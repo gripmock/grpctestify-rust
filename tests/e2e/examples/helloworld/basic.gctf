@@ -1,0 +1,26 @@
+// Basic gRPC Test File for the Greeter service
+
+--- ADDRESS ---
+localhost:4770
+
+--- ENDPOINT ---
+helloworld.Greeter/SayHello
+
+--- PROTO ---
+files: helloworld.proto
+import_paths: .
+
+--- REQUEST ---
+{
+  "name": "World"
+}
+
+--- RESPONSE with_asserts=true ---
+{
+  "message": "Hello World"
+}
+
+--- ASSERTS ---
+.message == "Hello World"
+@len(.message) == 11
+.message contains "Hello"

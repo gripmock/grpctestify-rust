@@ -1,0 +1,439 @@
+use super::engine::AssertionResult;
+use crate::parser::ast::InlineOptions;
+use serde_json::Value;
+
+pub struct JsonComparator;
+
+impl JsonComparator {
+    pub fn compare(
+        actual: &Value,
+        expected: &Value,
+        options: &InlineOptions,
+    ) -> Vec<AssertionResult> {
+        let mut results = Vec::new();
+
+        // 1. Redact fields if needed
+        let mut actual_redacted = actual.clone();
+        if !options.redact.is_empty() {
+            Self::redact_value(&mut actual_redacted, &options.redact);
+        }
+
+        // 2. Compare
+        Self::compare_recursive(&actual_redacted, expected, "$", options, &mut results);
+
+        results
+    }
+
+    fn redact_value(value: &mut Value, fields: &[String]) {
+        match value {
+            Value::Object(map) => {
+                for field in fields {
+                    map.remove(field);
+                }
+                for (_, v) in map.iter_mut() {
+                    Self::redact_value(v, fields);
+                }
+            }
+            Value::Array(arr) => {
+                for v in arr.iter_mut() {
+                    Self::redact_value(v, fields);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn compare_recursive(
+        actual: &Value,
+        expected: &Value,
+        path: &str,
+        options: &InlineOptions,
+        results: &mut Vec<AssertionResult>,
+    ) {
+        // Handle Wildcard "*"
+        if let Value::String(s) = expected {
+            if s == "*" {
+                return; // Matches anything
+            }
+        }
+
+        // Type mismatch check
+        // Note: Numbers can be float/int, so strictly checking discriminants might be too harsh if serde parses differently.
+        // But generally types should match.
+        // Exception: expected "*" string matches any actual type (handled above).
+
+        match (actual, expected) {
+            (Value::Object(act_map), Value::Object(exp_map)) => {
+                let resolve_actual_key = |expected_key: &str| -> Option<String> {
+                    if act_map.contains_key(expected_key) {
+                        return Some(expected_key.to_string());
+                    }
+
+                    let camel = snake_to_camel(expected_key);
+                    if act_map.contains_key(&camel) {
+                        return Some(camel);
+                    }
+
+                    let snake = camel_to_snake(expected_key);
+                    if act_map.contains_key(&snake) {
+                        return Some(snake);
+                    }
+
+                    None
+                };
+
+                // For objects, iterate over EXPECTED keys
+                for (k, exp_val) in exp_map {
+                    let new_path = format!("{}.{}", path, k);
+
+                    if let Some(resolved_key) = resolve_actual_key(k) {
+                        let act_val = act_map.get(&resolved_key).expect("resolved key must exist");
+                        Self::compare_recursive(act_val, exp_val, &new_path, options, results);
+                    } else {
+                        // Proto JSON may omit fields with default values.
+                        // If expected value is a default, treat missing key as acceptable.
+                        if !is_protojson_default_value(exp_val) {
+                            results.push(AssertionResult::fail(format!(
+                                "Key '{}' missing in actual response",
+                                new_path
+                            )));
+                        }
+                    }
+                }
+
+                // If NOT partial, check that actual doesn't have extra keys
+                if !options.partial {
+                    for k in act_map.keys() {
+                        let snake = camel_to_snake(k);
+                        let camel = snake_to_camel(k);
+                        if !exp_map.contains_key(k)
+                            && !exp_map.contains_key(&snake)
+                            && !exp_map.contains_key(&camel)
+                        {
+                            results.push(AssertionResult::fail(format!(
+                                "Unexpected key '{}.{}' in actual response",
+                                path, k
+                            )));
+                        }
+                    }
+                }
+            }
+            (Value::Array(act_arr), Value::Array(exp_arr)) => {
+                // Array length check
+                if !options.partial && act_arr.len() != exp_arr.len() {
+                    results.push(AssertionResult::fail_with_diff(
+                        format!(
+                            "Array length mismatch at '{}': expected {}, got {}",
+                            path,
+                            exp_arr.len(),
+                            act_arr.len()
+                        ),
+                        format!("length: {}", exp_arr.len()),
+                        format!("length: {}", act_arr.len()),
+                    ));
+                }
+
+                // If unordered_arrays is set, we need special handling
+                if options.unordered_arrays {
+                    // Strategy: For each item in EXPECTED, find a match in ACTUAL.
+                    // We need to keep track of used indices in ACTUAL to avoid reusing them.
+
+                    let mut used_indices = std::collections::HashSet::new();
+
+                    for exp_item in exp_arr.iter() {
+                        let mut found = false;
+
+                        for (j, act_item) in act_arr.iter().enumerate() {
+                            if used_indices.contains(&j) {
+                                continue;
+                            }
+
+                            // Check if this item matches
+                            // We need to call compare_recursive but capture results temporarily
+                            let mut temp_results = Vec::new();
+                            Self::compare_recursive(
+                                act_item,
+                                exp_item,
+                                &format!("{}[{}]", path, j),
+                                options,
+                                &mut temp_results,
+                            );
+
+                            if temp_results.is_empty() {
+                                // Match found!
+                                used_indices.insert(j);
+                                found = true;
+                                break;
+                            }
+                        }
+
+                        if !found {
+                            results.push(AssertionResult::fail(format!(
+                                "Missing expected item in unordered array at '{}': {:?}",
+                                path, exp_item
+                            )));
+                        }
+                    }
+
+                    // If not partial, check if we have leftover items in actual
+                    if !options.partial && used_indices.len() < act_arr.len() {
+                        results.push(AssertionResult::fail(format!(
+                            "Unordered array at '{}' has {} extra items",
+                            path,
+                            act_arr.len() - used_indices.len()
+                        )));
+                    }
+
+                    return;
+                }
+
+                // Iterate (up to min length)
+                // If partial is true, we usually still expect the items we defined to match the *first* N items
+                // OR we strictly match what we have.
+                // Let's implement strict index matching for the common case.
+
+                let len = std::cmp::min(act_arr.len(), exp_arr.len());
+                for i in 0..len {
+                    let new_path = format!("{}[{}]", path, i);
+                    Self::compare_recursive(&act_arr[i], &exp_arr[i], &new_path, options, results);
+                }
+
+                // If expected is longer than actual, that's always a fail (missing items)
+                if exp_arr.len() > act_arr.len() {
+                    for i in act_arr.len()..exp_arr.len() {
+                        results.push(AssertionResult::fail(format!(
+                            "Missing array item at '{}[{}]'",
+                            path, i
+                        )));
+                    }
+                }
+            }
+            (Value::String(a), Value::String(e)) => {
+                if a != e {
+                    results.push(AssertionResult::fail_with_diff(
+                        format!(
+                            "Value mismatch at '{}': expected \"{}\", got \"{}\"",
+                            path, e, a
+                        ),
+                        e,
+                        a,
+                    ));
+                }
+            }
+            (Value::Number(a), Value::Number(e)) => {
+                // Handle tolerance if provided
+                if let Some(tol) = options.tolerance {
+                    if let (Some(af), Some(ef)) = (a.as_f64(), e.as_f64()) {
+                        if (af - ef).abs() > tol {
+                            results.push(AssertionResult::fail_with_diff(
+                                format!(
+                                    "Value mismatch at '{}': expected {} (tolerance {}), got {}",
+                                    path, ef, tol, af
+                                ),
+                                format!("{} (±{})", ef, tol),
+                                format!("{}", af),
+                            ));
+                        }
+                        return;
+                    }
+                }
+
+                // Treat numerically-equal values as equal, even if JSON representation differs
+                // (e.g. 60 vs 60.0).
+                if let (Some(af), Some(ef)) = (a.as_f64(), e.as_f64()) {
+                    if af == ef || (af - ef).abs() <= 1e-6 {
+                        return;
+                    }
+                }
+
+                if a != e {
+                    results.push(AssertionResult::fail_with_diff(
+                        format!("Value mismatch at '{}': expected {}, got {}", path, e, a),
+                        format!("{}", e),
+                        format!("{}", a),
+                    ));
+                }
+            }
+            (Value::Bool(a), Value::Bool(e)) => {
+                if a != e {
+                    results.push(AssertionResult::fail_with_diff(
+                        format!("Value mismatch at '{}': expected {}, got {}", path, e, a),
+                        format!("{}", e),
+                        format!("{}", a),
+                    ));
+                }
+            }
+            (Value::Null, Value::Null) => {}
+            _ => {
+                // Type mismatch
+                results.push(AssertionResult::fail_with_diff(
+                    format!(
+                        "Type mismatch at '{}': expected {:?}, got {:?}",
+                        path, expected, actual
+                    ),
+                    format!("{:?}", expected),
+                    format!("{:?}", actual),
+                ));
+            }
+        }
+    }
+}
+
+fn snake_to_camel(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut upper = false;
+    for ch in input.chars() {
+        if ch == '_' {
+            upper = true;
+            continue;
+        }
+
+        if upper {
+            out.push(ch.to_ascii_uppercase());
+            upper = false;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn camel_to_snake(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for (i, ch) in input.chars().enumerate() {
+        if ch.is_ascii_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn is_protojson_default_value(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Bool(b) => !*b,
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                i == 0
+            } else if let Some(u) = n.as_u64() {
+                u == 0
+            } else if let Some(f) = n.as_f64() {
+                f == 0.0
+            } else {
+                false
+            }
+        }
+        Value::String(s) => s.is_empty(),
+        Value::Array(arr) => arr.is_empty(),
+        Value::Object(map) => map.is_empty(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_compare_exact_match() {
+        let actual = json!({"foo": "bar", "num": 1});
+        let expected = json!({"foo": "bar", "num": 1});
+        let options = InlineOptions::default();
+
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_compare_numeric_representation_match() {
+        let actual = json!({"result": 60.0});
+        let expected = json!({"result": 60});
+        let options = InlineOptions::default();
+
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_compare_mismatch() {
+        let actual = json!({"foo": "bar"});
+        let expected = json!({"foo": "baz"});
+        let options = InlineOptions::default();
+
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert_eq!(results.len(), 1);
+        if let AssertionResult::Fail { message: msg, .. } = &results[0] {
+            assert!(msg.contains("Value mismatch"));
+        } else {
+            panic!("Expected Fail");
+        }
+    }
+
+    #[test]
+    fn test_compare_partial_object() {
+        let actual = json!({"foo": "bar", "extra": "field"});
+        let expected = json!({"foo": "bar"});
+
+        // Without partial, this should fail (unexpected key)
+        let options = InlineOptions::default();
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert_eq!(results.len(), 1);
+
+        // With partial, this should pass
+        let options = InlineOptions {
+            partial: true,
+            ..Default::default()
+        };
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_wildcard() {
+        let actual = json!({"id": 12345, "name": "test"});
+        let expected = json!({"id": "*", "name": "test"});
+        let options = InlineOptions::default();
+
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_redact() {
+        let actual = json!({"id": 12345, "secret": "hidden", "name": "test"});
+        // If we redact "secret", it's removed from actual.
+        // If expected doesn't have it, strict match should pass.
+        let expected = json!({"id": 12345, "name": "test"});
+
+        let options = InlineOptions {
+            redact: vec!["secret".to_string()],
+            ..Default::default()
+        };
+
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_tolerance() {
+        let actual = json!({"val": 10.005});
+        let expected = json!({"val": 10.0});
+
+        let mut options = InlineOptions {
+            tolerance: Some(0.01),
+            ..Default::default()
+        };
+
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert!(results.is_empty());
+
+        options.tolerance = Some(0.001);
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert_eq!(results.len(), 1);
+    }
+}

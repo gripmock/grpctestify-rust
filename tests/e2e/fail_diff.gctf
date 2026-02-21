@@ -1,0 +1,21 @@
+--- ADDRESS ---
+localhost:4770
+
+--- ENDPOINT ---
+helloworld.Greeter/SayHello
+
+--- PROTO ---
+files: examples/helloworld/helloworld.proto
+
+--- REQUEST ---
+{
+  "name": "Different"
+}
+
+--- RESPONSE ---
+{
+  "message": "Hello Wrong"
+}
+
+--- ASSERTS ---
+.message == "Hello Wrong"

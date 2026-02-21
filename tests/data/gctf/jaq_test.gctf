@@ -1,0 +1,24 @@
+--- ADDRESS ---
+localhost:4770
+
+--- ENDPOINT ---
+helloworld.Greeter/SayHello
+
+--- REQUEST ---
+{
+  "name": "Jaq"
+}
+
+--- RESPONSE ---
+{
+  "message": "Hello Jaq"
+}
+
+--- ASSERTS ---
+# Simple field access (supported by both, but legacy might catch it if it looks like boolean)
+.message == "Hello Jaq"
+
+# Jaq filter syntax (should be handled by jaq)
+.message | length == 9
+.message | startswith("Hello")
+select(.message == "Hello Jaq")
