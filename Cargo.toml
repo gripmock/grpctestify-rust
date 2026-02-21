@@ -164,10 +164,17 @@ futures = "0.3.32"
 lazy_static = "1.5.0"
 tower-lsp = "0.20"
 
+[features]
+default = []
+proto-build = ["dep:tonic-build", "dep:protoc-bin-vendored"]
+
 [build-dependencies]
-tonic-build = "0.12"
+tonic-build = { version = "0.12", optional = true }
+protoc-bin-vendored = { version = "3", optional = true }
 
 [dev-dependencies]
 # Testing
 tokio-test = "0.4"
 tempfile = "3.10"
+tonic-build = "0.12"
+protoc-bin-vendored = "3"
