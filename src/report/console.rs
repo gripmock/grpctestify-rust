@@ -275,8 +275,12 @@ impl super::Reporter for ConsoleReporter {
         let mut errors = Vec::new();
         for result in results.all() {
             if result.status == TestStatus::Fail {
-                // Bash format: "test_name.gctf (duration)"
-                errors.push(format!("{} ({}ms)", result.name, result.duration_ms));
+                // Format: "test_name.gctf (duration)" with error details
+                let mut error_line = format!("{} ({}ms)", result.name, result.duration_ms);
+                if let Some(ref error_msg) = result.error_message {
+                    error_line.push_str(&format!("\n      Error: {}", error_msg));
+                }
+                errors.push(error_line);
             }
         }
 

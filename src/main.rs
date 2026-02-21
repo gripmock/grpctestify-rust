@@ -1169,10 +1169,11 @@ async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
     // Pass args to TestRunner if needed, e.g. no_assert
     // We need to update TestRunner to accept no_assert
     let runner = Arc::new(execution::TestRunner::new(
-        args.dry_run,
-        args.timeout,
-        args.no_assert,
-        args.update,
+        cli.run_args.dry_run,
+        cli.run_args.timeout,
+        cli.run_args.no_assert,
+        cli.run_args.update,
+        cli.verbose,
         coverage_collector.clone(),
     ));
 

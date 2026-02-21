@@ -61,6 +61,7 @@ pub struct TestRunner {
     timeout_seconds: u64,
     no_assert: bool,
     update_mode: bool,
+    verbose: bool,
     assertion_engine: AssertionEngine,
     coverage_collector: Option<Arc<CoverageCollector>>,
 }
@@ -136,6 +137,7 @@ impl TestRunner {
         timeout_seconds: u64,
         no_assert: bool,
         update_mode: bool,
+        verbose: bool,
         coverage_collector: Option<Arc<CoverageCollector>>,
     ) -> Self {
         Self {
@@ -143,6 +145,7 @@ impl TestRunner {
             timeout_seconds,
             no_assert,
             update_mode,
+            verbose,
             assertion_engine: AssertionEngine::new(),
             coverage_collector,
         }
@@ -369,6 +372,13 @@ impl TestRunner {
                             .unwrap_or_else(|_| request_value.to_string())
                     );
 
+                    if self.verbose {
+                        println!("🔍 Sending request: '{}'",
+                            serde_json::to_string_pretty(&request_value)
+                                .unwrap_or_else(|_| request_value.to_string())
+                        );
+                    }
+
                     let Some(tx_ref) = tx.as_mut() else {
                         failure_reasons.push(format!(
                             "Failed to send request at line {}: request stream already closed",
@@ -443,6 +453,11 @@ impl TestRunner {
                                             println!("--- RESPONSE (Raw) ---");
                                             println!(
                                                 "{}",
+                                                serde_json::to_string_pretty(&msg)
+                                                    .unwrap_or_else(|_| msg.to_string())
+                                            );
+                                        } else if self.verbose {
+                                            println!("🔍 gRPC response received: '{}'",
                                                 serde_json::to_string_pretty(&msg)
                                                     .unwrap_or_else(|_| msg.to_string())
                                             );
@@ -722,7 +737,20 @@ impl TestRunner {
                                             let mut expected = expected_json.clone();
                                             self.substitute_variables(&mut expected, &variables);
 
-                                            let got = e.to_string();
+                                            // Try to extract tonic Status from anyhow::Error
+                                            let got = if let Some(status) = e.downcast_ref::<tonic::Status>() {
+                                                let status_name = Self::grpc_code_name_from_numeric(status.code() as i64)
+                                                    .unwrap_or("Unknown");
+                                                format!("status: {}, message: \"{}\"", status_name, status.message())
+                                            } else {
+                                                // Fallback to error string representation
+                                                e.to_string()
+                                            };
+
+                                            if self.verbose {
+                                                println!("🔍 gRPC error received: '{}'", got);
+                                            }
+
                                             if !Self::error_matches_expected(&got, &expected) {
                                                 failure_reasons.push(format!(
                                                     "Error mismatch at line {}: expected {}, got '{}'",
@@ -756,6 +784,8 @@ impl TestRunner {
                             if self.no_assert {
                                 println!("--- RESPONSE (Error) ---");
                                 println!("{}", err_msg);
+                            } else if self.verbose {
+                                println!("🔍 gRPC error received: '{}'", err_msg);
                             }
 
                             if !self.no_assert {

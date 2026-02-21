@@ -1,4 +1,6 @@
+#[cfg(feature = "proto-build")]
 use std::env;
+#[cfg(feature = "proto-build")]
 use std::path::PathBuf;
 
 #[cfg(feature = "proto-build")]
