@@ -891,6 +891,10 @@ mod tests {
 
     #[test]
     fn test_compression_mode_default() {
+        // Ensure env var is not set
+        unsafe {
+            std::env::remove_var("GRPCTESTIFY_COMPRESSION");
+        }
         let mode = CompressionMode::from_env();
         assert_eq!(mode, CompressionMode::None);
     }
