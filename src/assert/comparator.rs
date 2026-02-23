@@ -436,4 +436,157 @@ mod tests {
         let results = JsonComparator::compare(&actual, &expected, &options);
         assert_eq!(results.len(), 1);
     }
+
+    #[test]
+    fn test_compare_empty_objects() {
+        let actual = json!({});
+        let expected = json!({});
+        let options = InlineOptions::default();
+
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_compare_empty_arrays() {
+        let actual = json!([]);
+        let expected = json!([]);
+        let options = InlineOptions::default();
+
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_compare_null_values() {
+        let actual = json!({"val": null});
+        let expected = json!({"val": null});
+        let options = InlineOptions::default();
+
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_compare_null_mismatch() {
+        let actual = json!({"val": "not null"});
+        let expected = json!({"val": null});
+        let options = InlineOptions::default();
+
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_compare_boolean_values() {
+        let actual = json!({"active": true, "deleted": false});
+        let expected = json!({"active": true, "deleted": false});
+        let options = InlineOptions::default();
+
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_compare_boolean_mismatch() {
+        let actual = json!({"active": true});
+        let expected = json!({"active": false});
+        let options = InlineOptions::default();
+
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_compare_nested_objects() {
+        let actual = json!({"user": {"name": "test", "age": 25}});
+        let expected = json!({"user": {"name": "test", "age": 25}});
+        let options = InlineOptions::default();
+
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_compare_nested_mismatch() {
+        let actual = json!({"user": {"name": "test"}});
+        let expected = json!({"user": {"name": "other"}});
+        let options = InlineOptions::default();
+
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_compare_arrays_different_lengths() {
+        let actual = json!([1, 2, 3]);
+        let expected = json!([1, 2]);
+        let options = InlineOptions::default();
+
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert!(results.len() > 0);
+    }
+
+    #[test]
+    fn test_compare_arrays_with_objects() {
+        let actual = json!([{"id": 1}, {"id": 2}]);
+        let expected = json!([{"id": 1}, {"id": 2}]);
+        let options = InlineOptions::default();
+
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_compare_partial_nested_object() {
+        let actual = json!({"user": {"name": "test", "age": 25, "extra": "field"}});
+        let expected = json!({"user": {"name": "test"}});
+        let options = InlineOptions {
+            partial: true,
+            ..Default::default()
+        };
+
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_redact_nested() {
+        let actual = json!({"user": {"password": "secret", "name": "test"}});
+        let expected = json!({"user": {"name": "test"}});
+
+        let options = InlineOptions {
+            redact: vec!["password".to_string()],
+            ..Default::default()
+        };
+
+        let results = JsonComparator::compare(&actual, &expected, &options);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_snake_to_camel() {
+        assert_eq!(snake_to_camel("user_name"), "userName");
+        assert_eq!(snake_to_camel("id"), "id");
+        assert_eq!(snake_to_camel("alreadyCamel"), "alreadyCamel");
+    }
+
+    #[test]
+    fn test_camel_to_snake() {
+        assert_eq!(camel_to_snake("userName"), "user_name");
+        assert_eq!(camel_to_snake("id"), "id");
+        assert_eq!(camel_to_snake("already_snake"), "already_snake");
+    }
+
+    #[test]
+    fn test_is_protojson_default_value() {
+        assert!(is_protojson_default_value(&Value::String("".to_string())));
+        assert!(is_protojson_default_value(&Value::Number(0.into())));
+        assert!(is_protojson_default_value(&Value::Bool(false)));
+        assert!(is_protojson_default_value(&Value::Array(vec![])));
+        assert!(is_protojson_default_value(&Value::Object(serde_json::Map::new())));
+        assert!(!is_protojson_default_value(&Value::String("not empty".to_string())));
+        assert!(!is_protojson_default_value(&Value::Number(1.into())));
+        assert!(!is_protojson_default_value(&Value::Bool(true)));
+    }
 }

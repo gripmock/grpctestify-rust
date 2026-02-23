@@ -57,3 +57,62 @@ impl TestResult {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_test_result_pass() {
+        let result = TestResult::pass("test.gctf", 100, Some(50));
+        assert_eq!(result.name, "test.gctf");
+        assert_eq!(result.status, TestStatus::Pass);
+        assert_eq!(result.duration_ms, 100);
+        assert_eq!(result.grpc_duration_ms, Some(50));
+        assert!(result.error_message.is_none());
+    }
+
+    #[test]
+    fn test_test_result_pass_no_grpc() {
+        let result = TestResult::pass("test.gctf", 100, None);
+        assert_eq!(result.name, "test.gctf");
+        assert_eq!(result.status, TestStatus::Pass);
+        assert!(result.grpc_duration_ms.is_none());
+    }
+
+    #[test]
+    fn test_test_result_fail() {
+        let result = TestResult::fail("test.gctf", "error message".to_string(), 100, Some(50));
+        assert_eq!(result.name, "test.gctf");
+        assert_eq!(result.status, TestStatus::Fail);
+        assert_eq!(result.duration_ms, 100);
+        assert_eq!(result.grpc_duration_ms, Some(50));
+        assert_eq!(result.error_message, Some("error message".to_string()));
+    }
+
+    #[test]
+    fn test_test_result_skip() {
+        let result = TestResult::skip("test.gctf", "skipped reason".to_string(), 100);
+        assert_eq!(result.name, "test.gctf");
+        assert_eq!(result.status, TestStatus::Skip);
+        assert_eq!(result.duration_ms, 100);
+        assert!(result.grpc_duration_ms.is_none());
+        assert_eq!(result.error_message, Some("skipped reason".to_string()));
+    }
+
+    #[test]
+    fn test_test_result_clone() {
+        let result = TestResult::pass("test.gctf", 100, Some(50));
+        let cloned = result.clone();
+        assert_eq!(result.name, cloned.name);
+        assert_eq!(result.status, cloned.status);
+    }
+
+    #[test]
+    fn test_test_result_debug() {
+        let result = TestResult::pass("test.gctf", 100, Some(50));
+        let debug_str = format!("{:?}", result);
+        assert!(debug_str.contains("test.gctf"));
+        assert!(debug_str.contains("Pass"));
+    }
+}

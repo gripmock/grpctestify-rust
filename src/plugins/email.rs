@@ -43,3 +43,74 @@ impl Plugin for EmailPlugin {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_context() -> PluginContext<'static> {
+        PluginContext {
+            response: &Value::Null,
+            headers: None,
+            trailers: None,
+        }
+    }
+
+    #[test]
+    fn test_email_plugin_name() {
+        let plugin = EmailPlugin;
+        assert_eq!(plugin.name(), "email");
+    }
+
+    #[test]
+    fn test_email_plugin_valid_email() {
+        let plugin = EmailPlugin;
+        let context = create_context();
+        let result = plugin.execute(&[Value::String("test@example.com".to_string())], &context);
+        assert!(result.is_ok());
+        if let PluginResult::Assertion(AssertionResult::Pass) = result.unwrap() {
+            // Pass
+        } else {
+            panic!("Expected Pass assertion result");
+        }
+    }
+
+    #[test]
+    fn test_email_plugin_invalid_email() {
+        let plugin = EmailPlugin;
+        let context = create_context();
+        let result = plugin.execute(&[Value::String("not-an-email".to_string())], &context);
+        assert!(result.is_ok());
+        if let PluginResult::Assertion(AssertionResult::Fail { .. }) = result.unwrap() {
+            // Pass
+        } else {
+            panic!("Expected Fail assertion result");
+        }
+    }
+
+    #[test]
+    fn test_email_plugin_wrong_type() {
+        let plugin = EmailPlugin;
+        let context = create_context();
+        let result = plugin.execute(&[Value::Number(serde_json::Number::from(123))], &context);
+        assert!(result.is_ok());
+        if let PluginResult::Assertion(AssertionResult::Fail { .. }) = result.unwrap() {
+            // Pass
+        } else {
+            panic!("Expected Fail assertion result");
+        }
+    }
+
+    #[test]
+    fn test_email_plugin_no_args() {
+        let plugin = EmailPlugin;
+        let context = create_context();
+        let result = plugin.execute(&[], &context);
+        assert!(result.is_ok());
+        if let PluginResult::Assertion(AssertionResult::Error(msg)) = result.unwrap() {
+            assert!(msg.contains("1 argument"));
+        } else {
+            panic!("Expected Error assertion result");
+        }
+    }
+}

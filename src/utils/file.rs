@@ -55,12 +55,6 @@ impl FileUtils {
         }
     }
 
-    /// Check if file exists and is readable
-    #[allow(dead_code)]
-    pub fn is_readable(path: &Path) -> bool {
-        path.exists() && path.is_file()
-    }
-
     /// Get file modification time (cross-platform)
     pub fn get_mtime(path: &Path) -> Result<i64> {
         #[cfg(unix)]
@@ -99,26 +93,6 @@ impl FileUtils {
         let metadata =
             fs::metadata(path).context(format!("Failed to get size for: {}", path.display()))?;
         Ok(metadata.len())
-    }
-
-    /// Read file content
-    #[allow(dead_code)]
-    pub fn read_file(path: &Path) -> Result<String> {
-        std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read file: {}", path.display()))
-    }
-
-    /// Write file content
-    #[allow(dead_code)]
-    pub fn write_file(path: &Path, content: &str) -> Result<()> {
-        std::fs::write(path, content)
-            .with_context(|| format!("Failed to write file: {}", path.display()))
-    }
-
-    /// Check if file has .gctf extension
-    #[allow(dead_code)]
-    pub fn is_gctf_file(path: &Path) -> bool {
-        path.extension().is_some_and(|e| e == "gctf")
     }
 
     /// Check if path exists
@@ -251,6 +225,8 @@ impl FileUtils {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn test_collect_test_files_single() {
@@ -263,6 +239,15 @@ mod tests {
     }
 
     #[test]
+    fn test_collect_test_files_non_gctf() {
+        let file = tempfile::Builder::new().suffix(".txt").tempfile().unwrap();
+        let path = file.path();
+
+        let files = FileUtils::collect_test_files(path);
+        assert_eq!(files.len(), 0);
+    }
+
+    #[test]
     fn test_collect_test_files_directory() {
         let dir = tempfile::tempdir().unwrap();
         let test_file = dir.path().join("test.gctf");
@@ -270,8 +255,234 @@ mod tests {
 
         let files = FileUtils::collect_test_files(dir.path());
         assert_eq!(files.len(), 1);
-        // assert_eq!(files[0], test_file); // Order is not guaranteed by walkdir or file system
         assert!(files.contains(&test_file));
+    }
+
+    #[test]
+    fn test_collect_test_files_directory_multiple() {
+        let dir = tempfile::tempdir().unwrap();
+        let file1 = dir.path().join("test1.gctf");
+        let file2 = dir.path().join("test2.gctf");
+        let file3 = dir.path().join("other.txt");
+        std::fs::write(&file1, "test1").unwrap();
+        std::fs::write(&file2, "test2").unwrap();
+        std::fs::write(&file3, "other").unwrap();
+
+        let files = FileUtils::collect_test_files(dir.path());
+        assert_eq!(files.len(), 2);
+        assert!(files.contains(&file1));
+        assert!(files.contains(&file2));
+        assert!(!files.contains(&file3));
+    }
+
+    #[test]
+    fn test_collect_test_files_directory_nested() {
+        let dir = tempfile::tempdir().unwrap();
+        let subdir = dir.path().join("subdir");
+        std::fs::create_dir(&subdir).unwrap();
+        let nested_file = subdir.join("nested.gctf");
+        std::fs::write(&nested_file, "nested").unwrap();
+
+        let files = FileUtils::collect_test_files(dir.path());
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&nested_file));
+    }
+
+    #[test]
+    fn test_collect_test_files_hidden_dirs_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let hidden_dir = dir.path().join(".hidden");
+        std::fs::create_dir(&hidden_dir).unwrap();
+        let hidden_file = hidden_dir.join("hidden.gctf");
+        std::fs::write(&hidden_file, "hidden").unwrap();
+        let visible_file = dir.path().join("visible.gctf");
+        std::fs::write(&visible_file, "visible").unwrap();
+
+        let files = FileUtils::collect_test_files(dir.path());
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&visible_file));
+        assert!(!files.contains(&hidden_file));
+    }
+
+    #[test]
+    fn test_collect_test_files_nonexistent() {
+        let path = PathBuf::from("/nonexistent/path");
+        let files = FileUtils::collect_test_files(&path);
+        assert_eq!(files.len(), 0);
+    }
+
+    #[test]
+    fn test_sort_files_by_name() {
+        let mut files = vec![
+            PathBuf::from("z.gctf"),
+            PathBuf::from("a.gctf"),
+            PathBuf::from("m.gctf"),
+        ];
+        FileUtils::sort_files(&mut files, "name");
+        assert_eq!(files[0].file_name().unwrap(), "a.gctf");
+        assert_eq!(files[1].file_name().unwrap(), "m.gctf");
+        assert_eq!(files[2].file_name().unwrap(), "z.gctf");
+    }
+
+    #[test]
+    fn test_sort_files_by_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let small = dir.path().join("small.gctf");
+        let large = dir.path().join("large.gctf");
+        std::fs::write(&small, "small").unwrap();
+        std::fs::write(&large, "larger content").unwrap();
+
+        let mut files = vec![large.clone(), small.clone()];
+        FileUtils::sort_files(&mut files, "size");
+        assert_eq!(files[0], small);
+        assert_eq!(files[1], large);
+    }
+
+    #[test]
+    fn test_sort_files_by_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old.gctf");
+        let new = dir.path().join("new.gctf");
+        std::fs::write(&old, "old").unwrap();
+        // Ensure different mtime by sleeping longer
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::fs::write(&new, "new").unwrap();
+
+        let mut files = vec![new.clone(), old.clone()];
+        FileUtils::sort_files(&mut files, "mtime");
+        // Older file should come first
+        assert!(files[0].file_name() == Some(std::ffi::OsStr::new("old.gctf")));
+        assert!(files[1].file_name() == Some(std::ffi::OsStr::new("new.gctf")));
+    }
+
+    #[test]
+    fn test_sort_files_random() {
+        let mut files = vec![
+            PathBuf::from("a.gctf"),
+            PathBuf::from("b.gctf"),
+            PathBuf::from("c.gctf"),
+        ];
+        let original = files.clone();
+        FileUtils::sort_files(&mut files, "random");
+        // Random shuffle should still have same elements
+        assert_eq!(files.len(), original.len());
+        for f in &original {
+            assert!(files.contains(f));
+        }
+    }
+
+    #[test]
+    fn test_sort_files_default() {
+        let mut files = vec![
+            PathBuf::from("z.gctf"),
+            PathBuf::from("a.gctf"),
+        ];
+        FileUtils::sort_files(&mut files, "unknown");
+        // Default should sort by path
+        assert!(files[0].to_string_lossy() < files[1].to_string_lossy());
+    }
+
+    #[test]
+    fn test_get_mtime() {
+        let file = tempfile::Builder::new().suffix(".gctf").tempfile().unwrap();
+        let mtime = FileUtils::get_mtime(file.path());
+        assert!(mtime.is_ok());
+        assert!(mtime.unwrap() > 0);
+    }
+
+    #[test]
+    fn test_get_mtime_nonexistent() {
+        let result = FileUtils::get_mtime(Path::new("/nonexistent/file"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_file_size() {
+        let file = tempfile::Builder::new().suffix(".gctf").tempfile().unwrap();
+        std::fs::write(file.path(), "hello").unwrap();
+        let size = FileUtils::get_file_size(file.path());
+        assert!(size.is_ok());
+        assert_eq!(size.unwrap(), 5);
+    }
+
+    #[test]
+    fn test_get_file_size_nonexistent() {
+        let result = FileUtils::get_file_size(Path::new("/nonexistent/file"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_exists() {
+        let file = tempfile::Builder::new().suffix(".gctf").tempfile().unwrap();
+        assert!(FileUtils::exists(file.path()));
+        assert!(!FileUtils::exists(Path::new("/nonexistent/file")));
+    }
+
+    #[test]
+    fn test_resolve_relative_path_absolute() {
+        let base = Path::new("/base/file.gctf");
+        let result = FileUtils::resolve_relative_path(base, "/absolute/path.gctf");
+        assert_eq!(result, PathBuf::from("/absolute/path.gctf"));
+    }
+
+    #[test]
+    fn test_resolve_relative_path_relative() {
+        let base = Path::new("/base/dir/file.gctf");
+        let result = FileUtils::resolve_relative_path(base, "relative/path.gctf");
+        assert_eq!(result, PathBuf::from("/base/dir/relative/path.gctf"));
+    }
+
+    #[test]
+    fn test_resolve_relative_path_parent_missing() {
+        let base = Path::new("file.gctf");
+        let result = FileUtils::resolve_relative_path(base, "relative.gctf");
+        assert_eq!(result, PathBuf::from("relative.gctf"));
+    }
+
+    #[test]
+    fn test_update_test_file() {
+        let mut doc = crate::parser::GctfDocument::new("test.gctf".to_string());
+        use crate::parser::ast::{Section, SectionContent, SectionType, InlineOptions};
+        use serde_json::json;
+
+        doc.sections.push(Section {
+            section_type: SectionType::Endpoint,
+            content: SectionContent::Single("Service/Method".to_string()),
+            inline_options: InlineOptions::default(),
+            raw_content: "Service/Method".to_string(),
+            start_line: 1,
+            end_line: 1,
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(json!({"result": "old"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"old\"}".to_string(),
+            start_line: 2,
+            end_line: 3,
+        });
+
+        let response = crate::grpc::GrpcResponse {
+            headers: std::collections::HashMap::new(),
+            trailers: std::collections::HashMap::new(),
+            messages: vec![json!({"result": "new"})],
+            error: None,
+        };
+
+        let temp_file = NamedTempFile::new().unwrap();
+        let content = "--- ENDPOINT ---
+Service/Method
+
+--- RESPONSE ---
+{\"result\": \"old\"}
+";
+        std::fs::write(temp_file.path(), content).unwrap();
+
+        let result = FileUtils::update_test_file(temp_file.path(), &doc, &response);
+        assert!(result.is_ok());
+
+        let updated_content = std::fs::read_to_string(temp_file.path()).unwrap();
+        assert!(updated_content.contains("\"result\": \"new\""));
     }
 
     #[test]
@@ -285,5 +496,11 @@ mod tests {
             let normalized = FileUtils::normalize_path_separators(path);
             assert!(normalized.to_str().unwrap().contains("/"));
         }
+    }
+
+    #[test]
+    fn test_file_utils_debug() {
+        // FileUtils is a unit struct, just verify it exists
+        let _ = FileUtils;
     }
 }

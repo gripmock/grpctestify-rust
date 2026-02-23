@@ -42,3 +42,74 @@ impl Plugin for IpPlugin {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_context() -> PluginContext<'static> {
+        PluginContext {
+            response: &Value::Null,
+            headers: None,
+            trailers: None,
+        }
+    }
+
+    #[test]
+    fn test_ip_plugin_name() {
+        let plugin = IpPlugin;
+        assert_eq!(plugin.name(), "ip");
+    }
+
+    #[test]
+    fn test_ip_plugin_valid_ipv4() {
+        let plugin = IpPlugin;
+        let context = create_context();
+        let result = plugin.execute(&[Value::String("192.168.1.1".to_string())], &context);
+        assert!(result.is_ok());
+        if let PluginResult::Assertion(AssertionResult::Pass) = result.unwrap() {
+            // Pass
+        } else {
+            panic!("Expected Pass assertion result");
+        }
+    }
+
+    #[test]
+    fn test_ip_plugin_valid_ipv6() {
+        let plugin = IpPlugin;
+        let context = create_context();
+        let result = plugin.execute(&[Value::String("::1".to_string())], &context);
+        assert!(result.is_ok());
+        if let PluginResult::Assertion(AssertionResult::Pass) = result.unwrap() {
+            // Pass
+        } else {
+            panic!("Expected Pass assertion result");
+        }
+    }
+
+    #[test]
+    fn test_ip_plugin_invalid_ip() {
+        let plugin = IpPlugin;
+        let context = create_context();
+        let result = plugin.execute(&[Value::String("not-an-ip".to_string())], &context);
+        assert!(result.is_ok());
+        if let PluginResult::Assertion(AssertionResult::Fail { .. }) = result.unwrap() {
+            // Pass
+        } else {
+            panic!("Expected Fail assertion result");
+        }
+    }
+
+    #[test]
+    fn test_ip_plugin_no_args() {
+        let plugin = IpPlugin;
+        let context = create_context();
+        let result = plugin.execute(&[], &context);
+        assert!(result.is_ok());
+        if let PluginResult::Assertion(AssertionResult::Error(msg)) = result.unwrap() {
+            assert!(msg.contains("1 argument"));
+        } else {
+            panic!("Expected Error assertion result");
+        }
+    }
+}

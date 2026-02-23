@@ -421,6 +421,8 @@ fn parse_assertions(content: &str) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn test_tokenize_options() {
@@ -435,10 +437,28 @@ mod tests {
     }
 
     #[test]
+    fn test_tokenize_options_empty() {
+        let result = tokenize_options("").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_tokenize_options_single() {
+        let result = tokenize_options("key=value").unwrap();
+        assert_eq!(result, vec!["key=value"]);
+    }
+
+    #[test]
     fn test_parse_key_value_options() {
         let result = parse_key_value_options("key1=value1 key2=value2").unwrap();
         assert_eq!(result.get("key1"), Some(&"value1".to_string()));
         assert_eq!(result.get("key2"), Some(&"value2".to_string()));
+    }
+
+    #[test]
+    fn test_parse_key_value_options_empty() {
+        let result = parse_key_value_options("").unwrap();
+        assert!(result.is_empty());
     }
 
     #[test]
@@ -447,6 +467,42 @@ mod tests {
         assert!(result.with_asserts);
         assert!(!result.partial);
         assert_eq!(result.tolerance, Some(0.1));
+    }
+
+    #[test]
+    fn test_parse_inline_options_partial() {
+        let result = parse_inline_options("partial=true").unwrap();
+        assert!(result.partial);
+        assert!(!result.with_asserts);
+        assert!(result.tolerance.is_none());
+    }
+
+    #[test]
+    fn test_parse_inline_options_redact() {
+        let result = parse_inline_options("redact=password,token").unwrap();
+        assert_eq!(result.redact, vec!["password", "token"]);
+    }
+
+    #[test]
+    fn test_parse_inline_options_unordered_arrays() {
+        let result = parse_inline_options("unordered_arrays=true").unwrap();
+        assert!(result.unordered_arrays);
+    }
+
+    #[test]
+    fn test_parse_inline_options_empty() {
+        let result = parse_inline_options("").unwrap();
+        assert!(!result.with_asserts);
+        assert!(!result.partial);
+        assert!(result.tolerance.is_none());
+        assert!(result.redact.is_empty());
+        assert!(!result.unordered_arrays);
+    }
+
+    #[test]
+    fn test_parse_inline_options_invalid_tolerance() {
+        let result = parse_inline_options("tolerance=invalid").unwrap();
+        assert!(result.tolerance.is_none());
     }
 
     #[test]
@@ -463,6 +519,20 @@ key2: value2
     }
 
     #[test]
+    fn test_parse_key_value_section_empty() {
+        let content = "";
+        let result = parse_key_value_section(content).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_key_value_section_colon_space() {
+        let content = "key:value";
+        let result = parse_key_value_section(content).unwrap();
+        assert_eq!(result.get("key"), Some(&"value".to_string()));
+    }
+
+    #[test]
     fn test_parse_assertions() {
         let content = r#"
 .status == "success"
@@ -471,5 +541,121 @@ key2: value2
         let result = parse_assertions(content).unwrap();
         assert_eq!(result.len(), 2);
         assert!(result.contains(&".status == \"success\"".to_string()));
+    }
+
+    #[test]
+    fn test_parse_assertions_empty() {
+        let content = "";
+        let result = parse_assertions(content).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_assertions_with_comments() {
+        let content = r#"
+# This is a comment
+.status == 200
+"#;
+        let result = parse_assertions(content).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result.contains(&".status == 200".to_string()));
+    }
+
+    #[test]
+    fn test_parse_gctf_from_str() {
+        let content = r#"--- ENDPOINT ---
+Service/Method
+
+--- REQUEST ---
+{"key": "value"}
+
+--- RESPONSE ---
+{"result": "ok"}
+"#;
+        let document = parse_gctf_from_str(content, "test.gctf").unwrap();
+        assert_eq!(document.file_path, "test.gctf");
+        assert_eq!(document.sections.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_gctf_from_str_empty() {
+        let content = "";
+        let document = parse_gctf_from_str(content, "test.gctf").unwrap();
+        assert_eq!(document.file_path, "test.gctf");
+        assert!(document.sections.is_empty());
+    }
+
+    #[test]
+    fn test_parse_gctf() {
+        let content = r#"--- ENDPOINT ---
+Service/Method
+
+--- REQUEST ---
+{"key": "value"}
+"#;
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(content.as_bytes()).unwrap();
+
+        let document = parse_gctf(temp_file.path()).unwrap();
+        assert_eq!(document.sections.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_gctf_nonexistent_file() {
+        let result = parse_gctf(Path::new("/nonexistent/file.gctf"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_gctf_with_diagnostics() {
+        let content = r#"--- ENDPOINT ---
+Service/Method
+
+--- REQUEST ---
+{"key": "value"}
+
+--- RESPONSE ---
+{"result": "ok"}
+"#;
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(content.as_bytes()).unwrap();
+
+        let (document, diagnostics) = parse_gctf_with_diagnostics(temp_file.path()).unwrap();
+        assert_eq!(document.sections.len(), 3);
+        assert!(diagnostics.bytes > 0);
+        assert_eq!(diagnostics.section_headers, 3);
+        assert!(diagnostics.timings.total_ms > 0.0);
+    }
+
+    #[test]
+    fn test_parse_timings_debug() {
+        let timings = ParseTimings {
+            read_ms: 1.0,
+            parse_sections_ms: 2.0,
+            build_document_ms: 3.0,
+            total_ms: 4.0,
+        };
+        let debug_str = format!("{:?}", timings);
+        assert!(debug_str.contains("ParseTimings"));
+    }
+
+    #[test]
+    fn test_parse_diagnostics_debug() {
+        let diagnostics = ParseDiagnostics {
+            file_path: "test.gctf".to_string(),
+            bytes: 100,
+            total_lines: 10,
+            section_headers: 3,
+            section_counts: HashMap::new(),
+            timings: ParseTimings {
+                read_ms: 1.0,
+                parse_sections_ms: 2.0,
+                build_document_ms: 3.0,
+                total_ms: 4.0,
+            },
+        };
+        let debug_str = format!("{:?}", diagnostics);
+        assert!(debug_str.contains("ParseDiagnostics"));
+        assert!(debug_str.contains("test.gctf"));
     }
 }

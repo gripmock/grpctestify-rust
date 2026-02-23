@@ -43,3 +43,61 @@ impl Plugin for TimestampPlugin {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_context() -> PluginContext<'static> {
+        PluginContext {
+            response: &Value::Null,
+            headers: None,
+            trailers: None,
+        }
+    }
+
+    #[test]
+    fn test_timestamp_plugin_name() {
+        let plugin = TimestampPlugin;
+        assert_eq!(plugin.name(), "timestamp");
+    }
+
+    #[test]
+    fn test_timestamp_plugin_valid() {
+        let plugin = TimestampPlugin;
+        let context = create_context();
+        let result = plugin.execute(&[Value::String("2024-01-15T10:30:00Z".to_string())], &context);
+        assert!(result.is_ok());
+        if let PluginResult::Assertion(AssertionResult::Pass) = result.unwrap() {
+            // Pass
+        } else {
+            panic!("Expected Pass assertion result");
+        }
+    }
+
+    #[test]
+    fn test_timestamp_plugin_invalid() {
+        let plugin = TimestampPlugin;
+        let context = create_context();
+        let result = plugin.execute(&[Value::String("not-a-timestamp".to_string())], &context);
+        assert!(result.is_ok());
+        if let PluginResult::Assertion(AssertionResult::Fail { .. }) = result.unwrap() {
+            // Pass
+        } else {
+            panic!("Expected Fail assertion result");
+        }
+    }
+
+    #[test]
+    fn test_timestamp_plugin_no_args() {
+        let plugin = TimestampPlugin;
+        let context = create_context();
+        let result = plugin.execute(&[], &context);
+        assert!(result.is_ok());
+        if let PluginResult::Assertion(AssertionResult::Error(msg)) = result.unwrap() {
+            assert!(msg.contains("1 argument"));
+        } else {
+            panic!("Expected Error assertion result");
+        }
+    }
+}

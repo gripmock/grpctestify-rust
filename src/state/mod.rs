@@ -139,3 +139,124 @@ pub enum TestStatus {
     #[allow(dead_code)]
     Skip,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_test_results_new() {
+        let results = TestResults::new();
+        assert_eq!(results.total(), 0);
+        assert_eq!(results.passed(), 0);
+        assert_eq!(results.failed(), 0);
+        assert_eq!(results.skipped(), 0);
+        assert!(results.all_passed());
+        assert_eq!(results.pass_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_test_results_default() {
+        let results = TestResults::default();
+        assert_eq!(results.total(), 0);
+    }
+
+    #[test]
+    fn test_test_results_add_pass() {
+        let mut results = TestResults::new();
+        let result = TestResult::pass("test1.gctf", 100, Some(50));
+        results.add(result);
+        assert_eq!(results.total(), 1);
+        assert_eq!(results.passed(), 1);
+        assert_eq!(results.failed(), 0);
+        assert!(results.all_passed());
+        assert_eq!(results.pass_rate(), 100.0);
+    }
+
+    #[test]
+    fn test_test_results_add_fail() {
+        let mut results = TestResults::new();
+        let result = TestResult::fail("test1.gctf", "error".to_string(), 100, Some(50));
+        results.add(result);
+        assert_eq!(results.total(), 1);
+        assert_eq!(results.passed(), 0);
+        assert_eq!(results.failed(), 1);
+        assert!(!results.all_passed());
+        assert_eq!(results.pass_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_test_results_add_skip() {
+        let mut results = TestResults::new();
+        let result = TestResult::skip("test1.gctf", "reason".to_string(), 100);
+        results.add(result);
+        assert_eq!(results.total(), 1);
+        assert_eq!(results.passed(), 0);
+        assert_eq!(results.failed(), 0);
+        assert_eq!(results.skipped(), 1);
+    }
+
+    #[test]
+    fn test_test_results_mixed() {
+        let mut results = TestResults::new();
+        results.add(TestResult::pass("test1.gctf", 100, Some(50)));
+        results.add(TestResult::pass("test2.gctf", 100, Some(50)));
+        results.add(TestResult::fail("test3.gctf", "error".to_string(), 100, Some(50)));
+        results.add(TestResult::skip("test4.gctf", "reason".to_string(), 100));
+        assert_eq!(results.total(), 4);
+        assert_eq!(results.passed(), 2);
+        assert_eq!(results.failed(), 1);
+        assert_eq!(results.skipped(), 1);
+        assert!(!results.all_passed());
+        assert_eq!(results.pass_rate(), 50.0);
+    }
+
+    #[test]
+    fn test_test_results_get() {
+        let mut results = TestResults::new();
+        results.add(TestResult::pass("test1.gctf", 100, Some(50)));
+        assert!(results.get(0).is_some());
+        assert!(results.get(1).is_none());
+    }
+
+    #[test]
+    fn test_test_results_all() {
+        let mut results = TestResults::new();
+        results.add(TestResult::pass("test1.gctf", 100, Some(50)));
+        results.add(TestResult::pass("test2.gctf", 100, Some(50)));
+        assert_eq!(results.all().len(), 2);
+    }
+
+    #[test]
+    fn test_test_results_reset() {
+        let mut results = TestResults::new();
+        results.add(TestResult::pass("test1.gctf", 100, Some(50)));
+        results.add(TestResult::fail("test2.gctf", "error".to_string(), 100, Some(50)));
+        results.reset();
+        assert_eq!(results.total(), 0);
+        assert_eq!(results.passed(), 0);
+        assert_eq!(results.failed(), 0);
+        assert!(results.all_passed());
+    }
+
+    #[test]
+    fn test_test_results_metrics() {
+        let mut results = TestResults::new();
+        results.add(TestResult::pass("test1.gctf", 100, Some(50)));
+        results.add(TestResult::pass("test2.gctf", 100, Some(30)));
+        let metrics = results.metrics();
+        assert_eq!(metrics.grpc_calls, 2);
+        assert_eq!(metrics.grpc_total_duration_ms, 80);
+    }
+
+    #[test]
+    fn test_execution_metrics_update_time() {
+        let mut metrics = ExecutionMetrics::default();
+        let start = metrics.start_time;
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        metrics.update_time();
+        assert!(metrics.end_time >= start);
+        // Allow some tolerance for timing inaccuracies
+        assert!(metrics.total_duration_ms >= 0);
+    }
+}

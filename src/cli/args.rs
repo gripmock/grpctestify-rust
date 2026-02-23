@@ -86,6 +86,12 @@ pub enum Commands {
     /// Run tests (default)
     Run(RunArgs),
 
+    /// Explain test execution workflow
+    Explain(ExplainArgs),
+
+    /// Inspect .gctf file structure (AST and Workflow)
+    Inspect(InspectArgs),
+
     /// List test files (for IDE test discovery)
     List(ListArgs),
 
@@ -97,9 +103,6 @@ pub enum Commands {
 
     /// Check .gctf file syntax and structure
     Check(CheckArgs),
-
-    /// Inspect .gctf file structure (AST and Workflow)
-    Inspect(InspectArgs),
 
     /// Start LSP server for IDE integration
     Lsp(LspArgs),
@@ -130,6 +133,17 @@ pub struct ListArgs {
 #[derive(Args, Debug, Clone)]
 pub struct InspectArgs {
     /// File to inspect
+    #[arg(required = true)]
+    pub file: PathBuf,
+
+    /// Output format (text, json)
+    #[arg(long, default_value = "text")]
+    pub format: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ExplainArgs {
+    /// File to explain
     #[arg(required = true)]
     pub file: PathBuf,
 

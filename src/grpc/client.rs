@@ -857,3 +857,41 @@ async fn load_descriptors_via_reflection(config: &GrpcClientConfig) -> Result<De
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_grpc_client_config_default() {
+        let config = GrpcClientConfig {
+            address: "localhost:4770".to_string(),
+            timeout_seconds: 30,
+            tls_config: None,
+            proto_config: None,
+            metadata: None,
+            target_service: None,
+            compression: CompressionMode::None,
+        };
+        assert_eq!(config.address, "localhost:4770");
+        assert_eq!(config.timeout_seconds, 30);
+    }
+
+    #[test]
+    fn test_compression_mode_from_env() {
+        unsafe {
+            std::env::set_var("GRPCTESTIFY_COMPRESSION", "gzip");
+        }
+        let mode = CompressionMode::from_env();
+        assert_eq!(mode, CompressionMode::Gzip);
+        unsafe {
+            std::env::remove_var("GRPCTESTIFY_COMPRESSION");
+        }
+    }
+
+    #[test]
+    fn test_compression_mode_default() {
+        let mode = CompressionMode::from_env();
+        assert_eq!(mode, CompressionMode::None);
+    }
+}

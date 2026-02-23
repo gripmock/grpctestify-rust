@@ -30,7 +30,7 @@ fn create_response_section(expected: serde_json::Value, options: InlineOptions) 
 
 #[test]
 fn test_validate_response_exact_match() {
-    let runner = TestRunner::new(false, 5, false, false, None);
+    let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
     // Expect: {"foo": "bar"}
@@ -61,7 +61,7 @@ fn create_asserts_section(assertions: Vec<String>) -> Section {
 
 #[test]
 fn test_validate_response_with_asserts() {
-    let runner = TestRunner::new(false, 5, false, false, None);
+    let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
     // Expect: {"foo": "bar"} with with_asserts=true
@@ -87,7 +87,7 @@ fn test_validate_response_with_asserts() {
 
 #[test]
 fn test_validate_response_with_asserts_fail() {
-    let runner = TestRunner::new(false, 5, false, false, None);
+    let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
     // Expect: {"foo": "bar"} with with_asserts=true
@@ -120,7 +120,7 @@ fn test_validate_response_with_asserts_fail() {
 
 #[test]
 fn test_validate_response_mixed_asserts() {
-    let runner = TestRunner::new(false, 5, false, false, None);
+    let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
     // Response 1: with_asserts=true
@@ -159,7 +159,7 @@ fn test_validate_response_mixed_asserts() {
 
 #[test]
 fn test_validate_response_mismatch() {
-    let runner = TestRunner::new(false, 5, false, false, None);
+    let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
     // Expect: {"foo": "bar"}
@@ -185,7 +185,7 @@ fn test_validate_response_mismatch() {
 
 #[test]
 fn test_validate_response_partial() {
-    let runner = TestRunner::new(false, 5, false, false, None);
+    let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
     // Expect: {"foo": "bar"} with partial=true
@@ -207,7 +207,7 @@ fn test_validate_response_partial() {
 
 #[test]
 fn test_validate_response_partial_fail() {
-    let runner = TestRunner::new(false, 5, false, false, None);
+    let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
     // Expect: {"foo": "bar"} with partial=false (default)
@@ -231,7 +231,7 @@ fn test_validate_response_partial_fail() {
 
 #[test]
 fn test_validate_response_multiple() {
-    let runner = TestRunner::new(false, 5, false, false, None);
+    let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
     // Expect:
@@ -260,7 +260,7 @@ fn test_validate_response_multiple() {
 
 #[test]
 fn test_validate_response_count_mismatch() {
-    let runner = TestRunner::new(false, 5, false, false, None);
+    let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
     // Expect:
@@ -294,7 +294,7 @@ fn test_validate_response_count_mismatch() {
 
 #[test]
 fn test_validate_response_unordered_arrays() {
-    let runner = TestRunner::new(false, 5, false, false, None);
+    let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
     // Expect: [{"id": 2}, {"id": 1}] with unordered_arrays=true
@@ -318,7 +318,7 @@ fn test_validate_response_unordered_arrays() {
 
 #[test]
 fn test_validate_response_unordered_arrays_fail() {
-    let runner = TestRunner::new(false, 5, false, false, None);
+    let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
     // Expect: [{"id": 2}, {"id": 1}] with unordered_arrays=false (default)
@@ -360,7 +360,7 @@ fn create_extract_section(extractions: Vec<(String, String)>) -> Section {
 
 #[test]
 fn test_validate_response_extract() {
-    let runner = TestRunner::new(false, 5, false, false, None);
+    let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
     // 1. Response: {"id": 123}

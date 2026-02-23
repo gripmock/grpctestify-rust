@@ -8,6 +8,7 @@ use crate::parser::ast::{SectionContent, SectionType};
 use crate::report::CoverageCollector;
 use crate::utils::file::FileUtils;
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
@@ -15,6 +16,337 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+
+/// Execution plan for inspect workflow visualization
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionPlan {
+    pub file_path: String,
+    pub connection: ConnectionInfo,
+    pub target: TargetInfo,
+    pub headers: Option<HeadersInfo>,
+    pub requests: Vec<RequestInfo>,
+    pub expectations: Vec<ExpectationInfo>,
+    pub assertions: Vec<AssertionInfo>,
+    pub extractions: Vec<ExtractionInfo>,
+    pub rpc_mode: RpcMode,
+    pub summary: ExecutionSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectionInfo {
+    pub address: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TargetInfo {
+    pub endpoint: String,
+    pub package: Option<String>,
+    pub service: Option<String>,
+    pub method: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeadersInfo {
+    pub count: usize,
+    pub headers: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestInfo {
+    pub index: usize,
+    pub content: Value,
+    pub content_type: String,
+    pub line_start: usize,
+    pub line_end: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpectationInfo {
+    pub index: usize,
+    pub expectation_type: String, // "response" or "error"
+    pub content: Option<Value>,
+    pub message_count: Option<usize>,
+    pub comparison_options: ComparisonOptions,
+    pub line_start: usize,
+    pub line_end: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ComparisonOptions {
+    pub partial: bool,
+    pub redact: Vec<String>,
+    pub tolerance: Option<f64>,
+    pub unordered_arrays: bool,
+    pub with_asserts: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssertionInfo {
+    pub index: usize,
+    pub assertions: Vec<String>,
+    pub line_start: usize,
+    pub line_end: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractionInfo {
+    pub index: usize,
+    pub variables: HashMap<String, String>,
+    pub line_start: usize,
+    pub line_end: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RpcMode {
+    Unary,
+    UnaryError,
+    ServerStreaming { response_count: usize },
+    ClientStreaming { request_count: usize },
+    BidirectionalStreaming { request_count: usize, response_count: usize },
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionSummary {
+    pub total_requests: usize,
+    pub total_responses: usize,
+    pub error_expected: bool,
+    pub assertion_blocks: usize,
+    pub variable_extractions: usize,
+    pub rpc_mode_name: String,
+}
+
+impl ExecutionPlan {
+    /// Build execution plan from a GctfDocument
+    pub fn from_document(doc: &GctfDocument) -> Self {
+        let file_path = doc.file_path.clone();
+        
+        // Connection info
+        let connection = if let Some(section) = doc.first_section(SectionType::Address) {
+            if let SectionContent::Single(addr) = &section.content {
+                ConnectionInfo {
+                    address: addr.clone(),
+                    source: format!("ADDRESS section [Line {}-{}]", section.start_line, section.end_line),
+                }
+            } else {
+                ConnectionInfo {
+                    address: "<env:GRPCTESTIFY_ADDRESS>".to_string(),
+                    source: "Environment variable (implicit)".to_string(),
+                }
+            }
+        } else {
+            ConnectionInfo {
+                address: "<env:GRPCTESTIFY_ADDRESS>".to_string(),
+                source: "Environment variable (implicit)".to_string(),
+            }
+        };
+
+        // Target info
+        let target = if let Some(section) = doc.first_section(SectionType::Endpoint) {
+            if let SectionContent::Single(endpoint) = &section.content {
+                let (package, service, method) = doc.parse_endpoint()
+                    .map(|(p, s, m)| (Some(p), Some(s), Some(m)))
+                    .unwrap_or((None, None, None));
+                TargetInfo {
+                    endpoint: endpoint.clone(),
+                    package,
+                    service,
+                    method,
+                }
+            } else {
+                TargetInfo {
+                    endpoint: "<missing>".to_string(),
+                    package: None,
+                    service: None,
+                    method: None,
+                }
+            }
+        } else {
+            TargetInfo {
+                endpoint: "<missing>".to_string(),
+                package: None,
+                service: None,
+                method: None,
+            }
+        };
+
+        // Headers info
+        let headers = doc.first_section(SectionType::RequestHeaders)
+            .and_then(|section| {
+                if let SectionContent::KeyValues(headers) = &section.content {
+                    Some(HeadersInfo {
+                        count: headers.len(),
+                        headers: headers.clone(),
+                    })
+                } else {
+                    None
+                }
+            });
+
+        // Requests
+        let request_sections = doc.sections_by_type(SectionType::Request);
+        let requests: Vec<RequestInfo> = request_sections.iter().enumerate().map(|(i, section)| {
+            let (content, content_type) = match &section.content {
+                SectionContent::Json(j) => (j.clone(), "json"),
+                SectionContent::JsonLines(_) => (Value::Array(vec![]), "json-lines"),
+                SectionContent::Empty => (Value::Object(serde_json::Map::new()), "empty"),
+                _ => (Value::Null, "unknown"),
+            };
+            RequestInfo {
+                index: i + 1,
+                content,
+                content_type: content_type.to_string(),
+                line_start: section.start_line,
+                line_end: section.end_line,
+            }
+        }).collect();
+
+        // Expectations (responses or error)
+        let response_sections = doc.sections_by_type(SectionType::Response);
+        let error_section = doc.first_section(SectionType::Error);
+        
+        let expectations: Vec<ExpectationInfo> = if !response_sections.is_empty() {
+            response_sections.iter().enumerate().map(|(i, section)| {
+                let (content, message_count) = match &section.content {
+                    SectionContent::Json(j) => (Some(j.clone()), None),
+                    SectionContent::JsonLines(vals) => (None, Some(vals.len())),
+                    _ => (None, None),
+                };
+                ExpectationInfo {
+                    index: i + 1,
+                    expectation_type: "response".to_string(),
+                    content,
+                    message_count,
+                    comparison_options: ComparisonOptions {
+                        partial: section.inline_options.partial,
+                        redact: section.inline_options.redact.clone(),
+                        tolerance: section.inline_options.tolerance,
+                        unordered_arrays: section.inline_options.unordered_arrays,
+                        with_asserts: section.inline_options.with_asserts,
+                    },
+                    line_start: section.start_line,
+                    line_end: section.end_line,
+                }
+            }).collect()
+        } else if let Some(section) = error_section {
+            let content = match &section.content {
+                SectionContent::Json(j) => Some(j.clone()),
+                _ => None,
+            };
+            vec![ExpectationInfo {
+                index: 1,
+                expectation_type: "error".to_string(),
+                content,
+                message_count: None,
+                comparison_options: ComparisonOptions::default(),
+                line_start: section.start_line,
+                line_end: section.end_line,
+            }]
+        } else {
+            vec![]
+        };
+
+        // Assertions
+        let assert_sections = doc.sections_by_type(SectionType::Asserts);
+        let assertions: Vec<AssertionInfo> = assert_sections.iter().enumerate().map(|(i, section)| {
+            let assertions = if let SectionContent::Assertions(lines) = &section.content {
+                lines.clone()
+            } else {
+                vec![]
+            };
+            AssertionInfo {
+                index: i + 1,
+                assertions,
+                line_start: section.start_line,
+                line_end: section.end_line,
+            }
+        }).collect();
+
+        // Extractions
+        let extract_sections = doc.sections_by_type(SectionType::Extract);
+        let extractions: Vec<ExtractionInfo> = extract_sections.iter().enumerate().map(|(i, section)| {
+            let variables = if let SectionContent::Extract(vars) = &section.content {
+                vars.clone()
+            } else {
+                HashMap::new()
+            };
+            ExtractionInfo {
+                index: i + 1,
+                variables,
+                line_start: section.start_line,
+                line_end: section.end_line,
+            }
+        }).collect();
+
+        // Infer RPC mode
+        let has_json_lines = response_sections.iter().any(|s| {
+            matches!(&s.content, SectionContent::JsonLines(vals) if vals.len() > 1)
+        });
+        let rpc_mode = infer_rpc_mode(&requests, &expectations, error_section.is_some(), has_json_lines);
+
+        // Summary
+        let rpc_mode_name = match &rpc_mode {
+            RpcMode::Unary => "Unary",
+            RpcMode::UnaryError => "Unary Error",
+            RpcMode::ServerStreaming { .. } => "Server Streaming",
+            RpcMode::ClientStreaming { .. } => "Client Streaming",
+            RpcMode::BidirectionalStreaming { .. } => "Bidirectional Streaming",
+            RpcMode::Unknown => "Unknown",
+        };
+
+        let summary = ExecutionSummary {
+            total_requests: requests.len(),
+            total_responses: expectations.iter().filter(|e| e.expectation_type == "response").count(),
+            error_expected: expectations.iter().any(|e| e.expectation_type == "error"),
+            assertion_blocks: assertions.len(),
+            variable_extractions: extractions.len(),
+            rpc_mode_name: rpc_mode_name.to_string(),
+        };
+
+        ExecutionPlan {
+            file_path,
+            connection,
+            target,
+            headers,
+            requests,
+            expectations,
+            assertions,
+            extractions,
+            rpc_mode,
+            summary,
+        }
+    }
+}
+
+fn infer_rpc_mode(
+    requests: &[RequestInfo],
+    expectations: &[ExpectationInfo],
+    has_error: bool,
+    has_json_lines: bool,
+) -> RpcMode {
+    let req_count = requests.len();
+    let resp_count = expectations.iter().filter(|e| e.expectation_type == "response").count();
+
+    if has_error {
+        RpcMode::UnaryError
+    } else if has_json_lines || resp_count > 1 {
+        if req_count > 1 {
+            RpcMode::BidirectionalStreaming { request_count: req_count, response_count: resp_count }
+        } else {
+            RpcMode::ServerStreaming { response_count: resp_count }
+        }
+    } else if req_count > 1 {
+        RpcMode::ClientStreaming { request_count: req_count }
+    } else if req_count == 1 && resp_count == 1 {
+        RpcMode::Unary
+    } else if req_count == 0 && resp_count > 0 {
+        RpcMode::ServerStreaming { response_count: resp_count }
+    } else {
+        RpcMode::Unknown
+    }
+}
 
 /// Test execution status
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1365,5 +1697,43 @@ impl TestRunner {
         println!();
         println!("═══════════════════════════════════════════════════════════════");
         println!();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_test_runner_new() {
+        let runner = TestRunner::new(false, 30, false, false, false, None);
+        assert_eq!(runner.dry_run, false);
+        assert_eq!(runner.timeout_seconds, 30);
+        assert_eq!(runner.no_assert, false);
+        assert_eq!(runner.update_mode, false);
+    }
+
+    #[test]
+    fn test_test_runner_with_dry_run() {
+        let runner = TestRunner::new(true, 30, false, false, false, None);
+        assert_eq!(runner.dry_run, true);
+    }
+
+    #[test]
+    fn test_test_runner_with_timeout() {
+        let runner = TestRunner::new(false, 60, false, false, false, None);
+        assert_eq!(runner.timeout_seconds, 60);
+    }
+
+    #[test]
+    fn test_test_runner_with_no_assert() {
+        let runner = TestRunner::new(false, 30, true, false, false, None);
+        assert_eq!(runner.no_assert, true);
+    }
+
+    #[test]
+    fn test_test_runner_with_update_mode() {
+        let runner = TestRunner::new(false, 30, false, true, false, None);
+        assert_eq!(runner.update_mode, true);
     }
 }

@@ -271,8 +271,8 @@ fn validate_structure(document: &GctfDocument, errors: &mut Vec<ValidationError>
     // Validate inline options are only on supported sections
     for section in &document.sections {
         if !section.section_type.supports_inline_options() {
-            let has_inline_options = !section.inline_options.with_asserts
-                || !section.inline_options.partial
+            let has_inline_options = section.inline_options.with_asserts
+                || section.inline_options.partial
                 || section.inline_options.tolerance.is_some()
                 || !section.inline_options.redact.is_empty()
                 || section.inline_options.unordered_arrays;
@@ -386,5 +386,233 @@ mod tests {
         ];
 
         assert!(!validation_passed(&errors));
+    }
+
+    #[test]
+    fn test_validate_document_diagnostics() {
+        let doc = create_test_document();
+        let errors = validate_document_diagnostics(&doc);
+        // Should have some errors or warnings
+        assert!(!errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_document_with_response() {
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 5,
+            end_line: 6,
+        });
+
+        let result = validate_document(&doc);
+        // Should pass with ADDRESS, ENDPOINT, and RESPONSE
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_document_with_error_section() {
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Error,
+            content: SectionContent::Json(serde_json::json!({"code": 5})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"code\": 5}".to_string(),
+            start_line: 5,
+            end_line: 6,
+        });
+
+        let result = validate_document(&doc);
+        // Should pass with ADDRESS, ENDPOINT, and ERROR
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_document_with_asserts() {
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Asserts,
+            content: SectionContent::Assertions(vec![".id == 1".to_string()]),
+            inline_options: InlineOptions::default(),
+            raw_content: ".id == 1".to_string(),
+            start_line: 5,
+            end_line: 5,
+        });
+
+        let result = validate_document(&doc);
+        // Should pass with ADDRESS, ENDPOINT, and ASSERTS
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_document_missing_endpoint() {
+        let mut doc = create_test_document();
+        doc.sections.remove(1); // Remove ENDPOINT
+
+        let errors = validate_document_diagnostics(&doc);
+        let has_endpoint_error = errors.iter().any(|e| e.message.contains("ENDPOINT"));
+        assert!(has_endpoint_error);
+    }
+
+    #[test]
+    fn test_validate_document_response_error_conflict() {
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 5,
+            end_line: 6,
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Error,
+            content: SectionContent::Json(serde_json::json!({"code": 5})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"code\": 5}".to_string(),
+            start_line: 7,
+            end_line: 8,
+        });
+
+        let errors = validate_document_diagnostics(&doc);
+        let has_conflict_error = errors.iter().any(|e| e.message.contains("RESPONSE") && e.message.contains("ERROR"));
+        assert!(has_conflict_error);
+    }
+
+    #[test]
+    fn test_validate_document_empty_requests() {
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: "".to_string(),
+            start_line: 5,
+            end_line: 5,
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 6,
+            end_line: 7,
+        });
+
+        let result = validate_document(&doc);
+        // Empty REQUEST is allowed
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_document_invalid_request_json() {
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Json(serde_json::json!({"key": "value"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"key\": \"value\"}".to_string(),
+            start_line: 5,
+            end_line: 6,
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 7,
+            end_line: 8,
+        });
+
+        let result = validate_document(&doc);
+        // Valid JSON should pass
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_document_invalid_response_json() {
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Json(serde_json::json!({"key": "value"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"key\": \"value\"}".to_string(),
+            start_line: 5,
+            end_line: 6,
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 7,
+            end_line: 8,
+        });
+
+        let errors = validate_document_diagnostics(&doc);
+        // Valid JSON should have no errors
+        let has_json_errors = errors.iter().any(|e| e.message.contains("JSON"));
+        assert!(!has_json_errors);
+    }
+
+    #[test]
+    fn test_validate_document_address_from_env() {
+        // Set env var
+        unsafe {
+            std::env::set_var(crate::config::ENV_GRPCTESTIFY_ADDRESS, "env:5000");
+        }
+        
+        let mut doc = GctfDocument::new("test.gctf".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Endpoint,
+            content: SectionContent::Single("Service/Method".to_string()),
+            inline_options: InlineOptions::default(),
+            raw_content: "Service/Method".to_string(),
+            start_line: 1,
+            end_line: 1,
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 2,
+            end_line: 3,
+        });
+
+        let result = validate_document(&doc);
+        // Should pass because address comes from env
+        assert!(result.is_ok());
+
+        // Clean up
+        unsafe {
+            std::env::remove_var(crate::config::ENV_GRPCTESTIFY_ADDRESS);
+        }
+    }
+
+    #[test]
+    fn test_validation_error_debug() {
+        let error = ValidationError {
+            message: "test error".to_string(),
+            line: Some(10),
+            severity: ErrorSeverity::Error,
+        };
+        let debug_str = format!("{:?}", error);
+        assert!(debug_str.contains("ValidationError"));
+        assert!(debug_str.contains("test error"));
+    }
+
+    #[test]
+    fn test_error_severity_serialize() {
+        let error = ErrorSeverity::Error;
+        let json = serde_json::to_string(&error).unwrap();
+        assert_eq!(json, "\"error\"");
+
+        let warning = ErrorSeverity::Warning;
+        let json = serde_json::to_string(&warning).unwrap();
+        assert_eq!(json, "\"warning\"");
     }
 }
