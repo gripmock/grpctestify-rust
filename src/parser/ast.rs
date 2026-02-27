@@ -229,20 +229,20 @@ impl GctfDocument {
 
     /// Get address (from ADDRESS section or environment variable)
     pub fn get_address(&self, env_address: Option<&str>) -> Option<String> {
-        if let Some(section) = self.first_section(SectionType::Address) {
-            if let SectionContent::Single(addr) = &section.content {
-                return Some(addr.clone());
-            }
+        if let Some(section) = self.first_section(SectionType::Address)
+            && let SectionContent::Single(addr) = &section.content
+        {
+            return Some(addr.clone());
         }
         env_address.map(|s| s.to_string())
     }
 
     /// Get endpoint
     pub fn get_endpoint(&self) -> Option<String> {
-        if let Some(section) = self.first_section(SectionType::Endpoint) {
-            if let SectionContent::Single(endpoint) = &section.content {
-                return Some(endpoint.clone());
-            }
+        if let Some(section) = self.first_section(SectionType::Endpoint)
+            && let SectionContent::Single(endpoint) = &section.content
+        {
+            return Some(endpoint.clone());
         }
         None
     }
@@ -283,19 +283,6 @@ impl GctfDocument {
             .collect()
     }
 
-    /// Get all response payloads
-    #[allow(dead_code)]
-    pub fn get_responses(&self) -> Vec<serde_json::Value> {
-        self.sections_by_type(SectionType::Response)
-            .into_iter()
-            .flat_map(|s| match &s.content {
-                SectionContent::Json(json) => vec![json.clone()],
-                SectionContent::JsonLines(values) => values.clone(),
-                _ => Vec::new(),
-            })
-            .collect()
-    }
-
     /// Get all assertion sections
     pub fn get_assertions(&self) -> Vec<Vec<String>> {
         self.sections_by_type(SectionType::Asserts)
@@ -310,54 +297,32 @@ impl GctfDocument {
             .collect()
     }
 
-    /// Get error expected
-    #[allow(dead_code)]
-    pub fn get_error(&self) -> Option<serde_json::Value> {
-        if let Some(section) = self.first_section(SectionType::Error) {
-            if let SectionContent::Json(json) = &section.content {
-                return Some(json.clone());
-            }
-        }
-        None
-    }
-
     /// Get request headers
     pub fn get_request_headers(&self) -> Option<HashMap<String, String>> {
-        if let Some(section) = self.first_section(SectionType::RequestHeaders) {
-            if let SectionContent::KeyValues(headers) = &section.content {
-                return Some(headers.clone());
-            }
+        if let Some(section) = self.first_section(SectionType::RequestHeaders)
+            && let SectionContent::KeyValues(headers) = &section.content
+        {
+            return Some(headers.clone());
         }
         None
     }
 
     /// Get TLS configuration
     pub fn get_tls_config(&self) -> Option<HashMap<String, String>> {
-        if let Some(section) = self.first_section(SectionType::Tls) {
-            if let SectionContent::KeyValues(config) = &section.content {
-                return Some(config.clone());
-            }
+        if let Some(section) = self.first_section(SectionType::Tls)
+            && let SectionContent::KeyValues(config) = &section.content
+        {
+            return Some(config.clone());
         }
         None
     }
 
     /// Get PROTO configuration
     pub fn get_proto_config(&self) -> Option<HashMap<String, String>> {
-        if let Some(section) = self.first_section(SectionType::Proto) {
-            if let SectionContent::KeyValues(config) = &section.content {
-                return Some(config.clone());
-            }
-        }
-        None
-    }
-
-    /// Get OPTIONS configuration
-    #[allow(dead_code)]
-    pub fn get_options(&self) -> Option<HashMap<String, String>> {
-        if let Some(section) = self.first_section(SectionType::Options) {
-            if let SectionContent::KeyValues(options) = &section.content {
-                return Some(options.clone());
-            }
+        if let Some(section) = self.first_section(SectionType::Proto)
+            && let SectionContent::KeyValues(config) = &section.content
+        {
+            return Some(config.clone());
         }
         None
     }
@@ -420,15 +385,24 @@ mod tests {
 
     #[test]
     fn test_section_type_from_keyword_aliases() {
-        assert_eq!(SectionType::from_keyword("HEADERS"), Some(SectionType::RequestHeaders));
-        assert_eq!(SectionType::from_keyword("REQUEST_HEADERS"), Some(SectionType::RequestHeaders));
+        assert_eq!(
+            SectionType::from_keyword("HEADERS"),
+            Some(SectionType::RequestHeaders)
+        );
+        assert_eq!(
+            SectionType::from_keyword("REQUEST_HEADERS"),
+            Some(SectionType::RequestHeaders)
+        );
     }
 
     #[test]
     fn test_section_type_from_keyword_case_insensitive() {
         // Should be case sensitive based on implementation
         assert_eq!(SectionType::from_keyword("address"), None);
-        assert_eq!(SectionType::from_keyword("  ADDRESS  "), Some(SectionType::Address));
+        assert_eq!(
+            SectionType::from_keyword("  ADDRESS  "),
+            Some(SectionType::Address)
+        );
     }
 
     #[test]
@@ -510,10 +484,16 @@ mod tests {
         });
 
         assert_eq!(doc.get_address(None), Some("localhost:4770".to_string()));
-        assert_eq!(doc.get_address(Some("env:5000")), Some("localhost:4770".to_string()));
+        assert_eq!(
+            doc.get_address(Some("env:5000")),
+            Some("localhost:4770".to_string())
+        );
 
         let doc2 = GctfDocument::new("test.gctf".to_string());
-        assert_eq!(doc2.get_address(Some("env:5000")), Some("env:5000".to_string()));
+        assert_eq!(
+            doc2.get_address(Some("env:5000")),
+            Some("env:5000".to_string())
+        );
         assert_eq!(doc2.get_address(None), None);
     }
 
@@ -613,30 +593,6 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_get_responses() {
-        let mut doc = GctfDocument::new("test.gctf".to_string());
-        doc.sections.push(Section {
-            section_type: SectionType::Response,
-            content: SectionContent::Json(json!({"result": "ok"})),
-            inline_options: InlineOptions::default(),
-            raw_content: "".to_string(),
-            start_line: 1,
-            end_line: 2,
-        });
-        doc.sections.push(Section {
-            section_type: SectionType::Response,
-            content: SectionContent::JsonLines(vec![json!({"r1": 1}), json!({"r2": 2})]),
-            inline_options: InlineOptions::default(),
-            raw_content: "".to_string(),
-            start_line: 3,
-            end_line: 5,
-        });
-
-        let responses = doc.get_responses();
-        assert_eq!(responses.len(), 3);
-    }
-
-    #[test]
     fn test_gctf_document_get_assertions() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         doc.sections.push(Section {
@@ -663,23 +619,6 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_get_error() {
-        let mut doc = GctfDocument::new("test.gctf".to_string());
-        doc.sections.push(Section {
-            section_type: SectionType::Error,
-            content: SectionContent::Json(json!({"code": 5, "message": "not found"})),
-            inline_options: InlineOptions::default(),
-            raw_content: "".to_string(),
-            start_line: 1,
-            end_line: 3,
-        });
-
-        let error = doc.get_error().unwrap();
-        assert_eq!(error["code"], 5);
-        assert_eq!(error["message"], "not found");
-    }
-
-    #[test]
     fn test_gctf_document_get_request_headers() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         let mut headers = HashMap::new();
@@ -694,7 +633,10 @@ mod tests {
         });
 
         let result = doc.get_request_headers().unwrap();
-        assert_eq!(result.get("Authorization"), Some(&"Bearer token".to_string()));
+        assert_eq!(
+            result.get("Authorization"),
+            Some(&"Bearer token".to_string())
+        );
     }
 
     #[test]

@@ -25,17 +25,6 @@ impl std::str::FromStr for ProgressMode {
     }
 }
 
-/// Sort modes for test files
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortMode {
-    Path,
-    Random,
-    Name,
-    Size,
-    Mtime,
-}
-
 /// Log format types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogFormat {
@@ -231,9 +220,9 @@ pub struct RunArgs {
     #[arg(long, default_value = "text")]
     pub coverage_format: String,
 
-    /// Update/Overwrite test files with actual server responses (Snapshot Mode)
-    #[arg(short = 'u', long, default_value_t = false)]
-    pub update: bool,
+    /// Write/Overwrite test files with actual server responses (Snapshot Mode)
+    #[arg(short = 'w', long, default_value_t = false)]
+    pub write: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -299,24 +288,6 @@ impl Cli {
                 }
             }
             _ => ProgressMode::Dots,
-        }
-    }
-
-    /// Get sort mode
-    #[allow(dead_code)]
-    pub fn sort_mode(&self) -> SortMode {
-        let sort = match &self.command {
-            Some(Commands::Run(args)) => &args.sort,
-            _ => &self.run_args.sort,
-        };
-
-        match sort.as_str() {
-            "path" => SortMode::Path,
-            "random" => SortMode::Random,
-            "name" => SortMode::Name,
-            "size" => SortMode::Size,
-            "mtime" => SortMode::Mtime,
-            _ => SortMode::Path,
         }
     }
 

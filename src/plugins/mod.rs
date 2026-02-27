@@ -1,10 +1,13 @@
 pub mod email;
-pub mod external;
+pub mod env;
 pub mod header;
+pub mod header_extract;
 pub mod ip;
 pub mod len;
+pub mod regex;
 pub mod timestamp;
 pub mod trailer;
+pub mod trailer_extract;
 pub mod url;
 pub mod uuid;
 
@@ -52,7 +55,6 @@ impl PluginManager {
             plugins: RwLock::new(HashMap::new()),
         };
         manager.register_defaults();
-        manager.load_external_plugins();
         manager
     }
 
@@ -64,96 +66,12 @@ impl PluginManager {
         self.register(Arc::new(timestamp::TimestampPlugin));
         self.register(Arc::new(header::HeaderPlugin));
         self.register(Arc::new(trailer::TrailerPlugin));
+        self.register(Arc::new(header_extract::HeaderExtractPlugin));
+        self.register(Arc::new(header_extract::HasHeaderPlugin));
+        self.register(Arc::new(trailer_extract::TrailerExtractPlugin));
         self.register(Arc::new(len::LenPlugin));
-    }
-
-    pub fn load_external_plugins(&mut self) {
-        let home_dir = match dirs::home_dir() {
-            Some(path) => path,
-            None => {
-                tracing::warn!("Could not determine home directory, skipping external plugins");
-                return;
-            }
-        };
-
-        let plugin_dir = home_dir.join(".grpctestify/plugins");
-        if !plugin_dir.exists() {
-            return;
-        }
-
-        tracing::info!("Loading plugins from {}", plugin_dir.display());
-
-        let entries = match std::fs::read_dir(&plugin_dir) {
-            Ok(entries) => entries,
-            Err(e) => {
-                tracing::error!("Failed to read plugin directory: {}", e);
-                return;
-            }
-        };
-
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                if path.is_dir() {
-                    let manifest_path = path.join("plugin.json");
-                    if manifest_path.exists() {
-                        self.load_plugin(&manifest_path, &path);
-                    }
-                }
-            }
-        }
-    }
-
-    fn load_plugin(&mut self, manifest_path: &std::path::Path, plugin_dir: &std::path::Path) {
-        match std::fs::read_to_string(manifest_path) {
-            Ok(content) => {
-                match serde_json::from_str::<external::PluginManifest>(&content) {
-                    Ok(manifest) => {
-                        // Validate executable exists
-                        let exec_path = plugin_dir.join(&manifest.executable);
-                        if !exec_path.exists() {
-                            tracing::error!(
-                                "Plugin '{}' executable not found: {}",
-                                manifest.name,
-                                exec_path.display()
-                            );
-                            return;
-                        }
-
-                        // Iterate over all functions defined in the manifest
-                        for func in manifest.functions {
-                            let plugin_name = func.name.clone();
-                            let plugin = Arc::new(external::ExternalPlugin::new(
-                                func.name,
-                                exec_path.clone(),
-                                func.description,
-                            ));
-
-                            tracing::info!(
-                                "Registering external plugin function '{}' from {}",
-                                plugin_name,
-                                manifest.name
-                            );
-                            self.register(plugin);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to parse plugin manifest {}: {}",
-                            manifest_path.display(),
-                            e
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::error!(
-                    "Failed to read plugin manifest {}: {}",
-                    manifest_path.display(),
-                    e
-                );
-            }
-        }
+        self.register(Arc::new(env::EnvPlugin));
+        self.register(Arc::new(regex::RegexPlugin));
     }
 
     pub fn register(&mut self, plugin: Arc<dyn Plugin>) {
@@ -238,5 +156,13 @@ mod tests {
         let result = plugin.execute(&[Value::String("test".to_string())], &context);
         // UUID plugin should return a value
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_plugin_manager_has_header_registered() {
+        let manager = PluginManager::new();
+        let plugin = manager.get("has_header");
+        assert!(plugin.is_some(), "has_header plugin should be registered");
+        assert_eq!(plugin.unwrap().name(), "has_header");
     }
 }

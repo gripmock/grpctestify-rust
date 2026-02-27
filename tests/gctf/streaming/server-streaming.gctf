@@ -1,0 +1,30 @@
+/// TEST: Server streaming with multiple responses
+/// EXPECT: PASS
+/// EXPLAIN: ServerStreaming
+--- ENDPOINT ---
+echo.EchoService/ServerStream
+
+--- REQUEST ---
+{
+  "prefix": "Message",
+  "count": 3
+}
+
+--- RESPONSE ---
+{
+  "index": 0,
+  "message": "Message #0"
+}
+--- RESPONSE ---
+{
+  "index": 1,
+  "message": "Message #1"
+}
+--- RESPONSE ---
+{
+  "index": 2,
+  "message": "Message #2"
+}
+
+--- ASSERTS ---
+@len(.message) > 0

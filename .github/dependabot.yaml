@@ -1,0 +1,68 @@
+# Dependabot configuration
+
+version: 2
+
+updates:
+  # Rust dependencies - patch
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: daily
+    allow:
+      - dependency-type: all
+    groups:
+      patch:
+        patterns:
+          - "*"
+        update-types:
+          - patch
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Rust dependencies - minor
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: daily
+    allow:
+      - dependency-type: all
+    groups:
+      minor:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Rust dependencies - major
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: daily
+    allow:
+      - dependency-type: all
+    groups:
+      major:
+        patterns:
+          - "*"
+        update-types:
+          - major
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps)"
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+    groups:
+      actions:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "ci(deps)"

@@ -1,7 +1,7 @@
 // Console reporter - pytest-style output
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::cli::ProgressMode;
 use crate::state::{TestResult, TestStatus};
@@ -46,6 +46,7 @@ impl ConsoleReporter {
     }
 
     /// Print summary
+    #[allow(clippy::too_many_arguments)]
     pub fn print_summary(
         &self,
         total: usize,
@@ -97,11 +98,7 @@ impl ConsoleReporter {
         }
 
         // Overhead
-        let overhead = if duration_ms > metrics.grpc_total_duration_ms {
-            duration_ms - metrics.grpc_total_duration_ms
-        } else {
-            0
-        };
+        let overhead = duration_ms.saturating_sub(metrics.grpc_total_duration_ms);
         let avg_overhead = if total > 0 {
             overhead as f64 / total as f64
         } else {
@@ -130,17 +127,8 @@ impl ConsoleReporter {
             println!("   • Success rate: N/A (no tests executed)");
         }
 
-        // Performance rating - ONLY show checkmark if NO failures
-        let rating = Self::get_performance_rating(avg);
-        if failed == 0 {
-            println!("   • Performance: {} ({:.0}ms/test)", rating, avg);
-        } else {
-            // If failed, maybe show just the timing without the "Checkmark Excellent"
-            // or just omit it entirely as user requested ("who needs it if test failed")
-            // The bash script showed it, but user complained. Let's hide the checkmark.
-            // Or better, just show timing.
-            println!("   • Performance: {:.0}ms/test", avg);
-        }
+        // Performance rating
+        println!("   • Performance: {:.0}ms/test", avg);
 
         println!(
             "────────────────────────────────────────────────────────────────────────────────"
@@ -167,36 +155,15 @@ impl ConsoleReporter {
             }
         );
 
-        println!("✨ No warnings detected"); // TODO: Implement warning tracking
+        println!("✨ No warnings detected");
         println!(
             "════════════════════════════════════════════════════════════════════════════════"
         );
         println!();
     }
 
-    /// Get performance rating based on average test duration
-    fn get_performance_rating(avg_ms: f64) -> String {
-        let rating = if avg_ms < 100.0 {
-            "⚡ Excellent"
-        } else if avg_ms < 500.0 {
-            "✅ Good"
-        } else if avg_ms < 1000.0 {
-            "⚠️  Moderate"
-        } else {
-            "🐌 Slow"
-        };
-
-        rating.to_string()
-    }
-
     /// Print slowest tests
     pub fn print_slowest_tests(&self, test_results: &[crate::state::TestResult], limit: usize) {
-        // Only print if verbose or if explicitly asked? The bash script puts it in "Failed Tests" section usually with duration.
-        // The Rust version printed it at the end. I'll keep it but maybe format it better or hide if empty.
-        // Actually, the bash script doesn't seem to print "Slowest tests" list separately in the main view,
-        // it just puts duration next to failed tests.
-        // I'll skip printing this separately to match bash output cleaner look, unless verbose?
-        // Let's keep it minimal as requested.
         if matches!(self.mode, ProgressMode::Verbose) {
             if test_results.is_empty() {
                 return;
@@ -208,19 +175,7 @@ impl ConsoleReporter {
             println!("🐢 Slowest Tests:");
             let count = limit.min(sorted.len());
             for (i, result) in sorted.iter().take(count).enumerate() {
-                let rating = if result.status == TestStatus::Fail {
-                    "❌ Failed".to_string()
-                } else {
-                    Self::get_performance_rating(result.duration_ms as f64)
-                };
-
-                println!(
-                    "   {}. {} ({}ms) - {}",
-                    i + 1,
-                    result.name,
-                    result.duration_ms,
-                    rating
-                );
+                println!("   {}. {} ({}ms)", i + 1, result.name, result.duration_ms);
             }
             println!();
         }

@@ -1,6 +1,8 @@
 pub mod assert;
 pub mod cli;
+pub mod commands;
 pub mod config;
+pub mod diagnostics;
 pub mod execution;
 pub mod grpc;
 pub mod logging;
@@ -11,6 +13,7 @@ pub mod report;
 pub mod state;
 pub mod utils;
 
+pub use commands::truncate_str;
 pub use parser::parse_gctf;
 pub use parser::validate_document;
 

@@ -20,7 +20,7 @@ once_cell = "1.20"
 
 # Error handling
 anyhow = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 
 # Async runtime
 tokio = { version = "1.48", features = ["full"] }
@@ -45,7 +45,6 @@ hyper-rustls = { version = "0.27", features = ["http1", "http2", "tls12", "loggi
 hyper-util = { version = "0.1", features = ["client", "tokio"] }
 
 # Regular expressions
-
 regex = "1.10"
 
 # UUID validation
@@ -68,8 +67,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Configuration
-dirs = "5.0"
-toml = "0.8"
+dirs = "6.0"
+toml = "1.0"
 
 # File operations
 walkdir = "2.4"
@@ -144,8 +143,8 @@ indicatif = "0.17"
 console = "0.15"
 
 # Configuration
-dirs = { workspace = true }
-toml = { workspace = true }
+dirs = "5.0"
+toml = "0.8"
 
 # File operations
 walkdir = { workspace = true }
@@ -164,12 +163,78 @@ futures = "0.3.32"
 lazy_static = "1.5.0"
 tower-lsp = "0.20"
 
+[[test]]
+name = "explain"
+path = "tests/explain_tests.rs"
+harness = true
+
+[[test]]
+name = "inspect"
+path = "tests/inspect_tests.rs"
+harness = true
+
+[[test]]
+name = "workflow"
+path = "tests/workflow_tests.rs"
+harness = true
+
+[[test]]
+name = "extract"
+path = "tests/extract_tests.rs"
+harness = true
+
+[[test]]
+name = "extract_metadata"
+path = "tests/extract_metadata_tests.rs"
+harness = true
+
+[[test]]
+name = "extract_ternary"
+path = "tests/extract_ternary_tests.rs"
+harness = true
+
+[[test]]
+name = "ternary_ast"
+path = "tests/ternary_ast_tests.rs"
+harness = true
+
+[[test]]
+name = "fmt"
+path = "tests/fmt_tests.rs"
+harness = true
+
+[[test]]
+name = "lsp_variable"
+path = "tests/lsp_variable_tests.rs"
+harness = true
+
+[[test]]
+name = "lsp_variable_definition"
+path = "tests/lsp_variable_definition_tests.rs"
+harness = true
+
+[[test]]
+name = "lsp_variable_definition_integration"
+path = "tests/lsp_variable_definition_integration_tests.rs"
+harness = true
+
+[[test]]
+name = "report"
+path = "tests/report_tests.rs"
+harness = true
+
+[[bin]]
+name = "test-server"
+path = "tests/servers/bin.rs"
+required-features = ["test-servers"]
+
 [features]
 default = []
-proto-build = ["dep:tonic-build", "dep:protoc-bin-vendored"]
+proto-build = ["dep:protoc-bin-vendored"]
+test-servers = []
 
 [build-dependencies]
-tonic-build = { version = "0.12", optional = true }
+tonic-build = "0.12"
 protoc-bin-vendored = { version = "3", optional = true }
 
 [dev-dependencies]
@@ -178,3 +243,11 @@ tokio-test = "0.4"
 tempfile = "3.10"
 tonic-build = "0.12"
 protoc-bin-vendored = "3"
+walkdir = "2.4"
+uuid = { workspace = true }
+
+# Test servers
+tonic = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+prost = { workspace = true }

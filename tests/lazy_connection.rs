@@ -11,9 +11,13 @@ async fn test_local_proto_files_are_rejected_in_native_mode() {
     // We assume the test runs from the workspace root.
     let proto_path = PathBuf::from("tests/e2e/examples/helloworld/helloworld.proto");
     let import_path = PathBuf::from("tests/e2e/examples/helloworld");
-    
+
     // Verify file exists to avoid spurious test failures
-    assert!(proto_path.exists(), "proto file not found at {:?}", proto_path);
+    assert!(
+        proto_path.exists(),
+        "proto file not found at {:?}",
+        proto_path
+    );
 
     let config = GrpcClientConfig {
         address: address.to_string(),
@@ -32,7 +36,10 @@ async fn test_local_proto_files_are_rejected_in_native_mode() {
     // 3. In native mode, local proto files are intentionally not supported to avoid
     // runtime dependency on protoc.
     let result = GrpcClient::new(config).await;
-    assert!(result.is_err(), "Client initialization unexpectedly succeeded");
+    assert!(
+        result.is_err(),
+        "Client initialization unexpectedly succeeded"
+    );
     let err = result.err().unwrap().to_string();
     assert!(
         err.contains("PROTO files are not supported in native mode"),

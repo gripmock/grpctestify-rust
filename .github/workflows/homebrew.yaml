@@ -1,0 +1,147 @@
+# Homebrew Update workflow
+name: Homebrew Update
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  # Hardcoded deadline - do not change unless intentionally extending support
+  FORMULA_DEADLINE: "2027-12-31"
+
+jobs:
+  update-formula:
+    name: Update Homebrew Formula
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get version
+        id: version
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          echo "VERSION=${VERSION#v}" >> $GITHUB_OUTPUT
+
+      - name: Download binary
+        uses: robinraju/release-downloader@v1
+        with:
+          latest: true
+          tarBall: false
+          zipBall: false
+
+      - name: Calculate checksum
+        id: checksum
+        run: |
+          CHECKSUM=$(sha256sum grpctestify-linux-amd64 | awk '{print $1}')
+          echo "CHECKSUM=$CHECKSUM" >> $GITHUB_OUTPUT
+
+      - name: Clone tap repo
+        run: |
+          git clone https://${{ github.actor }}:${{ secrets.HOMEBREW_TOKEN }}@github.com/gripmock/homebrew-tap.git
+          cd homebrew-tap
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Update formula
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          CHECKSUM="${{ steps.checksum.outputs.CHECKSUM }}"
+          URL="https://github.com/gripmock/grpctestify-rust/releases/download/v${VERSION}/grpctestify-linux-amd64"
+          DEADLINE="${{ env.FORMULA_DEADLINE }}"
+
+          cat > homebrew-tap/Formula/grpctestify.rb << EOF
+          # DEADLINE: ${DEADLINE} - Please migrate to cask
+          # brew install --cask grpctestify
+          #
+          # This formula is deprecated and will be removed after ${DEADLINE}
+
+          class Grpctestify < Formula
+            desc "gRPC testing utility written in Rust (deprecated - use cask)"
+            homepage "https://github.com/gripmock/grpctestify-rust"
+            url "${URL}"
+            sha256 "${CHECKSUM}"
+            version "${VERSION}"
+            license "MIT"
+            deprecated! date: "${DEADLINE}", because: "use cask instead"
+
+            def install
+              bin.install "grpctestify-linux-amd64" => "grpctestify"
+            end
+
+            test do
+              assert_match "${VERSION}", shell_output("#{bin}/grpctestify --version")
+            end
+          end
+          EOF
+
+      - name: Commit formula
+        run: |
+          cd homebrew-tap
+          git add Formula/grpctestify.rb
+          git commit -m "chore: update formula to ${{ steps.version.outputs.VERSION }} (deprecated)"
+          git push origin master
+
+  update-cask:
+    name: Update Homebrew Cask
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get version
+        id: version
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          echo "VERSION=${VERSION#v}" >> $GITHUB_OUTPUT
+
+      - name: Download macOS binary
+        uses: robinraju/release-downloader@v1
+        with:
+          latest: true
+          tarBall: false
+          zipBall: false
+
+      - name: Calculate checksum
+        id: checksum
+        run: |
+          CHECKSUM=$(sha256sum grpctestify-macos-arm64 | awk '{print $1}')
+          echo "CHECKSUM=$CHECKSUM" >> $GITHUB_OUTPUT
+
+      - name: Clone tap repo
+        run: |
+          git clone https://${{ github.actor }}:${{ secrets.HOMEBREW_TOKEN }}@github.com/gripmock/homebrew-tap.git
+          cd homebrew-tap
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Update cask
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          CHECKSUM="${{ steps.checksum.outputs.CHECKSUM }}"
+          URL="https://github.com/gripmock/grpctestify-rust/releases/download/v${VERSION}/grpctestify-macos-arm64"
+
+          cat > homebrew-tap/Casks/grpctestify.rb << EOF
+          cask "grpctestify" do
+            version "${VERSION}"
+            sha256 "${CHECKSUM}"
+
+            url "${URL}"
+            name "gRPCTestify"
+            desc "gRPC testing utility written in Rust"
+            homepage "https://github.com/gripmock/grpctestify-rust"
+
+            binary "grpctestify-macos-arm64", target: "grpctestify"
+
+            zap trash: [
+              "~/.grpctestify",
+            ]
+          end
+          EOF
+
+      - name: Commit cask
+        run: |
+          cd homebrew-tap
+          git add Casks/grpctestify.rb
+          git commit -m "feat: update cask to ${{ steps.version.outputs.VERSION }}"
+          git push origin master

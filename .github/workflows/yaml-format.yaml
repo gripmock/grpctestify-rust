@@ -1,0 +1,27 @@
+# YAML format - YAML file formatting check
+name: YAML Format
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  yamlfmt:
+    name: YAML Format
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: yamlfmt
+        uses: google/yamlfmt-action@v0.1.1

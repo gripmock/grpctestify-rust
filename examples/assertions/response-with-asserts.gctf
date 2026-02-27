@@ -1,0 +1,21 @@
+--- ENDPOINT ---
+users.UserService/GetUser
+
+--- REQUEST ---
+{
+  "id": 123
+}
+
+--- RESPONSE with_asserts=true ---
+{
+  "id": 123,
+  "name": "John Doe",
+  "email": "john@example.com",
+  "active": true
+}
+
+--- ASSERTS ---
+.id == 123
+.name == "John Doe"
+@email(.email)
+.active == true

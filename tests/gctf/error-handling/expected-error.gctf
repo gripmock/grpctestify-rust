@@ -1,0 +1,21 @@
+/// TEST: Expected error with code and message
+/// EXPECT: PASS
+/// EXPLAIN: UnaryError
+--- ENDPOINT ---
+auth.AuthService/Login
+
+--- REQUEST ---
+{
+  "username": "",
+  "password": ""
+}
+
+--- ERROR ---
+{
+  "code": 3,
+  "message": "Username and password required"
+}
+
+--- ASSERTS ---
+.code == 3
+.message contains "Username"

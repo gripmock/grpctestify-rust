@@ -447,14 +447,17 @@ fn test_header_case_insensitive() {
     let mut headers = HashMap::new();
     headers.insert("Content-Type".to_string(), "application/json".to_string());
 
-    // Should find header regardless of case
+    // @has_header returns boolean - use explicit comparison
     let result = engine
-        .evaluate("@header(\"content-type\")", &response, Some(&headers), None)
+        .evaluate(
+            "@has_header(content-type) == true",
+            &response,
+            Some(&headers),
+            None,
+        )
         .unwrap();
-    // Note: This depends on whether the engine lowercases keys
-    // If it does, this should pass; if not, it might fail
-    // Let's just verify the plugin doesn't crash
-    let _ = result;
+
+    assert!(matches!(result, AssertionResult::Pass));
 }
 
 #[test]

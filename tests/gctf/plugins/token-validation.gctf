@@ -1,0 +1,23 @@
+/// TEST: Token validation with plugins
+/// EXPECT: PASS
+/// EXPLAIN: Unary
+--- ENDPOINT ---
+auth.AuthService/Login
+
+--- REQUEST ---
+{
+  "username": "testuser",
+  "password": "secret"
+}
+
+--- RESPONSE ---
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.testuser",
+  "refresh_token": "550e8400-e29b-41d4-a716-446655440000",
+  "expires_in": 3600
+}
+
+--- ASSERTS ---
+@len(.access_token) > 0
+@uuid(.refresh_token)
+.expires_in == 3600

@@ -1,5 +1,5 @@
 //! LSP request handlers with full test coverage
-//! 
+//!
 //! This module contains all LSP request handlers with comprehensive test coverage.
 //! Each handler is tested in isolation.
 
@@ -27,17 +27,28 @@ pub fn get_section_hover(section_type: &SectionType) -> Option<String> {
 
 /// Get completions for section headers
 pub fn get_section_completions() -> Vec<CompletionItem> {
-    vec!["ADDRESS", "ENDPOINT", "REQUEST", "RESPONSE", "ERROR", 
-         "REQUEST_HEADERS", "TLS", "PROTO", "OPTIONS", "EXTRACT", "ASSERTS"]
-        .into_iter()
-        .map(|s| CompletionItem {
-            label: format!("--- {} ---", s),
-            kind: Some(CompletionItemKind::SNIPPET),
-            detail: Some(format!("{} section", s)),
-            insert_text: Some(format!("--- {} ---", s)),
-            ..CompletionItem::default()
-        })
-        .collect()
+    vec![
+        "ADDRESS",
+        "ENDPOINT",
+        "REQUEST",
+        "RESPONSE",
+        "ERROR",
+        "REQUEST_HEADERS",
+        "TLS",
+        "PROTO",
+        "OPTIONS",
+        "EXTRACT",
+        "ASSERTS",
+    ]
+    .into_iter()
+    .map(|s| CompletionItem {
+        label: format!("--- {} ---", s),
+        kind: Some(CompletionItemKind::SNIPPET),
+        detail: Some(format!("{} section", s)),
+        insert_text: Some(format!("--- {} ---", s)),
+        ..CompletionItem::default()
+    })
+    .collect()
 }
 
 /// Get completions for known gRPC servers
@@ -68,15 +79,39 @@ pub fn get_assertion_completions() -> Vec<CompletionItem> {
         ("<", CompletionItemKind::OPERATOR, "Less than"),
         (">=", CompletionItemKind::OPERATOR, "Greater or equal"),
         ("<=", CompletionItemKind::OPERATOR, "Less or equal"),
-        ("contains", CompletionItemKind::KEYWORD, "String/array contains"),
+        (
+            "contains",
+            CompletionItemKind::KEYWORD,
+            "String/array contains",
+        ),
         ("matches", CompletionItemKind::KEYWORD, "Regex match"),
         // Plugins
-        ("@uuid(.field)", CompletionItemKind::FUNCTION, "UUID validation"),
-        ("@email(.field)", CompletionItemKind::FUNCTION, "Email validation"),
+        (
+            "@uuid(.field)",
+            CompletionItemKind::FUNCTION,
+            "UUID validation",
+        ),
+        (
+            "@email(.field)",
+            CompletionItemKind::FUNCTION,
+            "Email validation",
+        ),
         ("@ip(.field)", CompletionItemKind::FUNCTION, "IP validation"),
-        ("@url(.field)", CompletionItemKind::FUNCTION, "URL validation"),
-        ("@timestamp(.field)", CompletionItemKind::FUNCTION, "Timestamp validation"),
-        ("@header(\"name\")", CompletionItemKind::FUNCTION, "Check header"),
+        (
+            "@url(.field)",
+            CompletionItemKind::FUNCTION,
+            "URL validation",
+        ),
+        (
+            "@timestamp(.field)",
+            CompletionItemKind::FUNCTION,
+            "Timestamp validation",
+        ),
+        (
+            "@header(\"name\")",
+            CompletionItemKind::FUNCTION,
+            "Check header",
+        ),
         ("@len(.field)", CompletionItemKind::FUNCTION, "Get length"),
     ]
     .into_iter()
@@ -89,37 +124,162 @@ pub fn get_assertion_completions() -> Vec<CompletionItem> {
     .collect()
 }
 
+/// Get completions for EXTRACT JQ functions
+pub fn get_extract_completions() -> Vec<CompletionItem> {
+    vec![
+        // String functions
+        (
+            "upper",
+            CompletionItemKind::FUNCTION,
+            "Convert to uppercase",
+        ),
+        (
+            "lower",
+            CompletionItemKind::FUNCTION,
+            "Convert to lowercase",
+        ),
+        ("trim", CompletionItemKind::FUNCTION, "Trim whitespace"),
+        ("split(\",\")", CompletionItemKind::FUNCTION, "Split string"),
+        ("join(\"-\")", CompletionItemKind::FUNCTION, "Join array"),
+        (
+            "gsub(\"old\"; \"new\")",
+            CompletionItemKind::FUNCTION,
+            "Global substitution",
+        ),
+        // Numeric functions
+        ("avg", CompletionItemKind::FUNCTION, "Average of array"),
+        ("min", CompletionItemKind::FUNCTION, "Minimum value"),
+        ("max", CompletionItemKind::FUNCTION, "Maximum value"),
+        ("add", CompletionItemKind::FUNCTION, "Sum of array"),
+        (
+            "length",
+            CompletionItemKind::FUNCTION,
+            "Length of array/string",
+        ),
+        // Array functions
+        (
+            "[.[] | select(.active)]",
+            CompletionItemKind::SNIPPET,
+            "Filter array",
+        ),
+        ("[.[] | .name]", CompletionItemKind::SNIPPET, "Map array"),
+        (
+            "sort_by(.field)",
+            CompletionItemKind::FUNCTION,
+            "Sort by field",
+        ),
+        ("reverse", CompletionItemKind::FUNCTION, "Reverse array"),
+        ("unique", CompletionItemKind::FUNCTION, "Unique values"),
+        (
+            "group_by(.field)",
+            CompletionItemKind::FUNCTION,
+            "Group by field",
+        ),
+        // Object functions
+        ("keys", CompletionItemKind::FUNCTION, "Get keys"),
+        ("values", CompletionItemKind::FUNCTION, "Get values"),
+        ("del(.field)", CompletionItemKind::FUNCTION, "Delete field"),
+        // Type conversion
+        (
+            "tostring",
+            CompletionItemKind::FUNCTION,
+            "Convert to string",
+        ),
+        (
+            "tonumber",
+            CompletionItemKind::FUNCTION,
+            "Convert to number",
+        ),
+        ("type", CompletionItemKind::FUNCTION, "Get type"),
+        // Conditional
+        (
+            "if .field == \"x\" then \"y\" else \"z\" end",
+            CompletionItemKind::SNIPPET,
+            "Conditional",
+        ),
+        (
+            "// \"default\"",
+            CompletionItemKind::SNIPPET,
+            "Default value",
+        ),
+        // Date/Time
+        (
+            "fromdateiso8601",
+            CompletionItemKind::FUNCTION,
+            "Parse ISO8601",
+        ),
+        (
+            "todateiso8601",
+            CompletionItemKind::FUNCTION,
+            "Format ISO8601",
+        ),
+        (
+            "strftime(\"%Y-%m-%d\")",
+            CompletionItemKind::FUNCTION,
+            "Format date",
+        ),
+        // Encoding
+        ("@base64", CompletionItemKind::FUNCTION, "Base64 encode"),
+        ("@base64d", CompletionItemKind::FUNCTION, "Base64 decode"),
+        ("@uri", CompletionItemKind::FUNCTION, "URI encode"),
+        // JSON
+        ("tojson", CompletionItemKind::FUNCTION, "Stringify JSON"),
+        ("fromjson", CompletionItemKind::FUNCTION, "Parse JSON"),
+    ]
+    .into_iter()
+    .map(|(label, kind, detail)| CompletionItem {
+        label: label.to_string(),
+        kind: Some(kind),
+        detail: Some(detail.to_string()),
+        insert_text: Some(label.to_string()),
+        ..CompletionItem::default()
+    })
+    .collect()
+}
+
 /// Extract address from document using AST
 pub async fn get_address_from_document(content: &str) -> Option<String> {
     let doc = parser::parse_gctf_from_str(content, "temp.gctf").ok()?;
     for section in &doc.sections {
-        if section.section_type == SectionType::Address {
-            if let parser::ast::SectionContent::Single(addr) = &section.content {
-                return Some(addr.trim().to_string());
-            }
+        if section.section_type == SectionType::Address
+            && let parser::ast::SectionContent::Single(addr) = &section.content
+        {
+            return Some(addr.trim().to_string());
         }
     }
     std::env::var("GRPCTESTIFY_ADDRESS").ok()
 }
 
 /// Convert validation error to LSP diagnostic
-pub fn validation_error_to_diagnostic(error: &crate::parser::validator::ValidationError, content: &str) -> Diagnostic {
+pub fn validation_error_to_diagnostic(
+    error: &crate::parser::validator::ValidationError,
+    content: &str,
+) -> Diagnostic {
     let severity = match error.severity {
         crate::parser::validator::ErrorSeverity::Error => DiagnosticSeverity::ERROR,
         crate::parser::validator::ErrorSeverity::Warning => DiagnosticSeverity::WARNING,
         crate::parser::validator::ErrorSeverity::Info => DiagnosticSeverity::INFORMATION,
     };
-    
+
     // AST line is 1-based, LSP is 0-based
     let line_num = (error.line.unwrap_or(1) - 1) as u32;
-    let line_len = content.lines().nth(line_num as usize).map(|l| l.len()).unwrap_or(0) as u32;
-    
+    let line_len = content
+        .lines()
+        .nth(line_num as usize)
+        .map(|l| l.len())
+        .unwrap_or(0) as u32;
+
     Diagnostic::new(
-        Range::new(Position::new(line_num, 0), Position::new(line_num, line_len)),
+        Range::new(
+            Position::new(line_num, 0),
+            Position::new(line_num, line_len),
+        ),
         Some(severity),
-        None, None,
+        None,
+        None,
         error.message.clone(),
-        None, None,
+        None,
+        None,
     )
 }
 
@@ -179,7 +339,7 @@ mod tests {
     fn test_get_section_completions() {
         let completions = get_section_completions();
         assert_eq!(completions.len(), 11); // 11 section types (no RESPONSE_HEADERS)
-        
+
         let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"--- ADDRESS ---"));
         assert!(labels.contains(&"--- ENDPOINT ---"));
@@ -191,7 +351,7 @@ mod tests {
     fn test_get_address_completions() {
         let completions = get_address_completions();
         assert_eq!(completions.len(), 3);
-        
+
         let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"localhost:4770"));
         assert!(labels.contains(&"localhost:50051"));
@@ -202,7 +362,7 @@ mod tests {
     fn test_get_assertion_completions() {
         let completions = get_assertion_completions();
         assert!(completions.len() >= 15);
-        
+
         let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"=="));
         assert!(labels.contains(&"!="));
@@ -238,10 +398,10 @@ test.Service/Method
             line: Some(5),
             severity: crate::parser::validator::ErrorSeverity::Error,
         };
-        
+
         let content = "line1\nline2\nline3\nline4\nline5\nline6";
         let diagnostic = validation_error_to_diagnostic(&error, content);
-        
+
         assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
         assert_eq!(diagnostic.range.start.line, 4); // 0-based
         assert_eq!(diagnostic.message, "Test error");
@@ -251,13 +411,16 @@ test.Service/Method
     fn test_create_headers_deprecated_action() {
         let uri = Url::parse("file:///test.gctf").unwrap();
         let range = Range::new(Position::new(0, 0), Position::new(0, 10));
-        
+
         let action = create_headers_deprecated_action(&uri, range);
-        
-        assert_eq!(action.title, "Replace --- HEADERS --- with --- REQUEST_HEADERS ---");
+
+        assert_eq!(
+            action.title,
+            "Replace --- HEADERS --- with --- REQUEST_HEADERS ---"
+        );
         assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
         assert_eq!(action.is_preferred, Some(true));
-        
+
         let edit = action.edit.unwrap();
         let changes = edit.changes.unwrap();
         let edits = changes.get(&uri).unwrap();

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Result, anyhow};
 use futures::stream::{Stream, StreamExt};
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage, Kind, MessageDescriptor, SerializeOptions};
@@ -8,88 +8,30 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, RwLock};
 use tokio::sync::Mutex as TokioMutex;
-use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
-use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity, Uri};
 use tonic::codec::CompressionEncoding;
+use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
+use tonic::transport::{Channel, Uri};
 use tonic::{Request, Status};
+use tonic_reflection::pb::v1::ServerReflectionRequest;
 use tonic_reflection::pb::v1::server_reflection_client::ServerReflectionClient;
 use tonic_reflection::pb::v1::server_reflection_request::MessageRequest;
-use tonic_reflection::pb::v1::ServerReflectionRequest;
 
 pub mod codec;
 use self::codec::DynamicCodec;
 
+// Re-export types and functions from tls and channel modules
+pub use crate::grpc::channel::create_channel;
+pub use crate::grpc::tls::{
+    ChannelCacheKey, CompressionMode, GrpcClientConfig, ProtoConfig, TlsConfig,
+};
+
 // Global cache for descriptors to avoid race conditions in parallel tests
+// Using RwLock for better concurrent read performance
 lazy_static::lazy_static! {
-    static ref DESCRIPTOR_CACHE: Mutex<HashMap<String, Arc<DescriptorPool>>> = Mutex::new(HashMap::new());
-    static ref CHANNEL_CACHE: Mutex<HashMap<ChannelCacheKey, Channel>> = Mutex::new(HashMap::new());
+    static ref DESCRIPTOR_CACHE: RwLock<HashMap<String, Arc<DescriptorPool>>> = RwLock::new(HashMap::new());
     static ref DESCRIPTOR_LOAD_MUTEX: TokioMutex<()> = TokioMutex::new(());
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ChannelCacheKey {
-    address: String,
-    timeout_seconds: u64,
-    tls_config: Option<TlsConfig>,
-    user_agent: String,
-}
-
-// Configuration for gRPC client
-#[derive(Debug, Clone)]
-pub struct GrpcClientConfig {
-    pub address: String,
-    pub timeout_seconds: u64,
-    pub tls_config: Option<TlsConfig>,
-    pub proto_config: Option<ProtoConfig>,
-    pub metadata: Option<HashMap<String, String>>,
-    pub target_service: Option<String>,
-    pub compression: CompressionMode,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompressionMode {
-    None,
-    Gzip,
-}
-
-impl Default for CompressionMode {
-    fn default() -> Self {
-        Self::None
-    }
-}
-
-impl CompressionMode {
-    pub fn from_env() -> Self {
-        match std::env::var("GRPCTESTIFY_COMPRESSION")
-            .unwrap_or_default()
-            .to_lowercase()
-            .as_str()
-        {
-            "gzip" => Self::Gzip,
-            _ => Self::None,
-        }
-    }
-}
-
-// Proto configuration
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ProtoConfig {
-    pub files: Vec<String>,
-    pub import_paths: Vec<String>,
-    pub descriptor: Option<String>,
-}
-
-// TLS configuration
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TlsConfig {
-    pub ca_cert_path: Option<String>,
-    pub client_cert_path: Option<String>,
-    pub client_key_path: Option<String>,
-    pub server_name: Option<String>,
-    pub insecure_skip_verify: bool,
 }
 
 /// gRPC client
@@ -104,7 +46,7 @@ impl GrpcClient {
     pub async fn new(config: GrpcClientConfig) -> Result<Self> {
         // Create channel first (lazy)
         let channel = create_channel(&config).await?;
-        
+
         // Load descriptors (might require connection if reflection is used)
         let descriptor_pool = load_descriptors(&config).await?;
 
@@ -199,14 +141,14 @@ impl GrpcClient {
 
         // Clone client to ensure we have a fresh handle that we can make ready and use
         let mut client = self.client.clone();
-        
+
         // Ensure client is ready
         // We ignore the error here because `ready()` returns a reference to the service,
         // but `unary` consumes `self`. We just need to drive the readiness check.
         // If it fails, the subsequent call will likely fail too.
         tracing::debug!("Checking client readiness...");
         if let Err(e) = client.ready().await {
-             tracing::warn!("Client readiness check failed: {}", e);
+            tracing::warn!("Client readiness check failed: {}", e);
         }
         tracing::debug!("Client ready");
 
@@ -219,7 +161,11 @@ impl GrpcClient {
 
                 let response = client.streaming(request, path, codec).await?;
                 let inner = response.into_inner();
-                Box::pin(inner.map(|item| item.map(|msg| StreamItem::Message(dynamic_message_to_json(&msg)))))
+                Box::pin(
+                    inner.map(|item| {
+                        item.map(|msg| StreamItem::Message(dynamic_message_to_json(&msg)))
+                    }),
+                )
             } else if method.is_server_streaming() {
                 // Server Streaming (Client Unary)
                 // We need exactly one request
@@ -234,7 +180,11 @@ impl GrpcClient {
 
                 let response = client.server_streaming(request, path, codec).await?;
                 let inner = response.into_inner();
-                Box::pin(inner.map(|item| item.map(|msg| StreamItem::Message(dynamic_message_to_json(&msg)))))
+                Box::pin(
+                    inner.map(|item| {
+                        item.map(|msg| StreamItem::Message(dynamic_message_to_json(&msg)))
+                    }),
+                )
             } else if method.is_client_streaming() {
                 // Client Streaming (Server Unary)
                 let mut request = Request::new(request_stream);
@@ -291,7 +241,10 @@ impl GrpcClient {
                     }
                     return Ok(output);
                 }
-                return Ok(format!("Invalid symbol format: {}. Expected 'package.Service/Method' or 'package.Service'", sym));
+                return Ok(format!(
+                    "Invalid symbol format: {}. Expected 'package.Service/Method' or 'package.Service'",
+                    sym
+                ));
             }
 
             let service_name = parts[0];
@@ -369,22 +322,6 @@ impl GrpcClient {
     }
 }
 
-fn user_agent_value() -> String {
-    format!("grpctestify/{}", env!("CARGO_PKG_VERSION"))
-}
-
-fn resolve_user_agent(custom_metadata: Option<&HashMap<String, String>>) -> String {
-    if let Some(metadata) = custom_metadata {
-        for (k, v) in metadata {
-            if k.eq_ignore_ascii_case("user-agent") {
-                return v.clone();
-            }
-        }
-    }
-
-    user_agent_value()
-}
-
 fn insert_request_metadata(
     meta: &mut MetadataMap,
     custom_metadata: Option<&HashMap<String, String>>,
@@ -395,10 +332,10 @@ fn insert_request_metadata(
                 continue;
             }
             let normalized_key = k.to_ascii_lowercase();
-            if let Ok(key) = MetadataKey::from_str(&normalized_key) {
-                if let Ok(val) = MetadataValue::from_str(v) {
-                    meta.insert(key, val);
-                }
+            if let Ok(key) = MetadataKey::from_str(&normalized_key)
+                && let Ok(val) = MetadataValue::from_str(v)
+            {
+                meta.insert(key, val);
             }
         }
     }
@@ -423,22 +360,20 @@ fn normalize_input_json_for_well_known(value: &mut Value, desc: &MessageDescript
         };
 
         if let Kind::Message(message_desc) = field.kind() {
-            if message_desc.full_name() == "google.protobuf.FieldMask" {
-                if let Some(paths) = field_value
+            if message_desc.full_name() == "google.protobuf.FieldMask"
+                && let Some(paths) = field_value
                     .as_object()
                     .and_then(|m| m.get("paths"))
                     .and_then(|v| v.as_array())
-                {
-                    let joined = paths
-                        .iter()
-                        .filter_map(|v| v.as_str())
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    *field_value = Value::String(joined);
-                    continue;
-                }
+            {
+                let joined = paths
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                *field_value = Value::String(joined);
+                continue;
             }
-
             if field.is_list() {
                 if let Some(arr) = field_value.as_array_mut() {
                     for item in arr {
@@ -472,104 +407,15 @@ pub enum StreamItem {
     Trailers(HashMap<String, String>),
 }
 
-// Helper function to create channel
-async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
-    let user_agent = resolve_user_agent(config.metadata.as_ref());
-
-    let cache_key = ChannelCacheKey {
-        address: config.address.clone(),
-        timeout_seconds: config.timeout_seconds,
-        tls_config: config.tls_config.clone(),
-        user_agent: user_agent.clone(),
-    };
-
-    {
-        let cache = CHANNEL_CACHE.lock().unwrap();
-        if let Some(channel) = cache.get(&cache_key) {
-            tracing::debug!("Cache hit for channel to {}", config.address);
-            return Ok(channel.clone());
-        }
-    }
-
-    tracing::debug!(
-        "Cache miss for channel to {}, creating new connection...",
-        config.address
-    );
-
-    let channel = if let Some(tls_config) = &config.tls_config {
-        let mut tls = ClientTlsConfig::new();
-
-        if let Some(domain) = &tls_config.server_name {
-            tls = tls.domain_name(domain);
-        }
-
-        if let Some(ca_path) = &tls_config.ca_cert_path {
-            let ca_pem =
-                std::fs::read_to_string(ca_path).context("Failed to read CA certificate")?;
-            tls = tls.ca_certificate(Certificate::from_pem(ca_pem));
-        }
-
-        if let (Some(cert_path), Some(key_path)) =
-            (&tls_config.client_cert_path, &tls_config.client_key_path)
-        {
-            let cert_pem =
-                std::fs::read_to_string(cert_path).context("Failed to read client certificate")?;
-            let key_pem = std::fs::read_to_string(key_path).context("Failed to read client key")?;
-            tls = tls.identity(Identity::from_pem(cert_pem, key_pem));
-        }
-
-        // Ensure scheme is present for TLS (https://)
-        let addr = if !config.address.contains("://") {
-            format!("https://{}", config.address)
-        } else {
-            config.address.clone()
-        };
-
-        let endpoint = Channel::from_shared(addr)
-            .context("Invalid address format")?
-            .timeout(Duration::from_secs(config.timeout_seconds))
-            .user_agent(user_agent.clone())
-            .context("Invalid user-agent value")?;
-
-        endpoint
-            .tls_config(tls)
-            .context("Failed to configure TLS")?
-            .connect_lazy()
-    } else {
-        // Ensure scheme is present for plaintext (http://)
-        let addr = if !config.address.contains("://") {
-            format!("http://{}", config.address)
-        } else {
-            config.address.clone()
-        };
-
-        let endpoint = Channel::from_shared(addr)
-            .context("Invalid address format")?
-            .timeout(Duration::from_secs(config.timeout_seconds))
-            .user_agent(user_agent)
-            .context("Invalid user-agent value")?;
-
-        endpoint
-            .connect_lazy()
-    };
-
-    {
-        let mut cache = CHANNEL_CACHE.lock().unwrap();
-        cache.insert(cache_key, channel.clone());
-    }
-
-    Ok(channel)
-}
-
 /// Load descriptors with caching
 async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<DescriptorPool>> {
     // Check if we have proto config
-    if let Some(proto_config) = &config.proto_config {
-        if !proto_config.files.is_empty() {
-            return Err(anyhow!(
-                "PROTO files are not supported in native mode. Use PROTO descriptor=<path> or server reflection."
-            ));
-        }
+    if let Some(proto_config) = &config.proto_config
+        && !proto_config.files.is_empty()
+    {
+        return Err(anyhow!(
+            "PROTO files are not supported in native mode. Use PROTO descriptor=<path> or server reflection."
+        ));
     }
 
     let cache_key = if let Some(target) = &config.target_service {
@@ -579,7 +425,7 @@ async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<DescriptorPoo
     };
 
     {
-        let cache = DESCRIPTOR_CACHE.lock().unwrap();
+        let cache = DESCRIPTOR_CACHE.read().unwrap();
         if let Some(pool) = cache.get(&cache_key) {
             tracing::debug!("Cache hit for descriptors from {}", cache_key);
             return Ok(pool.clone());
@@ -589,7 +435,7 @@ async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<DescriptorPoo
     let _load_guard = DESCRIPTOR_LOAD_MUTEX.lock().await;
 
     {
-        let cache = DESCRIPTOR_CACHE.lock().unwrap();
+        let cache = DESCRIPTOR_CACHE.read().unwrap();
         if let Some(pool) = cache.get(&cache_key) {
             tracing::debug!("Cache hit for descriptors from {}", cache_key);
             return Ok(pool.clone());
@@ -602,7 +448,7 @@ async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<DescriptorPoo
     let pool_arc = Arc::new(pool);
 
     {
-        let mut cache = DESCRIPTOR_CACHE.lock().unwrap();
+        let mut cache = DESCRIPTOR_CACHE.write().unwrap();
         cache.insert(cache_key, pool_arc.clone());
     }
 
@@ -662,17 +508,19 @@ async fn load_descriptors_via_reflection(config: &GrpcClientConfig) -> Result<De
         }
 
         tracing::debug!("Processing descriptor request for: {}", symbol_or_filename);
-        
+
         // Determine request type based on whether it looks like a filename
         let req = if symbol_or_filename.ends_with(".proto") {
-             ServerReflectionRequest {
+            ServerReflectionRequest {
                 host: config.address.clone(),
                 message_request: Some(MessageRequest::FileByFilename(symbol_or_filename.clone())),
             }
         } else {
-             ServerReflectionRequest {
+            ServerReflectionRequest {
                 host: config.address.clone(),
-                message_request: Some(MessageRequest::FileContainingSymbol(symbol_or_filename.clone())),
+                message_request: Some(MessageRequest::FileContainingSymbol(
+                    symbol_or_filename.clone(),
+                )),
             }
         };
 
@@ -693,29 +541,32 @@ async fn load_descriptors_via_reflection(config: &GrpcClientConfig) -> Result<De
             let msg = match response_result {
                 Ok(m) => m,
                 Err(e) => {
-                     tracing::warn!("Error receiving descriptor response for {}: {}", symbol_or_filename, e);
-                     continue;
+                    tracing::warn!(
+                        "Error receiving descriptor response for {}: {}",
+                        symbol_or_filename,
+                        e
+                    );
+                    continue;
                 }
             };
-            
+
             if let Some(tonic_reflection::pb::v1::server_reflection_response::MessageResponse::FileDescriptorResponse(resp)) = msg.message_response {
                 for fd_bytes in resp.file_descriptor_proto {
-                    if let Ok(fd) = FileDescriptorProto::decode(fd_bytes.as_slice()) {
-                         if let Some(name) = &fd.name {
-                            if !processed_files.contains(name) {
-                                tracing::debug!("Loaded descriptor for file: {}", name);
-                                processed_files.insert(name.clone());
-                                file_descriptors_bytes.insert(name.clone(), fd.clone());
-                                
-                                // Enqueue dependencies
-                                for dep in fd.dependency {
-                                    if !processed_files.contains(&dep) {
-                                         tracing::debug!("Found dependency: {}", dep);
-                                         files_to_process.push(dep);
-                                    }
-                                }
+                    if let Ok(fd) = FileDescriptorProto::decode(fd_bytes.as_slice())
+                        && let Some(name) = &fd.name
+                        && !processed_files.contains(name)
+                    {
+                        tracing::debug!("Loaded descriptor for file: {}", name);
+                        processed_files.insert(name.clone());
+                        file_descriptors_bytes.insert(name.clone(), fd.clone());
+
+                        // Enqueue dependencies
+                        for dep in fd.dependency {
+                            if !processed_files.contains(&dep) {
+                                 tracing::debug!("Found dependency: {}", dep);
+                                 files_to_process.push(dep);
                             }
-                         }
+                        }
                     }
                 }
             }
@@ -733,7 +584,7 @@ async fn load_descriptors_via_reflection(config: &GrpcClientConfig) -> Result<De
     for mut f in file_descriptors {
         // Some servers use synthetic names like `service.proto.src`; keep them,
         // they can still contain valid service descriptors.
-        
+
         // Ensure no duplicates in the final list (though hashmap should prevent this)
         if let Some(name) = &f.name {
             if names_seen.contains(name) {
@@ -780,17 +631,17 @@ async fn load_descriptors_via_reflection(config: &GrpcClientConfig) -> Result<De
         for msg in &mut f.message_type {
             let oneof_count = msg.oneof_decl.len() as i32;
             for field in &mut msg.field {
-                if let Some(idx) = field.oneof_index {
-                    if idx < 0 || idx >= oneof_count {
-                        tracing::warn!(
-                            "Sanitizing invalid oneof_index {} in message {} in file {} (oneof count: {})",
-                            idx,
-                            msg.name.as_deref().unwrap_or("<unknown>"),
-                            f.name.as_deref().unwrap_or("<unknown>"),
-                            oneof_count
-                        );
-                        field.oneof_index = None;
-                    }
+                if let Some(idx) = field.oneof_index
+                    && (idx < 0 || idx >= oneof_count)
+                {
+                    tracing::warn!(
+                        "Sanitizing invalid oneof_index {} in message {} in file {} (oneof count: {})",
+                        idx,
+                        msg.name.as_deref().unwrap_or("<unknown>"),
+                        f.name.as_deref().unwrap_or("<unknown>"),
+                        oneof_count
+                    );
+                    field.oneof_index = None;
                 }
             }
         }
@@ -818,13 +669,20 @@ async fn load_descriptors_via_reflection(config: &GrpcClientConfig) -> Result<De
 
         filtered_files.push(f);
     }
-    
+
     // Check for missing dependencies
-    let available_files: HashSet<String> = filtered_files.iter().filter_map(|f| f.name.clone()).collect();
+    let available_files: HashSet<String> = filtered_files
+        .iter()
+        .filter_map(|f| f.name.clone())
+        .collect();
     for f in &filtered_files {
         for dep in &f.dependency {
             if !available_files.contains(dep) {
-                tracing::warn!("File {} depends on missing file {}", f.name.as_deref().unwrap_or("<unknown>"), dep);
+                tracing::warn!(
+                    "File {} depends on missing file {}",
+                    f.name.as_deref().unwrap_or("<unknown>"),
+                    dep
+                );
             }
         }
     }
@@ -834,10 +692,15 @@ async fn load_descriptors_via_reflection(config: &GrpcClientConfig) -> Result<De
     };
 
     if file_descriptor_set.file.is_empty() {
-        return Err(anyhow!("No descriptors loaded via reflection for target service"));
+        return Err(anyhow!(
+            "No descriptors loaded via reflection for target service"
+        ));
     }
-    
-    tracing::debug!("Building descriptor pool with {} files (filtered)", file_descriptor_set.file.len());
+
+    tracing::debug!(
+        "Building descriptor pool with {} files (filtered)",
+        file_descriptor_set.file.len()
+    );
 
     let build_result = std::panic::catch_unwind(|| {
         let mut pool = DescriptorPool::global();
@@ -861,6 +724,10 @@ async fn load_descriptors_via_reflection(config: &GrpcClientConfig) -> Result<De
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Mutex to prevent race conditions when tests modify environment variables
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_grpc_client_config_default() {
@@ -879,6 +746,7 @@ mod tests {
 
     #[test]
     fn test_compression_mode_from_env() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         unsafe {
             std::env::set_var("GRPCTESTIFY_COMPRESSION", "gzip");
         }
@@ -891,6 +759,7 @@ mod tests {
 
     #[test]
     fn test_compression_mode_default() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         // Ensure env var is not set
         unsafe {
             std::env::remove_var("GRPCTESTIFY_COMPRESSION");

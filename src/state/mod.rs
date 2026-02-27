@@ -77,25 +77,21 @@ impl TestResults {
     }
 
     /// Get test result by index
-    #[allow(dead_code)]
     pub fn get(&self, index: usize) -> Option<&TestResult> {
         self.results.get(index)
     }
 
     /// Get all results
-    #[allow(dead_code)]
     pub fn all(&self) -> &[TestResult] {
         &self.results
     }
 
     /// Check if all tests passed
-    #[allow(dead_code)]
     pub fn all_passed(&self) -> bool {
         self.failed == 0
     }
 
     /// Get pass rate
-    #[allow(dead_code)]
     pub fn pass_rate(&self) -> f64 {
         if self.total == 0 {
             0.0
@@ -105,13 +101,11 @@ impl TestResults {
     }
 
     /// Get execution metrics
-    #[allow(dead_code)]
     pub fn metrics(&self) -> &ExecutionMetrics {
         &self.metrics
     }
 
     /// Reset results
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
         self.total = 0;
         self.passed = 0;
@@ -186,29 +180,21 @@ mod tests {
     }
 
     #[test]
-    fn test_test_results_add_skip() {
-        let mut results = TestResults::new();
-        let result = TestResult::skip("test1.gctf", "reason".to_string(), 100);
-        results.add(result);
-        assert_eq!(results.total(), 1);
-        assert_eq!(results.passed(), 0);
-        assert_eq!(results.failed(), 0);
-        assert_eq!(results.skipped(), 1);
-    }
-
-    #[test]
     fn test_test_results_mixed() {
         let mut results = TestResults::new();
         results.add(TestResult::pass("test1.gctf", 100, Some(50)));
         results.add(TestResult::pass("test2.gctf", 100, Some(50)));
-        results.add(TestResult::fail("test3.gctf", "error".to_string(), 100, Some(50)));
-        results.add(TestResult::skip("test4.gctf", "reason".to_string(), 100));
-        assert_eq!(results.total(), 4);
+        results.add(TestResult::fail(
+            "test3.gctf",
+            "error".to_string(),
+            100,
+            Some(50),
+        ));
+        assert_eq!(results.total(), 3);
         assert_eq!(results.passed(), 2);
         assert_eq!(results.failed(), 1);
-        assert_eq!(results.skipped(), 1);
         assert!(!results.all_passed());
-        assert_eq!(results.pass_rate(), 50.0);
+        assert!((results.pass_rate() - 66.67).abs() < 0.01);
     }
 
     #[test]
@@ -231,7 +217,12 @@ mod tests {
     fn test_test_results_reset() {
         let mut results = TestResults::new();
         results.add(TestResult::pass("test1.gctf", 100, Some(50)));
-        results.add(TestResult::fail("test2.gctf", "error".to_string(), 100, Some(50)));
+        results.add(TestResult::fail(
+            "test2.gctf",
+            "error".to_string(),
+            100,
+            Some(50),
+        ));
         results.reset();
         assert_eq!(results.total(), 0);
         assert_eq!(results.passed(), 0);
@@ -253,10 +244,8 @@ mod tests {
     fn test_execution_metrics_update_time() {
         let mut metrics = ExecutionMetrics::default();
         let start = metrics.start_time;
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(150));
         metrics.update_time();
         assert!(metrics.end_time >= start);
-        // Allow some tolerance for timing inaccuracies
-        assert!(metrics.total_duration_ms >= 0);
     }
 }

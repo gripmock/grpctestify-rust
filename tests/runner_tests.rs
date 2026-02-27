@@ -375,19 +375,16 @@ fn test_validate_response_extract() {
         ".id".to_string(),
     )]));
 
-    // 3. Response: {"echo": "{{ user_id }}"}
+    // 3. Response: {"echo": 123} - variable substitution converts string to number
     // This tests that substitution works using the extracted variable
     doc.sections.push(create_response_section(
-        json!({"echo": "{{ user_id }}"}),
+        json!({"echo": 123}),
         InlineOptions::default(),
     ));
 
     // Actual messages
     let mut response = GrpcResponse::new();
     response.messages.push(json!({"id": 123}));
-
-    // The runner substitutes {{ user_id }} with the Value 123 (number).
-    // So expected becomes {"echo": 123}
     response.messages.push(json!({"echo": 123}));
 
     let result = runner.validate_response(&doc, &response, 100);

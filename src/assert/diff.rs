@@ -1,5 +1,5 @@
 use console::Style;
-use dissimilar::{diff, Chunk};
+use dissimilar::{Chunk, diff};
 use serde_json::Value;
 use std::fmt::Write;
 

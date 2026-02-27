@@ -1,0 +1,22 @@
+--- ADDRESS ---
+localhost:4770
+
+--- ENDPOINT ---
+helloworld.Greeter/SayHello
+
+--- REQUEST_HEADERS ---
+Authorization: Bearer token123
+X-Request-ID: req-001
+
+--- REQUEST ---
+{
+  "name": "World"
+}
+
+--- RESPONSE ---
+{
+  "message": "Hello World"
+}
+
+--- ASSERTS ---
+@header("content-type")

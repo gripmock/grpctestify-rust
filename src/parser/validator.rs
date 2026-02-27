@@ -2,7 +2,7 @@
 // Checks for required sections, conflicts, and data integrity
 
 use super::ast::*;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::Serialize;
 
 /// Validation error
@@ -72,7 +72,7 @@ fn validate_required_sections(document: &GctfDocument, errors: &mut Vec<Validati
     }
 
     // ADDRESS or environment variable is required
-    // NOTE: The address might also be provided via CLI args or Config file, which the validator
+    // The address might also be provided via CLI args or Config file, which the validator
     // doesn't have access to here. We should probably relax this check or make it a warning.
     // Ideally validation happens with full context, but for now let's check env var.
     // If neither section nor env var is present, we warn instead of error,
@@ -120,35 +120,35 @@ fn validate_conflicts(document: &GctfDocument, errors: &mut Vec<ValidationError>
 /// Validate content
 fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) {
     // Validate endpoint format
-    if let Some(endpoint) = document.get_endpoint() {
-        if !endpoint.contains('/') {
-            errors.push(ValidationError {
-                message: format!(
-                    "Invalid endpoint format: {}. Expected format: package.Service/Method",
-                    endpoint
-                ),
-                line: document
-                    .first_section(SectionType::Endpoint)
-                    .map(|s| s.start_line),
-                severity: ErrorSeverity::Error,
-            });
-        }
+    if let Some(endpoint) = document.get_endpoint()
+        && !endpoint.contains('/')
+    {
+        errors.push(ValidationError {
+            message: format!(
+                "Invalid endpoint format: {}. Expected format: package.Service/Method",
+                endpoint
+            ),
+            line: document
+                .first_section(SectionType::Endpoint)
+                .map(|s| s.start_line),
+            severity: ErrorSeverity::Error,
+        });
     }
 
     // Validate address format
-    if let Some(address) = document.get_address(None) {
-        if !address.contains(':') {
-            errors.push(ValidationError {
-                message: format!(
-                    "Invalid address format: {}. Expected format: host:port",
-                    address
-                ),
-                line: document
-                    .first_section(SectionType::Address)
-                    .map(|s| s.start_line),
-                severity: ErrorSeverity::Error,
-            });
-        }
+    if let Some(address) = document.get_address(None)
+        && !address.contains(':')
+    {
+        errors.push(ValidationError {
+            message: format!(
+                "Invalid address format: {}. Expected format: host:port",
+                address
+            ),
+            line: document
+                .first_section(SectionType::Address)
+                .map(|s| s.start_line),
+            severity: ErrorSeverity::Error,
+        });
     }
 
     // Validate JSON sections
@@ -478,7 +478,9 @@ mod tests {
         });
 
         let errors = validate_document_diagnostics(&doc);
-        let has_conflict_error = errors.iter().any(|e| e.message.contains("RESPONSE") && e.message.contains("ERROR"));
+        let has_conflict_error = errors
+            .iter()
+            .any(|e| e.message.contains("RESPONSE") && e.message.contains("ERROR"));
         assert!(has_conflict_error);
     }
 
@@ -564,7 +566,7 @@ mod tests {
         unsafe {
             std::env::set_var(crate::config::ENV_GRPCTESTIFY_ADDRESS, "env:5000");
         }
-        
+
         let mut doc = GctfDocument::new("test.gctf".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Endpoint,

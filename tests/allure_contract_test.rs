@@ -128,10 +128,12 @@ fn test_allure_failed_test_structure() {
     });
 
     assert_eq!(allure_result["status"], "failed");
-    assert!(allure_result["statusDetails"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("mismatch"));
+    assert!(
+        allure_result["statusDetails"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("mismatch")
+    );
 }
 
 #[test]
@@ -265,4 +267,72 @@ fn test_allure_test_name_extraction() {
         .unwrap_or(test_path);
 
     assert_eq!(test_name, "case_tech_search.gctf");
+}
+
+#[test]
+fn test_allure_label_structure() {
+    // Test that Allure labels have correct structure
+    let label = serde_json::json!({
+        "name": "severity",
+        "value": "critical"
+    });
+
+    assert!(label.get("name").is_some());
+    assert!(label.get("value").is_some());
+    assert!(label["name"].is_string());
+    assert!(label["value"].is_string());
+
+    // Common label names should be valid
+    let valid_label_names = [
+        "severity", "priority", "tag", "owner", "suite", "subSuite", "feature", "story",
+    ];
+    for name in valid_label_names {
+        let test_label = serde_json::json!({
+            "name": name,
+            "value": "test-value"
+        });
+        assert!(test_label["name"].as_str() == Some(name));
+    }
+}
+
+#[test]
+fn test_allure_timestamp_format() {
+    // Test that timestamps are in correct format (milliseconds since epoch)
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+
+    // Timestamp should be reasonable (within last year and not in future by more than 1 day)
+    let one_year_ago = now - 365 * 24 * 60 * 60 * 1000;
+    let one_day_future = now + 24 * 60 * 60 * 1000;
+
+    let test_timestamp = now;
+    assert!(
+        test_timestamp >= one_year_ago,
+        "Timestamp should not be too old"
+    );
+    assert!(
+        test_timestamp <= one_day_future,
+        "Timestamp should not be too far in future"
+    );
+}
+
+#[test]
+fn test_allure_status_transitions() {
+    // Test valid status transitions
+    let valid_transitions = [
+        ("pending", "passed"),
+        ("pending", "failed"),
+        ("pending", "skipped"),
+        ("passed", "passed"),
+        ("failed", "failed"),
+    ];
+
+    for (from, to) in valid_transitions {
+        // In Allure, status is final, but we can test that both are valid statuses
+        let valid_statuses = ["passed", "failed", "skipped", "broken", "pending"];
+        assert!(valid_statuses.contains(&from));
+        assert!(valid_statuses.contains(&to));
+    }
 }

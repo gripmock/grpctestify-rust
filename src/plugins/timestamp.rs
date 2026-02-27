@@ -66,7 +66,10 @@ mod tests {
     fn test_timestamp_plugin_valid() {
         let plugin = TimestampPlugin;
         let context = create_context();
-        let result = plugin.execute(&[Value::String("2024-01-15T10:30:00Z".to_string())], &context);
+        let result = plugin.execute(
+            &[Value::String("2024-01-15T10:30:00Z".to_string())],
+            &context,
+        );
         assert!(result.is_ok());
         if let PluginResult::Assertion(AssertionResult::Pass) = result.unwrap() {
             // Pass

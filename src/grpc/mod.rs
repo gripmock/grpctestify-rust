@@ -1,8 +1,12 @@
 // gRPC client module
 
+pub mod channel;
 pub mod client;
+pub mod tls;
 
-pub use client::{CompressionMode, GrpcClient, GrpcClientConfig, ProtoConfig, TlsConfig};
+pub use channel::create_channel;
+pub use client::{GrpcClient, GrpcClientConfig};
+pub use tls::{CompressionMode, ProtoConfig, TlsConfig};
 
 use serde::Serialize;
 use serde_json::Value;

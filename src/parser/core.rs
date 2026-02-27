@@ -34,7 +34,7 @@ pub fn parse_gctf_from_str(content: &str, file_path: &str) -> Result<GctfDocumen
     Ok(document)
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct ParseTimings {
     pub read_ms: f64,
     pub parse_sections_ms: f64,
@@ -42,7 +42,7 @@ pub struct ParseTimings {
     pub total_ms: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct ParseDiagnostics {
     pub file_path: String,
     pub bytes: usize,
@@ -282,10 +282,10 @@ fn parse_inline_options(s: &str) -> Result<InlineOptions> {
         inline_options.partial = matches!(partial.as_str(), "true" | "1");
     }
 
-    if let Some(tolerance) = options.get("tolerance") {
-        if let Ok(t) = tolerance.parse::<f64>() {
-            inline_options.tolerance = Some(t);
-        }
+    if let Some(tolerance) = options.get("tolerance")
+        && let Ok(t) = tolerance.parse::<f64>()
+    {
+        inline_options.tolerance = Some(t);
     }
 
     if let Some(redact) = options.get("redact") {
@@ -370,9 +370,21 @@ fn parse_section_content(section_type: SectionType, content: &str) -> Result<Sec
             Ok(SectionContent::KeyValues(key_values))
         }
 
-        // Extract section
+        // Extract section - support ternary expressions via AST
         SectionType::Extract => {
-            let key_values = parse_key_value_section(content)?;
+            let mut key_values = HashMap::new();
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+                    continue;
+                }
+
+                // Parse using ternary AST
+                if let Some(extract_var) = crate::parser::ternary_ast::ExtractVar::parse(trimmed) {
+                    // Store the JQ-converted value for backward compatibility
+                    key_values.insert(extract_var.name, extract_var.value.to_jq());
+                }
+            }
             Ok(SectionContent::Extract(key_values))
         }
 
@@ -413,9 +425,66 @@ fn parse_assertions(content: &str) -> Result<Vec<String>> {
         .lines()
         .map(|line| line.trim().to_string())
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| normalize_regex_literals(&line))
         .collect();
 
     Ok(assertions)
+}
+
+/// Normalize JavaScript-style regex literals /pattern/ to regular strings
+/// Converts: @regex(.field, /\d{4}/) → @regex(.field, "\d{4}")
+fn normalize_regex_literals(line: &str) -> String {
+    let mut result = String::new();
+    let mut chars = line.chars().peekable();
+    let mut in_string = false;
+    let mut string_char = None;
+
+    while let Some(c) = chars.next() {
+        // Track string literals (single or double quotes)
+        if (c == '"' || c == '\'') && !in_string {
+            in_string = true;
+            string_char = Some(c);
+            result.push(c);
+        } else if in_string && Some(c) == string_char {
+            // Check for escape
+            if result.ends_with('\\') {
+                result.push(c);
+            } else {
+                in_string = false;
+                string_char = None;
+                result.push(c);
+            }
+        } else if !in_string && c == '/' {
+            // Found potential regex literal start
+            let mut regex_content = String::new();
+            let mut found_end = false;
+
+            // Collect content until closing /
+            while let Some(&next_c) = chars.peek() {
+                if next_c == '/' {
+                    chars.next(); // consume closing /
+                    found_end = true;
+                    break;
+                }
+                regex_content.push(chars.next().unwrap());
+            }
+
+            if found_end {
+                // Convert /pattern/ to "pattern" (even if pattern is empty)
+                result.push('"');
+                result.push_str(&regex_content);
+                result.push('"');
+            } else {
+                // Not a valid regex literal, keep the /
+                result.push('/');
+                result.push_str(&regex_content);
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -657,5 +726,68 @@ Service/Method
         let debug_str = format!("{:?}", diagnostics);
         assert!(debug_str.contains("ParseDiagnostics"));
         assert!(debug_str.contains("test.gctf"));
+    }
+
+    #[test]
+    fn test_normalize_regex_literals_js_style() {
+        // JavaScript-style regex literals
+        let input = r#"@regex(.field, /\d{4}/)"#;
+        let output = normalize_regex_literals(input);
+        assert_eq!(output, r#"@regex(.field, "\d{4}")"#);
+    }
+
+    #[test]
+    fn test_normalize_regex_literals_complex() {
+        // Complex regex pattern
+        let input = r#"@regex(.email, /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/)"#;
+        let output = normalize_regex_literals(input);
+        assert_eq!(
+            output,
+            r#"@regex(.email, "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")"#
+        );
+    }
+
+    #[test]
+    fn test_normalize_regex_literals_preserves_strings() {
+        // Regular strings should not be affected
+        let input = r#"@regex(.field, "pattern")"#;
+        let output = normalize_regex_literals(input);
+        assert_eq!(output, r#"@regex(.field, "pattern")"#);
+    }
+
+    #[test]
+    fn test_normalize_regex_literals_mixed() {
+        // Mixed: string and regex literal
+        let input = r#"@regex(.field1, "pattern1") and @regex(.field2, /\d+/)"#;
+        let output = normalize_regex_literals(input);
+        assert_eq!(
+            output,
+            r#"@regex(.field1, "pattern1") and @regex(.field2, "\d+")"#
+        );
+    }
+
+    #[test]
+    fn test_normalize_regex_literals_division_preserved() {
+        // Division operator should be preserved (not a regex)
+        let input = r#"100 / 5"#;
+        let output = normalize_regex_literals(input);
+        assert_eq!(output, r#"100 / 5"#);
+    }
+
+    #[test]
+    fn test_normalize_regex_literals_empty() {
+        // Empty regex literal - should be preserved as-is (invalid pattern)
+        let input = r#"@regex(.field, //)"#;
+        let output = normalize_regex_literals(input);
+        // Empty regex becomes empty string ""
+        assert_eq!(output, r#"@regex(.field, "")"#);
+    }
+
+    #[test]
+    fn test_normalize_regex_literals_escaped_quotes() {
+        // Escaped quotes in strings
+        let input = r#"@regex(.field, "test \"quoted\"")"#;
+        let output = normalize_regex_literals(input);
+        assert_eq!(output, r#"@regex(.field, "test \"quoted\"")"#);
     }
 }

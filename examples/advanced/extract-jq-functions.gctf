@@ -1,0 +1,53 @@
+--- ENDPOINT ---
+shop.OrderService/GetOrder
+
+--- REQUEST ---
+{
+  "order_id": 123
+}
+
+--- RESPONSE ---
+{
+  "order_id": 123,
+  "items": [
+    {"name": "Item 1", "price": 10.00, "qty": 2},
+    {"name": "Item 2", "price": 25.00, "qty": 1}
+  ],
+  "tax_rate": 0.08,
+  "created_at": "2024-01-15T10:30:00Z",
+  "status": 200
+}
+
+--- EXTRACT ---
+# Basic extraction
+order_id = .order_id
+status_code = .status
+
+# String functions
+date_only = .created_at | split("T")[0]
+time_only = .created_at | split("T")[1] | split("Z")[0]
+
+# Numeric aggregations
+item_count = .items | length
+subtotal = [.items[].price * .items[].qty] | add
+avg_price = [.items[].price] | avg
+min_price = [.items[].price] | min
+max_price = [.items[].price] | max
+
+# Calculations with variables
+tax_amount = $subtotal * .tax_rate
+total = $subtotal + $tax_amount
+
+# Array filtering
+expensive_items = [.items[] | select(.price > 15)]
+item_names = [.items[].name]
+
+# Conditional extraction
+status_label = if .status == 200 then "OK" elif .status == 404 then "Not Found" else "Error" end
+
+--- ASSERTS ---
+# Verify extractions
+.order_id == 123
+.item_count == 2
+@len(.item_names) == 2
+.status_label == "OK"

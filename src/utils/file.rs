@@ -26,12 +26,11 @@ impl FileUtils {
             });
 
             for entry in walker.flatten() {
-                if entry.file_type().is_file() {
-                    if let Some(ext) = entry.path().extension() {
-                        if ext == "gctf" {
-                            files.push(entry.path().to_path_buf());
-                        }
-                    }
+                if entry.file_type().is_file()
+                    && let Some(ext) = entry.path().extension()
+                    && ext == "gctf"
+                {
+                    files.push(entry.path().to_path_buf());
                 }
             }
         }
@@ -57,34 +56,11 @@ impl FileUtils {
 
     /// Get file modification time (cross-platform)
     pub fn get_mtime(path: &Path) -> Result<i64> {
-        #[cfg(unix)]
-        {
-            use std::fs::metadata;
-            use std::time::UNIX_EPOCH;
-            let metadata = metadata(path)
-                .context(format!("Failed to get metadata for: {}", path.display()))?;
-            Ok(metadata.modified()?.duration_since(UNIX_EPOCH)?.as_secs() as i64)
-        }
-
-        #[cfg(windows)]
-        {
-            use std::fs::metadata;
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let metadata = metadata(path)
-                .context(format!("Failed to get metadata for: {}", path.display()))?;
-            Ok(metadata.modified()?.duration_since(UNIX_EPOCH)?.as_secs() as i64)
-        }
-    }
-
-    /// Normalize path separators (backslash to forward slash)
-    #[allow(dead_code)]
-    pub fn normalize_path_separators(path: &Path) -> PathBuf {
-        let p = path.to_string_lossy();
-        if cfg!(windows) {
-            p.replace('\\', "/").into()
-        } else {
-            p.into_owned().into()
-        }
+        use std::fs::metadata;
+        use std::time::UNIX_EPOCH;
+        let metadata =
+            metadata(path).context(format!("Failed to get metadata for: {}", path.display()))?;
+        Ok(metadata.modified()?.duration_since(UNIX_EPOCH)?.as_secs() as i64)
     }
 
     /// Get file size (cross-platform)
@@ -93,12 +69,6 @@ impl FileUtils {
         let metadata =
             fs::metadata(path).context(format!("Failed to get size for: {}", path.display()))?;
         Ok(metadata.len())
-    }
-
-    /// Check if path exists
-    #[allow(dead_code)]
-    pub fn exists(path: &Path) -> bool {
-        path.exists()
     }
 
     /// Resolve a path relative to a base file path
@@ -225,7 +195,6 @@ impl FileUtils {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use tempfile::NamedTempFile;
 
     #[test]
@@ -373,10 +342,7 @@ mod tests {
 
     #[test]
     fn test_sort_files_default() {
-        let mut files = vec![
-            PathBuf::from("z.gctf"),
-            PathBuf::from("a.gctf"),
-        ];
+        let mut files = vec![PathBuf::from("z.gctf"), PathBuf::from("a.gctf")];
         FileUtils::sort_files(&mut files, "unknown");
         // Default should sort by path
         assert!(files[0].to_string_lossy() < files[1].to_string_lossy());
@@ -412,13 +378,6 @@ mod tests {
     }
 
     #[test]
-    fn test_exists() {
-        let file = tempfile::Builder::new().suffix(".gctf").tempfile().unwrap();
-        assert!(FileUtils::exists(file.path()));
-        assert!(!FileUtils::exists(Path::new("/nonexistent/file")));
-    }
-
-    #[test]
     fn test_resolve_relative_path_absolute() {
         let base = Path::new("/base/file.gctf");
         let result = FileUtils::resolve_relative_path(base, "/absolute/path.gctf");
@@ -442,7 +401,7 @@ mod tests {
     #[test]
     fn test_update_test_file() {
         let mut doc = crate::parser::GctfDocument::new("test.gctf".to_string());
-        use crate::parser::ast::{Section, SectionContent, SectionType, InlineOptions};
+        use crate::parser::ast::{InlineOptions, Section, SectionContent, SectionType};
         use serde_json::json;
 
         doc.sections.push(Section {
@@ -483,19 +442,6 @@ Service/Method
 
         let updated_content = std::fs::read_to_string(temp_file.path()).unwrap();
         assert!(updated_content.contains("\"result\": \"new\""));
-    }
-
-    #[test]
-    fn test_normalize_path_separators() {
-        if cfg!(windows) {
-            let path = Path::new("C:\\Users\\Test\\file.gctf");
-            let normalized = FileUtils::normalize_path_separators(path);
-            assert!(normalized.to_str().unwrap().contains("/"));
-        } else {
-            let path = Path::new("/home/user/test/file.gctf");
-            let normalized = FileUtils::normalize_path_separators(path);
-            assert!(normalized.to_str().unwrap().contains("/"));
-        }
     }
 
     #[test]

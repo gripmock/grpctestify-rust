@@ -65,7 +65,10 @@ mod tests {
     fn test_url_plugin_valid_url() {
         let plugin = UrlPlugin;
         let context = create_context();
-        let result = plugin.execute(&[Value::String("https://example.com".to_string())], &context);
+        let result = plugin.execute(
+            &[Value::String("https://example.com".to_string())],
+            &context,
+        );
         assert!(result.is_ok());
         if let PluginResult::Assertion(AssertionResult::Pass) = result.unwrap() {
             // Pass

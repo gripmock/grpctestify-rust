@@ -1,8 +1,10 @@
 // Test runner
 // Executes tests defined in GctfDocument
+// Refactored to use RequestHandler, ResponseHandler, AssertionHandler
 
 use super::super::parser::GctfDocument;
-use crate::assert::{get_json_diff, AssertionEngine, JsonComparator};
+use super::{AssertionHandler, RequestHandler, ResponseHandler};
+use crate::assert::{AssertionEngine, JsonComparator, get_json_diff};
 use crate::grpc::{CompressionMode, GrpcClient, GrpcClientConfig, ProtoConfig, TlsConfig};
 use crate::parser::ast::{SectionContent, SectionType};
 use crate::report::CoverageCollector;
@@ -14,8 +16,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 
 /// Execution plan for inspect workflow visualization
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,16 +104,24 @@ pub struct ExtractionInfo {
 pub enum RpcMode {
     Unary,
     UnaryError,
-    ServerStreaming { response_count: usize },
-    ClientStreaming { request_count: usize },
-    BidirectionalStreaming { request_count: usize, response_count: usize },
+    ServerStreaming {
+        response_count: usize,
+    },
+    ClientStreaming {
+        request_count: usize,
+    },
+    BidirectionalStreaming {
+        request_count: usize,
+        response_count: usize,
+    },
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ExecutionSummary {
     pub total_requests: usize,
     pub total_responses: usize,
+    pub total_errors: usize,
     pub error_expected: bool,
     pub assertion_blocks: usize,
     pub variable_extractions: usize,
@@ -122,13 +132,16 @@ impl ExecutionPlan {
     /// Build execution plan from a GctfDocument
     pub fn from_document(doc: &GctfDocument) -> Self {
         let file_path = doc.file_path.clone();
-        
+
         // Connection info
         let connection = if let Some(section) = doc.first_section(SectionType::Address) {
             if let SectionContent::Single(addr) = &section.content {
                 ConnectionInfo {
                     address: addr.clone(),
-                    source: format!("ADDRESS section [Line {}-{}]", section.start_line, section.end_line),
+                    source: format!(
+                        "ADDRESS section [Line {}-{}]",
+                        section.start_line, section.end_line
+                    ),
                 }
             } else {
                 ConnectionInfo {
@@ -146,7 +159,8 @@ impl ExecutionPlan {
         // Target info
         let target = if let Some(section) = doc.first_section(SectionType::Endpoint) {
             if let SectionContent::Single(endpoint) = &section.content {
-                let (package, service, method) = doc.parse_endpoint()
+                let (package, service, method) = doc
+                    .parse_endpoint()
                     .map(|(p, s, m)| (Some(p), Some(s), Some(m)))
                     .unwrap_or((None, None, None));
                 TargetInfo {
@@ -173,7 +187,8 @@ impl ExecutionPlan {
         };
 
         // Headers info
-        let headers = doc.first_section(SectionType::RequestHeaders)
+        let headers = doc
+            .first_section(SectionType::RequestHeaders)
             .and_then(|section| {
                 if let SectionContent::KeyValues(headers) = &section.content {
                     Some(HeadersInfo {
@@ -187,49 +202,57 @@ impl ExecutionPlan {
 
         // Requests
         let request_sections = doc.sections_by_type(SectionType::Request);
-        let requests: Vec<RequestInfo> = request_sections.iter().enumerate().map(|(i, section)| {
-            let (content, content_type) = match &section.content {
-                SectionContent::Json(j) => (j.clone(), "json"),
-                SectionContent::JsonLines(_) => (Value::Array(vec![]), "json-lines"),
-                SectionContent::Empty => (Value::Object(serde_json::Map::new()), "empty"),
-                _ => (Value::Null, "unknown"),
-            };
-            RequestInfo {
-                index: i + 1,
-                content,
-                content_type: content_type.to_string(),
-                line_start: section.start_line,
-                line_end: section.end_line,
-            }
-        }).collect();
+        let requests: Vec<RequestInfo> = request_sections
+            .iter()
+            .enumerate()
+            .map(|(i, section)| {
+                let (content, content_type) = match &section.content {
+                    SectionContent::Json(j) => (j.clone(), "json"),
+                    SectionContent::JsonLines(_) => (Value::Array(vec![]), "json-lines"),
+                    SectionContent::Empty => (Value::Object(serde_json::Map::new()), "empty"),
+                    _ => (Value::Null, "unknown"),
+                };
+                RequestInfo {
+                    index: i + 1,
+                    content,
+                    content_type: content_type.to_string(),
+                    line_start: section.start_line,
+                    line_end: section.end_line,
+                }
+            })
+            .collect();
 
         // Expectations (responses or error)
         let response_sections = doc.sections_by_type(SectionType::Response);
         let error_section = doc.first_section(SectionType::Error);
-        
+
         let expectations: Vec<ExpectationInfo> = if !response_sections.is_empty() {
-            response_sections.iter().enumerate().map(|(i, section)| {
-                let (content, message_count) = match &section.content {
-                    SectionContent::Json(j) => (Some(j.clone()), None),
-                    SectionContent::JsonLines(vals) => (None, Some(vals.len())),
-                    _ => (None, None),
-                };
-                ExpectationInfo {
-                    index: i + 1,
-                    expectation_type: "response".to_string(),
-                    content,
-                    message_count,
-                    comparison_options: ComparisonOptions {
-                        partial: section.inline_options.partial,
-                        redact: section.inline_options.redact.clone(),
-                        tolerance: section.inline_options.tolerance,
-                        unordered_arrays: section.inline_options.unordered_arrays,
-                        with_asserts: section.inline_options.with_asserts,
-                    },
-                    line_start: section.start_line,
-                    line_end: section.end_line,
-                }
-            }).collect()
+            response_sections
+                .iter()
+                .enumerate()
+                .map(|(i, section)| {
+                    let (content, message_count) = match &section.content {
+                        SectionContent::Json(j) => (Some(j.clone()), None),
+                        SectionContent::JsonLines(vals) => (None, Some(vals.len())),
+                        _ => (None, None),
+                    };
+                    ExpectationInfo {
+                        index: i + 1,
+                        expectation_type: "response".to_string(),
+                        content,
+                        message_count,
+                        comparison_options: ComparisonOptions {
+                            partial: section.inline_options.partial,
+                            redact: section.inline_options.redact.clone(),
+                            tolerance: section.inline_options.tolerance,
+                            unordered_arrays: section.inline_options.unordered_arrays,
+                            with_asserts: section.inline_options.with_asserts,
+                        },
+                        line_start: section.start_line,
+                        line_end: section.end_line,
+                    }
+                })
+                .collect()
         } else if let Some(section) = error_section {
             let content = match &section.content {
                 SectionContent::Json(j) => Some(j.clone()),
@@ -250,41 +273,54 @@ impl ExecutionPlan {
 
         // Assertions
         let assert_sections = doc.sections_by_type(SectionType::Asserts);
-        let assertions: Vec<AssertionInfo> = assert_sections.iter().enumerate().map(|(i, section)| {
-            let assertions = if let SectionContent::Assertions(lines) = &section.content {
-                lines.clone()
-            } else {
-                vec![]
-            };
-            AssertionInfo {
-                index: i + 1,
-                assertions,
-                line_start: section.start_line,
-                line_end: section.end_line,
-            }
-        }).collect();
+        let assertions: Vec<AssertionInfo> = assert_sections
+            .iter()
+            .enumerate()
+            .map(|(i, section)| {
+                let assertions = if let SectionContent::Assertions(lines) = &section.content {
+                    lines.clone()
+                } else {
+                    vec![]
+                };
+                AssertionInfo {
+                    index: i + 1,
+                    assertions,
+                    line_start: section.start_line,
+                    line_end: section.end_line,
+                }
+            })
+            .collect();
 
         // Extractions
         let extract_sections = doc.sections_by_type(SectionType::Extract);
-        let extractions: Vec<ExtractionInfo> = extract_sections.iter().enumerate().map(|(i, section)| {
-            let variables = if let SectionContent::Extract(vars) = &section.content {
-                vars.clone()
-            } else {
-                HashMap::new()
-            };
-            ExtractionInfo {
-                index: i + 1,
-                variables,
-                line_start: section.start_line,
-                line_end: section.end_line,
-            }
-        }).collect();
+        let extractions: Vec<ExtractionInfo> = extract_sections
+            .iter()
+            .enumerate()
+            .map(|(i, section)| {
+                let variables = if let SectionContent::Extract(vars) = &section.content {
+                    vars.clone()
+                } else {
+                    HashMap::new()
+                };
+                ExtractionInfo {
+                    index: i + 1,
+                    variables,
+                    line_start: section.start_line,
+                    line_end: section.end_line,
+                }
+            })
+            .collect();
 
         // Infer RPC mode
-        let has_json_lines = response_sections.iter().any(|s| {
-            matches!(&s.content, SectionContent::JsonLines(vals) if vals.len() > 1)
-        });
-        let rpc_mode = infer_rpc_mode(&requests, &expectations, error_section.is_some(), has_json_lines);
+        let has_json_lines = response_sections
+            .iter()
+            .any(|s| matches!(&s.content, SectionContent::JsonLines(vals) if vals.len() > 1));
+        let rpc_mode = infer_rpc_mode(
+            &requests,
+            &expectations,
+            error_section.is_some(),
+            has_json_lines,
+        );
 
         // Summary
         let rpc_mode_name = match &rpc_mode {
@@ -298,7 +334,14 @@ impl ExecutionPlan {
 
         let summary = ExecutionSummary {
             total_requests: requests.len(),
-            total_responses: expectations.iter().filter(|e| e.expectation_type == "response").count(),
+            total_responses: expectations
+                .iter()
+                .filter(|e| e.expectation_type == "response")
+                .count(),
+            total_errors: expectations
+                .iter()
+                .filter(|e| e.expectation_type == "error")
+                .count(),
             error_expected: expectations.iter().any(|e| e.expectation_type == "error"),
             assertion_blocks: assertions.len(),
             variable_extractions: extractions.len(),
@@ -327,22 +370,34 @@ fn infer_rpc_mode(
     has_json_lines: bool,
 ) -> RpcMode {
     let req_count = requests.len();
-    let resp_count = expectations.iter().filter(|e| e.expectation_type == "response").count();
+    let resp_count = expectations
+        .iter()
+        .filter(|e| e.expectation_type == "response")
+        .count();
 
     if has_error {
         RpcMode::UnaryError
     } else if has_json_lines || resp_count > 1 {
         if req_count > 1 {
-            RpcMode::BidirectionalStreaming { request_count: req_count, response_count: resp_count }
+            RpcMode::BidirectionalStreaming {
+                request_count: req_count,
+                response_count: resp_count,
+            }
         } else {
-            RpcMode::ServerStreaming { response_count: resp_count }
+            RpcMode::ServerStreaming {
+                response_count: resp_count,
+            }
         }
     } else if req_count > 1 {
-        RpcMode::ClientStreaming { request_count: req_count }
+        RpcMode::ClientStreaming {
+            request_count: req_count,
+        }
     } else if req_count == 1 && resp_count == 1 {
         RpcMode::Unary
     } else if req_count == 0 && resp_count > 0 {
-        RpcMode::ServerStreaming { response_count: resp_count }
+        RpcMode::ServerStreaming {
+            response_count: resp_count,
+        }
     } else {
         RpcMode::Unknown
     }
@@ -392,14 +447,18 @@ pub struct TestRunner {
     dry_run: bool,
     timeout_seconds: u64,
     no_assert: bool,
-    update_mode: bool,
+    write_mode: bool,
     verbose: bool,
     assertion_engine: AssertionEngine,
     coverage_collector: Option<Arc<CoverageCollector>>,
+    // Handler modules for delegated functionality
+    request_handler: RequestHandler,
+    response_handler: ResponseHandler,
+    assertion_handler: AssertionHandler,
 }
 
 impl TestRunner {
-    fn full_service_name(package: &str, service: &str) -> String {
+    pub fn full_service_name(package: &str, service: &str) -> String {
         if package.is_empty() {
             service.to_string()
         } else {
@@ -407,7 +466,9 @@ impl TestRunner {
         }
     }
 
-    fn expected_values_for_response_section(section: &crate::parser::ast::Section) -> Vec<Value> {
+    pub fn expected_values_for_response_section(
+        section: &crate::parser::ast::Section,
+    ) -> Vec<Value> {
         match &section.content {
             SectionContent::Json(v) => vec![v.clone()],
             SectionContent::JsonLines(values) => values.clone(),
@@ -415,52 +476,12 @@ impl TestRunner {
         }
     }
 
-    fn grpc_code_name_from_numeric(code: i64) -> Option<&'static str> {
-        match code {
-            0 => Some("OK"),
-            1 => Some("Cancelled"),
-            2 => Some("Unknown"),
-            3 => Some("InvalidArgument"),
-            4 => Some("DeadlineExceeded"),
-            5 => Some("NotFound"),
-            6 => Some("AlreadyExists"),
-            7 => Some("PermissionDenied"),
-            8 => Some("ResourceExhausted"),
-            9 => Some("FailedPrecondition"),
-            10 => Some("Aborted"),
-            11 => Some("OutOfRange"),
-            12 => Some("Unimplemented"),
-            13 => Some("Internal"),
-            14 => Some("Unavailable"),
-            15 => Some("DataLoss"),
-            16 => Some("Unauthenticated"),
-            _ => None,
-        }
+    pub fn grpc_code_name_from_numeric(code: i64) -> Option<&'static str> {
+        super::error_handler::ErrorHandler::grpc_code_name_from_numeric(code)
     }
 
-    fn error_matches_expected(error_text: &str, expected: &Value) -> bool {
-        if let Some(expected_msg) = expected.get("message").and_then(|v| v.as_str()) {
-            if !error_text.contains(expected_msg) {
-                return false;
-            }
-        } else if expected.is_string() {
-            if let Some(s) = expected.as_str() {
-                if !error_text.contains(s) {
-                    return false;
-                }
-            }
-        }
-
-        if let Some(code) = expected.get("code").and_then(|v| v.as_i64()) {
-            if let Some(code_name) = Self::grpc_code_name_from_numeric(code) {
-                let status_marker = format!("status: {}", code_name);
-                if !error_text.contains(&status_marker) && !error_text.contains(&format!("code: {}", code)) {
-                    return false;
-                }
-            }
-        }
-
-        true
+    pub fn error_matches_expected(error_text: &str, expected: &Value) -> bool {
+        super::error_handler::ErrorHandler::error_matches_expected(error_text, expected)
     }
 
     /// Create a new test runner
@@ -468,7 +489,7 @@ impl TestRunner {
         dry_run: bool,
         timeout_seconds: u64,
         no_assert: bool,
-        update_mode: bool,
+        write_mode: bool,
         verbose: bool,
         coverage_collector: Option<Arc<CoverageCollector>>,
     ) -> Self {
@@ -476,15 +497,39 @@ impl TestRunner {
             dry_run,
             timeout_seconds,
             no_assert,
-            update_mode,
+            write_mode,
             verbose,
             assertion_engine: AssertionEngine::new(),
-            coverage_collector,
+            coverage_collector: coverage_collector.clone(),
+            // Initialize handler modules
+            request_handler: RequestHandler::new(no_assert, verbose, coverage_collector.clone()),
+            response_handler: ResponseHandler::new(no_assert),
+            assertion_handler: AssertionHandler::new(verbose),
         }
     }
 
     /// Run a single test
     pub async fn run_test(&self, document: &GctfDocument) -> Result<TestExecutionResult> {
+        // Validate file path in update mode
+        if self.write_mode {
+            let file_path = Path::new(&document.file_path);
+            if !file_path.exists() {
+                return Ok(TestExecutionResult::fail(
+                    format!("Update mode: file '{}' does not exist", document.file_path),
+                    None,
+                ));
+            }
+
+            // Check if file is writable
+            use std::fs::OpenOptions;
+            if OpenOptions::new().write(true).open(file_path).is_err() {
+                return Ok(TestExecutionResult::fail(
+                    format!("Update mode: file '{}' is not writable", document.file_path),
+                    None,
+                ));
+            }
+        }
+
         // Extract address
         let address = match document.get_address(
             std::env::var(crate::config::ENV_GRPCTESTIFY_ADDRESS)
@@ -505,7 +550,7 @@ impl TestRunner {
                 return Ok(TestExecutionResult::fail(
                     "Invalid or missing endpoint".to_string(),
                     None,
-                ))
+                ));
             }
         };
 
@@ -606,11 +651,13 @@ impl TestRunner {
         let client = GrpcClient::new(client_config).await?;
 
         // Get input/output message types for field coverage tracking
-        let input_message_type = client.descriptor_pool()
+        let input_message_type = client
+            .descriptor_pool()
             .get_service_by_name(&full_service)
             .and_then(|s| s.methods().find(|m| m.name() == method))
             .map(|m| m.input().full_name().to_string());
-        let output_message_type = client.descriptor_pool()
+        let output_message_type = client
+            .descriptor_pool()
             .get_service_by_name(&full_service)
             .and_then(|s| s.methods().find(|m| m.name() == method))
             .map(|m| m.output().full_name().to_string());
@@ -657,19 +704,17 @@ impl TestRunner {
 
         // Legacy behavior: if no REQUEST section is provided, send an empty
         // JSON object as a single request message for unary/server-stream calls.
-        if !has_request_sections {
-            if let Some(tx_ref) = tx.as_mut() {
-                if let Err(e) = tx_ref.send(Value::Object(serde_json::Map::new())).await {
-                    failure_reasons.push(format!("Failed to send implicit empty request: {}", e));
-                }
+        if !has_request_sections && let Some(tx_ref) = tx.as_mut() {
+            if let Err(e) = tx_ref.send(Value::Object(serde_json::Map::new())).await {
+                failure_reasons.push(format!("Failed to send implicit empty request: {}", e));
             }
             drop(tx.take());
         }
 
         let mut skip_next_section = false;
 
-        // Capture full response for update mode
-        let mut captured_response = if self.update_mode {
+        // Capture full response for write mode
+        let mut captured_response = if self.write_mode {
             Some(crate::grpc::GrpcResponse::new())
         } else {
             None
@@ -683,6 +728,7 @@ impl TestRunner {
 
             match section.section_type {
                 SectionType::Request => {
+                    // Build request using RequestHandler
                     let request_value = match &section.content {
                         SectionContent::Json(req_json) => {
                             let mut req = req_json.clone();
@@ -694,23 +740,13 @@ impl TestRunner {
                     };
 
                     // Coverage: record request fields
-                    if let (Some(collector), Some(msg_type)) = (&self.coverage_collector, &input_message_type) {
+                    if let (Some(collector), Some(msg_type)) =
+                        (&self.coverage_collector, &input_message_type)
+                    {
                         collector.record_fields_from_json(msg_type, &request_value);
                     }
 
-                    tracing::debug!(
-                        "Sending Request:\n{}",
-                        serde_json::to_string_pretty(&request_value)
-                            .unwrap_or_else(|_| request_value.to_string())
-                    );
-
-                    if self.verbose {
-                        println!("🔍 Sending request: '{}'",
-                            serde_json::to_string_pretty(&request_value)
-                                .unwrap_or_else(|_| request_value.to_string())
-                        );
-                    }
-
+                    // Send request using RequestHandler
                     let Some(tx_ref) = tx.as_mut() else {
                         failure_reasons.push(format!(
                             "Failed to send request at line {}: request stream already closed",
@@ -719,12 +755,14 @@ impl TestRunner {
                         break;
                     };
 
-                    if let Err(e) = tx_ref.send(request_value).await {
-                        failure_reasons.push(format!(
-                            "Failed to send request at line {}: {}",
-                            section.start_line, e
-                        ));
-                        break;
+                    let result = self
+                        .request_handler
+                        .send_request(tx_ref, request_value, section.start_line, None)
+                        .await;
+                    if !result.success
+                        && let Some(error) = result.error_message
+                    {
+                        failure_reasons.push(error);
                     }
                 }
                 SectionType::Response => {
@@ -735,28 +773,27 @@ impl TestRunner {
                         drop(tx.take());
                     }
 
-                    if response_stream.is_none() {
-                        if let Some(handle) = call_handle.take() {
-                            match handle.await {
-                                Ok(Ok((h, stream))) => {
-                                    captured_headers = h.clone();
-                                    if let Some(resp) = &mut captured_response {
-                                        resp.headers = h;
-                                    }
-                                    response_stream = Some(stream);
+                    if response_stream.is_none()
+                        && let Some(handle) = call_handle.take()
+                    {
+                        match handle.await {
+                            Ok(Ok((h, stream))) => {
+                                captured_headers = h.clone();
+                                if let Some(resp) = &mut captured_response {
+                                    resp.headers = h;
                                 }
-                                Ok(Err(e)) => {
-                                    failure_reasons
-                                        .push(format!("Failed to start gRPC stream: {}", e));
-                                    break;
-                                }
-                                Err(e) => {
-                                    failure_reasons.push(format!(
-                                        "Failed to join gRPC stream startup task: {}",
-                                        e
-                                    ));
-                                    break;
-                                }
+                                response_stream = Some(stream);
+                            }
+                            Ok(Err(e)) => {
+                                failure_reasons.push(format!("Failed to start gRPC stream: {}", e));
+                                break;
+                            }
+                            Err(e) => {
+                                failure_reasons.push(format!(
+                                    "Failed to join gRPC stream startup task: {}",
+                                    e
+                                ));
+                                break;
                             }
                         }
                     }
@@ -789,7 +826,8 @@ impl TestRunner {
                                                     .unwrap_or_else(|_| msg.to_string())
                                             );
                                         } else if self.verbose {
-                                            println!("🔍 gRPC response received: '{}'",
+                                            println!(
+                                                "🔍 gRPC response received: '{}'",
                                                 serde_json::to_string_pretty(&msg)
                                                     .unwrap_or_else(|_| msg.to_string())
                                             );
@@ -800,8 +838,11 @@ impl TestRunner {
                                             self.substitute_variables(&mut expected, &variables);
 
                                             // Coverage: record expected response fields
-                                            if let (Some(collector), Some(msg_type)) = (&self.coverage_collector, &output_message_type) {
-                                                collector.record_fields_from_json(msg_type, &expected);
+                                            if let (Some(collector), Some(msg_type)) =
+                                                (&self.coverage_collector, &output_message_type)
+                                            {
+                                                collector
+                                                    .record_fields_from_json(msg_type, &expected);
                                             }
 
                                             let diffs = JsonComparator::compare(
@@ -822,7 +863,8 @@ impl TestRunner {
                                                             expected,
                                                             actual,
                                                         } => {
-                                                            let mut msg = format!("  - {}", message);
+                                                            let mut msg =
+                                                                format!("  - {}", message);
                                                             if let (Some(exp), Some(act)) =
                                                                 (expected, actual)
                                                             {
@@ -830,14 +872,15 @@ impl TestRunner {
                                                             }
                                                             failure_reasons.push(msg);
                                                         }
-                                                        crate::assert::AssertionResult::Error(m) => {
-                                                            failure_reasons
-                                                                .push(format!("  - Error: {}", m))
-                                                        }
+                                                        crate::assert::AssertionResult::Error(
+                                                            m,
+                                                        ) => failure_reasons
+                                                            .push(format!("  - Error: {}", m)),
                                                         _ => {}
                                                     }
                                                 }
-                                                failure_reasons.push(get_json_diff(&expected, &msg));
+                                                failure_reasons
+                                                    .push(get_json_diff(&expected, &msg));
                                             }
                                         }
                                     }
@@ -884,34 +927,33 @@ impl TestRunner {
                         }
                     }
 
-                    if section.inline_options.with_asserts {
-                        if let Some(next_section) = sections.get(i + 1) {
-                            if next_section.section_type == SectionType::Asserts {
-                                if !self.no_assert {
-                                    if let SectionContent::Assertions(lines) = &next_section.content {
-                                        for msg in &received_messages_for_section {
-                                            self.run_assertions(
-                                                lines,
-                                                msg,
-                                                &captured_headers,
-                                                &captured_trailers,
-                                                &mut failure_reasons,
-                                                format!(
-                                                    "(attached to RESPONSE at line {})",
-                                                    section.start_line
-                                                ),
-                                            );
-                                        }
-                                    }
-                                }
-                                skip_next_section = true;
-                            } else if !self.no_assert {
-                                failure_reasons.push(format!(
-                                    "RESPONSE at line {} has 'with_asserts' but is not followed by ASSERTS",
-                                    section.start_line
-                                ));
+                    if section.inline_options.with_asserts
+                        && let Some(next_section) = sections.get(i + 1)
+                        && next_section.section_type == SectionType::Asserts
+                    {
+                        if !self.no_assert
+                            && let SectionContent::Assertions(lines) = &next_section.content
+                        {
+                            for msg in &received_messages_for_section {
+                                self.run_assertions(
+                                    lines,
+                                    msg,
+                                    &captured_headers,
+                                    &captured_trailers,
+                                    &mut failure_reasons,
+                                    format!(
+                                        "(attached to RESPONSE at line {})",
+                                        section.start_line
+                                    ),
+                                );
                             }
                         }
+                        skip_next_section = true;
+                    } else if section.inline_options.with_asserts && !self.no_assert {
+                        failure_reasons.push(format!(
+                            "RESPONSE at line {} has 'with_asserts' but is not followed by ASSERTS",
+                            section.start_line
+                        ));
                     }
                 }
                 SectionType::Asserts => {
@@ -922,28 +964,27 @@ impl TestRunner {
                         drop(tx.take());
                     }
 
-                    if response_stream.is_none() {
-                        if let Some(handle) = call_handle.take() {
-                            match handle.await {
-                                Ok(Ok((h, stream))) => {
-                                    captured_headers = h.clone();
-                                    if let Some(resp) = &mut captured_response {
-                                        resp.headers = h;
-                                    }
-                                    response_stream = Some(stream);
+                    if response_stream.is_none()
+                        && let Some(handle) = call_handle.take()
+                    {
+                        match handle.await {
+                            Ok(Ok((h, stream))) => {
+                                captured_headers = h.clone();
+                                if let Some(resp) = &mut captured_response {
+                                    resp.headers = h;
                                 }
-                                Ok(Err(e)) => {
-                                    failure_reasons
-                                        .push(format!("Failed to start gRPC stream: {}", e));
-                                    break;
-                                }
-                                Err(e) => {
-                                    failure_reasons.push(format!(
-                                        "Failed to join gRPC stream startup task: {}",
-                                        e
-                                    ));
-                                    break;
-                                }
+                                response_stream = Some(stream);
+                            }
+                            Ok(Err(e)) => {
+                                failure_reasons.push(format!("Failed to start gRPC stream: {}", e));
+                                break;
+                            }
+                            Err(e) => {
+                                failure_reasons.push(format!(
+                                    "Failed to join gRPC stream startup task: {}",
+                                    e
+                                ));
+                                break;
                             }
                         }
                     }
@@ -968,17 +1009,17 @@ impl TestRunner {
                                 );
                             }
 
-                            if !self.no_assert {
-                                if let SectionContent::Assertions(lines) = &section.content {
-                                    self.run_assertions(
-                                        lines,
-                                        &msg,
-                                        &captured_headers,
-                                        &captured_trailers,
-                                        &mut failure_reasons,
-                                        format!("at line {}", section.start_line),
-                                    );
-                                }
+                            if !self.no_assert
+                                && let SectionContent::Assertions(lines) = &section.content
+                            {
+                                self.run_assertions(
+                                    lines,
+                                    &msg,
+                                    &captured_headers,
+                                    &captured_trailers,
+                                    &mut failure_reasons,
+                                    format!("at line {}", section.start_line),
+                                );
                             }
                         }
                         Some(Ok(crate::grpc::client::StreamItem::Trailers(t))) => {
@@ -1051,59 +1092,67 @@ impl TestRunner {
                         drop(tx.take());
                     }
 
-                    if response_stream.is_none() {
-                        if let Some(handle) = call_handle.take() {
-                            match handle.await {
-                                Ok(Ok((h, stream))) => {
-                                    captured_headers = h.clone();
-                                    if let Some(resp) = &mut captured_response {
-                                        resp.headers = h;
-                                    }
-                                    response_stream = Some(stream);
+                    if response_stream.is_none()
+                        && let Some(handle) = call_handle.take()
+                    {
+                        match handle.await {
+                            Ok(Ok((h, stream))) => {
+                                captured_headers = h.clone();
+                                if let Some(resp) = &mut captured_response {
+                                    resp.headers = h;
                                 }
-                                Ok(Err(e)) => {
-                                    // If ERROR section is expected, startup failures from unary/client-streaming
-                                    // calls may represent the expected application error.
-                                    if !self.no_assert {
-                                        if let SectionContent::Json(expected_json) = &section.content {
-                                            let mut expected = expected_json.clone();
-                                            self.substitute_variables(&mut expected, &variables);
+                                response_stream = Some(stream);
+                            }
+                            Ok(Err(e)) => {
+                                // If ERROR section is expected, startup failures from unary/client-streaming
+                                // calls may represent the expected application error.
+                                if !self.no_assert {
+                                    if let SectionContent::Json(expected_json) = &section.content {
+                                        let mut expected = expected_json.clone();
+                                        self.substitute_variables(&mut expected, &variables);
 
-                                            // Try to extract tonic Status from anyhow::Error
-                                            let got = if let Some(status) = e.downcast_ref::<tonic::Status>() {
-                                                let status_name = Self::grpc_code_name_from_numeric(status.code() as i64)
-                                                    .unwrap_or("Unknown");
-                                                format!("status: {}, message: \"{}\"", status_name, status.message())
-                                            } else {
-                                                // Fallback to error string representation
-                                                e.to_string()
-                                            };
+                                        // Try to extract tonic Status from anyhow::Error
+                                        let got = if let Some(status) =
+                                            e.downcast_ref::<tonic::Status>()
+                                        {
+                                            let status_name = Self::grpc_code_name_from_numeric(
+                                                status.code() as i64,
+                                            )
+                                            .unwrap_or("Unknown");
+                                            format!(
+                                                "status: {}, message: \"{}\"",
+                                                status_name,
+                                                status.message()
+                                            )
+                                        } else {
+                                            // Fallback to error string representation
+                                            e.to_string()
+                                        };
 
-                                            if self.verbose {
-                                                println!("🔍 gRPC error received: '{}'", got);
-                                            }
-
-                                            if !Self::error_matches_expected(&got, &expected) {
-                                                failure_reasons.push(format!(
-                                                    "Error mismatch at line {}: expected {}, got '{}'",
-                                                    section.start_line, expected, got
-                                                ));
-                                            }
+                                        if self.verbose {
+                                            println!("🔍 gRPC error received: '{}'", got);
                                         }
-                                    } else {
-                                        println!("--- RESPONSE (Error) ---");
-                                        println!("{}", e);
+
+                                        if !Self::error_matches_expected(&got, &expected) {
+                                            failure_reasons.push(format!(
+                                                "Error mismatch at line {}: expected {}, got '{}'",
+                                                section.start_line, expected, got
+                                            ));
+                                        }
                                     }
-                                    // Error has been consumed at startup stage; continue with next sections.
-                                    continue;
+                                } else {
+                                    println!("--- RESPONSE (Error) ---");
+                                    println!("{}", e);
                                 }
-                                Err(e) => {
-                                    failure_reasons.push(format!(
-                                        "Failed to join gRPC stream startup task: {}",
-                                        e
-                                    ));
-                                    break;
-                                }
+                                // Error has been consumed at startup stage; continue with next sections.
+                                continue;
+                            }
+                            Err(e) => {
+                                failure_reasons.push(format!(
+                                    "Failed to join gRPC stream startup task: {}",
+                                    e
+                                ));
+                                break;
                             }
                         }
                     }
@@ -1134,38 +1183,32 @@ impl TestRunner {
                                 }
 
                                 // Handle with_asserts for Error
-                                if section.inline_options.with_asserts {
-                                    if let Some(next_section) = sections.get(i + 1) {
-                                        if next_section.section_type == SectionType::Asserts {
-                                            if let SectionContent::Assertions(lines) =
-                                                &next_section.content
-                                            {
-                                                let error_value =
-                                                    Value::String(err_msg.to_string());
-                                                self.run_assertions(
-                                                    lines,
-                                                    &error_value,
-                                                    &captured_headers,
-                                                    &captured_trailers,
-                                                    &mut failure_reasons,
-                                                    format!(
-                                                        "(attached to ERROR at line {})",
-                                                        section.start_line
-                                                    ),
-                                                );
-                                            }
-                                            skip_next_section = true;
-                                        }
-                                    }
+                                if section.inline_options.with_asserts
+                                    && let Some(next_section) = sections.get(i + 1)
+                                    && next_section.section_type == SectionType::Asserts
+                                    && let SectionContent::Assertions(lines) = &next_section.content
+                                {
+                                    let error_value = Value::String(err_msg.to_string());
+                                    self.run_assertions(
+                                        lines,
+                                        &error_value,
+                                        &captured_headers,
+                                        &captured_trailers,
+                                        &mut failure_reasons,
+                                        format!(
+                                            "(attached to ERROR at line {})",
+                                            section.start_line
+                                        ),
+                                    );
+                                    skip_next_section = true;
                                 }
                             } else {
                                 // In no_assert mode, we still need to skip the attached ASSERTS section if present
-                                if section.inline_options.with_asserts {
-                                    if let Some(next_section) = sections.get(i + 1) {
-                                        if next_section.section_type == SectionType::Asserts {
-                                            skip_next_section = true;
-                                        }
-                                    }
+                                if section.inline_options.with_asserts
+                                    && let Some(next_section) = sections.get(i + 1)
+                                    && next_section.section_type == SectionType::Asserts
+                                {
+                                    skip_next_section = true;
                                 }
                             }
                         }
@@ -1206,16 +1249,16 @@ impl TestRunner {
 
         // If in update mode, capture any remaining responses
         if let Some(resp) = &mut captured_response {
-            if response_stream.is_none() {
-                if let Some(handle) = call_handle.take() {
-                    match handle.await {
-                        Ok(Ok((h, stream))) => {
-                            resp.headers = h;
-                            response_stream = Some(stream);
-                        }
-                        Ok(Err(_)) | Err(_) => {
-                            response_stream = None;
-                        }
+            if response_stream.is_none()
+                && let Some(handle) = call_handle.take()
+            {
+                match handle.await {
+                    Ok(Ok((h, stream))) => {
+                        resp.headers = h;
+                        response_stream = Some(stream);
+                    }
+                    Ok(Err(_)) | Err(_) => {
+                        response_stream = None;
                     }
                 }
             }
@@ -1250,9 +1293,9 @@ impl TestRunner {
         if !failure_reasons.is_empty() {
             // Even if failed, we might want to return captured response?
             // Usually snapshot update only happens if user asks for it.
-            // If update_mode is true, we should probably ignore failures?
-            if self.update_mode {
-                // In update mode, failures (mismatches) are expected because we are updating!
+            // If write_mode is true, we should probably ignore failures?
+            if self.write_mode {
+                // In write mode, failures (mismatches) are expected because we are updating!
                 // But validation errors (like invalid JSON) might still be relevant.
                 // Let's assume update mode implies "I want to overwrite whatever happens".
                 if let Some(resp) = captured_response {
@@ -1280,173 +1323,8 @@ impl TestRunner {
         response: &crate::grpc::GrpcResponse,
         _timeout_ms: u64,
     ) -> TestExecutionResult {
-        let mut failure_reasons: Vec<String> = Vec::new();
-        let mut variables: HashMap<String, Value> = HashMap::new(); // Empty for tests
-
-        let mut message_iter = response.messages.iter();
-        let sections = &document.sections;
-        let mut skip_next_section = false;
-        let mut last_message: Option<Value> = None;
-
-        for (i, section) in sections.iter().enumerate() {
-            if skip_next_section {
-                skip_next_section = false;
-                continue;
-            }
-
-            match section.section_type {
-                SectionType::Response => {
-                    let expected_values = Self::expected_values_for_response_section(section);
-                    let mut received_messages_for_section: Vec<Value> = Vec::new();
-
-                    for expected_template in expected_values {
-                        if let Some(msg) = message_iter.next() {
-                            last_message = Some(msg.clone());
-                            received_messages_for_section.push(msg.clone());
-
-                            if !self.no_assert {
-                                let mut expected = expected_template.clone();
-                                self.substitute_variables(&mut expected, &variables);
-
-                                let diffs = JsonComparator::compare(
-                                    msg,
-                                    &expected,
-                                    &section.inline_options,
-                                );
-
-                                if !diffs.is_empty() {
-                                    failure_reasons.push(format!(
-                                        "Response mismatch at line {}:",
-                                        section.start_line
-                                    ));
-                                    for diff in diffs {
-                                        match diff {
-                                            crate::assert::AssertionResult::Fail {
-                                                message,
-                                                expected,
-                                                actual,
-                                            } => {
-                                                let mut msg = format!("  - {}", message);
-                                                if let (Some(exp), Some(act)) = (expected, actual) {
-                                                    msg.push_str(&format!(
-                                                        "\n      Expected: {}\n      Actual:   {}",
-                                                        exp, act
-                                                    ));
-                                                }
-                                                failure_reasons.push(msg);
-                                            }
-                                            crate::assert::AssertionResult::Error(m) => {
-                                                failure_reasons.push(format!("  - Error: {}", m))
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-
-                                    failure_reasons.push(get_json_diff(&expected, msg));
-                                }
-                            }
-                        } else if !self.no_assert {
-                            failure_reasons.push(format!(
-                                "Expected message for RESPONSE section at line {}, but no more messages received",
-                                section.start_line
-                            ));
-                            break;
-                        }
-                    }
-
-                    if section.inline_options.with_asserts {
-                        if let Some(next_section) = sections.get(i + 1) {
-                            if next_section.section_type == SectionType::Asserts {
-                                if !self.no_assert {
-                                    if let SectionContent::Assertions(lines) =
-                                        &next_section.content
-                                    {
-                                        for msg in &received_messages_for_section {
-                                            self.run_assertions(
-                                                lines,
-                                                msg,
-                                                &response.headers,
-                                                &response.trailers,
-                                                &mut failure_reasons,
-                                                format!(
-                                                    "(attached to RESPONSE at line {})",
-                                                    section.start_line
-                                                ),
-                                            );
-                                        }
-                                    }
-                                }
-                                skip_next_section = true;
-                            }
-                        }
-                    }
-                }
-                SectionType::Asserts => {
-                    // Standalone Asserts - consumes a new message
-                    if let Some(msg) = message_iter.next() {
-                        last_message = Some(msg.clone());
-                        if !self.no_assert {
-                            if let SectionContent::Assertions(lines) = &section.content {
-                                self.run_assertions(
-                                    lines,
-                                    msg,
-                                    &response.headers,
-                                    &response.trailers,
-                                    &mut failure_reasons,
-                                    format!("at line {}", section.start_line),
-                                );
-                            }
-                        }
-                    } else if !self.no_assert {
-                        failure_reasons.push(format!(
-                            "Expected message for ASSERTS section at line {}, but no more messages received",
-                            section.start_line
-                        ));
-                    }
-                }
-                SectionType::Extract => {
-                    if let Some(msg) = &last_message {
-                        if let SectionContent::Extract(extractions) = &section.content {
-                            for (key, query) in extractions {
-                                match self.assertion_engine.query(query, msg) {
-                                    Ok(results) => {
-                                        if let Some(val) = results.first() {
-                                            variables.insert(key.clone(), val.clone());
-                                        } else {
-                                            failure_reasons.push(format!(
-                                                 "Extraction failed at line {}: Query '{}' returned no results",
-                                                 section.start_line, query
-                                             ));
-                                        }
-                                    }
-                                    Err(e) => {
-                                        failure_reasons.push(format!(
-                                            "Extraction error at line {}: {}",
-                                            section.start_line, e
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        failure_reasons.push(format!(
-                            "EXTRACT at line {} requires a previous response message",
-                            section.start_line
-                        ));
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        if !failure_reasons.is_empty() {
-            TestExecutionResult::fail(
-                format!("Validation failed:\n  - {}", failure_reasons.join("\n  - ")),
-                None,
-            )
-        } else {
-            TestExecutionResult::pass(None)
-        }
+        // Delegate to ResponseHandler
+        self.response_handler.validate_document(document, response)
     }
 
     fn substitute_variables(&self, value: &mut Value, variables: &HashMap<String, Value>) {
@@ -1456,11 +1334,11 @@ impl TestRunner {
                 if s.starts_with("{{") && s.ends_with("}}") {
                     let inner = s[2..s.len() - 2].trim();
                     // check if inner has more {{ }} which implies complex string
-                    if !inner.contains("{{") {
-                        if let Some(val) = variables.get(inner) {
-                            *value = val.clone();
-                            return;
-                        }
+                    if !inner.contains("{{")
+                        && let Some(val) = variables.get(inner)
+                    {
+                        *value = val.clone();
+                        return;
                     }
                 }
 
@@ -1507,30 +1385,17 @@ impl TestRunner {
         failure_reasons: &mut Vec<String>,
         context: String,
     ) {
-        let results =
-            self.assertion_engine
-                .evaluate_all(lines, target_value, Some(headers), Some(trailers));
+        // Use AssertionHandler for assertion evaluation
+        let result = self.assertion_handler.evaluate_assertions_for_section(
+            lines,
+            target_value,
+            headers,
+            trailers,
+            &context,
+        );
 
-        if self.assertion_engine.has_failures(&results) {
-            for fail in self.assertion_engine.get_failures(&results) {
-                match fail {
-                    crate::assert::AssertionResult::Fail {
-                        message,
-                        expected,
-                        actual,
-                    } => {
-                        failure_reasons.push(format!("Assertion failed {}: {}", context, message));
-                        if let (Some(exp), Some(act)) = (expected, actual) {
-                            failure_reasons
-                                .push(format!("    Expected: {}\n    Actual:   {}", exp, act));
-                        }
-                    }
-                    crate::assert::AssertionResult::Error(msg) => {
-                        failure_reasons.push(format!("Assertion error {}: {}", context, msg));
-                    }
-                    _ => {}
-                }
-            }
+        if !result.passed {
+            failure_reasons.extend(result.failure_messages);
         }
     }
 
@@ -1703,6 +1568,7 @@ impl TestRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn test_test_runner_new() {
@@ -1710,7 +1576,8 @@ mod tests {
         assert_eq!(runner.dry_run, false);
         assert_eq!(runner.timeout_seconds, 30);
         assert_eq!(runner.no_assert, false);
-        assert_eq!(runner.update_mode, false);
+        assert_eq!(runner.write_mode, false);
+        assert_eq!(runner.verbose, false);
     }
 
     #[test]
@@ -1732,8 +1599,137 @@ mod tests {
     }
 
     #[test]
-    fn test_test_runner_with_update_mode() {
+    fn test_test_runner_with_write_mode() {
         let runner = TestRunner::new(false, 30, false, true, false, None);
-        assert_eq!(runner.update_mode, true);
+        assert_eq!(runner.write_mode, true);
+    }
+
+    #[test]
+    fn test_test_runner_with_verbose() {
+        let runner = TestRunner::new(false, 30, false, false, true, None);
+        assert_eq!(runner.verbose, true);
+    }
+
+    #[test]
+    fn test_grpc_code_name_from_numeric() {
+        assert_eq!(TestRunner::grpc_code_name_from_numeric(0), Some("OK"));
+        assert_eq!(TestRunner::grpc_code_name_from_numeric(5), Some("NotFound"));
+        assert_eq!(
+            TestRunner::grpc_code_name_from_numeric(13),
+            Some("Internal")
+        );
+        assert_eq!(TestRunner::grpc_code_name_from_numeric(99), None);
+    }
+
+    #[test]
+    fn test_error_matches_expected_message() {
+        let expected = json!({
+            "message": "Can't find stub",
+            "code": 5
+        });
+        let error_text = "status: NotFound, message: \"Can't find stub\"";
+        assert!(TestRunner::error_matches_expected(error_text, &expected));
+    }
+
+    #[test]
+    fn test_error_matches_expected_code() {
+        let expected = json!({
+            "code": 5
+        });
+        let error_text = "status: NotFound, message: \"error\"";
+        assert!(TestRunner::error_matches_expected(error_text, &expected));
+    }
+
+    #[test]
+    fn test_error_matches_expected_wrong_code() {
+        let expected = json!({
+            "code": 3
+        });
+        let error_text = "status: NotFound, message: \"error\"";
+        assert!(!TestRunner::error_matches_expected(error_text, &expected));
+    }
+
+    #[test]
+    fn test_error_matches_expected_wrong_message() {
+        let expected = json!({
+            "message": "Different error"
+        });
+        let error_text = "status: NotFound, message: \"Can't find stub\"";
+        assert!(!TestRunner::error_matches_expected(error_text, &expected));
+    }
+
+    #[test]
+    fn test_error_matches_expected_string() {
+        let expected = json!("Can't find stub");
+        let error_text = "status: NotFound, message: \"Can't find stub\"";
+        assert!(TestRunner::error_matches_expected(error_text, &expected));
+    }
+
+    #[test]
+    fn test_full_service_name() {
+        assert_eq!(
+            TestRunner::full_service_name("package", "Service"),
+            "package.Service"
+        );
+        assert_eq!(TestRunner::full_service_name("", "Service"), "Service");
+    }
+
+    #[test]
+    fn test_expected_values_for_response_section() {
+        use crate::parser::ast::{InlineOptions, Section, SectionContent};
+
+        let section = Section {
+            section_type: crate::parser::ast::SectionType::Response,
+            content: SectionContent::Json(json!({"key": "value"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "".to_string(),
+            start_line: 1,
+            end_line: 2,
+        };
+
+        let values = TestRunner::expected_values_for_response_section(&section);
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0], json!({"key": "value"}));
+    }
+
+    #[test]
+    fn test_expected_values_for_json_lines() {
+        use crate::parser::ast::{InlineOptions, Section, SectionContent};
+
+        let section = Section {
+            section_type: crate::parser::ast::SectionType::Response,
+            content: SectionContent::JsonLines(vec![
+                json!({"key1": "value1"}),
+                json!({"key2": "value2"}),
+            ]),
+            inline_options: InlineOptions::default(),
+            raw_content: "".to_string(),
+            start_line: 1,
+            end_line: 3,
+        };
+
+        let values = TestRunner::expected_values_for_response_section(&section);
+        assert_eq!(values.len(), 2);
+    }
+
+    #[test]
+    fn test_expected_values_for_other_section() {
+        use crate::parser::ast::{InlineOptions, Section, SectionContent, SectionType};
+
+        // The function returns values for any Json content, not just Response sections
+        // This is expected behavior - it extracts Json values regardless of section type
+        let section = Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Json(json!({"key": "value"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "".to_string(),
+            start_line: 1,
+            end_line: 2,
+        };
+
+        let values = TestRunner::expected_values_for_response_section(&section);
+        // Returns 1 because the content is Json, even though it's a Request section
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0], json!({"key": "value"}));
     }
 }

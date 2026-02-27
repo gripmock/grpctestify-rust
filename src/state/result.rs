@@ -43,19 +43,6 @@ impl TestResult {
             execution_time: chrono::Utc::now().timestamp(),
         }
     }
-
-    /// Create a skip result
-    #[allow(dead_code)]
-    pub fn skip(name: impl Into<String>, reason: impl Into<String>, duration_ms: u64) -> Self {
-        Self {
-            name: name.into(),
-            status: TestStatus::Skip,
-            duration_ms,
-            grpc_duration_ms: None,
-            error_message: Some(reason.into()),
-            execution_time: chrono::Utc::now().timestamp(),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -88,16 +75,6 @@ mod tests {
         assert_eq!(result.duration_ms, 100);
         assert_eq!(result.grpc_duration_ms, Some(50));
         assert_eq!(result.error_message, Some("error message".to_string()));
-    }
-
-    #[test]
-    fn test_test_result_skip() {
-        let result = TestResult::skip("test.gctf", "skipped reason".to_string(), 100);
-        assert_eq!(result.name, "test.gctf");
-        assert_eq!(result.status, TestStatus::Skip);
-        assert_eq!(result.duration_ms, 100);
-        assert!(result.grpc_duration_ms.is_none());
-        assert_eq!(result.error_message, Some("skipped reason".to_string()));
     }
 
     #[test]

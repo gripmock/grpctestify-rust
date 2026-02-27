@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package echo;
+
+// Echo service for basic testing
+service EchoService {
+  // Simple unary call
+  rpc SayHello(HelloRequest) returns (HelloResponse);
+  
+  // Echo back the message
+  rpc Echo(EchoRequest) returns (EchoResponse);
+  
+  // Client streaming - send multiple messages
+  rpc Repeat(stream RepeatRequest) returns (RepeatResponse);
+  
+  // Server streaming - receive multiple messages
+  rpc ServerStream(StreamRequest) returns (stream StreamResponse);
+  
+  // Bidirectional streaming
+  rpc BidiStream(stream BidiRequest) returns (stream BidiResponse);
+}
+
+message HelloRequest {
+  string message = 1;
+}
+
+message HelloResponse {
+  string message = 1;
+}
+
+message EchoRequest {
+  string text = 1;
+  int32 count = 2;
+}
+
+message EchoResponse {
+  string text = 1;
+  int32 count = 2;
+}
+
+message RepeatRequest {
+  string message = 1;
+}
+
+message RepeatResponse {
+  int32 total_messages = 1;
+  string concatenated = 2;
+}
+
+message StreamRequest {
+  string prefix = 1;
+  int32 count = 2;
+}
+
+message StreamResponse {
+  int32 index = 1;
+  string message = 2;
+}
+
+message BidiRequest {
+  string message = 1;
+  bool send_response = 2;
+}
+
+message BidiResponse {
+  string echo = 1;
+  int32 sequence = 2;
+}

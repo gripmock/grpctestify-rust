@@ -315,7 +315,9 @@ address = "file-test:1234"
 "#;
 
         let mut temp_file = NamedTempFile::new().expect("Failed to create temp file");
-        temp_file.write_all(toml.as_bytes()).expect("Failed to write to temp file");
+        temp_file
+            .write_all(toml.as_bytes())
+            .expect("Failed to write to temp file");
 
         let config = Config::load_from_file(temp_file.path()).expect("Failed to load config");
         assert_eq!(config.general.address, "file-test:1234");

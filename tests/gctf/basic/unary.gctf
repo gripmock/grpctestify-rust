@@ -1,0 +1,15 @@
+/// TEST: Basic unary call
+/// EXPECT: PASS
+/// EXPLAIN: Unary
+--- ENDPOINT ---
+echo.EchoService/SayHello
+
+--- REQUEST ---
+{
+  "message": "World"
+}
+
+--- RESPONSE ---
+{
+  "message": "Hello, World!"
+}

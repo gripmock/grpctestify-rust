@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package validation;
+
+// Validation service for plugin testing
+service ValidationService {
+  // Validate email address
+  rpc ValidateEmail(EmailRequest) returns (EmailResponse);
+  
+  // Validate UUID
+  rpc ValidateUUID(UUIDRequest) returns (UUIDResponse);
+  
+  // Validate URL
+  rpc ValidateURL(URLRequest) returns (URLResponse);
+  
+  // Validate IP address
+  rpc ValidateIP(IPRequest) returns (IPResponse);
+  
+  // Validate timestamp
+  rpc ValidateTimestamp(TimestampRequest) returns (TimestampResponse);
+}
+
+message EmailRequest {
+  string email = 1;
+}
+
+message EmailResponse {
+  bool valid = 1;
+  string normalized = 2;
+  string domain = 3;
+}
+
+message UUIDRequest {
+  string uuid = 1;
+}
+
+message UUIDResponse {
+  bool valid = 1;
+  string version = 2;
+  string variant = 3;
+}
+
+message URLRequest {
+  string url = 1;
+}
+
+message URLResponse {
+  bool valid = 1;
+  string scheme = 2;
+  string host = 3;
+  string path = 4;
+}
+
+message IPRequest {
+  string ip = 1;
+}
+
+message IPResponse {
+  bool valid = 1;
+  string version = 2;  // "v4" or "v6"
+  bool is_private = 3;
+}
+
+message TimestampRequest {
+  string timestamp = 1;
+}
+
+message TimestampResponse {
+  bool valid = 1;
+  int64 unix_timestamp = 2;
+  string iso_format = 3;
+}

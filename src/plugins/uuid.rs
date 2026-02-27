@@ -71,7 +71,12 @@ mod tests {
     fn test_uuid_plugin_valid_uuid() {
         let plugin = UuidPlugin;
         let context = create_context();
-        let result = plugin.execute(&[Value::String("550e8400-e29b-41d4-a716-446655440000".to_string())], &context);
+        let result = plugin.execute(
+            &[Value::String(
+                "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            )],
+            &context,
+        );
         assert!(result.is_ok());
         if let PluginResult::Assertion(AssertionResult::Pass) = result.unwrap() {
             // Pass
@@ -123,7 +128,13 @@ mod tests {
     fn test_uuid_plugin_too_many_args() {
         let plugin = UuidPlugin;
         let context = create_context();
-        let result = plugin.execute(&[Value::String("test".to_string()), Value::String("test2".to_string())], &context);
+        let result = plugin.execute(
+            &[
+                Value::String("test".to_string()),
+                Value::String("test2".to_string()),
+            ],
+            &context,
+        );
         assert!(result.is_ok());
         if let PluginResult::Assertion(AssertionResult::Error(msg)) = result.unwrap() {
             assert!(msg.contains("1 argument"));

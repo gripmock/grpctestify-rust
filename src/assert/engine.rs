@@ -1,16 +1,17 @@
-// Assertion engine using embedded jaq and legacy fallback
-// Implementing a basic assertion engine that supports simple JQ-like syntax and custom functions
+// Assertion engine using embedded jaq and operators fallback
 
 use anyhow::Result;
-use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
 
 // Plugin imports
-use crate::plugins::{PluginContext, PluginManager, PluginResult};
+use crate::plugins::PluginManager;
 
 // Jaq imports
 use jaq_interpret::{Ctx, FilterT, ParseCtx, RcIter, Val};
+
+// Operators module
+use super::operators;
 
 /// Assertion result
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,8 +70,9 @@ impl AssertionEngine {
     ) -> Result<AssertionResult> {
         let trimmed = assertion.trim();
 
-        // 1. Try legacy engine (handles @ functions and custom operators)
-        match self.evaluate_legacy(trimmed, response, headers, trailers) {
+        // 1. Try operators engine (handles @ functions and custom operators)
+        match operators::evaluate_legacy(&self.plugin_manager, trimmed, response, headers, trailers)
+        {
             Ok(AssertionResult::Error(msg)) if msg.starts_with("Unsupported assertion syntax") => {
                 // Fallback to JQ
                 self.evaluate_jaq(trimmed, response)
@@ -185,343 +187,6 @@ impl AssertionEngine {
         }
     }
 
-    // Legacy Logic (Copied and adapted)
-    fn evaluate_legacy(
-        &self,
-        assertion: &str,
-        response: &Value,
-        headers: Option<&HashMap<String, String>>,
-        trailers: Option<&HashMap<String, String>>,
-    ) -> Result<AssertionResult> {
-        let trimmed = assertion.trim();
-
-        // Check for built-in boolean functions first (e.g. @uuid(.id))
-        if trimmed.starts_with('@')
-            && !trimmed.contains("==")
-            && !trimmed.contains("!=")
-            && !trimmed.contains('>')
-            && !trimmed.contains('<')
-        {
-            return self.evaluate_boolean_function(trimmed, response, headers, trailers);
-        }
-
-        // List of operators sorted by length (descending)
-        let operators = [
-            "contains",
-            "matches",
-            "startsWith",
-            "endsWith",
-            "==",
-            "!=",
-            ">=",
-            "<=",
-            ">",
-            "<",
-        ];
-
-        for op in operators {
-            if let Some(idx) = trimmed.find(op) {
-                let lhs_str = &trimmed[..idx].trim();
-                let rhs_str = &trimmed[idx + op.len()..].trim();
-
-                if lhs_str.is_empty() {
-                    continue;
-                }
-
-                // If LHS contains pipe '|', it's likely a JQ filter, so we should skip legacy evaluation
-                // unless it's inside a string (which is rare for LHS path)
-                if lhs_str.contains('|') {
-                    continue;
-                }
-
-                // If LHS contains '(', it might be a function call.
-                // Legacy only supports functions starting with '@'.
-                // If it doesn't start with '@', assume it's a JQ function (e.g. length, select, etc.)
-                if lhs_str.contains('(') && !lhs_str.trim().starts_with('@') {
-                    continue;
-                }
-
-                let lhs_val = self.evaluate_expression(lhs_str, response, headers, trailers);
-
-                let rhs_val = self.parse_value(rhs_str);
-
-                return self.compare(lhs_val, op, rhs_val, lhs_str, rhs_str);
-            }
-        }
-
-        Ok(AssertionResult::Error(format!(
-            "Unsupported assertion syntax: {}",
-            assertion
-        )))
-    }
-
-    fn evaluate_boolean_function(
-        &self,
-        expr: &str,
-        response: &Value,
-        headers: Option<&HashMap<String, String>>,
-        trailers: Option<&HashMap<String, String>>,
-    ) -> Result<AssertionResult> {
-        if let Some(start_paren) = expr.find('(') {
-            if let Some(end_paren) = expr.rfind(')') {
-                let func_name = &expr[0..start_paren];
-                // strip @
-                let plugin_name = if let Some(stripped) = func_name.strip_prefix('@') {
-                    stripped
-                } else {
-                    func_name
-                };
-
-                let arg_str = &expr[start_paren + 1..end_paren];
-
-                if let Some(plugin) = self.plugin_manager.get(plugin_name) {
-                    let context = PluginContext {
-                        response,
-                        headers,
-                        trailers,
-                    };
-
-                    // Special handling for @header and @trailer arguments (raw string)
-                    // The legacy engine passed raw string "key" for header/trailer
-                    // But other plugins evaluated the path .field
-
-                    let args = if plugin_name == "header" || plugin_name == "trailer" {
-                        vec![Value::String(arg_str.trim().trim_matches('"').to_string())]
-                    } else {
-                        vec![self.evaluate_expression(arg_str, response, headers, trailers)]
-                    };
-
-                    match plugin.execute(&args, &context) {
-                        Ok(PluginResult::Assertion(res)) => return Ok(res),
-                        Ok(PluginResult::Value(val)) => {
-                            // If a plugin returns a value in a boolean context, treat truthy/falsey
-                            if !val.is_null() && val != false {
-                                return Ok(AssertionResult::Pass);
-                            } else {
-                                return Ok(AssertionResult::fail(format!(
-                                    "Plugin {} returned falsy value: {:?}",
-                                    plugin_name, val
-                                )));
-                            }
-                        }
-                        Err(e) => {
-                            return Ok(AssertionResult::Error(format!("Plugin error: {}", e)))
-                        }
-                    }
-                }
-
-                return Ok(AssertionResult::Error(format!(
-                    "Unknown function: {}",
-                    func_name
-                )));
-            }
-        }
-        Ok(AssertionResult::Error(format!(
-            "Invalid function call syntax: {}",
-            expr
-        )))
-    }
-
-    fn evaluate_expression(
-        &self,
-        expr: &str,
-        response: &Value,
-        headers: Option<&HashMap<String, String>>,
-        trailers: Option<&HashMap<String, String>>,
-    ) -> Value {
-        if expr.starts_with('@') {
-            if let Some(start_paren) = expr.find('(') {
-                if let Some(end_paren) = expr.rfind(')') {
-                    let func_name = &expr[0..start_paren];
-                    let plugin_name = if let Some(stripped) = func_name.strip_prefix('@') {
-                        stripped
-                    } else {
-                        func_name
-                    };
-
-                    let arg_str = &expr[start_paren + 1..end_paren];
-
-                    if let Some(plugin) = self.plugin_manager.get(plugin_name) {
-                        let context = PluginContext {
-                            response,
-                            headers,
-                            trailers,
-                        };
-
-                        // Recursively evaluate arguments
-                        let arg_val =
-                            self.evaluate_expression(arg_str, response, headers, trailers);
-
-                        match plugin.execute(&[arg_val], &context) {
-                            Ok(PluginResult::Value(v)) => return v,
-                            _ => return Value::Null, // Or error? Legacy returned Null for unknowns
-                        }
-                    }
-                }
-            }
-        }
-        self.resolve_path(expr, response)
-    }
-
-    fn parse_value(&self, s: &str) -> Value {
-        if s.starts_with('"') {
-            let inner = s.trim_matches('"');
-            Value::String(inner.to_string())
-        } else if let Ok(_n) = s.parse::<f64>() {
-            serde_json::from_str(s).unwrap_or(Value::Null)
-        } else if s == "true" {
-            Value::Bool(true)
-        } else if s == "false" {
-            Value::Bool(false)
-        } else if s == "null" {
-            Value::Null
-        } else {
-            Value::String(s.to_string())
-        }
-    }
-
-    fn compare(
-        &self,
-        lhs: Value,
-        op: &str,
-        rhs: Value,
-        lhs_expr: &str,
-        rhs_expr: &str,
-    ) -> Result<AssertionResult> {
-        let pass = match op {
-            "==" => lhs == rhs,
-            "!=" => lhs != rhs,
-            ">" => {
-                if let (Some(l), Some(r)) = (lhs.as_f64(), rhs.as_f64()) {
-                    l > r
-                } else {
-                    false
-                }
-            }
-            "<" => {
-                if let (Some(l), Some(r)) = (lhs.as_f64(), rhs.as_f64()) {
-                    l < r
-                } else {
-                    false
-                }
-            }
-            ">=" => {
-                if let (Some(l), Some(r)) = (lhs.as_f64(), rhs.as_f64()) {
-                    l >= r
-                } else {
-                    false
-                }
-            }
-            "<=" => {
-                if let (Some(l), Some(r)) = (lhs.as_f64(), rhs.as_f64()) {
-                    l <= r
-                } else {
-                    false
-                }
-            }
-            "contains" => match (&lhs, &rhs) {
-                (Value::String(l), Value::String(r)) => l.contains(r),
-                (Value::Array(l), r) => l.contains(r),
-                (Value::Object(l), Value::String(r)) => l.contains_key(r),
-                _ => false,
-            },
-            "startsWith" => match (&lhs, &rhs) {
-                (Value::String(l), Value::String(r)) => l.starts_with(r),
-                _ => false,
-            },
-            "endsWith" => match (&lhs, &rhs) {
-                (Value::String(l), Value::String(r)) => l.ends_with(r),
-                _ => false,
-            },
-            "matches" => match (&lhs, &rhs) {
-                (Value::String(l), Value::String(r)) => {
-                    if let Ok(re) = Regex::new(r) {
-                        re.is_match(l)
-                    } else {
-                        return Ok(AssertionResult::Error(format!("Invalid regex: {}", r)));
-                    }
-                }
-                _ => false,
-            },
-            _ => return Ok(AssertionResult::Error(format!("Unknown operator: {}", op))),
-        };
-
-        if pass {
-            Ok(AssertionResult::Pass)
-        } else {
-            Ok(AssertionResult::Fail {
-                message: format!(
-                    "Assertion failed: {} {} {} (Values: {:?} vs {:?})",
-                    lhs_expr, op, rhs_expr, lhs, rhs
-                ),
-                expected: Some(format!("{} {:?}", op, rhs)),
-                actual: Some(format!("{:?}", lhs)),
-            })
-        }
-    }
-
-    fn resolve_path(&self, path: &str, root: &Value) -> Value {
-        if path == "." {
-            return root.clone();
-        }
-
-        let mut current = root;
-        let clean_path = if let Some(stripped) = path.strip_prefix('.') {
-            stripped
-        } else {
-            path
-        };
-
-        let mut parts = Vec::new();
-        let mut start = 0;
-        let chars = clean_path.chars().collect::<Vec<_>>();
-        let mut i = 0;
-
-        while i < chars.len() {
-            if chars[i] == '.' {
-                parts.push(clean_path[start..i].to_string());
-                start = i + 1;
-            }
-            i += 1;
-        }
-        parts.push(clean_path[start..].to_string());
-
-        for part in parts {
-            if part.is_empty() {
-                continue;
-            }
-
-            if let Some(bracket_start) = part.find('[') {
-                if let Some(bracket_end) = part.find(']') {
-                    let key = &part[0..bracket_start];
-                    let index_str = &part[bracket_start + 1..bracket_end];
-
-                    if !key.is_empty() {
-                        if let Some(val) = current.get(key) {
-                            current = val;
-                        } else {
-                            return Value::Null;
-                        }
-                    }
-
-                    if let Ok(idx) = index_str.parse::<usize>() {
-                        if let Some(val) = current.get(idx) {
-                            current = val;
-                        } else {
-                            return Value::Null;
-                        }
-                    }
-                }
-            } else if let Some(val) = current.get(&part) {
-                current = val;
-            } else {
-                return Value::Null;
-            }
-        }
-
-        current.clone()
-    }
-
     // Check if any assertion failed (re-exported wrapper)
     pub fn has_failures(&self, results: &[AssertionResult]) -> bool {
         results
@@ -606,7 +271,12 @@ mod tests {
     #[test]
     fn test_assertion_result_fail_with_diff() {
         let result = AssertionResult::fail_with_diff("mismatch", "expected", "actual");
-        if let AssertionResult::Fail { message, expected, actual } = result {
+        if let AssertionResult::Fail {
+            message,
+            expected,
+            actual,
+        } = result
+        {
             assert_eq!(message, "mismatch");
             assert_eq!(expected, Some("expected".to_string()));
             assert_eq!(actual, Some("actual".to_string()));
@@ -626,9 +296,11 @@ mod tests {
     fn test_evaluate_plugin_function() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
+
         // Test @email plugin
-        let result = engine.evaluate("@email(.email)", &response, None, None).unwrap();
+        let result = engine
+            .evaluate("@email(.email)", &response, None, None)
+            .unwrap();
         if let AssertionResult::Pass = result {
             // Pass
         } else {
@@ -640,8 +312,10 @@ mod tests {
     fn test_evaluate_plugin_function_invalid() {
         let engine = AssertionEngine::new();
         let response = json!({"email": "not-an-email"});
-        
-        let result = engine.evaluate("@email(.email)", &response, None, None).unwrap();
+
+        let result = engine
+            .evaluate("@email(.email)", &response, None, None)
+            .unwrap();
         if let AssertionResult::Fail { .. } = result {
             // Pass
         } else {
@@ -653,8 +327,10 @@ mod tests {
     fn test_evaluate_equality_operator() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
-        let result = engine.evaluate(".id == 123", &response, None, None).unwrap();
+
+        let result = engine
+            .evaluate(".id == 123", &response, None, None)
+            .unwrap();
         if let AssertionResult::Pass = result {
             // Pass
         } else {
@@ -666,8 +342,10 @@ mod tests {
     fn test_evaluate_equality_operator_fail() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
-        let result = engine.evaluate(".id == 456", &response, None, None).unwrap();
+
+        let result = engine
+            .evaluate(".id == 456", &response, None, None)
+            .unwrap();
         if let AssertionResult::Fail { .. } = result {
             // Pass
         } else {
@@ -679,8 +357,10 @@ mod tests {
     fn test_evaluate_inequality_operator() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
-        let result = engine.evaluate(".id != 456", &response, None, None).unwrap();
+
+        let result = engine
+            .evaluate(".id != 456", &response, None, None)
+            .unwrap();
         if let AssertionResult::Pass = result {
             // Pass
         } else {
@@ -692,8 +372,10 @@ mod tests {
     fn test_evaluate_contains_operator() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
-        let result = engine.evaluate(".name contains \"test\"", &response, None, None).unwrap();
+
+        let result = engine
+            .evaluate(".name contains \"test\"", &response, None, None)
+            .unwrap();
         if let AssertionResult::Pass = result {
             // Pass
         } else {
@@ -705,8 +387,10 @@ mod tests {
     fn test_evaluate_contains_operator_array() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
-        let result = engine.evaluate(".tags contains \"a\"", &response, None, None).unwrap();
+
+        let result = engine
+            .evaluate(".tags contains \"a\"", &response, None, None)
+            .unwrap();
         if let AssertionResult::Pass = result {
             // Pass
         } else {
@@ -718,8 +402,10 @@ mod tests {
     fn test_evaluate_starts_with_operator() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
-        let result = engine.evaluate(".name startsWith \"te\"", &response, None, None).unwrap();
+
+        let result = engine
+            .evaluate(".name startsWith \"te\"", &response, None, None)
+            .unwrap();
         if let AssertionResult::Pass = result {
             // Pass
         } else {
@@ -731,8 +417,10 @@ mod tests {
     fn test_evaluate_ends_with_operator() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
-        let result = engine.evaluate(".name endsWith \"st\"", &response, None, None).unwrap();
+
+        let result = engine
+            .evaluate(".name endsWith \"st\"", &response, None, None)
+            .unwrap();
         if let AssertionResult::Pass = result {
             // Pass
         } else {
@@ -744,7 +432,7 @@ mod tests {
     fn test_evaluate_numeric_greater_than() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
+
         let result = engine.evaluate(".id > 100", &response, None, None).unwrap();
         if let AssertionResult::Pass = result {
             // Pass
@@ -757,7 +445,7 @@ mod tests {
     fn test_evaluate_numeric_less_than() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
+
         let result = engine.evaluate(".id < 200", &response, None, None).unwrap();
         if let AssertionResult::Pass = result {
             // Pass
@@ -770,8 +458,10 @@ mod tests {
     fn test_evaluate_numeric_gte() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
-        let result = engine.evaluate(".id >= 123", &response, None, None).unwrap();
+
+        let result = engine
+            .evaluate(".id >= 123", &response, None, None)
+            .unwrap();
         if let AssertionResult::Pass = result {
             // Pass
         } else {
@@ -783,8 +473,10 @@ mod tests {
     fn test_evaluate_numeric_lte() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
-        let result = engine.evaluate(".id <= 123", &response, None, None).unwrap();
+
+        let result = engine
+            .evaluate(".id <= 123", &response, None, None)
+            .unwrap();
         if let AssertionResult::Pass = result {
             // Pass
         } else {
@@ -796,8 +488,10 @@ mod tests {
     fn test_evaluate_matches_regex() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
-        let result = engine.evaluate(".name matches \"^te.*t$\"", &response, None, None).unwrap();
+
+        let result = engine
+            .evaluate(".name matches \"^te.*t$\"", &response, None, None)
+            .unwrap();
         if let AssertionResult::Pass = result {
             // Pass
         } else {
@@ -809,8 +503,10 @@ mod tests {
     fn test_evaluate_matches_regex_fail() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
-        let result = engine.evaluate(".name matches \"^xyz\"", &response, None, None).unwrap();
+
+        let result = engine
+            .evaluate(".name matches \"^xyz\"", &response, None, None)
+            .unwrap();
         if let AssertionResult::Fail { .. } = result {
             // Pass
         } else {
@@ -824,8 +520,10 @@ mod tests {
         let response = create_test_response();
         let mut headers = HashMap::new();
         headers.insert("content-type".to_string(), "application/json".to_string());
-        
-        let result = engine.evaluate("@header(\"content-type\")", &response, Some(&headers), None).unwrap();
+
+        let result = engine
+            .evaluate("@header(\"content-type\")", &response, Some(&headers), None)
+            .unwrap();
         if let AssertionResult::Pass = result {
             // Pass
         } else {
@@ -839,8 +537,10 @@ mod tests {
         let response = create_test_response();
         let mut trailers = HashMap::new();
         trailers.insert("x-custom".to_string(), "value".to_string());
-        
-        let result = engine.evaluate("@trailer(\"x-custom\")", &response, None, Some(&trailers)).unwrap();
+
+        let result = engine
+            .evaluate("@trailer(\"x-custom\")", &response, None, Some(&trailers))
+            .unwrap();
         if let AssertionResult::Pass = result {
             // Pass
         } else {
@@ -852,8 +552,10 @@ mod tests {
     fn test_evaluate_nested_path() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
-        let result = engine.evaluate(".nested.value == 42", &response, None, None).unwrap();
+
+        let result = engine
+            .evaluate(".nested.value == 42", &response, None, None)
+            .unwrap();
         if let AssertionResult::Pass = result {
             // Pass
         } else {
@@ -865,8 +567,10 @@ mod tests {
     fn test_evaluate_boolean_path() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
-        let result = engine.evaluate(".active == true", &response, None, None).unwrap();
+
+        let result = engine
+            .evaluate(".active == true", &response, None, None)
+            .unwrap();
         if let AssertionResult::Pass = result {
             // Pass
         } else {
@@ -878,8 +582,10 @@ mod tests {
     fn test_evaluate_array_index() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
-        let result = engine.evaluate(".tags[0] == \"a\"", &response, None, None).unwrap();
+
+        let result = engine
+            .evaluate(".tags[0] == \"a\"", &response, None, None)
+            .unwrap();
         if let AssertionResult::Pass = result {
             // Pass
         } else {
@@ -891,7 +597,7 @@ mod tests {
     fn test_evaluate_unsupported_syntax() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
+
         // This should fall through to JQ evaluation
         let result = engine.evaluate("some_unknown_function()", &response, None, None);
         // Should not panic, should return Error or handle gracefully
@@ -902,12 +608,9 @@ mod tests {
     fn test_evaluate_all() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
-        let assertions = vec![
-            ".id == 123".to_string(),
-            ".name == \"test\"".to_string(),
-        ];
-        
+
+        let assertions = vec![".id == 123".to_string(), ".name == \"test\"".to_string()];
+
         let results = engine.evaluate_all(&assertions, &response, None, None);
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(|r| matches!(r, AssertionResult::Pass)));
@@ -917,12 +620,9 @@ mod tests {
     fn test_evaluate_all_with_failure() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
-        let assertions = vec![
-            ".id == 123".to_string(),
-            ".id == 999".to_string(),
-        ];
-        
+
+        let assertions = vec![".id == 123".to_string(), ".id == 999".to_string()];
+
         let results = engine.evaluate_all(&assertions, &response, None, None);
         assert_eq!(results.len(), 2);
         assert!(matches!(&results[0], AssertionResult::Pass));
@@ -933,7 +633,7 @@ mod tests {
     fn test_query_jq_simple() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
+
         let results = engine.query(".id", &response).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], json!(123));
@@ -943,7 +643,7 @@ mod tests {
     fn test_query_jq_nested() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
+
         let results = engine.query(".nested.value", &response).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], json!(42));
@@ -953,7 +653,7 @@ mod tests {
     fn test_query_jq_array() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
+
         let results = engine.query(".tags[]", &response).unwrap();
         assert_eq!(results.len(), 3);
         assert_eq!(results[0], json!("a"));
@@ -965,7 +665,7 @@ mod tests {
     fn test_query_jq_filter() {
         let engine = AssertionEngine::new();
         let response = json!([1, 2, 3, 4, 5]);
-        
+
         let results = engine.query(".[] | select(. > 3)", &response).unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0], json!(4));
@@ -976,7 +676,7 @@ mod tests {
     fn test_query_jq_length() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
+
         let results = engine.query(".tags | length", &response).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], json!(3));
@@ -986,7 +686,7 @@ mod tests {
     fn test_query_invalid_expression() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
-        
+
         let results = engine.query("invalid[[[", &response);
         assert!(results.is_err());
     }
