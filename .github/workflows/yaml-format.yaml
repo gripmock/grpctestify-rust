@@ -23,5 +23,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: yamlfmt
-        uses: google/yamlfmt-action@v0.1.1
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+
+      - name: Install yamlfmt
+        run: go install github.com/google/yamlfmt/cmd/yamlfmt@latest
+
+      - name: Check
+        run: yamlfmt -lint .

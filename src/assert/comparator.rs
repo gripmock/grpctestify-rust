@@ -571,7 +571,7 @@ mod tests {
         let options = InlineOptions::default();
 
         let results = JsonComparator::compare(&actual, &expected, &options);
-        assert!(results.len() > 0);
+        assert!(!results.is_empty());
     }
 
     #[test]

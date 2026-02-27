@@ -41,7 +41,7 @@ fn test_check_missing_file_json_output() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("Invalid JSON output");
 
-    assert!(json["diagnostics"].as_array().unwrap().len() > 0);
+    assert!(!json["diagnostics"].as_array().unwrap().is_empty());
     assert_eq!(json["diagnostics"][0]["code"], "FILE_NOT_FOUND");
 }
 
@@ -140,7 +140,7 @@ fn test_list_json_output() {
 
     assert!(json.get("tests").is_some());
     let tests = json["tests"].as_array().expect("tests should be array");
-    assert!(tests.len() > 0);
+    assert!(!tests.is_empty());
 
     for test in tests {
         assert!(test.get("id").is_some());

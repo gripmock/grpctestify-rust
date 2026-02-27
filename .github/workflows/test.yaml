@@ -34,13 +34,17 @@ jobs:
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      - name: Install protoc
-        run: |
-          case ${{ runner.os }} in
-            Linux) sudo apt-get update && sudo apt-get install -y protobuf-compiler ;;
-            macOS) brew install protobuf ;;
-            Windows) choco install protobuf -y ;;
-          esac
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Install protoc (Windows)
+        if: runner.os == 'Windows'
+        run: choco install protobuf -y
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2

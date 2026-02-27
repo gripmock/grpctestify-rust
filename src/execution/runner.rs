@@ -1601,13 +1601,13 @@ mod tests {
     #[test]
     fn test_test_runner_with_write_mode() {
         let runner = TestRunner::new(false, 30, false, true, false, None);
-        assert_eq!(runner.write_mode, true);
+        assert!(runner.write_mode);
     }
 
     #[test]
     fn test_test_runner_with_verbose() {
         let runner = TestRunner::new(false, 30, false, false, true, None);
-        assert_eq!(runner.verbose, true);
+        assert!(runner.verbose);
     }
 
     #[test]

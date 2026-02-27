@@ -3,7 +3,7 @@
 version: 2
 
 updates:
-  # Rust dependencies - patch
+  # Rust dependencies
   - package-ecosystem: cargo
     directory: /
     schedule:
@@ -16,35 +16,11 @@ updates:
           - "*"
         update-types:
           - patch
-    open-pull-requests-limit: 10
-    commit-message:
-      prefix: "chore(deps)"
-
-  # Rust dependencies - minor
-  - package-ecosystem: cargo
-    directory: /
-    schedule:
-      interval: daily
-    allow:
-      - dependency-type: all
-    groups:
       minor:
         patterns:
           - "*"
         update-types:
           - minor
-    open-pull-requests-limit: 10
-    commit-message:
-      prefix: "chore(deps)"
-
-  # Rust dependencies - major
-  - package-ecosystem: cargo
-    directory: /
-    schedule:
-      interval: daily
-    allow:
-      - dependency-type: all
-    groups:
       major:
         patterns:
           - "*"

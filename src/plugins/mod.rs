@@ -113,7 +113,7 @@ mod tests {
         // PluginManager registers defaults on creation
         let plugins = manager.plugins.read().unwrap();
         // Should have default plugins registered
-        assert!(plugins.len() > 0);
+        assert!(!plugins.is_empty());
     }
 
     #[test]
