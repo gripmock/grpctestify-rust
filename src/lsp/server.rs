@@ -7,13 +7,19 @@ use tower_lsp::{Client, LanguageServer, LspService, Server, lsp_types::*};
 
 use crate::lsp::handlers;
 use crate::lsp::variable_definition;
+use crate::optimizer;
 use crate::parser::ast::SectionType;
 use crate::parser::{self, GctfDocument};
+use crate::plugins::{PluginManager, PluginPurity, PluginReturnKind};
 
 pub struct GrpctestifyLsp {
     client: Client,
     documents: Arc<RwLock<HashMap<String, String>>>,
+    doc_versions: Arc<RwLock<HashMap<String, i32>>>,
     parsed_docs: Arc<RwLock<HashMap<String, GctfDocument>>>,
+    parsed_doc_versions: Arc<RwLock<HashMap<String, i32>>>,
+    semantic_tokens_cache: Arc<RwLock<HashMap<String, (i32, SemanticTokens)>>>,
+    inlay_hints_cache: Arc<RwLock<HashMap<String, (i32, Vec<InlayHint>)>>>,
 }
 
 impl GrpctestifyLsp {
@@ -21,25 +27,101 @@ impl GrpctestifyLsp {
         Self {
             client,
             documents: Arc::new(RwLock::new(HashMap::new())),
+            doc_versions: Arc::new(RwLock::new(HashMap::new())),
             parsed_docs: Arc::new(RwLock::new(HashMap::new())),
+            parsed_doc_versions: Arc::new(RwLock::new(HashMap::new())),
+            semantic_tokens_cache: Arc::new(RwLock::new(HashMap::new())),
+            inlay_hints_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    async fn publish_diagnostics(&self, uri: &Url, content: &str) {
-        let path = uri.to_file_path().unwrap_or_default();
+    fn inlay_cache_key(uri: &Url, range: &Range) -> String {
+        format!(
+            "{}:{}:{}:{}:{}",
+            uri, range.start.line, range.start.character, range.end.line, range.end.character
+        )
+    }
 
-        match parser::parse_gctf(&path) {
+    async fn current_doc_version(&self, uri: &Url) -> i32 {
+        self.doc_versions
+            .read()
+            .await
+            .get(&uri.to_string())
+            .copied()
+            .unwrap_or(-1)
+    }
+
+    async fn invalidate_analysis_cache(&self, uri: &Url) {
+        let uri_key = uri.to_string();
+        self.parsed_docs.write().await.remove(&uri_key);
+        self.parsed_doc_versions.write().await.remove(&uri_key);
+        self.semantic_tokens_cache.write().await.remove(&uri_key);
+
+        let mut inlay_cache = self.inlay_hints_cache.write().await;
+        let prefix = format!("{}:", uri_key);
+        inlay_cache.retain(|k, _| !k.starts_with(&prefix));
+    }
+
+    async fn get_or_parse_document(&self, uri: &Url, content: &str) -> Option<GctfDocument> {
+        let uri_key = uri.to_string();
+        let version = self.current_doc_version(uri).await;
+
+        {
+            let parsed = self.parsed_docs.read().await;
+            let parsed_versions = self.parsed_doc_versions.read().await;
+            if let (Some(doc), Some(doc_ver)) =
+                (parsed.get(&uri_key), parsed_versions.get(&uri_key))
+                && *doc_ver == version
+            {
+                return Some(doc.clone());
+            }
+        }
+
+        let file_name = uri
+            .to_file_path()
+            .ok()
+            .and_then(|p| p.to_str().map(ToOwned::to_owned))
+            .unwrap_or_else(|| uri.to_string());
+        let parsed = parser::parse_gctf_from_str(content, &file_name).ok()?;
+
+        self.parsed_docs
+            .write()
+            .await
+            .insert(uri_key.clone(), parsed.clone());
+        self.parsed_doc_versions
+            .write()
+            .await
+            .insert(uri_key, version);
+
+        Some(parsed)
+    }
+
+    async fn publish_diagnostics(&self, uri: &Url, content: &str) {
+        let file_name = uri
+            .to_file_path()
+            .ok()
+            .and_then(|p| p.to_str().map(ToOwned::to_owned))
+            .unwrap_or_else(|| uri.to_string());
+
+        match parser::parse_gctf_from_str(content, &file_name) {
             Ok(document) => {
                 self.parsed_docs
                     .write()
                     .await
                     .insert(uri.to_string(), document.clone());
+                let version = self.current_doc_version(uri).await;
+                self.parsed_doc_versions
+                    .write()
+                    .await
+                    .insert(uri.to_string(), version);
 
                 let errors = crate::parser::validator::validate_document_diagnostics(&document);
-                let lsp_diags: Vec<Diagnostic> = errors
+                let mut lsp_diags: Vec<Diagnostic> = errors
                     .iter()
                     .map(|e| handlers::validation_error_to_diagnostic(e, content))
                     .collect();
+                lsp_diags.extend(handlers::collect_semantic_diagnostics(&document, content));
+                lsp_diags.extend(handlers::collect_optimizer_diagnostics(&document, content));
 
                 self.client
                     .publish_diagnostics(uri.clone(), lsp_diags, None)
@@ -64,7 +146,7 @@ impl LanguageServer for GrpctestifyLsp {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::INCREMENTAL,
+                    TextDocumentSyncKind::FULL,
                 )),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(false),
@@ -130,20 +212,34 @@ impl LanguageServer for GrpctestifyLsp {
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
         let content = params.text_document.text;
+        let version = params.text_document.version;
         self.documents
             .write()
             .await
             .insert(uri.to_string(), content.clone());
+        self.doc_versions
+            .write()
+            .await
+            .insert(uri.to_string(), version);
+        self.invalidate_analysis_cache(&uri).await;
         self.publish_diagnostics(&uri, &content).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
-        let content = params.content_changes[0].text.clone();
+        let version = params.text_document.version;
+        let Some(content) = params.content_changes.last().map(|c| c.text.clone()) else {
+            return;
+        };
         self.documents
             .write()
             .await
             .insert(uri.to_string(), content.clone());
+        self.doc_versions
+            .write()
+            .await
+            .insert(uri.to_string(), version);
+        self.invalidate_analysis_cache(&uri).await;
         self.publish_diagnostics(&uri, &content).await;
     }
 
@@ -155,6 +251,7 @@ impl LanguageServer for GrpctestifyLsp {
                 .write()
                 .await
                 .insert(uri.to_string(), content.clone());
+            self.invalidate_analysis_cache(&uri).await;
             self.publish_diagnostics(&uri, &content).await;
         }
     }
@@ -162,7 +259,19 @@ impl LanguageServer for GrpctestifyLsp {
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
         self.documents.write().await.remove(&uri.to_string());
+        self.doc_versions.write().await.remove(&uri.to_string());
         self.parsed_docs.write().await.remove(&uri.to_string());
+        self.parsed_doc_versions
+            .write()
+            .await
+            .remove(&uri.to_string());
+        self.semantic_tokens_cache
+            .write()
+            .await
+            .remove(&uri.to_string());
+        let mut inlay_cache = self.inlay_hints_cache.write().await;
+        let prefix = format!("{}:", uri);
+        inlay_cache.retain(|k, _| !k.starts_with(&prefix));
         self.client.publish_diagnostics(uri, vec![], None).await;
     }
 
@@ -170,16 +279,18 @@ impl LanguageServer for GrpctestifyLsp {
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
 
-        let docs = self.documents.read().await;
-        let content = match docs.get(&uri.to_string()) {
-            Some(c) => c,
-            None => return Ok(None),
+        let content = {
+            let docs = self.documents.read().await;
+            match docs.get(&uri.to_string()) {
+                Some(c) => c.clone(),
+                None => return Ok(None),
+            }
         };
 
         let mut items = Vec::new();
 
         // Use AST for context-aware completions
-        if let Ok(doc) = parser::parse_gctf_from_str(content, "temp.gctf") {
+        if let Some(doc) = self.get_or_parse_document(&uri, &content).await {
             let line_num = position.line as usize + 1;
 
             // Check if we're on an empty line or section header line
@@ -203,7 +314,8 @@ impl LanguageServer for GrpctestifyLsp {
                     match section.section_type {
                         SectionType::Address => items.extend(handlers::get_address_completions()),
                         SectionType::Endpoint => items.extend(
-                            handlers::get_address_from_document(content)
+                            handlers::get_address_from_document(&content)
+                                .await
                                 .map(|_| vec![])
                                 .unwrap_or_else(|| {
                                     vec![CompletionItem {
@@ -238,8 +350,14 @@ impl LanguageServer for GrpctestifyLsp {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
-        let docs = self.parsed_docs.read().await;
-        if let Some(doc) = docs.get(&uri.to_string()) {
+        let content = {
+            let docs = self.documents.read().await;
+            match docs.get(&uri.to_string()) {
+                Some(c) => c.clone(),
+                None => return Ok(None),
+            }
+        };
+        if let Some(doc) = self.get_or_parse_document(&uri, &content).await {
             let line = position.line as usize + 1;
             for section in &doc.sections {
                 if section.start_line <= line
@@ -267,17 +385,20 @@ impl LanguageServer for GrpctestifyLsp {
             None => return Ok(None),
         };
 
-        let path = uri.to_file_path().unwrap_or_default();
-        if let Ok(document) = parser::parse_gctf(&path) {
-            let formatted = crate::serialize_gctf(&document);
-            if formatted != *content {
-                let line_count = content.lines().count() as u32;
-                let last_len = content.lines().last().map(|l| l.len()).unwrap_or(0) as u32;
-                return Ok(Some(vec![TextEdit::new(
-                    Range::new(Position::new(0, 0), Position::new(line_count, last_len)),
-                    formatted,
-                )]));
-            }
+        let file_name = uri
+            .to_file_path()
+            .ok()
+            .and_then(|p| p.to_str().map(ToOwned::to_owned))
+            .unwrap_or_else(|| uri.to_string());
+        if let Ok(formatted) = crate::commands::fmt::format_gctf_content(content, &file_name)
+            && formatted != *content
+        {
+            let line_count = content.lines().count() as u32;
+            let last_len = content.lines().last().map(|l| l.len()).unwrap_or(0) as u32;
+            return Ok(Some(vec![TextEdit::new(
+                Range::new(Position::new(0, 0), Position::new(line_count, last_len)),
+                formatted,
+            )]));
         }
         Ok(None)
     }
@@ -287,8 +408,130 @@ impl LanguageServer for GrpctestifyLsp {
         params: DocumentSymbolParams,
     ) -> LspResult<Option<DocumentSymbolResponse>> {
         let uri = params.text_document.uri;
-        let docs = self.parsed_docs.read().await;
-        if let Some(doc) = docs.get(&uri.to_string()) {
+        let content = {
+            let docs = self.documents.read().await;
+            match docs.get(&uri.to_string()) {
+                Some(c) => c.clone(),
+                None => return Ok(None),
+            }
+        };
+        if let Some(doc) = self.get_or_parse_document(&uri, &content).await {
+            let section_children =
+                |s: &crate::parser::ast::Section| -> Option<Vec<DocumentSymbol>> {
+                    let mut children: Vec<DocumentSymbol> = Vec::new();
+
+                    if s.section_type == SectionType::Asserts {
+                        for (idx, line) in s.raw_content.lines().enumerate() {
+                            let trimmed = line.trim();
+                            if trimmed.is_empty()
+                                || trimmed.starts_with('#')
+                                || trimmed.starts_with("//")
+                            {
+                                continue;
+                            }
+
+                            let line_num = (s.start_line + idx + 1) as u32;
+                            #[allow(deprecated)]
+                            let mut assertion_symbol = DocumentSymbol {
+                                name: trimmed.to_string(),
+                                detail: Some("assertion".to_string()),
+                                kind: SymbolKind::STRING,
+                                tags: None,
+                                deprecated: None,
+                                range: Range::new(
+                                    Position::new(line_num, 0),
+                                    Position::new(line_num, trimmed.len() as u32),
+                                ),
+                                selection_range: Range::new(
+                                    Position::new(line_num, 0),
+                                    Position::new(line_num, trimmed.len() as u32),
+                                ),
+                                children: None,
+                            };
+
+                            let mut var_children = Vec::new();
+                            let mut offset = 0usize;
+                            while let Some(open) = trimmed[offset..].find("{{") {
+                                let abs_open = offset + open;
+                                let Some(close_rel) = trimmed[abs_open..].find("}}") else {
+                                    break;
+                                };
+                                let abs_close = abs_open + close_rel + 2;
+                                let inner = trimmed[abs_open + 2..abs_close - 2].trim();
+                                if !inner.is_empty() {
+                                    #[allow(deprecated)]
+                                    var_children.push(DocumentSymbol {
+                                        name: inner.to_string(),
+                                        detail: Some("variable reference".to_string()),
+                                        kind: SymbolKind::VARIABLE,
+                                        tags: None,
+                                        deprecated: None,
+                                        range: Range::new(
+                                            Position::new(line_num, abs_open as u32),
+                                            Position::new(line_num, abs_close as u32),
+                                        ),
+                                        selection_range: Range::new(
+                                            Position::new(line_num, (abs_open + 2) as u32),
+                                            Position::new(line_num, (abs_close - 2) as u32),
+                                        ),
+                                        children: None,
+                                    });
+                                }
+                                offset = abs_close;
+                            }
+
+                            if !var_children.is_empty() {
+                                assertion_symbol.children = Some(var_children);
+                            }
+
+                            children.push(assertion_symbol);
+                        }
+                    }
+
+                    if s.section_type == SectionType::Extract {
+                        for (idx, line) in s.raw_content.lines().enumerate() {
+                            let trimmed = line.trim();
+                            if trimmed.is_empty()
+                                || trimmed.starts_with('#')
+                                || trimmed.starts_with("//")
+                            {
+                                continue;
+                            }
+
+                            let Some((name, expr)) = trimmed.split_once('=') else {
+                                continue;
+                            };
+                            let var_name = name.trim();
+                            let line_num = (s.start_line + idx + 1) as u32;
+                            let expr_trimmed = expr.trim();
+
+                            #[allow(deprecated)]
+                            children.push(DocumentSymbol {
+                                name: var_name.to_string(),
+                                detail: Some(format!("extract: {}", expr_trimmed)),
+                                kind: SymbolKind::VARIABLE,
+                                tags: None,
+                                deprecated: None,
+                                range: Range::new(
+                                    Position::new(line_num, 0),
+                                    Position::new(line_num, trimmed.len() as u32),
+                                ),
+                                selection_range: Range::new(
+                                    Position::new(line_num, 0),
+                                    Position::new(line_num, var_name.len() as u32),
+                                ),
+                                children: None,
+                            });
+                        }
+                    }
+
+                    if children.is_empty() {
+                        None
+                    } else {
+                        Some(children)
+                    }
+                };
+
             let symbols = doc
                 .sections
                 .iter()
@@ -308,7 +551,7 @@ impl LanguageServer for GrpctestifyLsp {
                             Position::new(s.start_line as u32, 3),
                             Position::new(s.start_line as u32, 15),
                         ),
-                        children: None,
+                        children: section_children(s),
                     }
                 })
                 .collect();
@@ -319,6 +562,7 @@ impl LanguageServer for GrpctestifyLsp {
 
     async fn code_action(&self, params: CodeActionParams) -> LspResult<Option<CodeActionResponse>> {
         let mut actions = Vec::new();
+        let uri = params.text_document.uri.clone();
 
         for diagnostic in &params.context.diagnostics {
             if diagnostic.code == Some(NumberOrString::String("DEPRECATED_SECTION".to_string()))
@@ -327,6 +571,35 @@ impl LanguageServer for GrpctestifyLsp {
                 let action = handlers::create_headers_deprecated_action(
                     &params.text_document.uri,
                     diagnostic.range,
+                );
+                actions.push(CodeActionOrCommand::CodeAction(action));
+            }
+
+            if let Some(NumberOrString::String(code)) = &diagnostic.code
+                && code.starts_with("OPT_")
+                && let Some(data) = &diagnostic.data
+                && let Some(replacement) = data.get("replacement").and_then(|v| v.as_str())
+            {
+                let action = handlers::create_optimizer_rewrite_action(
+                    &params.text_document.uri,
+                    diagnostic.range,
+                    replacement,
+                    code,
+                );
+                actions.push(CodeActionOrCommand::CodeAction(action));
+            }
+        }
+
+        let docs = self.documents.read().await;
+        if let Some(content) = docs.get(&uri.to_string())
+            && let Ok(doc) = parser::parse_gctf_from_str(content, uri.as_str())
+        {
+            let edits = handlers::collect_optimizer_rewrite_edits(&doc, content);
+            if !edits.is_empty() {
+                let action = handlers::create_apply_all_optimizer_rewrite_action(
+                    &uri,
+                    edits.clone(),
+                    edits.len(),
                 );
                 actions.push(CodeActionOrCommand::CodeAction(action));
             }
@@ -486,7 +759,7 @@ impl LanguageServer for GrpctestifyLsp {
             // Create text edits for all references
             let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
             for location in locations {
-                let edit = TextEdit::new(location.range, new_name.clone());
+                let edit = TextEdit::new(location.range, format!("{{{{ {} }}}}", new_name));
                 changes.entry(location.uri).or_default().push(edit);
             }
 
@@ -530,6 +803,8 @@ impl LanguageServer for GrpctestifyLsp {
             && let Some(paren_pos) = line[at_pos..].find('(')
         {
             let plugin_name = &line[at_pos + 1..at_pos + paren_pos];
+            let open_paren_abs = at_pos + paren_pos;
+            let active_param = infer_active_parameter(line, open_paren_abs, char_idx);
 
             // Get signature info for known plugins
             let signatures = get_plugin_signatures();
@@ -542,7 +817,7 @@ impl LanguageServer for GrpctestifyLsp {
                         active_parameter: None,
                     }],
                     active_signature: Some(0),
-                    active_parameter: Some(0),
+                    active_parameter: Some(active_param),
                 }));
             }
         }
@@ -555,6 +830,18 @@ impl LanguageServer for GrpctestifyLsp {
         params: SemanticTokensParams,
     ) -> LspResult<Option<SemanticTokensResult>> {
         let uri = params.text_document.uri;
+        let version = self.current_doc_version(&uri).await;
+
+        if let Some((cached_ver, cached_tokens)) = self
+            .semantic_tokens_cache
+            .read()
+            .await
+            .get(&uri.to_string())
+            .cloned()
+            && cached_ver == version
+        {
+            return Ok(Some(SemanticTokensResult::Tokens(cached_tokens)));
+        }
 
         let docs = self.documents.read().await;
         let content = match docs.get(&uri.to_string()) {
@@ -563,6 +850,10 @@ impl LanguageServer for GrpctestifyLsp {
         };
 
         let tokens = build_semantic_tokens(content);
+        self.semantic_tokens_cache
+            .write()
+            .await
+            .insert(uri.to_string(), (version, tokens.clone()));
         Ok(Some(SemanticTokensResult::Tokens(tokens)))
     }
 
@@ -585,6 +876,15 @@ impl LanguageServer for GrpctestifyLsp {
     async fn inlay_hint(&self, params: InlayHintParams) -> LspResult<Option<Vec<InlayHint>>> {
         let uri = params.text_document.uri;
         let range = params.range;
+        let version = self.current_doc_version(&uri).await;
+        let cache_key = Self::inlay_cache_key(&uri, &range);
+
+        if let Some((cached_ver, cached_hints)) =
+            self.inlay_hints_cache.read().await.get(&cache_key).cloned()
+            && cached_ver == version
+        {
+            return Ok(Some(cached_hints));
+        }
 
         let docs = self.documents.read().await;
         let content = match docs.get(&uri.to_string()) {
@@ -593,147 +893,135 @@ impl LanguageServer for GrpctestifyLsp {
         };
 
         let hints = build_inlay_hints(content, range);
+        self.inlay_hints_cache
+            .write()
+            .await
+            .insert(cache_key, (version, hints.clone()));
         Ok(Some(hints))
     }
 }
 
 /// Plugin signature information
-struct PluginSignature {
+struct LspPluginSignature {
     label: String,
     documentation: String,
     parameters: Vec<ParameterInformation>,
 }
 
 /// Get plugin signatures for signature help
-fn get_plugin_signatures() -> std::collections::HashMap<String, PluginSignature> {
+fn get_plugin_signatures() -> std::collections::HashMap<String, LspPluginSignature> {
     use std::collections::HashMap;
 
     let mut signatures = HashMap::new();
+    let mut plugins = PluginManager::new().list();
+    plugins.sort_by(|a, b| a.name().cmp(b.name()));
 
-    signatures.insert(
-        "uuid".to_string(),
-        PluginSignature {
-            label: "@uuid(field)".to_string(),
-            documentation: "Validate UUID format (v1-v5)".to_string(),
-            parameters: vec![ParameterInformation {
-                label: ParameterLabel::Simple("field".to_string()),
+    for plugin in plugins {
+        let normalized = plugin.name().trim_start_matches('@').to_string();
+        let signature = plugin.signature();
+        let template: Vec<&str> = if signature.arg_names.is_empty() {
+            vec!["value"]
+        } else {
+            signature.arg_names.to_vec()
+        };
+        let label = format!("@{}({})", normalized, template.join(", "));
+
+        let return_kind = match signature.return_kind {
+            PluginReturnKind::Boolean => "bool",
+            PluginReturnKind::Number => "number",
+            PluginReturnKind::String => "string",
+            PluginReturnKind::Value => "value",
+            PluginReturnKind::Unknown => "unknown",
+        };
+        let purity = match signature.purity {
+            PluginPurity::Pure => "pure",
+            PluginPurity::ContextDependent => "context-dependent",
+            PluginPurity::Impure => "impure",
+        };
+        let documentation = format!(
+            "{}\n\nReturns: {} | Purity: {} | Deterministic: {} | Idempotent: {}",
+            plugin.description(),
+            return_kind,
+            purity,
+            signature.deterministic,
+            signature.idempotent
+        );
+
+        let parameters = template
+            .into_iter()
+            .map(|p| ParameterInformation {
+                label: ParameterLabel::Simple(p.to_string()),
                 documentation: None,
-            }],
-        },
-    );
+            })
+            .collect();
 
-    signatures.insert(
-        "email".to_string(),
-        PluginSignature {
-            label: "@email(field)".to_string(),
-            documentation: "Validate email format".to_string(),
-            parameters: vec![ParameterInformation {
-                label: ParameterLabel::Simple("field".to_string()),
-                documentation: None,
-            }],
-        },
-    );
-
-    signatures.insert(
-        "ip".to_string(),
-        PluginSignature {
-            label: "@ip(field)".to_string(),
-            documentation: "Validate IP address format (IPv4/IPv6)".to_string(),
-            parameters: vec![ParameterInformation {
-                label: ParameterLabel::Simple("field".to_string()),
-                documentation: None,
-            }],
-        },
-    );
-
-    signatures.insert(
-        "url".to_string(),
-        PluginSignature {
-            label: "@url(field)".to_string(),
-            documentation: "Validate URL format".to_string(),
-            parameters: vec![ParameterInformation {
-                label: ParameterLabel::Simple("field".to_string()),
-                documentation: None,
-            }],
-        },
-    );
-
-    signatures.insert(
-        "timestamp".to_string(),
-        PluginSignature {
-            label: "@timestamp(field)".to_string(),
-            documentation: "Validate timestamp format (ISO 8601)".to_string(),
-            parameters: vec![ParameterInformation {
-                label: ParameterLabel::Simple("field".to_string()),
-                documentation: None,
-            }],
-        },
-    );
-
-    signatures.insert(
-        "header".to_string(),
-        PluginSignature {
-            label: "@header(name)".to_string(),
-            documentation: "Check if header exists".to_string(),
-            parameters: vec![ParameterInformation {
-                label: ParameterLabel::Simple("name".to_string()),
-                documentation: None,
-            }],
-        },
-    );
-
-    signatures.insert(
-        "trailer".to_string(),
-        PluginSignature {
-            label: "@trailer(name)".to_string(),
-            documentation: "Check if trailer exists".to_string(),
-            parameters: vec![ParameterInformation {
-                label: ParameterLabel::Simple("name".to_string()),
-                documentation: None,
-            }],
-        },
-    );
-
-    signatures.insert(
-        "len".to_string(),
-        PluginSignature {
-            label: "@len(field)".to_string(),
-            documentation: "Get length of string/array".to_string(),
-            parameters: vec![ParameterInformation {
-                label: ParameterLabel::Simple("field".to_string()),
-                documentation: None,
-            }],
-        },
-    );
-
-    signatures.insert(
-        "regex".to_string(),
-        PluginSignature {
-            label: "@regex(field, pattern)".to_string(),
-            documentation: "Validate field matches regex pattern".to_string(),
-            parameters: vec![
-                ParameterInformation {
-                    label: ParameterLabel::Simple("field".to_string()),
-                    documentation: None,
-                },
-                ParameterInformation {
-                    label: ParameterLabel::Simple("pattern".to_string()),
-                    documentation: None,
-                },
-            ],
-        },
-    );
+        signatures
+            .entry(normalized)
+            .or_insert_with(|| LspPluginSignature {
+                label,
+                documentation,
+                parameters,
+            });
+    }
 
     signatures
+}
+
+fn infer_active_parameter(line: &str, open_paren_abs: usize, cursor_idx: usize) -> u32 {
+    let start = (open_paren_abs + 1).min(line.len());
+    let end = cursor_idx.min(line.len());
+    if end <= start {
+        return 0;
+    }
+
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut commas = 0u32;
+
+    for ch in line[start..end].chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+            }
+            ',' if depth == 0 => commas += 1,
+            _ => {}
+        }
+    }
+
+    commas
 }
 
 /// Build semantic tokens for syntax highlighting
 /// Note: Currently uses hybrid approach - AST for sections when available, line parsing for rest
 /// TODO: Full AST-based tokenization when parser tracks all token types
 fn build_semantic_tokens(content: &str) -> SemanticTokens {
-    let mut tokens: Vec<SemanticToken> = Vec::new();
-    let mut last_line: u32 = 0;
-    let mut last_start: u32 = 0;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    struct RawToken {
+        line: u32,
+        start: u32,
+        length: u32,
+        token_type: u32,
+    }
 
     // Token type indices (must match the order in initialize)
     const KEYWORD: u32 = 0;
@@ -742,335 +1030,150 @@ fn build_semantic_tokens(content: &str) -> SemanticTokens {
     const NUMBER: u32 = 3;
     const OPERATOR: u32 = 4;
 
-    // Compile regexes once
-    let num_regex = regex::Regex::new(r"\b\d+(\.\d+)?\b").ok();
-    let jq_keyword_regexes: Vec<(&str, Option<regex::Regex>)> = vec![
-        ("if", regex::Regex::new(r"\bif\b").ok()),
-        ("then", regex::Regex::new(r"\bthen\b").ok()),
-        ("else", regex::Regex::new(r"\belse\b").ok()),
-        ("end", regex::Regex::new(r"\bend\b").ok()),
-        ("select", regex::Regex::new(r"\bselect\b").ok()),
-        ("map", regex::Regex::new(r"\bmap\b").ok()),
-        ("reduce", regex::Regex::new(r"\breduce\b").ok()),
-        ("foreach", regex::Regex::new(r"\bforeach\b").ok()),
-        ("def", regex::Regex::new(r"\bdef\b").ok()),
-        ("import", regex::Regex::new(r"\bimport\b").ok()),
-        ("include", regex::Regex::new(r"\binclude\b").ok()),
-        ("module", regex::Regex::new(r"\bmodule\b").ok()),
-        ("as", regex::Regex::new(r"\bas\b").ok()),
-        ("label", regex::Regex::new(r"\blabel\b").ok()),
-        ("break", regex::Regex::new(r"\bbreak\b").ok()),
-    ];
+    let section_header_re = regex::Regex::new(r"^---\s*[A-Z_]+(?:\s+.+)?\s*---$").ok();
+    let jq_keyword_re = regex::Regex::new(r"\b(if|then|else|end|select|map|reduce|foreach|def|import|include|module|as|label|break)\b").ok();
+    let variable_re = regex::Regex::new(r"\{\{[^}]+\}\}").ok();
+    let plugin_re = regex::Regex::new(r"@[A-Za-z_][A-Za-z0-9_]*").ok();
+    let number_re = regex::Regex::new(r"\b\d+(?:\.\d+)?\b").ok();
+    let operator_re = regex::Regex::new(
+        r"==|!=|<=|>=|\bcontains\b|\bmatches\b|\bstartsWith\b|\bendsWith\b|[<>+\-*/%|]",
+    )
+    .ok();
 
-    // Use line-by-line parsing for all tokens
-    for (line_idx, line) in content.lines().enumerate() {
-        let line_num = line_idx as u32;
+    let mut raw_tokens: Vec<RawToken> = Vec::new();
+    let lines: Vec<&str> = content.lines().collect();
 
-        // Section headers: --- ENDPOINT ---, --- REQUEST ---, etc.
-        if line.trim().starts_with("---") && line.trim().ends_with("---") {
-            let start = line.find("---").unwrap_or(0) as u32;
-            let length = line.trim().len() as u32;
-
-            let delta_line = line_num.saturating_sub(last_line);
-            let delta_start = if delta_line == 0 {
-                start.saturating_sub(last_start)
-            } else {
-                start
-            };
-            last_line = line_num;
-            last_start = start;
-
-            tokens.push(SemanticToken {
-                delta_line,
-                delta_start,
-                length,
-                token_type: KEYWORD,
-                token_modifiers_bitset: 0,
-            });
+    let tokenize_line = |line: &str, line_num: u32, include_jq_keywords: bool| {
+        let mut line_tokens: Vec<RawToken> = Vec::new();
+        if let Some(re) = &variable_re {
+            for m in re.find_iter(line) {
+                line_tokens.push(RawToken {
+                    line: line_num,
+                    start: m.start() as u32,
+                    length: (m.end() - m.start()) as u32,
+                    token_type: VARIABLE,
+                });
+            }
         }
+        if let Some(re) = &plugin_re {
+            for m in re.find_iter(line) {
+                line_tokens.push(RawToken {
+                    line: line_num,
+                    start: m.start() as u32,
+                    length: (m.end() - m.start()) as u32,
+                    token_type: FUNCTION,
+                });
+            }
+        }
+        if let Some(re) = &number_re {
+            for m in re.find_iter(line) {
+                line_tokens.push(RawToken {
+                    line: line_num,
+                    start: m.start() as u32,
+                    length: (m.end() - m.start()) as u32,
+                    token_type: NUMBER,
+                });
+            }
+        }
+        if let Some(re) = &operator_re {
+            for m in re.find_iter(line) {
+                line_tokens.push(RawToken {
+                    line: line_num,
+                    start: m.start() as u32,
+                    length: (m.end() - m.start()) as u32,
+                    token_type: OPERATOR,
+                });
+            }
+        }
+        if include_jq_keywords && let Some(re) = &jq_keyword_re {
+            for m in re.find_iter(line) {
+                line_tokens.push(RawToken {
+                    line: line_num,
+                    start: m.start() as u32,
+                    length: (m.end() - m.start()) as u32,
+                    token_type: KEYWORD,
+                });
+            }
+        }
+        line_tokens
+    };
 
-        // JQ keywords: if, then, else, end, select, map, etc.
-        for (_keyword, regex_opt) in &jq_keyword_regexes {
-            if let Some(re) = regex_opt {
-                for mat in re.find_iter(line) {
-                    let start = mat.start() as u32;
-                    let length = mat.end() as u32 - start;
-
-                    let delta_line = line_num.saturating_sub(last_line);
-                    let delta_start = if delta_line == 0 {
-                        start.saturating_sub(last_start)
-                    } else {
-                        start
-                    };
-                    last_line = line_num;
-                    last_start = start;
-
-                    tokens.push(SemanticToken {
-                        delta_line,
-                        delta_start,
+    if let Ok(doc) = parser::parse_gctf_from_str(content, "temp.gctf")
+        && !doc.sections.is_empty()
+    {
+        for section in &doc.sections {
+            if section.start_line < lines.len() {
+                let header_line = lines[section.start_line];
+                if section_header_re
+                    .as_ref()
+                    .is_some_and(|re| re.is_match(header_line.trim()))
+                {
+                    let start = header_line.find("---").unwrap_or(0) as u32;
+                    let length = header_line.trim().len() as u32;
+                    raw_tokens.push(RawToken {
+                        line: section.start_line as u32,
+                        start,
                         length,
                         token_type: KEYWORD,
-                        token_modifiers_bitset: 0,
                     });
                 }
             }
-        }
 
-        // JQ functions: .field, |, etc.
-        let jq_functions = [
-            "select",
-            "map",
-            "map_values",
-            "keys",
-            "values",
-            "to_entries",
-            "from_entries",
-            "length",
-            "keys_unsorted",
-            "sort",
-            "sort_by",
-            "reverse",
-            "min",
-            "max",
-            "group_by",
-            "unique",
-            "unique_by",
-            "flatten",
-            "add",
-            "any",
-            "all",
-            "contains",
-            "indices",
-            "index",
-            "rindex",
-            "startswith",
-            "endswith",
-            "explode",
-            "implode",
-            "utf8bytelength",
-            "type",
-            "isfinite",
-            "isnan",
-            "isnormal",
-            "infinite",
-            "nan",
-            "null",
-            "false",
-            "true",
-            "floor",
-            "ceil",
-            "round",
-            "near",
-            "min_by",
-            "max_by",
-            "del",
-            "delpaths",
-            "getpath",
-            "setpath",
-            "filepath",
-            "format",
-            "entries",
-            "recurse",
-            "walk",
-            "env",
-            "now",
-            "today",
-            "strptime",
-            "strftime",
-            "strflocaltime",
-            "mktime",
-            "gmtime",
-            "localtime",
-            "debug",
-            "error",
-            "halt",
-            "halt_error",
-            "stderr",
-            "input",
-            "inputs",
-            "scan",
-            "splits",
-            "captures",
-            "capture",
-            "test",
-            "match",
-            "split",
-            "join",
-            "explode",
-            "implode",
-            "ascii_downcase",
-            "ascii_upcase",
-            "repeat",
-            "limit",
-            "first",
-            "range",
-            "recurse",
-            "while",
-            "until",
-            "try",
-            "catch",
-            "alt",
-            "//",
-        ];
-        for func in &jq_functions {
-            if let Some(pos) = line.find(func) {
-                // Check if it's a function call (followed by space or parenthesis or pipe)
-                let after_pos = pos + func.len();
-                if after_pos >= line.len()
-                    || line
-                        .chars()
-                        .nth(after_pos)
-                        .is_none_or(|c| c.is_whitespace() || c == '(' || c == '|' || c == ',')
-                {
-                    let start = pos as u32;
-                    let length = func.len() as u32;
-
-                    let delta_line = line_num.saturating_sub(last_line);
-                    let delta_start = if delta_line == 0 {
-                        start.saturating_sub(last_start)
-                    } else {
-                        start
-                    };
-                    last_line = line_num;
-                    last_start = start;
-
-                    tokens.push(SemanticToken {
-                        delta_line,
-                        delta_start,
-                        length,
-                        token_type: FUNCTION,
-                        token_modifiers_bitset: 0,
-                    });
-                }
+            for (idx, section_line) in section.raw_content.lines().enumerate() {
+                let line_num = (section.start_line + idx + 1) as u32;
+                let include_jq_keywords = section.section_type == parser::ast::SectionType::Extract;
+                raw_tokens.extend(tokenize_line(section_line, line_num, include_jq_keywords));
             }
         }
-
-        // Variable references: {{ var_name }}
-        let mut search_start = 0;
-        while let Some(open_pos) = line[search_start..].find("{{") {
-            let abs_open = search_start + open_pos;
-            if let Some(close_pos) = line[abs_open..].find("}}") {
-                let start = abs_open as u32;
-                let length = (close_pos + 2) as u32;
-
-                let delta_line = line_num.saturating_sub(last_line);
-                let delta_start = if delta_line == 0 {
-                    start.saturating_sub(last_start)
-                } else {
-                    start
-                };
-                last_line = line_num;
-                last_start = start;
-
-                tokens.push(SemanticToken {
-                    delta_line,
-                    delta_start,
+    } else {
+        // Fallback for incomplete buffers where full parse may fail.
+        for (line_idx, line) in lines.iter().enumerate() {
+            let line_num = line_idx as u32;
+            if section_header_re
+                .as_ref()
+                .is_some_and(|re| re.is_match(line.trim()))
+            {
+                let start = line.find("---").unwrap_or(0) as u32;
+                let length = line.trim().len() as u32;
+                raw_tokens.push(RawToken {
+                    line: line_num,
+                    start,
                     length,
-                    token_type: VARIABLE,
-                    token_modifiers_bitset: 0,
-                });
-                search_start = abs_open + close_pos + 2;
-            } else {
-                break;
-            }
-        }
-
-        // Plugin names: @uuid, @email, @ip, etc.
-        let plugins = [
-            "@uuid",
-            "@email",
-            "@url",
-            "@ip",
-            "@timestamp",
-            "@regex",
-            "@len",
-            "@header",
-            "@trailer",
-            "@env",
-        ];
-        for plugin in &plugins {
-            if let Some(pos) = line.find(plugin) {
-                let start = pos as u32;
-                let length = plugin.len() as u32;
-
-                let delta_line = line_num.saturating_sub(last_line);
-                let delta_start = if delta_line == 0 {
-                    start.saturating_sub(last_start)
-                } else {
-                    start
-                };
-                last_line = line_num;
-                last_start = start;
-
-                tokens.push(SemanticToken {
-                    delta_line,
-                    delta_start,
-                    length,
-                    token_type: FUNCTION,
-                    token_modifiers_bitset: 0,
+                    token_type: KEYWORD,
                 });
             }
+            raw_tokens.extend(tokenize_line(line, line_num, true));
         }
+    }
 
-        // Operators: |, +, -, *, /, %, ==, !=, <, >, <=, >=
-        let operators = [
-            "==", "!=", "<=", ">=", "<", ">", "+", "-", "*", "/", "%", "|",
-        ];
-        for op in &operators {
-            let mut pos = 0;
-            while let Some(found_pos) = line[pos..].find(op) {
-                let start = (pos + found_pos) as u32;
-                let length = op.len() as u32;
+    raw_tokens.sort_by_key(|t| (t.line, t.start, t.length, t.token_type));
+    raw_tokens.dedup();
 
-                let delta_line = line_num.saturating_sub(last_line);
-                let delta_start = if delta_line == 0 {
-                    start.saturating_sub(last_start)
-                } else {
-                    start
-                };
-                last_line = line_num;
-                last_start = start;
+    let mut encoded: Vec<SemanticToken> = Vec::with_capacity(raw_tokens.len());
+    let mut last_line: u32 = 0;
+    let mut last_start: u32 = 0;
 
-                tokens.push(SemanticToken {
-                    delta_line,
-                    delta_start,
-                    length,
-                    token_type: OPERATOR,
-                    token_modifiers_bitset: 0,
-                });
-                pos = pos + found_pos + op.len();
-            }
-        }
-
-        // Numbers (simple pattern)
-        if let Some(num_regex) = &num_regex {
-            for mat in num_regex.find_iter(line) {
-                let start = mat.start() as u32;
-                let length = mat.end() as u32 - start;
-
-                let delta_line = line_num.saturating_sub(last_line);
-                let delta_start = if delta_line == 0 {
-                    start.saturating_sub(last_start)
-                } else {
-                    start
-                };
-                last_line = line_num;
-                last_start = start;
-
-                tokens.push(SemanticToken {
-                    delta_line,
-                    delta_start,
-                    length,
-                    token_type: NUMBER,
-                    token_modifiers_bitset: 0,
-                });
-            }
-        }
+    for t in raw_tokens {
+        let delta_line = t.line.saturating_sub(last_line);
+        let delta_start = if delta_line == 0 {
+            t.start.saturating_sub(last_start)
+        } else {
+            t.start
+        };
+        encoded.push(SemanticToken {
+            delta_line,
+            delta_start,
+            length: t.length,
+            token_type: t.token_type,
+            token_modifiers_bitset: 0,
+        });
+        last_line = t.line;
+        last_start = t.start;
     }
 
     SemanticTokens {
         result_id: None,
-        data: tokens,
+        data: encoded,
     }
 }
 
@@ -1104,6 +1207,33 @@ fn build_folding_ranges(content: &str) -> Vec<FoldingRange> {
 fn build_inlay_hints(content: &str, range: tower_lsp::lsp_types::Range) -> Vec<InlayHint> {
     let mut hints: Vec<InlayHint> = Vec::new();
 
+    let infer_type_label = |expr: &str| -> &'static str {
+        let e = expr.trim();
+        if e == "true" || e == "false" {
+            return "bool";
+        }
+        if e.starts_with('"') && e.ends_with('"') && e.len() >= 2 {
+            return "string";
+        }
+        if e.parse::<f64>().is_ok() {
+            return "number";
+        }
+        if e.starts_with('@')
+            && let Some(open) = e.find('(')
+        {
+            let plugin_name = e[1..open].trim();
+            if let Some(plugin) = PluginManager::new().get(plugin_name) {
+                return match plugin.signature().return_kind {
+                    PluginReturnKind::Boolean => "bool",
+                    PluginReturnKind::Number => "number",
+                    PluginReturnKind::String => "string",
+                    PluginReturnKind::Value | PluginReturnKind::Unknown => "value",
+                };
+            }
+        }
+        "value"
+    };
+
     // Parse content using AST for accurate section and variable detection
     if let Ok(doc) = parser::parse_gctf_from_str(content, "temp.gctf") {
         // Add section type hints
@@ -1133,19 +1263,35 @@ fn build_inlay_hints(content: &str, range: tower_lsp::lsp_types::Range) -> Vec<I
             if section.section_type == parser::ast::SectionType::Extract
                 && let parser::ast::SectionContent::Extract(extractions) = &section.content
             {
-                for _extraction in extractions {
-                    let section_line = ((section.start_line as i32) - 1).max(0) as u32;
-                    if section_line >= range.start.line && section_line <= range.end.line {
-                        // Add type hint for extracted variable
+                for (var_name, expr) in extractions {
+                    let mut hint_line: Option<u32> = None;
+                    let mut hint_char: u32 = 1000;
+                    for (idx, line) in section.raw_content.lines().enumerate() {
+                        let trimmed = line.trim();
+                        if let Some((name, _)) = trimmed.split_once('=')
+                            && name.trim() == var_name
+                        {
+                            hint_line = Some((section.start_line + idx + 1) as u32);
+                            hint_char = name.len() as u32;
+                            break;
+                        }
+                    }
+
+                    let line_num =
+                        hint_line.unwrap_or(((section.start_line as i32) - 1).max(0) as u32);
+                    if line_num >= range.start.line && line_num <= range.end.line {
                         hints.push(InlayHint {
                             position: tower_lsp::lsp_types::Position {
-                                line: section_line,
-                                character: 1000,
+                                line: line_num,
+                                character: hint_char,
                             },
-                            label: InlayHintLabel::String(": any".to_string()),
+                            label: InlayHintLabel::String(format!(": {}", infer_type_label(expr))),
                             kind: Some(InlayHintKind::TYPE),
                             text_edits: None,
-                            tooltip: None,
+                            tooltip: Some(InlayHintTooltip::String(format!(
+                                "Extracted from expression: {}",
+                                expr
+                            ))),
                             padding_left: Some(true),
                             padding_right: None,
                             data: None,
@@ -1153,6 +1299,29 @@ fn build_inlay_hints(content: &str, range: tower_lsp::lsp_types::Range) -> Vec<I
                     }
                 }
             }
+        }
+
+        for opt in optimizer::collect_assertion_optimizations(&doc) {
+            let line_num = opt.line.saturating_sub(1) as u32;
+            if line_num < range.start.line || line_num > range.end.line {
+                continue;
+            }
+            hints.push(InlayHint {
+                position: tower_lsp::lsp_types::Position {
+                    line: line_num,
+                    character: 1000,
+                },
+                label: InlayHintLabel::String(format!("opt: {}", opt.rule_id)),
+                kind: Some(InlayHintKind::TYPE),
+                text_edits: None,
+                tooltip: opt
+                    .proof_note
+                    .as_ref()
+                    .map(|s| InlayHintTooltip::String(s.clone())),
+                padding_left: Some(true),
+                padding_right: None,
+                data: None,
+            });
         }
     }
 
@@ -1320,6 +1489,38 @@ mod tests {
 
         // Should have hints (section types + extract variables)
         assert!(!hints.is_empty());
+        let labels: Vec<String> = hints
+            .iter()
+            .filter_map(|h| match &h.label {
+                InlayHintLabel::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(labels.iter().any(|l| l == ": value"));
+    }
+
+    #[test]
+    fn test_build_inlay_hints_optimizer_opportunities() {
+        let content = "--- ENDPOINT ---\ntest.Service/Method\n\n--- ASSERTS ---\n@has_header(\"x\") == true\n";
+        let range = tower_lsp::lsp_types::Range {
+            start: tower_lsp::lsp_types::Position {
+                line: 0,
+                character: 0,
+            },
+            end: tower_lsp::lsp_types::Position {
+                line: 10,
+                character: 0,
+            },
+        };
+        let hints = build_inlay_hints(content, range);
+        let labels: Vec<String> = hints
+            .iter()
+            .filter_map(|h| match &h.label {
+                InlayHintLabel::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(labels.iter().any(|l| l == "opt: OPT_B001"));
     }
 
     #[test]
@@ -1339,5 +1540,25 @@ mod tests {
 
         // Should have no hints for empty content
         assert!(hints.is_empty());
+    }
+
+    #[test]
+    fn test_get_plugin_signatures_uses_runtime_arg_names() {
+        let signatures = get_plugin_signatures();
+        let regex = signatures.get("regex").unwrap();
+        assert_eq!(regex.label, "@regex(value, pattern)");
+
+        let has_trailer = signatures.get("has_trailer").unwrap();
+        assert_eq!(has_trailer.label, "@has_trailer(name)");
+        assert!(has_trailer.documentation.contains("Returns: bool"));
+    }
+
+    #[test]
+    fn test_infer_active_parameter_counts_top_level_commas() {
+        let line = "@regex(.name, \"a,b\")";
+        let open = line.find('(').unwrap();
+        let cursor = line.len() - 1;
+        let active = infer_active_parameter(line, open, cursor);
+        assert_eq!(active, 1);
     }
 }

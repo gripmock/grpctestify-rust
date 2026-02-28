@@ -3,10 +3,12 @@
 //! This module contains all LSP request handlers with comprehensive test coverage.
 //! Each handler is tested in isolation.
 
+use serde_json::json;
 use std::collections::HashMap;
 use tower_lsp::lsp_types::*;
 
 use crate::parser::{self, ast::SectionType};
+use crate::plugins::{PluginManager, PluginPurity};
 
 /// Get hover documentation for a section type
 pub fn get_section_hover(section_type: &SectionType) -> Option<String> {
@@ -71,8 +73,7 @@ pub fn get_address_completions() -> Vec<CompletionItem> {
 
 /// Get completions for assertion operators and plugins
 pub fn get_assertion_completions() -> Vec<CompletionItem> {
-    vec![
-        // Operators
+    let mut items: Vec<CompletionItem> = vec![
         ("==", CompletionItemKind::OPERATOR, "Equality"),
         ("!=", CompletionItemKind::OPERATOR, "Inequality"),
         (">", CompletionItemKind::OPERATOR, "Greater than"),
@@ -85,34 +86,6 @@ pub fn get_assertion_completions() -> Vec<CompletionItem> {
             "String/array contains",
         ),
         ("matches", CompletionItemKind::KEYWORD, "Regex match"),
-        // Plugins
-        (
-            "@uuid(.field)",
-            CompletionItemKind::FUNCTION,
-            "UUID validation",
-        ),
-        (
-            "@email(.field)",
-            CompletionItemKind::FUNCTION,
-            "Email validation",
-        ),
-        ("@ip(.field)", CompletionItemKind::FUNCTION, "IP validation"),
-        (
-            "@url(.field)",
-            CompletionItemKind::FUNCTION,
-            "URL validation",
-        ),
-        (
-            "@timestamp(.field)",
-            CompletionItemKind::FUNCTION,
-            "Timestamp validation",
-        ),
-        (
-            "@header(\"name\")",
-            CompletionItemKind::FUNCTION,
-            "Check header",
-        ),
-        ("@len(.field)", CompletionItemKind::FUNCTION, "Get length"),
     ]
     .into_iter()
     .map(|(label, kind, detail)| CompletionItem {
@@ -121,7 +94,30 @@ pub fn get_assertion_completions() -> Vec<CompletionItem> {
         detail: Some(detail.to_string()),
         ..CompletionItem::default()
     })
-    .collect()
+    .collect();
+
+    let mut plugins = PluginManager::new().list();
+    plugins.sort_by(|a, b| a.name().cmp(b.name()));
+
+    for plugin in plugins {
+        let signature = plugin.signature();
+        let name = plugin.name().trim_start_matches('@');
+        let purity = match signature.purity {
+            PluginPurity::Pure => "pure",
+            PluginPurity::ContextDependent => "context",
+            PluginPurity::Impure => "impure",
+        };
+        let label = format!("@{}(...)", name);
+        let detail = format!("{} [{}]", plugin.description(), purity);
+        items.push(CompletionItem {
+            label,
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some(detail),
+            ..CompletionItem::default()
+        });
+    }
+
+    items
 }
 
 /// Get completions for EXTRACT JQ functions
@@ -301,6 +297,135 @@ pub fn create_headers_deprecated_action(uri: &Url, range: Range) -> CodeAction {
     }
 }
 
+pub fn collect_optimizer_diagnostics(
+    doc: &crate::parser::GctfDocument,
+    content: &str,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for (range, replacement, rule_id, before) in
+        collect_optimizer_rewrites_with_ranges(doc, content)
+    {
+        diagnostics.push(Diagnostic {
+            range,
+            severity: Some(DiagnosticSeverity::HINT),
+            code: Some(NumberOrString::String(rule_id)),
+            source: Some("grpctestify-optimizer".to_string()),
+            message: format!("Optimizer hint: {} -> {}", before, replacement),
+            data: Some(json!({"replacement": replacement})),
+            ..Diagnostic::default()
+        });
+    }
+
+    diagnostics
+}
+
+pub fn collect_optimizer_rewrite_edits(
+    doc: &crate::parser::GctfDocument,
+    content: &str,
+) -> Vec<TextEdit> {
+    collect_optimizer_rewrites_with_ranges(doc, content)
+        .into_iter()
+        .map(|(range, replacement, _, _)| TextEdit::new(range, replacement))
+        .collect()
+}
+
+fn collect_optimizer_rewrites_with_ranges(
+    doc: &crate::parser::GctfDocument,
+    content: &str,
+) -> Vec<(Range, String, String, String)> {
+    let hints = crate::optimizer::collect_assertion_optimizations(doc);
+    let lines: Vec<&str> = content.lines().collect();
+    let mut rewrites = Vec::new();
+
+    for hint in hints {
+        let lsp_line = hint.line.saturating_sub(1) as u32;
+        let full_line = lines.get(lsp_line as usize).copied().unwrap_or("");
+        let start_char = full_line.find(&hint.before).unwrap_or(0) as u32;
+        let end_char = (start_char as usize + hint.before.len()) as u32;
+
+        rewrites.push((
+            Range::new(
+                Position::new(lsp_line, start_char),
+                Position::new(lsp_line, end_char),
+            ),
+            hint.after,
+            hint.rule_id,
+            hint.before,
+        ));
+    }
+
+    rewrites
+}
+
+pub fn collect_semantic_diagnostics(
+    doc: &crate::parser::GctfDocument,
+    content: &str,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    let lines: Vec<&str> = content.lines().collect();
+
+    for mismatch in crate::semantics::collect_assertion_type_mismatches(doc) {
+        let lsp_line = mismatch.line.saturating_sub(1) as u32;
+        let full_line = lines.get(lsp_line as usize).copied().unwrap_or("");
+        let start_char = full_line.find(&mismatch.expression).unwrap_or(0) as u32;
+        let end_char = (start_char as usize + mismatch.expression.len()) as u32;
+
+        diagnostics.push(Diagnostic {
+            range: Range::new(
+                Position::new(lsp_line, start_char),
+                Position::new(lsp_line, end_char),
+            ),
+            severity: Some(DiagnosticSeverity::WARNING),
+            code: Some(NumberOrString::String(mismatch.rule_id)),
+            source: Some("grpctestify-semantics".to_string()),
+            message: mismatch.message,
+            ..Diagnostic::default()
+        });
+    }
+
+    diagnostics
+}
+
+pub fn create_optimizer_rewrite_action(
+    uri: &Url,
+    range: Range,
+    replacement: &str,
+    rule_id: &str,
+) -> CodeAction {
+    CodeAction {
+        title: format!("Apply safe optimization ({})", rule_id),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: None,
+        edit: Some(WorkspaceEdit {
+            changes: Some(HashMap::from([(
+                uri.clone(),
+                vec![TextEdit::new(range, replacement.to_string())],
+            )])),
+            ..WorkspaceEdit::default()
+        }),
+        is_preferred: Some(true),
+        ..CodeAction::default()
+    }
+}
+
+pub fn create_apply_all_optimizer_rewrite_action(
+    uri: &Url,
+    edits: Vec<TextEdit>,
+    count: usize,
+) -> CodeAction {
+    CodeAction {
+        title: format!("Apply all safe optimizations in file ({})", count),
+        kind: Some(CodeActionKind::SOURCE),
+        diagnostics: None,
+        edit: Some(WorkspaceEdit {
+            changes: Some(HashMap::from([(uri.clone(), edits)])),
+            ..WorkspaceEdit::default()
+        }),
+        is_preferred: Some(false),
+        ..CodeAction::default()
+    }
+}
+
 // ============================================================================
 // TESTS
 // ============================================================================
@@ -366,8 +491,9 @@ mod tests {
         let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"=="));
         assert!(labels.contains(&"!="));
-        assert!(labels.contains(&"@uuid(.field)"));
-        assert!(labels.contains(&"@email(.field)"));
+        assert!(labels.contains(&"@uuid(...)"));
+        assert!(labels.contains(&"@email(...)"));
+        assert!(labels.contains(&"@has_trailer(...)"));
     }
 
     #[test]
@@ -426,5 +552,252 @@ test.Service/Method
         let edits = changes.get(&uri).unwrap();
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0].new_text, "--- REQUEST_HEADERS ---");
+    }
+
+    #[test]
+    fn test_collect_optimizer_diagnostics_has_header_true() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+@has_header("x") == true
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let diagnostics = collect_optimizer_diagnostics(&doc, content);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].code,
+            Some(NumberOrString::String("OPT_B001".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_snapshot_optimizer_diagnostic_hint() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+@has_header("x") == true
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let diagnostics = collect_optimizer_diagnostics(&doc, content);
+        assert_eq!(diagnostics.len(), 1);
+
+        let actual = serde_json::to_value(&diagnostics[0]).unwrap();
+        let expected = json!({
+            "range": {
+                "start": {"line": 3, "character": 0},
+                "end": {"line": 3, "character": 24}
+            },
+            "severity": 4,
+            "code": "OPT_B001",
+            "source": "grpctestify-optimizer",
+            "message": "Optimizer hint: @has_header(\"x\") == true -> @has_header(\"x\")",
+            "data": {"replacement": "@has_header(\"x\")"}
+        });
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_create_optimizer_rewrite_action() {
+        let uri = Url::parse("file:///test.gctf").unwrap();
+        let range = Range::new(Position::new(2, 0), Position::new(2, 10));
+
+        let action = create_optimizer_rewrite_action(&uri, range, "@has_header(\"x\")", "OPT_B001");
+        assert!(action.title.contains("OPT_B001"));
+        assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+    }
+
+    #[test]
+    fn test_collect_optimizer_rewrite_edits() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+@has_header("x") == true
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let edits = collect_optimizer_rewrite_edits(&doc, content);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "@has_header(\"x\")");
+    }
+
+    #[test]
+    fn test_create_apply_all_optimizer_rewrite_action() {
+        let uri = Url::parse("file:///test.gctf").unwrap();
+        let edits = vec![
+            TextEdit::new(
+                Range::new(Position::new(4, 0), Position::new(4, 24)),
+                "@has_header(\"x\")".to_string(),
+            ),
+            TextEdit::new(
+                Range::new(Position::new(5, 0), Position::new(5, 25)),
+                "!@has_header(\"y\")".to_string(),
+            ),
+        ];
+
+        let action = create_apply_all_optimizer_rewrite_action(&uri, edits, 2);
+        assert!(
+            action
+                .title
+                .contains("Apply all safe optimizations in file")
+        );
+        assert!(action.title.contains("2"));
+        assert_eq!(action.kind, Some(CodeActionKind::SOURCE));
+
+        let changes = action
+            .edit
+            .unwrap()
+            .changes
+            .unwrap()
+            .get(&uri)
+            .unwrap()
+            .clone();
+        assert_eq!(changes.len(), 2);
+    }
+
+    #[test]
+    fn test_snapshot_optimizer_quickfix_action() {
+        let uri = Url::parse("file:///test.gctf").unwrap();
+        let range = Range::new(Position::new(4, 0), Position::new(4, 24));
+        let action = create_optimizer_rewrite_action(&uri, range, "@has_header(\"x\")", "OPT_B001");
+
+        let actual = serde_json::to_value(&action).unwrap();
+        let expected = json!({
+            "title": "Apply safe optimization (OPT_B001)",
+            "kind": "quickfix",
+            "edit": {
+                "changes": {
+                    "file:///test.gctf": [
+                        {
+                            "range": {
+                                "start": {"line": 4, "character": 0},
+                                "end": {"line": 4, "character": 24}
+                            },
+                            "newText": "@has_header(\"x\")"
+                        }
+                    ]
+                }
+            },
+            "isPreferred": true
+        });
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_snapshot_apply_all_optimizer_action() {
+        let uri = Url::parse("file:///test.gctf").unwrap();
+        let edits = vec![
+            TextEdit::new(
+                Range::new(Position::new(4, 0), Position::new(4, 24)),
+                "@has_header(\"x\")".to_string(),
+            ),
+            TextEdit::new(
+                Range::new(Position::new(5, 0), Position::new(5, 25)),
+                "!@has_header(\"y\")".to_string(),
+            ),
+        ];
+        let action = create_apply_all_optimizer_rewrite_action(&uri, edits, 2);
+
+        let actual = serde_json::to_value(&action).unwrap();
+        let expected = json!({
+            "title": "Apply all safe optimizations in file (2)",
+            "kind": "source",
+            "edit": {
+                "changes": {
+                    "file:///test.gctf": [
+                        {
+                            "range": {
+                                "start": {"line": 4, "character": 0},
+                                "end": {"line": 4, "character": 24}
+                            },
+                            "newText": "@has_header(\"x\")"
+                        },
+                        {
+                            "range": {
+                                "start": {"line": 5, "character": 0},
+                                "end": {"line": 5, "character": 25}
+                            },
+                            "newText": "!@has_header(\"y\")"
+                        }
+                    ]
+                }
+            },
+            "isPreferred": false
+        });
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_collect_optimizer_diagnostics_non_boolean_plugin() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+@len(.items) == true
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let diagnostics = collect_optimizer_diagnostics(&doc, content);
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_collect_optimizer_diagnostics_double_negation_rule() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+!!@has_header("x")
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let diagnostics = collect_optimizer_diagnostics(&doc, content);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].code,
+            Some(NumberOrString::String("OPT_B005".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_collect_optimizer_diagnostics_canonical_operator_rule() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.name startswith "abc"
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let diagnostics = collect_optimizer_diagnostics(&doc, content);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].code,
+            Some(NumberOrString::String("OPT_N001".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_collect_optimizer_diagnostics_constant_fold_rule() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+3 > 2
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let diagnostics = collect_optimizer_diagnostics(&doc, content);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].code,
+            Some(NumberOrString::String("OPT_B006".to_string()))
+        );
     }
 }

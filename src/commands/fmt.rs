@@ -81,6 +81,11 @@ fn format_gctf_preserve_comments(doc: &crate::parser::GctfDocument, source: &str
     output
 }
 
+pub fn format_gctf_content(source: &str, file_name: &str) -> Result<String> {
+    let doc = parser::parse_gctf_from_str(source, file_name)?;
+    Ok(format_gctf_preserve_comments(&doc, source))
+}
+
 pub async fn handle_fmt(args: &FmtArgs) -> Result<()> {
     let mut files = Vec::new();
     let mut has_error = false;
@@ -113,17 +118,15 @@ pub async fn handle_fmt(args: &FmtArgs) -> Result<()> {
             }
         };
 
-        // Parse
-        let doc = match parser::parse_gctf(&file) {
-            Ok(doc) => doc,
+        let file_name = file.to_string_lossy();
+        let formatted = match format_gctf_content(&original, &file_name) {
+            Ok(formatted) => formatted,
             Err(e) => {
                 error!("Failed to parse {}: {}", file.display(), e);
                 has_error = true;
                 continue;
             }
         };
-
-        let formatted = format_gctf_preserve_comments(&doc, &original);
 
         if args.write {
             // Only write if content changed (idempotent check)

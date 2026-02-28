@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use crate::assert::engine::AssertionResult;
 use crate::plugins::{PluginContext, PluginManager, PluginResult};
 
-/// Evaluate legacy assertion (plugins and operators)
-pub fn evaluate_legacy(
+/// Evaluate assertion expression (plugins and operators)
+pub fn evaluate_assertion(
     plugin_manager: &PluginManager,
     assertion: &str,
     response: &Value,
@@ -85,31 +85,22 @@ fn evaluate_boolean_function(
 ) -> Result<AssertionResult> {
     if let (Some(start_paren), Some(end_paren)) = (expr.find('('), expr.rfind(')')) {
         let func_name = &expr[0..start_paren];
-        let plugin_name = func_name.strip_prefix('@').unwrap_or(func_name);
         let arg_str = &expr[start_paren + 1..end_paren];
 
-        if let Some(plugin) = plugin_manager.get(plugin_name) {
+        let resolved_name = if plugin_manager.get(func_name).is_some() {
+            func_name
+        } else {
+            func_name.strip_prefix('@').unwrap_or(func_name)
+        };
+
+        if let Some(plugin) = plugin_manager.get(resolved_name) {
             let context = PluginContext {
                 response,
                 headers,
                 trailers,
             };
 
-            // Special handling for @header, @has_header, and @trailer arguments (raw string)
-            let args = if plugin_name == "header"
-                || plugin_name == "has_header"
-                || plugin_name == "trailer"
-            {
-                vec![Value::String(arg_str.trim().trim_matches('"').to_string())]
-            } else {
-                vec![evaluate_expression(
-                    plugin_manager,
-                    arg_str,
-                    response,
-                    headers,
-                    trailers,
-                )]
-            };
+            let args = parse_plugin_arguments(plugin_manager, arg_str, response, headers, trailers);
 
             return match plugin.execute(&args, &context) {
                 Ok(PluginResult::Assertion(res)) => Ok(res),
@@ -119,7 +110,7 @@ fn evaluate_boolean_function(
                     } else {
                         Ok(AssertionResult::fail(format!(
                             "Plugin {} returned falsy value: {:?}",
-                            plugin_name, val
+                            resolved_name, val
                         )))
                     }
                 }
@@ -144,31 +135,22 @@ fn evaluate_expression(
         && let (Some(start_paren), Some(end_paren)) = (expr.find('('), expr.rfind(')'))
     {
         let func_name = &expr[0..start_paren];
-        let plugin_name = func_name.strip_prefix('@').unwrap_or(func_name);
         let arg_str = &expr[start_paren + 1..end_paren];
 
-        if let Some(plugin) = plugin_manager.get(plugin_name) {
+        let resolved_name = if plugin_manager.get(func_name).is_some() {
+            func_name
+        } else {
+            func_name.strip_prefix('@').unwrap_or(func_name)
+        };
+
+        if let Some(plugin) = plugin_manager.get(resolved_name) {
             let context = PluginContext {
                 response,
                 headers,
                 trailers,
             };
 
-            // Special handling for @header, @has_header, and @trailer arguments (raw string)
-            let args = if plugin_name == "header"
-                || plugin_name == "has_header"
-                || plugin_name == "trailer"
-            {
-                vec![Value::String(arg_str.trim().trim_matches('"').to_string())]
-            } else {
-                vec![evaluate_expression(
-                    plugin_manager,
-                    arg_str,
-                    response,
-                    headers,
-                    trailers,
-                )]
-            };
+            let args = parse_plugin_arguments(plugin_manager, arg_str, response, headers, trailers);
 
             match plugin.execute(&args, &context) {
                 Ok(PluginResult::Value(v)) => return v,
@@ -194,6 +176,99 @@ fn parse_value(s: &str) -> Value {
     } else {
         Value::String(s.to_string())
     }
+}
+
+fn parse_plugin_arguments(
+    plugin_manager: &PluginManager,
+    arg_str: &str,
+    response: &Value,
+    headers: Option<&HashMap<String, String>>,
+    trailers: Option<&HashMap<String, String>>,
+) -> Vec<Value> {
+    split_arguments(arg_str)
+        .into_iter()
+        .map(|token| parse_argument_value(plugin_manager, token, response, headers, trailers))
+        .collect()
+}
+
+fn split_arguments(input: &str) -> Vec<&str> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in trimmed.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+            }
+            ',' if depth == 0 => {
+                out.push(trimmed[start..idx].trim());
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+
+    out.push(trimmed[start..].trim());
+    out
+}
+
+fn parse_argument_value(
+    plugin_manager: &PluginManager,
+    token: &str,
+    response: &Value,
+    headers: Option<&HashMap<String, String>>,
+    trailers: Option<&HashMap<String, String>>,
+) -> Value {
+    let t = token.trim();
+    if t.is_empty() {
+        return Value::Null;
+    }
+
+    if t.starts_with('@') && t.contains('(') && t.ends_with(')') {
+        return evaluate_expression(plugin_manager, t, response, headers, trailers);
+    }
+
+    if t == "." || t.starts_with('.') {
+        return resolve_path(t, response);
+    }
+
+    if (t.starts_with('"') && t.ends_with('"') && t.len() >= 2)
+        || t == "true"
+        || t == "false"
+        || t == "null"
+        || t.parse::<f64>().is_ok()
+    {
+        return parse_value(t);
+    }
+
+    Value::String(t.to_string())
 }
 
 fn compare(
@@ -343,34 +418,75 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_legacy_equality() {
+    fn test_evaluate_assertion_equality() {
         let pm = create_plugin_manager();
         let response = json!({"status": "success"});
-        let result = evaluate_legacy(&pm, ".status == \"success\"", &response, None, None).unwrap();
+        let result =
+            evaluate_assertion(&pm, ".status == \"success\"", &response, None, None).unwrap();
         assert!(matches!(result, AssertionResult::Pass));
     }
 
     #[test]
-    fn test_evaluate_legacy_inequality() {
+    fn test_evaluate_assertion_inequality() {
         let pm = create_plugin_manager();
         let response = json!({"status": "success"});
-        let result = evaluate_legacy(&pm, ".status == \"error\"", &response, None, None).unwrap();
+        let result =
+            evaluate_assertion(&pm, ".status == \"error\"", &response, None, None).unwrap();
         assert!(matches!(result, AssertionResult::Fail { .. }));
     }
 
     #[test]
-    fn test_evaluate_legacy_contains() {
+    fn test_evaluate_assertion_contains() {
         let pm = create_plugin_manager();
         let response = json!({"name": "test"});
-        let result = evaluate_legacy(&pm, ".name contains \"te\"", &response, None, None).unwrap();
+        let result =
+            evaluate_assertion(&pm, ".name contains \"te\"", &response, None, None).unwrap();
         assert!(matches!(result, AssertionResult::Pass));
     }
 
     #[test]
-    fn test_evaluate_legacy_plugin() {
+    fn test_evaluate_assertion_plugin() {
         let pm = create_plugin_manager();
         let response = json!({"id": "550e8400-e29b-41d4-a716-446655440000"});
-        let result = evaluate_legacy(&pm, "@uuid(.id)", &response, None, None).unwrap();
+        let result = evaluate_assertion(&pm, "@uuid(.id)", &response, None, None).unwrap();
+        assert!(matches!(result, AssertionResult::Pass));
+    }
+
+    #[test]
+    fn test_evaluate_assertion_has_header_unquoted_argument() {
+        let pm = create_plugin_manager();
+        let response = json!({});
+        let mut headers = HashMap::new();
+        headers.insert("content-type".to_string(), "application/json".to_string());
+
+        let result = evaluate_assertion(
+            &pm,
+            "@has_header(content-type) == true",
+            &response,
+            Some(&headers),
+            None,
+        )
+        .unwrap();
+
+        assert!(matches!(result, AssertionResult::Pass));
+    }
+
+    #[test]
+    fn test_evaluate_assertion_trailer_value_plugin() {
+        let pm = create_plugin_manager();
+        let response = json!({});
+        let mut trailers = HashMap::new();
+        trailers.insert("grpc-status".to_string(), "0".to_string());
+
+        let result = evaluate_assertion(
+            &pm,
+            "@trailer(\"grpc-status\") == \"0\"",
+            &response,
+            None,
+            Some(&trailers),
+        )
+        .unwrap();
+
         assert!(matches!(result, AssertionResult::Pass));
     }
 

@@ -1,12 +1,22 @@
 // Explain command - show detailed execution plan and workflow
 
 use anyhow::Result;
+use serde::Serialize;
 use std::path::Path;
 
 use crate::cli::args::ExplainArgs;
 use crate::execution;
+use crate::optimizer;
 use crate::parser;
 use crate::parser::ast::{SectionContent, SectionType};
+
+#[derive(Serialize)]
+struct ExplainJsonOutput {
+    semantic_plan: execution::ExecutionPlan,
+    optimization_trace: Vec<optimizer::OptimizationHint>,
+    optimized_plan: execution::ExecutionPlan,
+    execution_plan: execution::ExecutionPlan,
+}
 
 pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
     let file_path = &args.file;
@@ -43,13 +53,35 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
     let validation_result = parser::validate_document(&doc);
     let validation_ms = validation_start.elapsed().as_secs_f64() * 1000.0;
 
-    if args.format == "json" {
-        // Build execution plan and output as JSON
-        let execution_plan = execution::ExecutionPlan::from_document(&doc);
-        println!("{}", serde_json::to_string_pretty(&execution_plan)?);
+    if args.is_json() {
+        let semantic_plan = execution::ExecutionPlan::from_document(&doc);
+        let optimization_trace = optimizer::collect_assertion_optimizations(&doc);
+        let optimized_plan = semantic_plan.clone();
+        let execution_plan = optimized_plan.clone();
+        let output = ExplainJsonOutput {
+            semantic_plan,
+            optimization_trace,
+            optimized_plan,
+            execution_plan,
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         // Print detailed workflow visualization
         print_detailed_workflow(&doc, file_path, &parser::ParseDiagnostics::default());
+        println!();
+
+        let optimization_trace = optimizer::collect_assertion_optimizations(&doc);
+        println!("OPTIMIZATION TRACE:");
+        if optimization_trace.is_empty() {
+            println!("  (no safe rewrites found)");
+        } else {
+            for hint in &optimization_trace {
+                println!(
+                    "  - [{}] line {}: {} -> {}",
+                    hint.rule_id, hint.line, hint.before, hint.after
+                );
+            }
+        }
         println!();
 
         // Show validation result

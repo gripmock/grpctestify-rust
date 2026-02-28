@@ -314,3 +314,37 @@ impl Cli {
         }
     }
 }
+
+fn is_json_format(value: &str) -> bool {
+    value.eq_ignore_ascii_case("json")
+}
+
+impl ListArgs {
+    pub fn is_json(&self) -> bool {
+        is_json_format(&self.format)
+    }
+}
+
+impl InspectArgs {
+    pub fn is_json(&self) -> bool {
+        is_json_format(&self.format)
+    }
+}
+
+impl ExplainArgs {
+    pub fn is_json(&self) -> bool {
+        is_json_format(&self.format)
+    }
+}
+
+impl CheckArgs {
+    pub fn is_json(&self) -> bool {
+        is_json_format(&self.format)
+    }
+}
+
+impl RunArgs {
+    pub fn is_json_coverage(&self) -> bool {
+        is_json_format(&self.coverage_format)
+    }
+}

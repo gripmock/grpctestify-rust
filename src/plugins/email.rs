@@ -3,7 +3,9 @@ use email_address::EmailAddress;
 use serde_json::Value;
 
 use crate::assert::engine::AssertionResult;
-use crate::plugins::{Plugin, PluginContext, PluginResult};
+use crate::plugins::{
+    Plugin, PluginContext, PluginPurity, PluginResult, PluginReturnKind, PluginSignature,
+};
 
 pub struct EmailPlugin;
 
@@ -14,6 +16,17 @@ impl Plugin for EmailPlugin {
 
     fn description(&self) -> &str {
         "Validates if the provided value is a valid email address"
+    }
+
+    fn signature(&self) -> PluginSignature {
+        PluginSignature {
+            return_kind: PluginReturnKind::Boolean,
+            purity: PluginPurity::Pure,
+            deterministic: true,
+            idempotent: true,
+            safe_for_rewrite: true,
+            arg_names: &["value"],
+        }
     }
 
     fn execute(&self, args: &[Value], _context: &PluginContext) -> Result<PluginResult> {

@@ -1,11 +1,13 @@
 // Header plugin for EXTRACT section
-// Extracts values from HTTP headers
+// Extracts values from gRPC metadata headers
 
 use anyhow::Result;
 use serde_json::Value;
 
 use crate::assert::engine::AssertionResult;
-use crate::plugins::{Plugin, PluginContext, PluginResult};
+use crate::plugins::{
+    Plugin, PluginContext, PluginPurity, PluginResult, PluginReturnKind, PluginSignature,
+};
 
 /// Header plugin - extracts header values
 #[derive(Debug, Clone, Default)]
@@ -17,7 +19,18 @@ impl Plugin for HeaderExtractPlugin {
     }
 
     fn description(&self) -> &'static str {
-        "Extract value from HTTP headers"
+        "Extract value from gRPC metadata headers"
+    }
+
+    fn signature(&self) -> PluginSignature {
+        PluginSignature {
+            return_kind: PluginReturnKind::String,
+            purity: PluginPurity::ContextDependent,
+            deterministic: true,
+            idempotent: true,
+            safe_for_rewrite: false,
+            arg_names: &["name"],
+        }
     }
 
     fn execute(&self, args: &[Value], context: &PluginContext) -> Result<PluginResult> {
@@ -75,7 +88,18 @@ impl Plugin for HasHeaderPlugin {
     }
 
     fn description(&self) -> &'static str {
-        "Check if HTTP header exists (returns true/false)"
+        "Check if gRPC metadata header exists (returns true/false)"
+    }
+
+    fn signature(&self) -> PluginSignature {
+        PluginSignature {
+            return_kind: PluginReturnKind::Boolean,
+            purity: PluginPurity::ContextDependent,
+            deterministic: true,
+            idempotent: true,
+            safe_for_rewrite: true,
+            arg_names: &["name"],
+        }
     }
 
     fn execute(&self, args: &[Value], context: &PluginContext) -> Result<PluginResult> {

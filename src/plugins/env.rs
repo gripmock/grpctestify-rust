@@ -7,7 +7,9 @@ use serde_json::Value;
 use std::env;
 
 use crate::assert::engine::AssertionResult;
-use crate::plugins::{Plugin, PluginContext, PluginResult};
+use crate::plugins::{
+    Plugin, PluginContext, PluginPurity, PluginResult, PluginReturnKind, PluginSignature,
+};
 
 /// Environment variable plugin
 #[derive(Debug, Clone, Default)]
@@ -20,6 +22,17 @@ impl Plugin for EnvPlugin {
 
     fn description(&self) -> &'static str {
         "Read environment variable value"
+    }
+
+    fn signature(&self) -> PluginSignature {
+        PluginSignature {
+            return_kind: PluginReturnKind::String,
+            purity: PluginPurity::ContextDependent,
+            deterministic: false,
+            idempotent: false,
+            safe_for_rewrite: false,
+            arg_names: &["name"],
+        }
     }
 
     fn execute(&self, args: &[Value], _context: &PluginContext) -> Result<PluginResult> {

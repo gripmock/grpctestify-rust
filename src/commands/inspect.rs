@@ -5,8 +5,10 @@ use std::path::Path;
 
 use crate::cli::args::InspectArgs;
 use crate::execution;
+use crate::optimizer;
 use crate::parser;
 use crate::report::{AstOverview, InspectReport, SectionInfo};
+use crate::semantics;
 
 pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
     let file_path = &args.file;
@@ -43,8 +45,10 @@ pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
     let validation_result = parser::validate_document(&doc);
     let validation_ms = validation_start.elapsed().as_secs_f64() * 1000.0;
 
-    if args.format == "json" {
+    if args.is_json() {
         let mut inspect_diagnostics: Vec<crate::report::Diagnostic> = Vec::new();
+        let mut semantic_diagnostics: Vec<crate::report::Diagnostic> = Vec::new();
+        let mut optimization_hints: Vec<crate::report::Diagnostic> = Vec::new();
         let file_str = file_path.to_string_lossy().to_string();
 
         if let Err(e) = &validation_result {
@@ -75,6 +79,30 @@ pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
                     }
                 }
             }
+        }
+
+        for mismatch in semantics::collect_assertion_type_mismatches(&doc) {
+            let diag = crate::report::Diagnostic::warning(
+                &file_str,
+                &mismatch.rule_id,
+                &mismatch.message,
+                mismatch.line,
+            )
+            .with_hint(&format!("Expression: {}", mismatch.expression));
+            semantic_diagnostics.push(diag.clone());
+            inspect_diagnostics.push(diag);
+        }
+
+        for hint in optimizer::collect_assertion_optimizations(&doc) {
+            let diag = crate::report::Diagnostic::hint(
+                &file_str,
+                &hint.rule_id,
+                &format!("Safe rewrite available: {} -> {}", hint.before, hint.after),
+                hint.line,
+            )
+            .with_hint("Boolean expression compared with true/false can be simplified");
+            optimization_hints.push(diag.clone());
+            inspect_diagnostics.push(diag);
         }
 
         // Build sections info
@@ -117,6 +145,8 @@ pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
                 sections: sections_info,
             },
             diagnostics: inspect_diagnostics,
+            semantic_diagnostics,
+            optimization_hints,
             inferred_rpc_mode,
         };
 
@@ -440,6 +470,21 @@ fn print_detailed_analysis(
             );
             has_warnings = true;
         }
+    }
+
+    for mismatch in semantics::collect_assertion_type_mismatches(doc) {
+        println!("  [WARN] Line {}: {}", mismatch.line, mismatch.message);
+        println!("         Expression: {}", mismatch.expression);
+        has_warnings = true;
+    }
+
+    for hint in optimizer::collect_assertion_optimizations(doc) {
+        println!(
+            "  [HINT] Line {}: [{}] {} -> {}",
+            hint.line, hint.rule_id, hint.before, hint.after
+        );
+        println!("         Boolean expression compared with true/false can be simplified");
+        has_warnings = true;
     }
 
     if !has_warnings {
