@@ -96,6 +96,15 @@ jobs:
 
             binary "grpctestify", target: "grpctestify"
 
+            postflight do
+              system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{HOMEBREW_PREFIX}/bin/grpctestify"], must_succeed: false
+            end
+
+            caveats <<~EOS
+              If macOS still blocks launch, run:
+                xattr -dr com.apple.quarantine "$(brew --prefix)/bin/grpctestify"
+            EOS
+
             zap trash: [
               "~/.grpctestify",
             ]
