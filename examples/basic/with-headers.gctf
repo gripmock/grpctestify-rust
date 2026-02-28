@@ -19,4 +19,4 @@ X-Request-ID: req-001
 }
 
 --- ASSERTS ---
-@header("content-type")
+@has_header("content-type")
