@@ -4,15 +4,17 @@ on:
   workflow_run:
     workflows: ["Release"]
     types: [completed]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.id }}
+  cancel-in-progress: true
 permissions:
   contents: write
-  packages: write
 env:
   # Hardcoded deadline - do not change unless intentionally extending support
   FORMULA_DEADLINE: "2027-12-31"
 jobs:
-  update-formula:
-    name: Update Homebrew Formula
+  update-homebrew:
+    name: Update Homebrew Formula and Cask
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
@@ -24,27 +26,35 @@ jobs:
           TAG=$(gh api repos/${{ github.repository }}/releases/latest --jq '.tag_name')
           VERSION="${TAG#v}"
           echo "TAG=${TAG}" >> $GITHUB_OUTPUT
-          echo "VERSION=${VERSION#v}" >> $GITHUB_OUTPUT
-      - name: Download binary
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+      - name: Download release archives
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release download "${{ steps.version.outputs.TAG }}" --repo "${{ github.repository }}" --pattern "grpctestify-linux-amd64" --clobber
-      - name: Calculate checksum
+        run: |
+          gh release download "${{ steps.version.outputs.TAG }}" --repo "${{ github.repository }}" --pattern "grpctestify-linux-amd64.tar.gz" --clobber
+          gh release download "${{ steps.version.outputs.TAG }}" --repo "${{ github.repository }}" --pattern "grpctestify-macos-arm64.tar.gz" --clobber
+          gh release download "${{ steps.version.outputs.TAG }}" --repo "${{ github.repository }}" --pattern "grpctestify-macos-amd64.tar.gz" --clobber
+      - name: Calculate checksums
         id: checksum
         run: |
-          CHECKSUM=$(sha256sum grpctestify-linux-amd64 | awk '{print $1}')
-          echo "CHECKSUM=$CHECKSUM" >> $GITHUB_OUTPUT
+          LINUX_AMD64_CHECKSUM=$(sha256sum grpctestify-linux-amd64.tar.gz | awk '{print $1}')
+          MACOS_ARM64_CHECKSUM=$(sha256sum grpctestify-macos-arm64.tar.gz | awk '{print $1}')
+          MACOS_AMD64_CHECKSUM=$(sha256sum grpctestify-macos-amd64.tar.gz | awk '{print $1}')
+          echo "LINUX_AMD64_CHECKSUM=$LINUX_AMD64_CHECKSUM" >> $GITHUB_OUTPUT
+          echo "MACOS_ARM64_CHECKSUM=$MACOS_ARM64_CHECKSUM" >> $GITHUB_OUTPUT
+          echo "MACOS_AMD64_CHECKSUM=$MACOS_AMD64_CHECKSUM" >> $GITHUB_OUTPUT
       - name: Clone tap repo
         run: |
           git clone https://${{ github.actor }}:${{ secrets.HOMEBREW_TOKEN }}@github.com/gripmock/homebrew-tap.git
           cd homebrew-tap
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-      - name: Update formula
+      - name: Update formula and cask
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
-          CHECKSUM="${{ steps.checksum.outputs.CHECKSUM }}"
-          URL="https://github.com/gripmock/grpctestify-rust/releases/download/v${VERSION}/grpctestify-linux-amd64"
+          LINUX_AMD64_CHECKSUM="${{ steps.checksum.outputs.LINUX_AMD64_CHECKSUM }}"
+          MACOS_ARM64_CHECKSUM="${{ steps.checksum.outputs.MACOS_ARM64_CHECKSUM }}"
+          MACOS_AMD64_CHECKSUM="${{ steps.checksum.outputs.MACOS_AMD64_CHECKSUM }}"
           DEADLINE="${{ env.FORMULA_DEADLINE }}"
 
           cat > homebrew-tap/Formula/grpctestify.rb << EOF
@@ -56,14 +66,14 @@ jobs:
           class Grpctestify < Formula
             desc "gRPC testing utility written in Rust (deprecated - use cask)"
             homepage "https://github.com/gripmock/grpctestify-rust"
-            url "${URL}"
-            sha256 "${CHECKSUM}"
+            url "https://github.com/gripmock/grpctestify-rust/releases/download/v${VERSION}/grpctestify-linux-amd64.tar.gz"
+            sha256 "${LINUX_AMD64_CHECKSUM}"
             version "${VERSION}"
             license "MIT"
             deprecated! date: "${DEADLINE}", because: "use cask instead"
 
             def install
-              bin.install "grpctestify-linux-amd64" => "grpctestify"
+              bin.install "grpctestify"
             end
 
             test do
@@ -71,72 +81,31 @@ jobs:
             end
           end
           EOF
-      - name: Commit formula
-        run: |
-          cd homebrew-tap
-          git add Formula/grpctestify.rb
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: update formula to ${{ steps.version.outputs.VERSION }} (deprecated)"
-            git push origin master
-          fi
-  update-cask:
-    name: Update Homebrew Cask
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    needs: update-formula
-    runs-on: ubuntu-latest
-    steps:
-      - name: Get version
-        id: version
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG=$(gh api repos/${{ github.repository }}/releases/latest --jq '.tag_name')
-          VERSION="${TAG#v}"
-          echo "TAG=${TAG}" >> $GITHUB_OUTPUT
-          echo "VERSION=${VERSION#v}" >> $GITHUB_OUTPUT
-      - name: Download macOS binary
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release download "${{ steps.version.outputs.TAG }}" --repo "${{ github.repository }}" --pattern "grpctestify-macos-arm64" --clobber
-      - name: Calculate checksum
-        id: checksum
-        run: |
-          CHECKSUM=$(sha256sum grpctestify-macos-arm64 | awk '{print $1}')
-          echo "CHECKSUM=$CHECKSUM" >> $GITHUB_OUTPUT
-      - name: Clone tap repo
-        run: |
-          git clone https://${{ github.actor }}:${{ secrets.HOMEBREW_TOKEN }}@github.com/gripmock/homebrew-tap.git
-          cd homebrew-tap
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-      - name: Update cask
-        run: |
-          VERSION="${{ steps.version.outputs.VERSION }}"
-          CHECKSUM="${{ steps.checksum.outputs.CHECKSUM }}"
-          URL="https://github.com/gripmock/grpctestify-rust/releases/download/v${VERSION}/grpctestify-macos-arm64"
 
           cat > homebrew-tap/Casks/grpctestify.rb << EOF
           cask "grpctestify" do
-            version "${VERSION}"
-            sha256 "${CHECKSUM}"
+            arch arm: "arm64", intel: "amd64"
 
-            url "${URL}"
+            version "${VERSION}"
+            sha256 arm: "${MACOS_ARM64_CHECKSUM}", intel: "${MACOS_AMD64_CHECKSUM}"
+
+            url "https://github.com/gripmock/grpctestify-rust/releases/download/v#{version}/grpctestify-macos-#{arch}.tar.gz"
             name "gRPCTestify"
             desc "gRPC testing utility written in Rust"
             homepage "https://github.com/gripmock/grpctestify-rust"
 
-            binary "grpctestify-macos-arm64", target: "grpctestify"
+            binary "grpctestify", target: "grpctestify"
 
             zap trash: [
               "~/.grpctestify",
             ]
           end
           EOF
-      - name: Commit cask
+      - name: Commit tap updates
         run: |
           cd homebrew-tap
-          git add Casks/grpctestify.rb
+          git add Formula/grpctestify.rb Casks/grpctestify.rb
           if ! git diff --cached --quiet; then
-            git commit -m "feat: update cask to ${{ steps.version.outputs.VERSION }}"
+            git commit -m "chore: update homebrew to ${{ steps.version.outputs.VERSION }}"
             git push origin master
           fi
