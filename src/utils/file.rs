@@ -191,13 +191,17 @@ impl FileUtils {
     }
 }
 
-#[cfg(all(test, not(miri)))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::polyfill::runtime;
     use tempfile::NamedTempFile;
 
     #[test]
     fn test_collect_test_files_single() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
         let file = tempfile::Builder::new().suffix(".gctf").tempfile().unwrap();
         let path = file.path();
 
@@ -208,6 +212,9 @@ mod tests {
 
     #[test]
     fn test_collect_test_files_non_gctf() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
         let file = tempfile::Builder::new().suffix(".txt").tempfile().unwrap();
         let path = file.path();
 
@@ -217,6 +224,9 @@ mod tests {
 
     #[test]
     fn test_collect_test_files_directory() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let test_file = dir.path().join("test.gctf");
         std::fs::write(&test_file, "test").unwrap();
@@ -228,6 +238,9 @@ mod tests {
 
     #[test]
     fn test_collect_test_files_directory_multiple() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let file1 = dir.path().join("test1.gctf");
         let file2 = dir.path().join("test2.gctf");
@@ -245,6 +258,9 @@ mod tests {
 
     #[test]
     fn test_collect_test_files_directory_nested() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let subdir = dir.path().join("subdir");
         std::fs::create_dir(&subdir).unwrap();
@@ -258,6 +274,9 @@ mod tests {
 
     #[test]
     fn test_collect_test_files_hidden_dirs_skipped() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let hidden_dir = dir.path().join(".hidden");
         std::fs::create_dir(&hidden_dir).unwrap();
@@ -274,6 +293,9 @@ mod tests {
 
     #[test]
     fn test_collect_test_files_nonexistent() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
         let path = PathBuf::from("/nonexistent/path");
         let files = FileUtils::collect_test_files(&path);
         assert_eq!(files.len(), 0);
@@ -294,6 +316,9 @@ mod tests {
 
     #[test]
     fn test_sort_files_by_size() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let small = dir.path().join("small.gctf");
         let large = dir.path().join("large.gctf");
@@ -308,6 +333,9 @@ mod tests {
 
     #[test]
     fn test_sort_files_by_mtime() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let old = dir.path().join("old.gctf");
         let new = dir.path().join("new.gctf");
@@ -349,6 +377,9 @@ mod tests {
 
     #[test]
     fn test_get_mtime() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
         let file = tempfile::Builder::new().suffix(".gctf").tempfile().unwrap();
         let mtime = FileUtils::get_mtime(file.path());
         assert!(mtime.is_ok());
@@ -357,12 +388,18 @@ mod tests {
 
     #[test]
     fn test_get_mtime_nonexistent() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
         let result = FileUtils::get_mtime(Path::new("/nonexistent/file"));
         assert!(result.is_err());
     }
 
     #[test]
     fn test_get_file_size() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
         let file = tempfile::Builder::new().suffix(".gctf").tempfile().unwrap();
         std::fs::write(file.path(), "hello").unwrap();
         let size = FileUtils::get_file_size(file.path());
@@ -372,6 +409,9 @@ mod tests {
 
     #[test]
     fn test_get_file_size_nonexistent() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
         let result = FileUtils::get_file_size(Path::new("/nonexistent/file"));
         assert!(result.is_err());
     }
@@ -399,6 +439,9 @@ mod tests {
 
     #[test]
     fn test_update_test_file() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
         let mut doc = crate::parser::GctfDocument::new("test.gctf".to_string());
         use crate::parser::ast::{InlineOptions, Section, SectionContent, SectionType};
         use serde_json::json;

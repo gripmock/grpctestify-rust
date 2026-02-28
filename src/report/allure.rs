@@ -4,7 +4,6 @@ use anyhow::Result;
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 pub struct AllureReporter {
@@ -124,10 +123,7 @@ impl Reporter for AllureReporter {
             None
         };
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
+        let now = crate::time::now_unix_millis();
         let duration = result.duration_ms as u128;
         let start = now.saturating_sub(duration);
 

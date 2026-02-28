@@ -199,17 +199,6 @@ pub struct SectionHeader {
 }
 
 impl GctfDocument {
-    fn current_timestamp() -> i64 {
-        #[cfg(miri)]
-        {
-            0
-        }
-        #[cfg(not(miri))]
-        {
-            chrono::Utc::now().timestamp()
-        }
-    }
-
     /// Create a new empty document
     pub fn new(file_path: String) -> Self {
         Self {
@@ -218,7 +207,7 @@ impl GctfDocument {
             metadata: DocumentMetadata {
                 source: None,
                 mtime: None,
-                parsed_at: Self::current_timestamp(),
+                parsed_at: crate::time::now_timestamp(),
             },
         }
     }

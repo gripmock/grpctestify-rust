@@ -23,7 +23,7 @@ impl TestResult {
             duration_ms,
             grpc_duration_ms,
             error_message: None,
-            execution_time: chrono::Utc::now().timestamp(),
+            execution_time: crate::time::now_timestamp(),
         }
     }
 
@@ -40,7 +40,7 @@ impl TestResult {
             duration_ms,
             grpc_duration_ms,
             error_message: Some(error_message),
-            execution_time: chrono::Utc::now().timestamp(),
+            execution_time: crate::time::now_timestamp(),
         }
     }
 }

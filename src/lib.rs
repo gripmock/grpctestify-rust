@@ -9,8 +9,10 @@ pub mod logging;
 pub mod lsp;
 pub mod parser;
 pub mod plugins;
+pub mod polyfill;
 pub mod report;
 pub mod state;
+pub mod time;
 pub mod utils;
 
 pub use commands::truncate_str;

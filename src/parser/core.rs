@@ -490,6 +490,7 @@ fn normalize_regex_literals(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::polyfill::runtime;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -655,8 +656,11 @@ Service/Method
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn test_parse_gctf() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
+
         let content = r#"--- ENDPOINT ---
 Service/Method
 
@@ -671,15 +675,21 @@ Service/Method
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn test_parse_gctf_nonexistent_file() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
+
         let result = parse_gctf(Path::new("/nonexistent/file.gctf"));
         assert!(result.is_err());
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn test_parse_gctf_with_diagnostics() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
+
         let content = r#"--- ENDPOINT ---
 Service/Method
 

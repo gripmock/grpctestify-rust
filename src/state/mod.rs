@@ -120,7 +120,7 @@ impl ExecutionMetrics {
     /// Update execution time
     #[allow(dead_code)]
     pub fn update_time(&mut self) {
-        self.end_time = chrono::Utc::now().timestamp();
+        self.end_time = crate::time::now_timestamp();
         self.total_duration_ms = (self.end_time - self.start_time) as u64;
     }
 }

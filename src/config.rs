@@ -170,6 +170,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::polyfill::runtime;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -308,8 +309,11 @@ address = "custom:5000"
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn test_config_load_from_file() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
+
         let toml = r#"
 [general]
 address = "file-test:1234"
@@ -325,8 +329,11 @@ address = "file-test:1234"
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn test_config_load_from_nonexistent_file() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
+
         let result = Config::load_from_file(Path::new("/nonexistent/path/config.toml"));
         assert!(result.is_none());
     }

@@ -1,6 +1,5 @@
 // Execution metrics
 
-use chrono::Utc;
 use serde::Serialize;
 
 /// Execution metrics
@@ -18,7 +17,7 @@ impl Default for ExecutionMetrics {
     fn default() -> Self {
         Self {
             total_duration_ms: 0,
-            start_time: Utc::now().timestamp(),
+            start_time: crate::time::now_timestamp(),
             end_time: 0,
             grpc_calls: 0,
             grpc_total_duration_ms: 0,
