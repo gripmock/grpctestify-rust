@@ -206,13 +206,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_assertion_handler_new() {
-        let handler = AssertionHandler::new(false);
-        // Handler created successfully
-        let _ = handler;
-    }
-
-    #[test]
     fn test_evaluate_assertions_pass() {
         let handler = AssertionHandler::new(false);
         let sections = vec![Section {

@@ -1,12 +1,22 @@
 // Explain command - show detailed execution plan and workflow
 
 use anyhow::Result;
+use serde::Serialize;
 use std::path::Path;
 
 use crate::cli::args::ExplainArgs;
 use crate::execution;
+use crate::optimizer;
 use crate::parser;
 use crate::parser::ast::{SectionContent, SectionType};
+
+#[derive(Serialize)]
+struct ExplainJsonOutput {
+    semantic_plan: execution::ExecutionPlan,
+    optimization_trace: Vec<optimizer::OptimizationHint>,
+    optimized_plan: execution::ExecutionPlan,
+    execution_plan: execution::ExecutionPlan,
+}
 
 pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
     let file_path = &args.file;
@@ -20,6 +30,10 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
     let parse_result = parser::parse_with_recovery(file_path);
     let doc = parse_result.document;
     let diagnostics = parse_result.diagnostics;
+    let parse_diagnostics = parser::parse_gctf_with_diagnostics(file_path)
+        .ok()
+        .map(|(_, d)| d)
+        .unwrap_or_default();
 
     let parse_ms = parse_start.elapsed().as_secs_f64() * 1000.0;
 
@@ -42,21 +56,66 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
     let validation_start = std::time::Instant::now();
     let validation_result = parser::validate_document(&doc);
     let validation_ms = validation_start.elapsed().as_secs_f64() * 1000.0;
+    let semantic_type_mismatches = crate::semantics::collect_assertion_type_mismatches(&doc);
+    let semantic_unknown_plugins = crate::semantics::collect_unknown_plugin_calls(&doc);
 
-    if args.format == "json" {
-        // Build execution plan and output as JSON
-        let execution_plan = execution::ExecutionPlan::from_document(&doc);
-        println!("{}", serde_json::to_string_pretty(&execution_plan)?);
+    if args.is_json() {
+        let semantic_plan = execution::ExecutionPlan::from_document(&doc);
+        let optimization_trace = optimizer::collect_assertion_optimizations(&doc);
+        let optimized_plan = semantic_plan.clone();
+        let execution_plan = optimized_plan.clone();
+        let output = ExplainJsonOutput {
+            semantic_plan,
+            optimization_trace,
+            optimized_plan,
+            execution_plan,
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         // Print detailed workflow visualization
-        print_detailed_workflow(&doc, file_path, &parser::ParseDiagnostics::default());
+        print_detailed_workflow(&doc, file_path, &parse_diagnostics);
+        println!();
+
+        let optimization_trace = optimizer::collect_assertion_optimizations(&doc);
+        println!("OPTIMIZATION TRACE:");
+        if optimization_trace.is_empty() {
+            println!("  (no safe rewrites found)");
+        } else {
+            for hint in &optimization_trace {
+                println!(
+                    "  - [{}] line {}: {} -> {}",
+                    hint.rule_id, hint.line, hint.before, hint.after
+                );
+            }
+        }
         println!();
 
         // Show validation result
         println!("VALIDATION:");
         match validation_result {
-            Ok(_) => println!("  OK - No issues found. Test appears structurally valid."),
             Err(e) => println!("  FAILED: {}", e),
+            Ok(_)
+                if !semantic_unknown_plugins.is_empty() || !semantic_type_mismatches.is_empty() =>
+            {
+                println!(
+                    "  FAILED: semantic validation failed ({} unknown plugin call(s), {} type mismatch(es))",
+                    semantic_unknown_plugins.len(),
+                    semantic_type_mismatches.len()
+                );
+                for unknown in &semantic_unknown_plugins {
+                    println!(
+                        "  - line {} [{}] {}",
+                        unknown.line, unknown.rule_id, unknown.message
+                    );
+                }
+                for mismatch in &semantic_type_mismatches {
+                    println!(
+                        "  - line {} [{}] {}",
+                        mismatch.line, mismatch.rule_id, mismatch.message
+                    );
+                }
+            }
+            Ok(_) => println!("  OK - No issues found. Test appears structurally valid."),
         }
         println!();
         println!("TIMING:");
@@ -100,13 +159,36 @@ fn print_diagnostic(diagnostic: &crate::diagnostics::Diagnostic) {
 fn print_detailed_workflow(
     doc: &parser::GctfDocument,
     file_path: &Path,
-    _parse_diagnostics: &parser::ParseDiagnostics,
+    parse_diagnostics: &parser::ParseDiagnostics,
 ) {
     println!();
     println!("EXECUTION PLAN");
     println!("==============");
     println!();
     println!("FILE: {}", file_path.display());
+    println!();
+
+    println!("PARSE PROFILING");
+    println!("---------------");
+    println!("  File size:         {} bytes", parse_diagnostics.bytes);
+    println!("  Total lines:       {}", parse_diagnostics.total_lines);
+    println!("  Section headers:   {}", parse_diagnostics.section_headers);
+    println!(
+        "  Read:              {:.3}ms",
+        parse_diagnostics.timings.read_ms
+    );
+    println!(
+        "  Parse sections:    {:.3}ms",
+        parse_diagnostics.timings.parse_sections_ms
+    );
+    println!(
+        "  Build document:    {:.3}ms",
+        parse_diagnostics.timings.build_document_ms
+    );
+    println!(
+        "  Total:             {:.3}ms",
+        parse_diagnostics.timings.total_ms
+    );
     println!();
 
     // Build execution plan for summary
@@ -122,7 +204,7 @@ fn print_detailed_workflow(
     // Target endpoint
     println!("TARGET ENDPOINT");
     println!("---------------");
-    println!("  Method:  {}", plan.target.endpoint);
+    println!("  Endpoint: {}", plan.target.endpoint);
     if let Some(pkg) = &plan.target.package {
         println!("  Package: {}", pkg);
     }
@@ -157,7 +239,9 @@ fn print_detailed_workflow(
                     println!();
                     println!(
                         "Step {}: ADDRESS [lines {}-{}]",
-                        step, section.start_line, section.end_line
+                        step,
+                        section.start_line + 1,
+                        section.end_line + 1
                     );
                     println!("  {}", addr);
                     step += 1;
@@ -168,7 +252,9 @@ fn print_detailed_workflow(
                     println!();
                     println!(
                         "Step {}: ENDPOINT [lines {}-{}]",
-                        step, section.start_line, section.end_line
+                        step,
+                        section.start_line + 1,
+                        section.end_line + 1
                     );
                     println!("  {}", endpoint);
                     step += 1;
@@ -178,7 +264,9 @@ fn print_detailed_workflow(
                 println!();
                 println!(
                     "Step {}: REQUEST HEADERS [lines {}-{}]",
-                    step, section.start_line, section.end_line
+                    step,
+                    section.start_line + 1,
+                    section.end_line + 1
                 );
                 if let SectionContent::KeyValues(headers) = &section.content {
                     for (key, value) in headers {
@@ -191,7 +279,9 @@ fn print_detailed_workflow(
                 println!();
                 println!(
                     "Step {}: REQUEST [lines {}-{}]",
-                    step, section.start_line, section.end_line
+                    step,
+                    section.start_line + 1,
+                    section.end_line + 1
                 );
                 match &section.content {
                     SectionContent::Json(value) => {
@@ -213,7 +303,9 @@ fn print_detailed_workflow(
                 println!();
                 println!(
                     "Step {}: RESPONSE [lines {}-{}]",
-                    step, section.start_line, section.end_line
+                    step,
+                    section.start_line + 1,
+                    section.end_line + 1
                 );
                 match &section.content {
                     SectionContent::Json(value) => {
@@ -234,23 +326,24 @@ fn print_detailed_workflow(
                 }
 
                 // Show comparison options
+                let mut option_flags = Vec::new();
                 if section.inline_options.partial {
-                    println!("  Options: Partial matching enabled");
+                    option_flags.push("partial");
                 }
                 if section.inline_options.unordered_arrays {
-                    println!("  Options: Unordered arrays enabled");
-                }
-                if !section.inline_options.redact.is_empty() {
-                    println!(
-                        "  Options: Redact fields: {:?}",
-                        section.inline_options.redact
-                    );
-                }
-                if let Some(tol) = section.inline_options.tolerance {
-                    println!("  Options: Tolerance: {}", tol);
+                    option_flags.push("unordered_arrays");
                 }
                 if section.inline_options.with_asserts {
-                    println!("  Options: With asserts enabled (ASSERTS section follows)");
+                    option_flags.push("with_asserts");
+                }
+                if !option_flags.is_empty() {
+                    println!("  Options: {}", option_flags.join(", "));
+                }
+                if !section.inline_options.redact.is_empty() {
+                    println!("  Redact:  {:?}", section.inline_options.redact);
+                }
+                if let Some(tol) = section.inline_options.tolerance {
+                    println!("  Tolerance: {}", tol);
                 }
                 println!("  Action: Validate response against expected");
                 step += 1;
@@ -259,7 +352,9 @@ fn print_detailed_workflow(
                 println!();
                 println!(
                     "Step {}: EXPECTED ERROR [lines {}-{}]",
-                    step, section.start_line, section.end_line
+                    step,
+                    section.start_line + 1,
+                    section.end_line + 1
                 );
                 if let SectionContent::Json(value) = &section.content {
                     println!("  Expected gRPC error:");
@@ -277,7 +372,9 @@ fn print_detailed_workflow(
                 println!();
                 println!(
                     "Step {}: EXTRACT [lines {}-{}]",
-                    step, section.start_line, section.end_line
+                    step,
+                    section.start_line + 1,
+                    section.end_line + 1
                 );
                 if let SectionContent::Extract(extractions) = &section.content {
                     for (var_name, jq_path) in extractions {
@@ -291,14 +388,22 @@ fn print_detailed_workflow(
                 println!();
                 println!(
                     "Step {}: ASSERTS [lines {}-{}]",
-                    step, section.start_line, section.end_line
+                    step,
+                    section.start_line + 1,
+                    section.end_line + 1
                 );
                 if let SectionContent::Assertions(assertions) = &section.content {
                     for (idx, assertion) in assertions.iter().enumerate() {
-                        println!("  {}. {}", idx + 1, assertion);
+                        let rewritten =
+                            optimizer::rewrite_assertion_expression_fixed_point(assertion);
+                        if rewritten == assertion.trim() {
+                            println!("  {}. {}", idx + 1, assertion);
+                        } else {
+                            println!("  {}. {}", idx + 1, rewritten);
+                        }
                     }
                 }
-                println!("  Action: Evaluate all assertions (must all pass)");
+                println!("  Action: Evaluate optimized assertions (must all pass)");
                 step += 1;
             }
             SectionType::Options | SectionType::Tls | SectionType::Proto => {
@@ -307,8 +412,8 @@ fn print_detailed_workflow(
                     "Step {}: {} [lines {}-{}]",
                     step,
                     section.section_type.as_str(),
-                    section.start_line,
-                    section.end_line
+                    section.start_line + 1,
+                    section.end_line + 1
                 );
                 println!("  (configuration section)");
                 step += 1;
@@ -360,6 +465,6 @@ fn print_workflow_type(doc: &parser::GctfDocument) {
     // Build and print workflow steps with section references
     let steps = build_workflow_graph(&doc.sections);
     for step in &steps {
-        println!("    {} [line {}]", step.format(), step.section_line);
+        println!("    {} [line {}]", step.format(), step.section_line + 1);
     }
 }

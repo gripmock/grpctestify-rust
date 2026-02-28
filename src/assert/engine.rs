@@ -72,8 +72,13 @@ impl AssertionEngine {
         let trimmed = assertion.trim();
 
         // 1. Try operators engine (handles @ functions and custom operators)
-        match operators::evaluate_legacy(&self.plugin_manager, trimmed, response, headers, trailers)
-        {
+        match operators::evaluate_assertion(
+            &self.plugin_manager,
+            trimmed,
+            response,
+            headers,
+            trailers,
+        ) {
             Ok(AssertionResult::Error(msg)) if msg.starts_with("Unsupported assertion syntax") => {
                 // Fallback to JQ
                 self.evaluate_jaq(trimmed, response)
@@ -295,6 +300,21 @@ mod tests {
             // Pass
         } else {
             panic!("Expected Fail for invalid email");
+        }
+    }
+
+    #[test]
+    fn test_evaluate_empty_plugin() {
+        let engine = AssertionEngine::new();
+        let response = json!({"tags": []});
+
+        let result = engine
+            .evaluate("@empty(.tags)", &response, None, None)
+            .unwrap();
+        if let AssertionResult::Pass = result {
+            // Pass
+        } else {
+            panic!("Expected Pass for empty value");
         }
     }
 

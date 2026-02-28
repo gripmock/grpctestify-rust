@@ -1,5 +1,6 @@
 // LSP go-to-definition for variables
 
+use crate::parser;
 use tower_lsp::lsp_types::*;
 
 /// Variable definition location
@@ -67,39 +68,34 @@ pub fn extract_variable_at_position(line: &str, char_idx: usize) -> Option<Strin
 
 /// Find variable definition in EXTRACT section
 fn find_variable_in_extract(content: &str, var_name: &str, uri: &str) -> Option<VariableLocation> {
-    let lines: Vec<&str> = content.lines().collect();
-    let mut in_extract = false;
+    let doc = parser::parse_gctf_from_str(content, "lsp-document.gctf").ok()?;
 
-    for (line_idx, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-
-        // Check for EXTRACT section start
-        if trimmed.starts_with("--- EXTRACT ---") {
-            in_extract = true;
+    for section in &doc.sections {
+        if section.section_type != parser::ast::SectionType::Extract {
             continue;
         }
 
-        // Check for section end
-        if trimmed.starts_with("---") && !trimmed.starts_with("--- EXTRACT") {
-            if in_extract {
-                in_extract = false;
+        for (idx, line) in section.raw_content.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+                continue;
             }
-            continue;
-        }
 
-        // Look for variable definition in EXTRACT section
-        if in_extract {
-            // Parse "var_name = value"
-            if let Some(eq_pos) = trimmed.find('=') {
-                let name = trimmed[..eq_pos].trim();
-                if name == var_name {
-                    return Some(VariableLocation {
-                        name: var_name.to_string(),
-                        line: line_idx as u32,
-                        character: 0,
-                        uri: uri.to_string(),
-                    });
-                }
+            if let Some(extract_var) = parser::ExtractVar::parse(trimmed)
+                && extract_var.name == var_name
+            {
+                let line_num = section.start_line as u32 + idx as u32 + 1;
+                let character = line
+                    .find(&extract_var.name)
+                    .map(|pos| pos as u32)
+                    .unwrap_or(0);
+
+                return Some(VariableLocation {
+                    name: var_name.to_string(),
+                    line: line_num,
+                    character,
+                    uri: uri.to_string(),
+                });
             }
         }
     }
@@ -127,10 +123,44 @@ pub fn variable_location_to_lsp(loc: &VariableLocation) -> Location {
 /// Find all variable references in document
 pub fn find_variable_references(content: &str, var_name: &str, uri: &str) -> Vec<Location> {
     let mut references = Vec::new();
-    let lines: Vec<&str> = content.lines().collect();
 
-    for (line_idx, line) in lines.iter().enumerate() {
-        // Find all {{ var_name }} occurrences
+    if let Ok(doc) = parser::parse_gctf_from_str(content, "lsp-document.gctf") {
+        for section in &doc.sections {
+            for (idx, line) in section.raw_content.lines().enumerate() {
+                // Find all {{ var_name }} occurrences
+                let mut search_start = 0;
+                while let Some(var_start) = line[search_start..].find("{{") {
+                    let abs_start = search_start + var_start;
+                    if let Some(var_end) = line[abs_start..].find("}}") {
+                        let var_content = line[abs_start + 2..abs_start + var_end].trim();
+                        if var_content == var_name {
+                            references.push(Location {
+                                uri: Url::parse(uri)
+                                    .unwrap_or_else(|_| Url::parse("file:///unknown").unwrap()),
+                                range: Range {
+                                    start: Position {
+                                        line: section.start_line as u32 + idx as u32 + 1,
+                                        character: abs_start as u32,
+                                    },
+                                    end: Position {
+                                        line: section.start_line as u32 + idx as u32 + 1,
+                                        character: (abs_start + var_end + 2) as u32,
+                                    },
+                                },
+                            });
+                        }
+                        search_start = abs_start + var_end + 2;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        return references;
+    }
+
+    // Fallback for parse failures: keep previous behavior on raw lines.
+    for (line_idx, line) in content.lines().enumerate() {
         let mut search_start = 0;
         while let Some(var_start) = line[search_start..].find("{{") {
             let abs_start = search_start + var_start;
@@ -165,28 +195,22 @@ pub fn find_variable_references(content: &str, var_name: &str, uri: &str) -> Vec
 /// Get all variables defined in document
 pub fn get_all_variables(content: &str) -> Vec<(String, u32)> {
     let mut variables = Vec::new();
-    let lines: Vec<&str> = content.lines().collect();
-    let mut in_extract = false;
 
-    for (line_idx, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-
-        if trimmed.starts_with("--- EXTRACT ---") {
-            in_extract = true;
-            continue;
-        }
-
-        if trimmed.starts_with("---") && !trimmed.starts_with("--- EXTRACT") {
-            if in_extract {
-                in_extract = false;
+    if let Ok(doc) = parser::parse_gctf_from_str(content, "lsp-document.gctf") {
+        for section in &doc.sections {
+            if section.section_type != parser::ast::SectionType::Extract {
+                continue;
             }
-            continue;
-        }
 
-        if in_extract && let Some(eq_pos) = trimmed.find('=') {
-            let name = trimmed[..eq_pos].trim();
-            if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                variables.push((name.to_string(), line_idx as u32));
+            for (idx, line) in section.raw_content.lines().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+                    continue;
+                }
+
+                if let Some(extract_var) = parser::ExtractVar::parse(trimmed) {
+                    variables.push((extract_var.name, section.start_line as u32 + idx as u32 + 1));
+                }
             }
         }
     }

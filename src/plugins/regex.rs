@@ -6,7 +6,9 @@ use regex::Regex;
 use serde_json::Value;
 
 use crate::assert::engine::AssertionResult;
-use crate::plugins::{Plugin, PluginContext, PluginResult};
+use crate::plugins::{
+    Plugin, PluginContext, PluginPurity, PluginResult, PluginReturnKind, PluginSignature,
+};
 
 /// Regex plugin for pattern matching
 #[derive(Debug, Clone, Default)]
@@ -14,11 +16,22 @@ pub struct RegexPlugin;
 
 impl Plugin for RegexPlugin {
     fn name(&self) -> &'static str {
-        "@regex"
+        "regex"
     }
 
     fn description(&self) -> &'static str {
         "Validate field matches regex pattern"
+    }
+
+    fn signature(&self) -> PluginSignature {
+        PluginSignature {
+            return_kind: PluginReturnKind::Boolean,
+            purity: PluginPurity::Pure,
+            deterministic: true,
+            idempotent: true,
+            safe_for_rewrite: true,
+            arg_names: &["value", "pattern"],
+        }
     }
 
     fn execute(&self, args: &[Value], _context: &PluginContext) -> Result<PluginResult> {
@@ -182,7 +195,7 @@ mod tests {
     #[test]
     fn test_regex_plugin_name() {
         let plugin = RegexPlugin;
-        assert_eq!(plugin.name(), "@regex");
+        assert_eq!(plugin.name(), "regex");
     }
 
     #[test]

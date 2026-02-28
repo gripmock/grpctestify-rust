@@ -248,6 +248,10 @@ pub struct FmtArgs {
     /// Write changes to file instead of stdout
     #[arg(short = 'w', long, default_value_t = false)]
     pub write: bool,
+
+    /// Apply safe optimizer rewrites before formatting
+    #[arg(short = 'o', long = "optimize", default_value_t = false)]
+    pub optimize: bool,
 }
 
 impl Cli {
@@ -312,5 +316,39 @@ impl Cli {
             Some(Commands::Run(args)) => args,
             _ => &self.run_args,
         }
+    }
+}
+
+fn is_json_format(value: &str) -> bool {
+    value.eq_ignore_ascii_case("json")
+}
+
+impl ListArgs {
+    pub fn is_json(&self) -> bool {
+        is_json_format(&self.format)
+    }
+}
+
+impl InspectArgs {
+    pub fn is_json(&self) -> bool {
+        is_json_format(&self.format)
+    }
+}
+
+impl ExplainArgs {
+    pub fn is_json(&self) -> bool {
+        is_json_format(&self.format)
+    }
+}
+
+impl CheckArgs {
+    pub fn is_json(&self) -> bool {
+        is_json_format(&self.format)
+    }
+}
+
+impl RunArgs {
+    pub fn is_json_coverage(&self) -> bool {
+        is_json_format(&self.coverage_format)
     }
 }

@@ -6,6 +6,7 @@ use super::super::parser::GctfDocument;
 use super::{AssertionHandler, RequestHandler, ResponseHandler};
 use crate::assert::{AssertionEngine, JsonComparator, get_json_diff};
 use crate::grpc::{CompressionMode, GrpcClient, GrpcClientConfig, ProtoConfig, TlsConfig};
+use crate::optimizer;
 use crate::parser::ast::{SectionContent, SectionType};
 use crate::report::CoverageCollector;
 use crate::utils::file::FileUtils;
@@ -278,7 +279,10 @@ impl ExecutionPlan {
             .enumerate()
             .map(|(i, section)| {
                 let assertions = if let SectionContent::Assertions(lines) = &section.content {
-                    lines.clone()
+                    lines
+                        .iter()
+                        .map(|line| optimizer::rewrite_assertion_expression_fixed_point(line))
+                        .collect()
                 } else {
                     vec![]
                 };
@@ -1385,9 +1389,14 @@ impl TestRunner {
         failure_reasons: &mut Vec<String>,
         context: String,
     ) {
+        let optimized_lines: Vec<String> = lines
+            .iter()
+            .map(|line| optimizer::rewrite_assertion_expression_fixed_point(line))
+            .collect();
+
         // Use AssertionHandler for assertion evaluation
         let result = self.assertion_handler.evaluate_assertions_for_section(
-            lines,
+            &optimized_lines,
             target_value,
             headers,
             trailers,

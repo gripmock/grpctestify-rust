@@ -4,7 +4,9 @@ use anyhow::Result;
 use tracing::{error, warn};
 
 use crate::cli::args::FmtArgs;
+use crate::optimizer;
 use crate::parser;
+use crate::semantics;
 use crate::utils::FileUtils;
 
 fn parse_header_line(line: &str) -> Option<(&str, &str)> {
@@ -81,6 +83,81 @@ fn format_gctf_preserve_comments(doc: &crate::parser::GctfDocument, source: &str
     output
 }
 
+pub fn format_gctf_content(source: &str, file_name: &str) -> Result<String> {
+    let doc = parser::parse_gctf_from_str(source, file_name)?;
+    Ok(format_gctf_preserve_comments(&doc, source))
+}
+
+fn apply_optimizer_rewrites(source: &str, file_name: &str) -> Result<String> {
+    let doc = parser::parse_gctf_from_str(source, file_name)?;
+    let hints = optimizer::collect_assertion_optimizations(&doc);
+    if hints.is_empty() {
+        return Ok(source.to_string());
+    }
+
+    let mut lines: Vec<String> = source.lines().map(str::to_string).collect();
+    for hint in hints {
+        let line_idx = hint.line.saturating_sub(1);
+        if line_idx >= lines.len() {
+            continue;
+        }
+
+        let line = &mut lines[line_idx];
+        if let Some(start) = line.find(&hint.before) {
+            let end = start + hint.before.len();
+            line.replace_range(start..end, &hint.after);
+        }
+    }
+
+    let mut rewritten = lines.join("\n");
+    if source.ends_with('\n') {
+        rewritten.push('\n');
+    }
+    Ok(rewritten)
+}
+
+fn collect_check_errors_for_content(
+    source: &str,
+    file_name: &str,
+) -> Vec<(usize, String, String, Option<String>)> {
+    let mut errors = Vec::new();
+
+    let doc = match parser::parse_gctf_from_str(source, file_name) {
+        Ok(doc) => doc,
+        Err(e) => {
+            errors.push((1, "PARSE_ERROR".to_string(), e.to_string(), None));
+            return errors;
+        }
+    };
+
+    if let Err(e) = parser::validate_document(&doc) {
+        errors.push((1, "VALIDATION_ERROR".to_string(), e.to_string(), None));
+    }
+
+    for mismatch in semantics::collect_assertion_type_mismatches(&doc) {
+        errors.push((
+            mismatch.line,
+            mismatch.rule_id,
+            mismatch.message,
+            Some(format!(
+                "Type contract violation in assertion: {}",
+                mismatch.expression
+            )),
+        ));
+    }
+
+    for unknown in semantics::collect_unknown_plugin_calls(&doc) {
+        errors.push((
+            unknown.line,
+            unknown.rule_id,
+            unknown.message,
+            Some(format!("Assertion: {}", unknown.expression)),
+        ));
+    }
+
+    errors
+}
+
 pub async fn handle_fmt(args: &FmtArgs) -> Result<()> {
     let mut files = Vec::new();
     let mut has_error = false;
@@ -113,17 +190,40 @@ pub async fn handle_fmt(args: &FmtArgs) -> Result<()> {
             }
         };
 
-        // Parse
-        let doc = match parser::parse_gctf(&file) {
-            Ok(doc) => doc,
+        let file_name = file.to_string_lossy();
+        let check_errors = collect_check_errors_for_content(&original, &file_name);
+        if !check_errors.is_empty() {
+            for (line, code, message, hint) in check_errors {
+                error!("{}:{}: [{}] {}", file.display(), line, code, message);
+                if let Some(hint) = hint {
+                    error!("  hint: {}", hint);
+                }
+            }
+            has_error = true;
+            continue;
+        }
+
+        let preformatted = if args.optimize {
+            match apply_optimizer_rewrites(&original, &file_name) {
+                Ok(content) => content,
+                Err(e) => {
+                    error!("Failed to optimize {}: {}", file.display(), e);
+                    has_error = true;
+                    continue;
+                }
+            }
+        } else {
+            original.clone()
+        };
+
+        let formatted = match format_gctf_content(&preformatted, &file_name) {
+            Ok(formatted) => formatted,
             Err(e) => {
                 error!("Failed to parse {}: {}", file.display(), e);
                 has_error = true;
                 continue;
             }
         };
-
-        let formatted = format_gctf_preserve_comments(&doc, &original);
 
         if args.write {
             // Only write if content changed (idempotent check)

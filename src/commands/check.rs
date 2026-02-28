@@ -6,6 +6,7 @@ use tracing::info;
 use crate::cli::args::CheckArgs;
 use crate::parser;
 use crate::report::{CheckReport, CheckSummary, Diagnostic, DiagnosticSeverity};
+use crate::semantics;
 use crate::utils::FileUtils;
 
 pub async fn handle_check(args: &CheckArgs) -> Result<()> {
@@ -30,7 +31,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     }
 
     if files.is_empty() {
-        if args.format == "json" {
+        if args.is_json() {
             let total_errors = diagnostics
                 .iter()
                 .filter(|d| matches!(d.severity, DiagnosticSeverity::Error))
@@ -49,6 +50,17 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                 },
             };
             println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            for d in &diagnostics {
+                println!(
+                    "{}:{}: [{}] {}",
+                    d.file, d.range.start.line, d.code, d.message
+                );
+            }
+        }
+
+        if files_with_errors > 0 {
+            std::process::exit(1);
         }
         return Ok(());
     }
@@ -57,6 +69,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
 
     for file in &files {
         let file_str = file.to_string_lossy().to_string();
+        let mut file_has_error = false;
         match parser::parse_gctf(file) {
             Ok(doc) => {
                 // Check for deprecated HEADERS using AST section types
@@ -85,8 +98,41 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                         &e.to_string(),
                         1,
                     ));
-                    files_with_errors += 1;
-                } else if args.format != "json" {
+                    file_has_error = true;
+                }
+
+                let semantic_mismatches = semantics::collect_assertion_type_mismatches(&doc);
+                for mismatch in semantic_mismatches {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            &file_str,
+                            &mismatch.rule_id,
+                            &mismatch.message,
+                            mismatch.line,
+                        )
+                        .with_hint(&format!(
+                            "Type contract violation in assertion: {}",
+                            mismatch.expression
+                        )),
+                    );
+                    file_has_error = true;
+                }
+
+                let unknown_plugins = semantics::collect_unknown_plugin_calls(&doc);
+                for unknown in unknown_plugins {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            &file_str,
+                            &unknown.rule_id,
+                            &unknown.message,
+                            unknown.line,
+                        )
+                        .with_hint(&format!("Assertion: {}", unknown.expression)),
+                    );
+                    file_has_error = true;
+                }
+
+                if !args.is_json() && !file_has_error {
                     println!("{} ... OK", file.display());
                 }
             }
@@ -97,12 +143,28 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                     &e.to_string(),
                     1,
                 ));
-                files_with_errors += 1;
+                file_has_error = true;
+            }
+        }
+
+        if file_has_error {
+            files_with_errors += 1;
+        }
+    }
+
+    if !args.is_json() {
+        for d in &diagnostics {
+            println!(
+                "{}:{}: [{}] {}",
+                d.file, d.range.start.line, d.code, d.message
+            );
+            if let Some(hint) = &d.hint {
+                println!("  hint: {}", hint);
             }
         }
     }
 
-    if args.format == "json" {
+    if args.is_json() {
         let total_errors = diagnostics
             .iter()
             .filter(|d| matches!(d.severity, DiagnosticSeverity::Error))

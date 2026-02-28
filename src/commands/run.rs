@@ -208,7 +208,7 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
 
     // Print Coverage Report if enabled
     if let Some(collector) = coverage_collector {
-        if args.coverage_format == "json" {
+        if args.is_json_coverage() {
             let report = collector.generate_json_report();
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {

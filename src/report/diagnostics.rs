@@ -66,6 +66,8 @@ pub struct InspectReport {
     pub validation_time_ms: f64,
     pub ast: AstOverview,
     pub diagnostics: Vec<Diagnostic>,
+    pub semantic_diagnostics: Vec<Diagnostic>,
+    pub optimization_hints: Vec<Diagnostic>,
     pub inferred_rpc_mode: Option<String>,
 }
 

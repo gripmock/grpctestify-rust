@@ -18,7 +18,7 @@ pub fn handle_list(args: &ListArgs) -> Result<()> {
 
     let files = FileUtils::collect_test_files(path);
 
-    if args.format == "json" {
+    if args.is_json() {
         let tests: Vec<serde_json::Value> = files
             .iter()
             .map(|file| {
