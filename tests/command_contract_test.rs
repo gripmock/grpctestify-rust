@@ -4,16 +4,19 @@ fn get_binary() -> String {
     env!("CARGO_BIN_EXE_grpctestify").to_string()
 }
 
+fn fixture_path(rel: &str) -> String {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(rel)
+        .to_string_lossy()
+        .into_owned()
+}
+
 #[test]
 fn test_check_valid_file_json_output() {
     let binary = get_binary();
+    let file = fixture_path("tests/data/gctf/valid_simple.gctf");
     let output = Command::new(&binary)
-        .args([
-            "check",
-            "tests/data/gctf/valid_simple.gctf",
-            "--format",
-            "json",
-        ])
+        .args(["check", &file, "--format", "json"])
         .output()
         .expect("Failed to execute check command");
 
@@ -28,13 +31,9 @@ fn test_check_valid_file_json_output() {
 #[test]
 fn test_check_missing_file_json_output() {
     let binary = get_binary();
+    let file = fixture_path("tests/data/gctf/nonexistent.gctf");
     let output = Command::new(&binary)
-        .args([
-            "check",
-            "tests/data/gctf/nonexistent.gctf",
-            "--format",
-            "json",
-        ])
+        .args(["check", &file, "--format", "json"])
         .output()
         .expect("Failed to execute check command");
 
@@ -48,13 +47,9 @@ fn test_check_missing_file_json_output() {
 #[test]
 fn test_inspect_valid_file_json_output() {
     let binary = get_binary();
+    let file = fixture_path("tests/data/gctf/valid_simple.gctf");
     let output = Command::new(&binary)
-        .args([
-            "inspect",
-            "tests/data/gctf/valid_simple.gctf",
-            "--format",
-            "json",
-        ])
+        .args(["inspect", &file, "--format", "json"])
         .output()
         .expect("Failed to execute inspect command");
 
@@ -70,13 +65,9 @@ fn test_inspect_valid_file_json_output() {
 #[test]
 fn test_inssect_sections_have_required_fields() {
     let binary = get_binary();
+    let file = fixture_path("tests/data/gctf/valid_simple.gctf");
     let output = Command::new(&binary)
-        .args([
-            "inspect",
-            "tests/data/gctf/valid_simple.gctf",
-            "--format",
-            "json",
-        ])
+        .args(["inspect", &file, "--format", "json"])
         .output()
         .expect("Failed to execute inspect command");
 
@@ -97,8 +88,9 @@ fn test_inssect_sections_have_required_fields() {
 #[test]
 fn test_fmt_stdout_output() {
     let binary = get_binary();
+    let file = fixture_path("tests/data/gctf/valid_simple.gctf");
     let output = Command::new(&binary)
-        .args(["fmt", "tests/data/gctf/valid_simple.gctf"])
+        .args(["fmt", &file])
         .output()
         .expect("Failed to execute fmt command");
 
@@ -110,14 +102,15 @@ fn test_fmt_stdout_output() {
 #[test]
 fn test_fmt_idempotent() {
     let binary = get_binary();
+    let file = fixture_path("tests/data/gctf/valid_simple.gctf");
 
     let output1 = Command::new(&binary)
-        .args(["fmt", "tests/data/gctf/valid_simple.gctf"])
+        .args(["fmt", &file])
         .output()
         .expect("Failed to execute fmt command");
 
     let output2 = Command::new(&binary)
-        .args(["fmt", "tests/data/gctf/valid_simple.gctf"])
+        .args(["fmt", &file])
         .output()
         .expect("Failed to execute fmt command");
 
@@ -130,8 +123,9 @@ fn test_fmt_idempotent() {
 #[test]
 fn test_list_json_output() {
     let binary = get_binary();
+    let dir = fixture_path("tests/data/gctf");
     let output = Command::new(&binary)
-        .args(["list", "tests/data/gctf", "--format", "json"])
+        .args(["list", &dir, "--format", "json"])
         .output()
         .expect("Failed to execute list command");
 
@@ -152,14 +146,9 @@ fn test_list_json_output() {
 #[test]
 fn test_list_with_range() {
     let binary = get_binary();
+    let dir = fixture_path("tests/data/gctf");
     let output = Command::new(&binary)
-        .args([
-            "list",
-            "tests/data/gctf",
-            "--format",
-            "json",
-            "--with-range",
-        ])
+        .args(["list", &dir, "--format", "json", "--with-range"])
         .output()
         .expect("Failed to execute list command");
 
