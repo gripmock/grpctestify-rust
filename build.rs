@@ -14,7 +14,7 @@ fn compile_main_protos() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .file_descriptor_set_path(out_dir.join("helloworld_descriptor.bin"))
         .compile_protos(&["tests/server/helloworld.proto"], &["tests/server"])?;
     Ok(())
@@ -55,9 +55,9 @@ fn compile_test_server_protos() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Compile test server protos
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .file_descriptor_set_path(out_dir.join("test_servers_descriptor.bin"))
-        .compile_protos(&proto_files, &[test_proto_dir])?;
+        .compile_protos(&proto_files, &[test_proto_dir.to_path_buf()])?;
 
     Ok(())
 }

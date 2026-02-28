@@ -8,7 +8,8 @@ use std::collections::HashMap;
 use crate::plugins::PluginManager;
 
 // Jaq imports
-use jaq_interpret::{Ctx, FilterT, ParseCtx, RcIter, Val};
+use jaq_core::{Compiler, Ctx, Vars, data, load, unwrap_valr};
+use jaq_json::Val as JaqVal;
 
 // Operators module
 use super::operators;
@@ -83,74 +84,31 @@ impl AssertionEngine {
 
     /// Execute a JQ query and return the result(s)
     pub fn query(&self, expr: &str, input: &Value) -> Result<Vec<Value>> {
-        // Parse using jaq_parse::parse
-        let main_expr = self.parse_jaq(expr)?;
-
-        // Compile
-        let mut defs = ParseCtx::new(Vec::new());
-        defs.insert_natives(jaq_core::core());
-        defs.insert_defs(jaq_std::std());
-
-        let filter = defs.compile(main_expr);
-
-        // Execute
-        let inputs = RcIter::new(core::iter::empty());
-        let out = filter.run((Ctx::new(vec![], &inputs), Val::from(input.clone())));
-
-        let mut results = Vec::new();
-        for r in out {
-            match r {
-                Ok(val) => {
-                    // Convert Val back to serde_json::Value
-                    results.push(val.into());
-                }
-                Err(e) => return Err(anyhow::anyhow!("JQ Runtime Error: {}", e)),
-            }
-        }
-
-        Ok(results)
+        let values = self.run_jaq(expr, input)?;
+        values
+            .into_iter()
+            .map(|val| {
+                serde_json::from_str(&val.to_string())
+                    .map_err(|e| anyhow::anyhow!("JQ output conversion error: {}", e))
+            })
+            .collect()
     }
 
     fn evaluate_jaq(&self, expr: &str, response: &Value) -> Result<AssertionResult> {
-        // Parse using jaq_parse::parse
-        let main_expr = match self.parse_jaq(expr) {
-            Ok(main) => main,
+        let out = match self.run_jaq(expr, response) {
+            Ok(out) => out,
             Err(e) => return Ok(AssertionResult::Error(format!("JQ Parse Error: {}", e))),
         };
 
-        // Compile
-        let mut defs = ParseCtx::new(Vec::new());
-        defs.insert_natives(jaq_core::core());
-        defs.insert_defs(jaq_std::std());
-
-        let filter = defs.compile(main_expr);
-
-        // Execute
-        let inputs = RcIter::new(core::iter::empty());
-        let out = filter.run((Ctx::new(vec![], &inputs), Val::from(response.clone())));
-
         let mut passed = false;
         let mut seen_false = false;
-        let mut errors = Vec::new();
 
-        for r in out {
-            match r {
-                Ok(val) => {
-                    if val.as_bool() {
-                        passed = true;
-                    } else {
-                        seen_false = true;
-                    }
-                }
-                Err(e) => errors.push(format!("{}", e)),
+        for val in out {
+            if matches!(val, JaqVal::Bool(true)) {
+                passed = true;
+            } else {
+                seen_false = true;
             }
-        }
-
-        if !errors.is_empty() {
-            return Ok(AssertionResult::Error(format!(
-                "JQ Runtime Error: {}",
-                errors.join(", ")
-            )));
         }
 
         if seen_false {
@@ -170,21 +128,38 @@ impl AssertionEngine {
         }
     }
 
-    // Helper to parse JQ expression using jaq_parse
-    fn parse_jaq(&self, expr: &str) -> Result<jaq_syn::Main> {
-        let parser = jaq_parse::main();
+    fn run_jaq(&self, expr: &str, input: &Value) -> Result<Vec<JaqVal>> {
+        let arena = load::Arena::default();
+        let loader = load::Loader::new(jaq_std::defs().chain(jaq_json::defs()));
+        let program = load::File {
+            code: expr,
+            path: (),
+        };
 
-        // Use jaq_parse::parse
-        let result = jaq_parse::parse(expr, parser);
+        let modules = loader
+            .load(&arena, program)
+            .map_err(|errs| anyhow::anyhow!("Failed to parse JQ expression: {}", errs.len()))?;
 
-        // Result is (Option<Main>, Vec<Error>)
-        match result.0 {
-            Some(main) => Ok(main),
-            None => {
-                let errs = result.1;
-                Err(anyhow::anyhow!("Failed to parse JQ expression: {:?}", errs))
+        let filter = Compiler::default()
+            .with_funs(jaq_std::funs().chain(jaq_json::funs()))
+            .compile(modules)
+            .map_err(|errs| anyhow::anyhow!("Failed to compile JQ expression: {}", errs.len()))?;
+
+        let input: JaqVal = serde_json::from_value(input.clone())
+            .map_err(|e| anyhow::anyhow!("Failed to convert input for JQ: {}", e))?;
+
+        let ctx = Ctx::<data::JustLut<JaqVal>>::new(&filter.lut, Vars::new([]));
+        let out = filter.id.run((ctx, input)).map(unwrap_valr);
+
+        let mut values = Vec::new();
+        for item in out {
+            match item {
+                Ok(v) => values.push(v),
+                Err(e) => return Err(anyhow::anyhow!("JQ Runtime Error: {}", e)),
             }
         }
+
+        Ok(values)
     }
 
     // Check if any assertion failed (re-exported wrapper)

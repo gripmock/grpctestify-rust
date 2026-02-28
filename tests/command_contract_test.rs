@@ -53,6 +53,46 @@ fn parse_json_stdout(output: &Output) -> serde_json::Value {
 }
 
 #[test]
+fn test_fmt_preserves_comments_and_json5_content() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("comments.gctf");
+    let content = r#"# file header comment
+--- ADDRESS ---
+localhost:50051
+
+# endpoint comment
+--- ENDPOINT ---
+example.Service/Call
+
+--- REQUEST ---
+# request comment
+{ "a": 1, // inline comment
+  "b": 2 }
+
+--- ASSERTS ---
+# assert explanation
+.a == 1
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["fmt", &path]);
+    assert!(
+        output.status.success(),
+        "fmt command failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("// file header comment"));
+    assert!(stdout.contains("// endpoint comment"));
+    assert!(stdout.contains("// request comment"));
+    assert!(stdout.contains("// inline comment"));
+    assert!(stdout.contains("// assert explanation"));
+}
+
+#[test]
 fn test_check_valid_file_json_output() {
     let file = fixture_path("tests/data/gctf/valid_simple.gctf");
     let output = run_cli(&["check", &file, "--format", "json"]);
