@@ -1,8 +1,9 @@
 # Homebrew Update workflow
 name: Homebrew Update
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
 permissions:
   contents: write
   packages: write
@@ -12,19 +13,22 @@ env:
 jobs:
   update-formula:
     name: Update Homebrew Formula
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Get version
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION="${{ github.event.release.tag_name }}"
+          TAG=$(gh api repos/${{ github.repository }}/releases/latest --jq '.tag_name')
+          VERSION="${TAG#v}"
+          echo "TAG=${TAG}" >> $GITHUB_OUTPUT
           echo "VERSION=${VERSION#v}" >> $GITHUB_OUTPUT
       - name: Download binary
-        uses: robinraju/release-downloader@v1
-        with:
-          latest: true
-          tarBall: false
-          zipBall: false
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ steps.version.outputs.TAG }}" --repo "${{ github.repository }}" --pattern "grpctestify-linux-amd64" --clobber
       - name: Calculate checksum
         id: checksum
         run: |
@@ -71,23 +75,29 @@ jobs:
         run: |
           cd homebrew-tap
           git add Formula/grpctestify.rb
-          git commit -m "chore: update formula to ${{ steps.version.outputs.VERSION }} (deprecated)"
-          git push origin master
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update formula to ${{ steps.version.outputs.VERSION }} (deprecated)"
+            git push origin master
+          fi
   update-cask:
     name: Update Homebrew Cask
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    needs: update-formula
     runs-on: ubuntu-latest
     steps:
       - name: Get version
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION="${{ github.event.release.tag_name }}"
+          TAG=$(gh api repos/${{ github.repository }}/releases/latest --jq '.tag_name')
+          VERSION="${TAG#v}"
+          echo "TAG=${TAG}" >> $GITHUB_OUTPUT
           echo "VERSION=${VERSION#v}" >> $GITHUB_OUTPUT
       - name: Download macOS binary
-        uses: robinraju/release-downloader@v1
-        with:
-          latest: true
-          tarBall: false
-          zipBall: false
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ steps.version.outputs.TAG }}" --repo "${{ github.repository }}" --pattern "grpctestify-macos-arm64" --clobber
       - name: Calculate checksum
         id: checksum
         run: |
@@ -126,5 +136,7 @@ jobs:
         run: |
           cd homebrew-tap
           git add Casks/grpctestify.rb
-          git commit -m "feat: update cask to ${{ steps.version.outputs.VERSION }}"
-          git push origin master
+          if ! git diff --cached --quiet; then
+            git commit -m "feat: update cask to ${{ steps.version.outputs.VERSION }}"
+            git push origin master
+          fi

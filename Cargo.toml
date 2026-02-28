@@ -2,7 +2,7 @@
 resolver = "2"
 
 [workspace.package]
-version = "1.3.1"
+version = "1.3.2"
 edition = "2024"
 authors = ["bavix"]
 license = "MIT"
@@ -246,13 +246,13 @@ required-features = ["test-servers"]
 
 [features]
 default = []
-proto-build = ["dep:protoc-bin-vendored"]
+proto-build = []
 test-servers = []
 
 [build-dependencies]
 tonic-build = "0.14.5"
 tonic-prost-build = "0.14.5"
-protoc-bin-vendored = { version = "3", optional = true }
+protoc-bin-vendored = "3"
 
 [dev-dependencies]
 # Testing
