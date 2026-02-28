@@ -87,6 +87,33 @@ pub trait Plugin: Send + Sync {
     }
 }
 
+pub fn normalize_plugin_name(name: &str) -> &str {
+    let trimmed = name.trim();
+    trimmed.strip_prefix('@').unwrap_or(trimmed)
+}
+
+pub fn extract_plugin_call_name(expr: &str) -> Option<String> {
+    let e = expr.trim();
+    if !e.starts_with('@') || !e.ends_with(')') {
+        return None;
+    }
+
+    let open = e.find('(')?;
+    if open <= 1 {
+        return None;
+    }
+
+    Some(e[1..open].trim().to_string())
+}
+
+pub fn plugin_signature_map() -> HashMap<String, PluginSignature> {
+    PluginManager::new()
+        .list()
+        .into_iter()
+        .map(|plugin| (plugin.name().to_string(), plugin.signature()))
+        .collect()
+}
+
 /// Manager to register and retrieve plugins
 pub struct PluginManager {
     plugins: RwLock<HashMap<String, Arc<dyn Plugin>>>,
@@ -132,7 +159,8 @@ impl PluginManager {
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Plugin>> {
-        self.plugins.read().unwrap().get(name).cloned()
+        let normalized = normalize_plugin_name(name);
+        self.plugins.read().unwrap().get(normalized).cloned()
     }
 
     pub fn list(&self) -> Vec<Arc<dyn Plugin>> {
@@ -174,6 +202,14 @@ mod tests {
         let manager = PluginManager::new();
         // Test retrieval of registered plugin
         let plugin = manager.get("uuid");
+        assert!(plugin.is_some());
+        assert_eq!(plugin.unwrap().name(), "uuid");
+    }
+
+    #[test]
+    fn test_plugin_manager_get_accepts_at_prefix() {
+        let manager = PluginManager::new();
+        let plugin = manager.get("@uuid");
         assert!(plugin.is_some());
         assert_eq!(plugin.unwrap().name(), "uuid");
     }
@@ -239,7 +275,7 @@ mod tests {
     #[test]
     fn test_signature_metadata_env() {
         let manager = PluginManager::new();
-        let signature = manager.get("@env").unwrap().signature();
+        let signature = manager.get("env").unwrap().signature();
         assert_eq!(signature.return_kind, PluginReturnKind::String);
         assert_eq!(signature.purity, PluginPurity::ContextDependent);
         assert!(!signature.deterministic);

@@ -54,6 +54,16 @@ fn parse_json_stdout(output: &Output) -> serde_json::Value {
     })
 }
 
+fn parse_json_stdout_any_status(output: &Output) -> serde_json::Value {
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+        panic!(
+            "Invalid JSON output: {e}\nstderr:\n{}\nstdout:\n{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        )
+    })
+}
+
 fn inspect_contract_view(json: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "has_file": json.get("file").is_some(),
@@ -138,7 +148,8 @@ fn test_check_valid_file_json_output() {
 fn test_check_missing_file_json_output() {
     let file = fixture_path("tests/data/gctf/nonexistent.gctf");
     let output = run_cli(&["check", &file, "--format", "json"]);
-    let json = parse_json_stdout(&output);
+    assert!(!output.status.success(), "missing file should fail check");
+    let json = parse_json_stdout_any_status(&output);
 
     assert!(!json["diagnostics"].as_array().unwrap().is_empty());
     assert_eq!(json["diagnostics"][0]["code"], "FILE_NOT_FOUND");
@@ -315,6 +326,35 @@ fn test_fmt_idempotent() {
     let stdout2 = String::from_utf8_lossy(&output2.stdout);
 
     assert_eq!(stdout1, stdout2, "Formatter should be idempotent");
+}
+
+#[test]
+fn test_fmt_fails_when_check_fails() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("invalid-plugin.gctf");
+    let content = r#"--- ENDPOINT ---
+example.v1.Greeter/SayHello
+
+--- REQUEST ---
+{"name": "World"}
+
+--- RESPONSE ---
+{"message": "Hello World"}
+
+--- ASSERTS ---
+@regexp(.message, /World/) == true
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["fmt", &path]);
+
+    assert!(
+        !output.status.success(),
+        "fmt must fail when check fails\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
 }
 
 #[test]

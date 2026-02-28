@@ -50,6 +50,17 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                 },
             };
             println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            for d in &diagnostics {
+                println!(
+                    "{}:{}: [{}] {}",
+                    d.file, d.range.start.line, d.code, d.message
+                );
+            }
+        }
+
+        if files_with_errors > 0 {
+            std::process::exit(1);
         }
         return Ok(());
     }
@@ -88,8 +99,6 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                         1,
                     ));
                     file_has_error = true;
-                } else if !args.is_json() {
-                    println!("{} ... OK", file.display());
                 }
 
                 let semantic_mismatches = semantics::collect_assertion_type_mismatches(&doc);
@@ -107,6 +116,24 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                         )),
                     );
                     file_has_error = true;
+                }
+
+                let unknown_plugins = semantics::collect_unknown_plugin_calls(&doc);
+                for unknown in unknown_plugins {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            &file_str,
+                            &unknown.rule_id,
+                            &unknown.message,
+                            unknown.line,
+                        )
+                        .with_hint(&format!("Assertion: {}", unknown.expression)),
+                    );
+                    file_has_error = true;
+                }
+
+                if !args.is_json() && !file_has_error {
+                    println!("{} ... OK", file.display());
                 }
             }
             Err(e) => {
@@ -126,10 +153,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     }
 
     if !args.is_json() {
-        for d in diagnostics
-            .iter()
-            .filter(|d| matches!(d.severity, DiagnosticSeverity::Error))
-        {
+        for d in &diagnostics {
             println!(
                 "{}:{}: [{}] {}",
                 d.file, d.range.start.line, d.code, d.message

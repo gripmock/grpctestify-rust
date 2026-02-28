@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use crate::parser;
-use crate::plugins::{PluginManager, PluginReturnKind, PluginSignature};
+use crate::plugins::{
+    PluginReturnKind, PluginSignature, extract_plugin_call_name, plugin_signature_map,
+};
 
 #[derive(Debug, Clone, Copy)]
 struct RewriteRuleMetadata {
@@ -50,6 +52,18 @@ const REWRITE_RULES: &[RewriteRuleMetadata] = &[
         proof_note: "Constant folding preserves comparison result",
     },
     RewriteRuleMetadata {
+        id: "OPT_B007",
+        preconditions: "expression has form x == x and x is idempotent",
+        negative_cases: "x may be non-idempotent or side-effectful",
+        proof_note: "Reflexive equality over idempotent expressions is always true",
+    },
+    RewriteRuleMetadata {
+        id: "OPT_B008",
+        preconditions: "expression has form x != x and x is idempotent",
+        negative_cases: "x may be non-idempotent or side-effectful",
+        proof_note: "Reflexive inequality over idempotent expressions is always false",
+    },
+    RewriteRuleMetadata {
         id: "OPT_N001",
         preconditions: "operator alias startswith/endswith is present",
         negative_cases: "already canonicalized form",
@@ -88,32 +102,12 @@ fn build_hint(rule_id: &str, line: usize, before: &str, after: String) -> Optimi
     }
 }
 
-fn extract_plugin_call_name(expr: &str) -> Option<String> {
-    let e = expr.trim();
-    if !e.starts_with('@') || !e.ends_with(')') {
-        return None;
-    }
-
-    let open = e.find('(')?;
-    if open <= 1 {
-        return None;
-    }
-
-    Some(e[1..open].trim().to_string())
+fn plugin_signatures() -> HashMap<String, PluginSignature> {
+    plugin_signature_map()
 }
 
-fn plugin_signatures() -> HashMap<String, PluginSignature> {
-    let manager = PluginManager::new();
-    manager
-        .list()
-        .into_iter()
-        .map(|plugin| {
-            (
-                plugin.name().trim_start_matches('@').to_string(),
-                plugin.signature(),
-            )
-        })
-        .collect()
+fn section_content_line(start_line: usize, idx: usize) -> usize {
+    start_line + idx + 2
 }
 
 fn boolean_plugins() -> HashSet<String> {
@@ -259,7 +253,138 @@ fn suggest_constant_folding(expr: &str) -> Option<(&'static str, String)> {
     None
 }
 
+fn is_idempotent_expr(expr: &str, signatures: &HashMap<String, PluginSignature>) -> bool {
+    let trimmed = expr.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    if parse_literal(trimmed).is_some() {
+        return true;
+    }
+
+    if (trimmed.starts_with("{{") && trimmed.ends_with("}}")) || trimmed.starts_with('.') {
+        return true;
+    }
+
+    if trimmed.starts_with('(') && trimmed.ends_with(')') && trimmed.len() >= 2 {
+        return is_idempotent_expr(&trimmed[1..trimmed.len() - 1], signatures);
+    }
+
+    if let Some(plugin_name) = extract_plugin_call_name(trimmed) {
+        return signatures
+            .get(plugin_name.as_str())
+            .map(|sig| sig.idempotent)
+            .unwrap_or(false);
+    }
+
+    false
+}
+
+fn suggest_reflexive_idempotent_equality(
+    expr: &str,
+    signatures: &HashMap<String, PluginSignature>,
+) -> Option<(&'static str, String)> {
+    let (lhs, rhs) = expr.split_once("==")?;
+    let lhs = lhs.trim();
+    let rhs = rhs.trim();
+
+    if lhs.is_empty() || rhs.is_empty() || lhs != rhs {
+        return None;
+    }
+
+    if parse_literal(lhs).is_some() && parse_literal(rhs).is_some() {
+        return None;
+    }
+
+    if is_idempotent_expr(lhs, signatures) {
+        Some(("OPT_B007", "true".to_string()))
+    } else {
+        None
+    }
+}
+
+fn suggest_reflexive_idempotent_inequality(
+    expr: &str,
+    signatures: &HashMap<String, PluginSignature>,
+) -> Option<(&'static str, String)> {
+    let (lhs, rhs) = expr.split_once("!=")?;
+    let lhs = lhs.trim();
+    let rhs = rhs.trim();
+
+    if lhs.is_empty() || rhs.is_empty() || lhs != rhs {
+        return None;
+    }
+
+    if parse_literal(lhs).is_some() && parse_literal(rhs).is_some() {
+        return None;
+    }
+
+    if is_idempotent_expr(lhs, signatures) {
+        Some(("OPT_B008", "false".to_string()))
+    } else {
+        None
+    }
+}
+
+fn rewrite_assertion_expression_with_context(
+    expr: &str,
+    signatures: &HashMap<String, PluginSignature>,
+    bool_plugins: &HashSet<String>,
+) -> Option<(&'static str, String)> {
+    if let Some((rule_id, rewrite)) = suggest_boolean_rewrite(expr, bool_plugins) {
+        return Some((rule_id, rewrite));
+    }
+
+    if let Some((rule_id, rewrite)) = suggest_double_negation_rewrite(expr, bool_plugins) {
+        return Some((rule_id, rewrite));
+    }
+
+    if let Some((rule_id, rewrite)) = suggest_operator_canonicalization(expr) {
+        return Some((rule_id, rewrite));
+    }
+
+    if let Some((rule_id, rewrite)) = suggest_constant_folding(expr) {
+        return Some((rule_id, rewrite));
+    }
+
+    if let Some((rule_id, rewrite)) = suggest_reflexive_idempotent_equality(expr, signatures) {
+        return Some((rule_id, rewrite));
+    }
+
+    suggest_reflexive_idempotent_inequality(expr, signatures)
+}
+
+pub fn rewrite_assertion_expression(expr: &str) -> Option<(&'static str, String)> {
+    let signatures = plugin_signatures();
+    let bool_plugins = boolean_plugins();
+    rewrite_assertion_expression_with_context(expr, &signatures, &bool_plugins)
+}
+
+pub fn rewrite_assertion_expression_fixed_point(expr: &str) -> String {
+    let signatures = plugin_signatures();
+    let bool_plugins = boolean_plugins();
+
+    let mut current = expr.trim().to_string();
+    for _ in 0..32 {
+        let Some((_, rewritten)) =
+            rewrite_assertion_expression_with_context(&current, &signatures, &bool_plugins)
+        else {
+            break;
+        };
+
+        let normalized = rewritten.trim().to_string();
+        if normalized == current {
+            break;
+        }
+        current = normalized;
+    }
+
+    current
+}
+
 pub fn collect_assertion_optimizations(doc: &parser::GctfDocument) -> Vec<OptimizationHint> {
+    let signatures = plugin_signatures();
     let bool_plugins = boolean_plugins();
     let mut hints = Vec::new();
 
@@ -274,46 +399,13 @@ pub fn collect_assertion_optimizations(doc: &parser::GctfDocument) -> Vec<Optimi
                 continue;
             }
 
-            if let Some((rule_id, rewrite)) = suggest_boolean_rewrite(trimmed, &bool_plugins) {
-                debug_assert!(rule_metadata(rule_id).is_some());
-                hints.push(build_hint(
-                    rule_id,
-                    section.start_line + idx + 1,
-                    trimmed,
-                    rewrite,
-                ));
-                continue;
-            }
-
             if let Some((rule_id, rewrite)) =
-                suggest_double_negation_rewrite(trimmed, &bool_plugins)
+                rewrite_assertion_expression_with_context(trimmed, &signatures, &bool_plugins)
             {
                 debug_assert!(rule_metadata(rule_id).is_some());
                 hints.push(build_hint(
                     rule_id,
-                    section.start_line + idx + 1,
-                    trimmed,
-                    rewrite,
-                ));
-                continue;
-            }
-
-            if let Some((rule_id, rewrite)) = suggest_operator_canonicalization(trimmed) {
-                debug_assert!(rule_metadata(rule_id).is_some());
-                hints.push(build_hint(
-                    rule_id,
-                    section.start_line + idx + 1,
-                    trimmed,
-                    rewrite,
-                ));
-                continue;
-            }
-
-            if let Some((rule_id, rewrite)) = suggest_constant_folding(trimmed) {
-                debug_assert!(rule_metadata(rule_id).is_some());
-                hints.push(build_hint(
-                    rule_id,
-                    section.start_line + idx + 1,
+                    section_content_line(section.start_line, idx),
                     trimmed,
                     rewrite,
                 ));
@@ -429,7 +521,8 @@ test.Service/Method
     #[test]
     fn test_rewrite_rule_metadata_is_complete() {
         let expected = [
-            "OPT_B001", "OPT_B002", "OPT_B003", "OPT_B004", "OPT_B005", "OPT_B006", "OPT_N001",
+            "OPT_B001", "OPT_B002", "OPT_B003", "OPT_B004", "OPT_B005", "OPT_B006", "OPT_B007",
+            "OPT_B008", "OPT_N001",
         ];
 
         for id in expected {
@@ -455,5 +548,61 @@ test.Service/Method
         assert!(hints[0].preconditions.as_deref().is_some());
         assert!(hints[0].negative_cases.as_deref().is_some());
         assert!(hints[0].proof_note.as_deref().is_some());
+    }
+
+    #[test]
+    fn test_collect_assertion_optimizations_reflexive_idempotent_path() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.user.id == .user.id
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let hints = collect_assertion_optimizations(&doc);
+
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].rule_id, "OPT_B007");
+        assert_eq!(hints[0].after, "true");
+    }
+
+    #[test]
+    fn test_collect_assertion_optimizations_no_reflexive_for_non_idempotent_plugin() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+@env("HOME") == @env("HOME")
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let hints = collect_assertion_optimizations(&doc);
+
+        assert!(hints.is_empty());
+    }
+
+    #[test]
+    fn test_collect_assertion_optimizations_reflexive_idempotent_inequality() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+{{ user_id }} != {{ user_id }}
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let hints = collect_assertion_optimizations(&doc);
+
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].rule_id, "OPT_B008");
+        assert_eq!(hints[0].after, "false");
+    }
+
+    #[test]
+    fn test_rewrite_assertion_expression_fixed_point() {
+        let expr = "true == @has_header(\"x-request-id\")";
+        let rewritten = rewrite_assertion_expression_fixed_point(expr);
+        assert_eq!(rewritten, "@has_header(\"x-request-id\")");
     }
 }

@@ -485,10 +485,4 @@ Service/Method
         let updated_content = std::fs::read_to_string(temp_file.path()).unwrap();
         assert!(updated_content.contains("\"result\": \"new\""));
     }
-
-    #[test]
-    fn test_file_utils_debug() {
-        // FileUtils is a unit struct, just verify it exists
-        let _ = FileUtils;
-    }
 }

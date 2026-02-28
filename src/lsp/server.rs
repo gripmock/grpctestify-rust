@@ -1439,18 +1439,6 @@ mod tests {
     }
 
     #[test]
-    fn test_build_folding_ranges_single_line() {
-        // Test that sections with start_line == end_line don't create folding ranges
-        // Note: Parser may not create sections for incomplete content, so we just verify
-        // the function doesn't panic and returns a valid result
-        let content = "--- ENDPOINT ---\n";
-        let _ranges = build_folding_ranges(content);
-
-        // Just verify the function works without panicking
-        // The actual behavior depends on parser behavior for incomplete content
-    }
-
-    #[test]
     fn test_build_inlay_hints_section_types() {
         let content = "--- ENDPOINT ---\ntest.Service/Method\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n";
         let range = tower_lsp::lsp_types::Range {

@@ -15,7 +15,7 @@ pub struct HeaderExtractPlugin;
 
 impl Plugin for HeaderExtractPlugin {
     fn name(&self) -> &'static str {
-        "@header"
+        "header"
     }
 
     fn description(&self) -> &'static str {
@@ -306,7 +306,7 @@ mod tests {
     #[test]
     fn test_header_plugin_name() {
         let plugin = HeaderExtractPlugin;
-        assert_eq!(plugin.name(), "@header");
+        assert_eq!(plugin.name(), "header");
     }
 
     #[test]

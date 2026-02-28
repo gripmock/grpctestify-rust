@@ -16,7 +16,7 @@ pub struct RegexPlugin;
 
 impl Plugin for RegexPlugin {
     fn name(&self) -> &'static str {
-        "@regex"
+        "regex"
     }
 
     fn description(&self) -> &'static str {
@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn test_regex_plugin_name() {
         let plugin = RegexPlugin;
-        assert_eq!(plugin.name(), "@regex");
+        assert_eq!(plugin.name(), "regex");
     }
 
     #[test]

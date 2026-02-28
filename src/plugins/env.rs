@@ -17,7 +17,7 @@ pub struct EnvPlugin;
 
 impl Plugin for EnvPlugin {
     fn name(&self) -> &'static str {
-        "@env"
+        "env"
     }
 
     fn description(&self) -> &'static str {
@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn test_env_plugin_name() {
         let plugin = EnvPlugin;
-        assert_eq!(plugin.name(), "@env");
+        assert_eq!(plugin.name(), "env");
     }
 
     #[test]

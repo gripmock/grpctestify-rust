@@ -22,6 +22,10 @@ pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
     let parse_result = parser::parse_with_recovery(file_path);
     let doc = parse_result.document;
     let diagnostics = parse_result.diagnostics;
+    let parse_diagnostics = parser::parse_gctf_with_diagnostics(file_path)
+        .ok()
+        .map(|(_, d)| d)
+        .unwrap_or_default();
 
     let parse_ms = parse_start.elapsed().as_secs_f64() * 1000.0;
 
@@ -82,13 +86,29 @@ pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
         }
 
         for mismatch in semantics::collect_assertion_type_mismatches(&doc) {
-            let diag = crate::report::Diagnostic::warning(
+            let diag = crate::report::Diagnostic::error(
                 &file_str,
                 &mismatch.rule_id,
                 &mismatch.message,
                 mismatch.line,
             )
             .with_hint(&format!("Expression: {}", mismatch.expression));
+            semantic_diagnostics.push(diag.clone());
+            inspect_diagnostics.push(diag);
+        }
+
+        for unknown in semantics::collect_unknown_plugin_calls(&doc) {
+            let message = match &unknown.suggestion {
+                Some(suggestion) => format!("{} (use {})", unknown.message, suggestion),
+                None => unknown.message.clone(),
+            };
+            let diag = crate::report::Diagnostic::error(
+                &file_str,
+                &unknown.rule_id,
+                &message,
+                unknown.line,
+            )
+            .with_hint(&format!("Assertion: {}", unknown.expression));
             semantic_diagnostics.push(diag.clone());
             inspect_diagnostics.push(diag);
         }
@@ -156,7 +176,7 @@ pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
         print_detailed_analysis(
             &doc,
             file_path,
-            &parser::ParseDiagnostics::default(),
+            &parse_diagnostics,
             parse_ms,
             validation_ms,
             validation_result.err().map(|e| e.to_string()).as_deref(),
@@ -261,8 +281,8 @@ fn print_detailed_analysis(
             "  {:<2}  {:<16} {:>3}-{:>3}        {:<12}   {:>6} bytes",
             i + 1,
             section.section_type.as_str(),
-            section.start_line,
-            section.end_line,
+            section.start_line + 1,
+            section.end_line + 1,
             content_kind,
             raw_bytes
         );
@@ -347,7 +367,8 @@ fn print_detailed_analysis(
             if let parser::ast::SectionContent::Extract(extractions) = &section.content {
                 println!(
                     "  Extract block at lines {}-{}:",
-                    section.start_line, section.end_line
+                    section.start_line + 1,
+                    section.end_line + 1
                 );
                 for (name, query) in extractions {
                     println!("    ${{ {:<15} }} = {}", name, query);
@@ -369,7 +390,7 @@ fn print_detailed_analysis(
         if !var_usages.is_empty() {
             println!("  Variable usages:");
             for (section_type, line) in var_usages {
-                println!("    - {} section at line {}", section_type, line);
+                println!("    - {} section at line {}", section_type, line + 1);
             }
         }
     }
@@ -418,6 +439,9 @@ fn print_detailed_analysis(
     }
 
     // Check each section for issues
+    let type_mismatches = semantics::collect_assertion_type_mismatches(doc);
+    let unknown_plugins = semantics::collect_unknown_plugin_calls(doc);
+
     for (i, section) in sections.iter().enumerate() {
         // Check for `with_asserts` without following ASSERTS
         if section.inline_options.with_asserts {
@@ -428,7 +452,7 @@ fn print_detailed_analysis(
             if !has_following_asserts {
                 println!(
                     "  [WARN] Line {}: with_asserts option set but no",
-                    section.start_line
+                    section.start_line + 1
                 );
                 println!("         ASSERTS section follows");
                 has_warnings = true;
@@ -441,7 +465,7 @@ fn print_detailed_analysis(
         {
             println!(
                 "  [INFO] Line {}: Empty REQUEST section will send",
-                section.start_line
+                section.start_line + 1
             );
             println!("         empty JSON object {{}}");
             has_warnings = true;
@@ -454,7 +478,7 @@ fn print_detailed_analysis(
         {
             println!(
                 "  [WARN] Line {}: EXTRACT section has no variables",
-                section.start_line
+                section.start_line + 1
             );
             has_warnings = true;
         }
@@ -466,15 +490,21 @@ fn print_detailed_analysis(
         {
             println!(
                 "  [WARN] Line {}: ASSERTS section has no assertions",
-                section.start_line
+                section.start_line + 1
             );
             has_warnings = true;
         }
     }
 
-    for mismatch in semantics::collect_assertion_type_mismatches(doc) {
-        println!("  [WARN] Line {}: {}", mismatch.line, mismatch.message);
+    for mismatch in &type_mismatches {
+        println!("  [ERROR] Line {}: {}", mismatch.line, mismatch.message);
         println!("         Expression: {}", mismatch.expression);
+        has_warnings = true;
+    }
+
+    for unknown in &unknown_plugins {
+        println!("  [ERROR] Line {}: {}", unknown.line, unknown.message);
+        println!("         Assertion: {}", unknown.expression);
         has_warnings = true;
     }
 
@@ -497,7 +527,17 @@ fn print_detailed_analysis(
     println!("-------");
     match validation_error {
         Some(e) => println!("  FAILED: {}", e),
-        None => println!("  OK - No issues found. Test appears structurally valid."),
+        None => {
+            if unknown_plugins.is_empty() && type_mismatches.is_empty() {
+                println!("  OK - No issues found. Test appears structurally valid.");
+            } else {
+                println!(
+                    "  FAILED: semantic validation failed ({} unknown plugin call(s), {} type mismatch(es))",
+                    unknown_plugins.len(),
+                    type_mismatches.len()
+                );
+            }
+        }
     }
 }
 

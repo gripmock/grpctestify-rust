@@ -15,7 +15,7 @@ pub struct TrailerExtractPlugin;
 
 impl Plugin for TrailerExtractPlugin {
     fn name(&self) -> &'static str {
-        "@trailer"
+        "trailer"
     }
 
     fn description(&self) -> &'static str {
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn test_trailer_plugin_name() {
         let plugin = TrailerExtractPlugin;
-        assert_eq!(plugin.name(), "@trailer");
+        assert_eq!(plugin.name(), "trailer");
     }
 
     #[test]

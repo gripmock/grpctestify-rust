@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::parser;
-use crate::plugins::{PluginManager, PluginReturnKind, PluginSignature};
+use crate::plugins::{
+    PluginManager, PluginReturnKind, PluginSignature, extract_plugin_call_name,
+    plugin_signature_map,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssertionTypeMismatch {
@@ -12,6 +15,16 @@ pub struct AssertionTypeMismatch {
     pub message: String,
     pub expected: String,
     pub actual: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnknownPluginCall {
+    pub rule_id: String,
+    pub line: usize,
+    pub expression: String,
+    pub plugin_name: String,
+    pub message: String,
+    pub suggestion: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,20 +62,6 @@ impl ValueKind {
             Self::Unknown => "unknown",
         }
     }
-}
-
-fn extract_plugin_call_name(expr: &str) -> Option<String> {
-    let e = expr.trim();
-    if !e.starts_with('@') || !e.ends_with(')') {
-        return None;
-    }
-
-    let open = e.find('(')?;
-    if open <= 1 {
-        return None;
-    }
-
-    Some(e[1..open].trim().to_string())
 }
 
 fn operator_from_expression(expr: &str) -> Option<(&'static str, usize, usize)> {
@@ -105,16 +104,78 @@ fn operator_contract(op: &str) -> Option<OperatorContract> {
 }
 
 fn plugin_signatures() -> HashMap<String, PluginSignature> {
-    PluginManager::new()
-        .list()
-        .into_iter()
-        .map(|plugin| {
-            (
-                plugin.name().trim_start_matches('@').to_string(),
-                plugin.signature(),
-            )
-        })
-        .collect()
+    plugin_signature_map()
+}
+
+fn section_content_line(start_line: usize, idx: usize) -> usize {
+    start_line + idx + 2
+}
+
+fn extract_plugin_calls(expr: &str) -> Vec<String> {
+    let chars: Vec<char> = expr.chars().collect();
+    let mut calls = Vec::new();
+    let mut i = 0;
+
+    while i < chars.len() {
+        if chars[i] != '@' {
+            i += 1;
+            continue;
+        }
+
+        let start = i + 1;
+        let mut end = start;
+        while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
+            end += 1;
+        }
+
+        if end == start {
+            i += 1;
+            continue;
+        }
+
+        let mut cursor = end;
+        while cursor < chars.len() && chars[cursor].is_whitespace() {
+            cursor += 1;
+        }
+
+        if cursor < chars.len() && chars[cursor] == '(' {
+            let name: String = chars[start..end].iter().collect();
+            calls.push(name);
+        }
+
+        i = end;
+    }
+
+    calls
+}
+
+fn best_plugin_suggestion(unknown: &str, known_plugins: &[String]) -> Option<String> {
+    fn common_prefix_len(a: &str, b: &str) -> usize {
+        a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count()
+    }
+
+    let mut best: Option<(&str, usize, usize)> = None;
+    for candidate in known_plugins {
+        let prefix = common_prefix_len(unknown, candidate);
+        let len_diff = unknown.len().abs_diff(candidate.len());
+
+        match best {
+            None => best = Some((candidate.as_str(), prefix, len_diff)),
+            Some((_, best_prefix, best_len_diff)) => {
+                if prefix > best_prefix || (prefix == best_prefix && len_diff < best_len_diff) {
+                    best = Some((candidate.as_str(), prefix, len_diff));
+                }
+            }
+        }
+    }
+
+    best.and_then(|(name, prefix, _)| {
+        if prefix >= 3 {
+            Some(name.to_string())
+        } else {
+            None
+        }
+    })
 }
 
 fn infer_value_kind(expr: &str, signatures: &HashMap<String, PluginSignature>) -> ValueKind {
@@ -283,13 +344,61 @@ pub fn collect_assertion_type_mismatches(doc: &parser::GctfDocument) -> Vec<Asse
             }
 
             if let Some(mut mismatch) = detect_type_mismatch(trimmed, &signatures) {
-                mismatch.line = section.start_line + idx + 1;
+                mismatch.line = section_content_line(section.start_line, idx);
                 mismatches.push(mismatch);
             }
         }
     }
 
     mismatches
+}
+
+pub fn collect_unknown_plugin_calls(doc: &parser::GctfDocument) -> Vec<UnknownPluginCall> {
+    let signatures = plugin_signatures();
+    let mut known_plugins: Vec<String> = signatures.keys().cloned().collect();
+    known_plugins.sort();
+
+    let mut unknown = Vec::new();
+
+    for section in &doc.sections {
+        if section.section_type != parser::ast::SectionType::Asserts {
+            continue;
+        }
+
+        for (idx, line) in section.raw_content.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+                continue;
+            }
+
+            for plugin_name in extract_plugin_calls(trimmed) {
+                if signatures.contains_key(plugin_name.as_str()) {
+                    continue;
+                }
+
+                let suggestion =
+                    best_plugin_suggestion(&plugin_name, &known_plugins).map(|s| format!("@{}", s));
+                let message = match &suggestion {
+                    Some(s) => format!(
+                        "Unknown assertion plugin '@{}'. Did you mean {}?",
+                        plugin_name, s
+                    ),
+                    None => format!("Unknown assertion plugin '@{}'", plugin_name),
+                };
+
+                unknown.push(UnknownPluginCall {
+                    rule_id: "SEM_F001".to_string(),
+                    line: section_content_line(section.start_line, idx),
+                    expression: trimmed.to_string(),
+                    plugin_name,
+                    message,
+                    suggestion,
+                });
+            }
+        }
+    }
+
+    unknown
 }
 
 #[cfg(test)]
@@ -344,5 +453,36 @@ test.Service/Method
     fn test_plugin_semantics_completeness() {
         let issues = validate_plugin_semantics_completeness();
         assert!(issues.is_empty(), "Incomplete plugin semantics: {issues:?}");
+    }
+
+    #[test]
+    fn test_semantics_detects_unknown_plugin_calls() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+@regexp(.name, "^a") == true
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let unknown = collect_unknown_plugin_calls(&doc);
+        assert_eq!(unknown.len(), 1);
+        assert_eq!(unknown[0].rule_id, "SEM_F001");
+        assert_eq!(unknown[0].plugin_name, "regexp");
+        assert_eq!(unknown[0].suggestion.as_deref(), Some("@regex"));
+    }
+
+    #[test]
+    fn test_semantics_allows_known_plugin_calls() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+@regex(.name, "^a") == true
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let unknown = collect_unknown_plugin_calls(&doc);
+        assert!(unknown.is_empty());
     }
 }

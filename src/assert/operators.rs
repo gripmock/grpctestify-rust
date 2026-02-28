@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::assert::engine::AssertionResult;
-use crate::plugins::{PluginContext, PluginManager, PluginResult};
+use crate::plugins::{PluginContext, PluginManager, PluginResult, normalize_plugin_name};
 
 /// Evaluate assertion expression (plugins and operators)
 pub fn evaluate_assertion(
@@ -87,11 +87,7 @@ fn evaluate_boolean_function(
         let func_name = &expr[0..start_paren];
         let arg_str = &expr[start_paren + 1..end_paren];
 
-        let resolved_name = if plugin_manager.get(func_name).is_some() {
-            func_name
-        } else {
-            func_name.strip_prefix('@').unwrap_or(func_name)
-        };
+        let resolved_name = normalize_plugin_name(func_name);
 
         if let Some(plugin) = plugin_manager.get(resolved_name) {
             let context = PluginContext {
@@ -137,11 +133,7 @@ fn evaluate_expression(
         let func_name = &expr[0..start_paren];
         let arg_str = &expr[start_paren + 1..end_paren];
 
-        let resolved_name = if plugin_manager.get(func_name).is_some() {
-            func_name
-        } else {
-            func_name.strip_prefix('@').unwrap_or(func_name)
-        };
+        let resolved_name = normalize_plugin_name(func_name);
 
         if let Some(plugin) = plugin_manager.get(resolved_name) {
             let context = PluginContext {

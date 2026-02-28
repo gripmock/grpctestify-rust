@@ -375,10 +375,30 @@ pub fn collect_semantic_diagnostics(
                 Position::new(lsp_line, start_char),
                 Position::new(lsp_line, end_char),
             ),
-            severity: Some(DiagnosticSeverity::WARNING),
+            severity: Some(DiagnosticSeverity::ERROR),
             code: Some(NumberOrString::String(mismatch.rule_id)),
             source: Some("grpctestify-semantics".to_string()),
             message: mismatch.message,
+            ..Diagnostic::default()
+        });
+    }
+
+    for unknown in crate::semantics::collect_unknown_plugin_calls(doc) {
+        let lsp_line = unknown.line.saturating_sub(1) as u32;
+        let full_line = lines.get(lsp_line as usize).copied().unwrap_or("");
+        let needle = format!("@{}(", unknown.plugin_name);
+        let start_char = full_line.find(&needle).unwrap_or(0) as u32;
+        let end_char = start_char + needle.len() as u32;
+
+        diagnostics.push(Diagnostic {
+            range: Range::new(
+                Position::new(lsp_line, start_char),
+                Position::new(lsp_line, end_char),
+            ),
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: Some(NumberOrString::String(unknown.rule_id)),
+            source: Some("grpctestify-semantics".to_string()),
+            message: unknown.message,
             ..Diagnostic::default()
         });
     }
@@ -588,8 +608,8 @@ test.Service/Method
         let actual = serde_json::to_value(&diagnostics[0]).unwrap();
         let expected = json!({
             "range": {
-                "start": {"line": 3, "character": 0},
-                "end": {"line": 3, "character": 24}
+                "start": {"line": 4, "character": 0},
+                "end": {"line": 4, "character": 24}
             },
             "severity": 4,
             "code": "OPT_B001",
@@ -799,5 +819,23 @@ test.Service/Method
             diagnostics[0].code,
             Some(NumberOrString::String("OPT_B006".to_string()))
         );
+    }
+
+    #[test]
+    fn test_collect_semantic_diagnostics_unknown_plugin() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+@regexp(.name, "^a") == true
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let diagnostics = collect_semantic_diagnostics(&doc, content);
+
+        assert!(diagnostics.iter().any(|d| {
+            d.code == Some(NumberOrString::String("SEM_F001".to_string()))
+                && d.severity == Some(DiagnosticSeverity::ERROR)
+        }));
     }
 }
