@@ -3,6 +3,7 @@
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+use tonic::transport::Server;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::servers::{TestServerConfig, TestServerHandle};
@@ -42,32 +43,21 @@ impl EchoService for EchoServiceImpl {
         }))
     }
 
-    type RepeatStream = ReceiverStream<Result<RepeatResponse, Status>>;
-
     async fn repeat(
         &self,
         request: Request<Streaming<RepeatRequest>>,
-    ) -> Result<Response<Self::RepeatStream>, Status> {
+    ) -> Result<Response<RepeatResponse>, Status> {
         let mut stream = request.into_inner();
-        let (tx, rx) = mpsc::channel(4);
+        let mut messages = Vec::new();
 
-        tokio::spawn(async move {
-            let mut messages = Vec::new();
-            while let Some(result) = stream.message().await.ok() {
-                if let Some(req) = result {
-                    messages.push(req.message);
-                }
-            }
+        while let Some(result) = stream.message().await? {
+            messages.push(result.message);
+        }
 
-            let response = RepeatResponse {
-                total_messages: messages.len() as i32,
-                concatenated: messages.join(" "),
-            };
-
-            let _ = tx.send(Ok(response)).await;
-        });
-
-        Ok(Response::new(ReceiverStream::new(rx)))
+        Ok(Response::new(RepeatResponse {
+            total_messages: messages.len() as i32,
+            concatenated: messages.join(" "),
+        }))
     }
 
     type ServerStreamStream = ReceiverStream<Result<StreamResponse, Status>>;
@@ -105,17 +95,15 @@ impl EchoService for EchoServiceImpl {
 
         tokio::spawn(async move {
             let mut sequence = 0;
-            while let Some(result) = stream.message().await.ok() {
-                if let Some(req) = result {
-                    if req.send_response {
-                        let response = BidiResponse {
-                            echo: req.message,
-                            sequence,
-                        };
-                        sequence += 1;
-                        if tx.send(Ok(response)).await.is_err() {
-                            break;
-                        }
+            while let Ok(Some(req)) = stream.message().await {
+                if req.send_response {
+                    let response = BidiResponse {
+                        echo: req.message,
+                        sequence,
+                    };
+                    sequence += 1;
+                    if tx.send(Ok(response)).await.is_err() {
+                        break;
                     }
                 }
             }
@@ -130,15 +118,17 @@ pub async fn start_echo_server(
     config: TestServerConfig,
 ) -> Result<TestServerHandle, Box<dyn std::error::Error>> {
     let addr = format!("{}:{}", config.host, config.port).parse::<SocketAddr>()?;
-    let echo_service = EchoServiceImpl::default();
+    let echo_service = EchoServiceImpl;
 
-    let server = Server::builder()
-        .add_service(EchoServiceServer::new(echo_service))
-        .serve(addr)
-        .await?;
+    let server = tokio::spawn(async move {
+        Server::builder()
+            .add_service(EchoServiceServer::new(echo_service))
+            .serve(addr)
+            .await
+    });
 
     Ok(TestServerHandle {
-        handle: tokio::spawn(server),
+        handle: server,
         address: addr,
     })
 }

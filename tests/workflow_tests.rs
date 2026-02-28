@@ -396,7 +396,7 @@ fn test_workflow_validate_invalid() {
     use grpctestify::execution::workflow_events::{Workflow, WorkflowEvent, WorkflowSummary};
 
     // Create a workflow with missing required events
-    let mut workflow = Workflow {
+    let workflow = Workflow {
         file_path: "test.gctf".to_string(),
         events: vec![
             WorkflowEvent::TestLoaded {

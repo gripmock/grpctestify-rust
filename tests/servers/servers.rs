@@ -1,12 +1,14 @@
 // Test gRPC servers for integration testing
 
+#[path = "auth.rs"]
 pub mod auth;
+#[path = "echo.rs"]
 pub mod echo;
+#[path = "validation.rs"]
 pub mod validation;
 
 use std::net::SocketAddr;
 use tokio::task::JoinHandle;
-use tonic::transport::Server;
 
 /// Test server configuration
 #[derive(Debug, Clone)]
@@ -27,6 +29,7 @@ impl Default for TestServerConfig {
 /// Running test server handle
 pub struct TestServerHandle {
     pub handle: JoinHandle<Result<(), tonic::transport::Error>>,
+    #[allow(dead_code)]
     pub address: SocketAddr,
 }
 
@@ -59,6 +62,7 @@ pub async fn start_all_test_servers(
 }
 
 /// Start a single test server on given port
+#[allow(dead_code)]
 pub async fn start_test_server(
     server_type: &str,
     port: u16,

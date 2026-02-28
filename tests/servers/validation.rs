@@ -1,6 +1,7 @@
 // Validation test server implementation
 
 use std::net::SocketAddr;
+use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
 use crate::servers::{TestServerConfig, TestServerHandle};
@@ -11,8 +12,8 @@ pub mod validation_proto {
 }
 
 use validation_proto::{
-    EmailRequest, EmailResponse, IPRequest, IPResponse, TimestampRequest, TimestampResponse,
-    URLRequest, URLResponse, UUIDRequest, UUIDResponse,
+    EmailRequest, EmailResponse, IpRequest, IpResponse, TimestampRequest, TimestampResponse,
+    UrlRequest, UrlResponse, UuidRequest, UuidResponse,
     validation_service_server::{ValidationService, ValidationServiceServer},
 };
 
@@ -38,12 +39,12 @@ impl ValidationService for ValidationServiceImpl {
 
     async fn validate_uuid(
         &self,
-        request: Request<UUIDRequest>,
-    ) -> Result<Response<UUIDResponse>, Status> {
+        request: Request<UuidRequest>,
+    ) -> Result<Response<UuidResponse>, Status> {
         let inner = request.into_inner();
         let valid = uuid::Uuid::parse_str(&inner.uuid).is_ok();
 
-        Ok(Response::new(UUIDResponse {
+        Ok(Response::new(UuidResponse {
             valid,
             version: if valid {
                 "4".to_string()
@@ -60,12 +61,12 @@ impl ValidationService for ValidationServiceImpl {
 
     async fn validate_url(
         &self,
-        request: Request<URLRequest>,
-    ) -> Result<Response<URLResponse>, Status> {
+        request: Request<UrlRequest>,
+    ) -> Result<Response<UrlResponse>, Status> {
         let inner = request.into_inner();
         let valid = inner.url.starts_with("http://") || inner.url.starts_with("https://");
 
-        Ok(Response::new(URLResponse {
+        Ok(Response::new(UrlResponse {
             valid,
             scheme: if valid {
                 inner.url.split("://").next().unwrap_or("").to_string()
@@ -79,13 +80,13 @@ impl ValidationService for ValidationServiceImpl {
 
     async fn validate_ip(
         &self,
-        request: Request<IPRequest>,
-    ) -> Result<Response<IPResponse>, Status> {
+        request: Request<IpRequest>,
+    ) -> Result<Response<IpResponse>, Status> {
         let inner = request.into_inner();
         let valid = inner.ip.parse::<std::net::IpAddr>().is_ok();
         let version = if inner.ip.contains(':') { "v6" } else { "v4" };
 
-        Ok(Response::new(IPResponse {
+        Ok(Response::new(IpResponse {
             valid,
             version: version.to_string(),
             is_private: false,
@@ -114,15 +115,17 @@ pub async fn start_validation_server(
     config: TestServerConfig,
 ) -> Result<TestServerHandle, Box<dyn std::error::Error>> {
     let addr = format!("{}:{}", config.host, config.port + 2).parse::<SocketAddr>()?;
-    let validation_service = ValidationServiceImpl::default();
+    let validation_service = ValidationServiceImpl;
 
-    let server = Server::builder()
-        .add_service(ValidationServiceServer::new(validation_service))
-        .serve(addr)
-        .await?;
+    let server = tokio::spawn(async move {
+        Server::builder()
+            .add_service(ValidationServiceServer::new(validation_service))
+            .serve(addr)
+            .await
+    });
 
     Ok(TestServerHandle {
-        handle: tokio::spawn(server),
+        handle: server,
         address: addr,
     })
 }

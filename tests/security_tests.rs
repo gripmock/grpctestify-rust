@@ -1,6 +1,6 @@
 // Security tests - TLS warnings, address validation, update mode validation
 
-use grpctestify::grpc::{GrpcClientConfig, TlsConfig};
+use grpctestify::grpc::TlsConfig;
 
 #[test]
 fn test_tls_config_insecure_skip_verify() {

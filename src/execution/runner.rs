@@ -1573,17 +1573,17 @@ mod tests {
     #[test]
     fn test_test_runner_new() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
-        assert_eq!(runner.dry_run, false);
+        assert!(!runner.dry_run);
         assert_eq!(runner.timeout_seconds, 30);
-        assert_eq!(runner.no_assert, false);
-        assert_eq!(runner.write_mode, false);
-        assert_eq!(runner.verbose, false);
+        assert!(!runner.no_assert);
+        assert!(!runner.write_mode);
+        assert!(!runner.verbose);
     }
 
     #[test]
     fn test_test_runner_with_dry_run() {
         let runner = TestRunner::new(true, 30, false, false, false, None);
-        assert_eq!(runner.dry_run, true);
+        assert!(runner.dry_run);
     }
 
     #[test]
@@ -1595,7 +1595,7 @@ mod tests {
     #[test]
     fn test_test_runner_with_no_assert() {
         let runner = TestRunner::new(false, 30, true, false, false, None);
-        assert_eq!(runner.no_assert, true);
+        assert!(runner.no_assert);
     }
 
     #[test]

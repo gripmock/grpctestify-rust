@@ -1,6 +1,7 @@
 // Auth test server implementation
 
 use std::net::SocketAddr;
+use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
 use crate::servers::{TestServerConfig, TestServerHandle};
@@ -86,15 +87,17 @@ pub async fn start_auth_server(
     config: TestServerConfig,
 ) -> Result<TestServerHandle, Box<dyn std::error::Error>> {
     let addr = format!("{}:{}", config.host, config.port + 1).parse::<SocketAddr>()?;
-    let auth_service = AuthServiceImpl::default();
+    let auth_service = AuthServiceImpl;
 
-    let server = Server::builder()
-        .add_service(AuthServiceServer::new(auth_service))
-        .serve(addr)
-        .await?;
+    let server = tokio::spawn(async move {
+        Server::builder()
+            .add_service(AuthServiceServer::new(auth_service))
+            .serve(addr)
+            .await
+    });
 
     Ok(TestServerHandle {
-        handle: tokio::spawn(server),
+        handle: server,
         address: addr,
     })
 }

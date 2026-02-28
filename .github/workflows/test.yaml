@@ -1,23 +1,18 @@
 # Test workflow - unit and integration tests
 name: Test
-
 on:
   push:
     branches:
       - master
   pull_request:
-
 permissions:
   contents: read
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
-
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-Dwarnings"
-
 jobs:
   test:
     name: Test (${{ matrix.os }})
@@ -26,30 +21,23 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, macos-13, windows-latest]
       fail-fast: false
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
-
       - name: Install protoc (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
       - name: Install protoc (macOS)
         if: runner.os == 'macOS'
         run: brew install protobuf
-
       - name: Install protoc (Windows)
         if: runner.os == 'Windows'
         run: choco install protobuf -y
-
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-
       - name: Run tests
         run: cargo nextest run --workspace --all-targets --all-features --no-tests=pass

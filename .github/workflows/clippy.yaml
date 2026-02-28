@@ -1,39 +1,30 @@
 # Clippy - Rust linter
 name: Clippy
-
 on:
   push:
     branches:
       - master
   pull_request:
-
 permissions:
   contents: read
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
-
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-Dwarnings"
-
 jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy
-
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
       - name: Run
         run: cargo clippy --workspace --all-targets --all-features -- -Dwarnings

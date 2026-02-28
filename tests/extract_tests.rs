@@ -33,7 +33,7 @@ value = .value
     let extracts = workflow.extractions();
 
     // Assert
-    assert!(extracts.len() >= 1, "Expected at least 1 extract event");
+    assert!(!extracts.is_empty(), "Expected at least 1 extract event");
 
     let result = workflow.validate();
     assert!(
@@ -74,7 +74,7 @@ joined = .tags | split(",") | join("-")
     let extracts = workflow.extractions();
 
     // Assert
-    assert!(extracts.len() >= 1, "Expected at least 1 extract event");
+    assert!(!extracts.is_empty(), "Expected at least 1 extract event");
 
     let result = workflow.validate();
     assert!(
@@ -115,7 +115,7 @@ sum = [.items[].price] | add
     let extracts = workflow.extractions();
 
     // Assert
-    assert!(extracts.len() >= 1, "Expected at least 1 extract event");
+    assert!(!extracts.is_empty(), "Expected at least 1 extract event");
 
     let result = workflow.validate();
     assert!(
@@ -156,7 +156,7 @@ unique_names = [.users[].name] | unique
     let extracts = workflow.extractions();
 
     // Assert
-    assert!(extracts.len() >= 1, "Expected at least 1 extract event");
+    assert!(!extracts.is_empty(), "Expected at least 1 extract event");
 
     let result = workflow.validate();
     assert!(
@@ -195,7 +195,7 @@ default_port = .port // 8080
     let extracts = workflow.extractions();
 
     // Assert
-    assert!(extracts.len() >= 1, "Expected at least 1 extract event");
+    assert!(!extracts.is_empty(), "Expected at least 1 extract event");
 
     let result = workflow.validate();
     assert!(
@@ -233,7 +233,7 @@ time_only = .created_at | split("T")[1] | split("Z")[0]
     let extracts = workflow.extractions();
 
     // Assert
-    assert!(extracts.len() >= 1, "Expected at least 1 extract event");
+    assert!(!extracts.is_empty(), "Expected at least 1 extract event");
 
     let result = workflow.validate();
     assert!(
@@ -341,7 +341,7 @@ expensive = [.items[] | select(.price > 15) | .name]
     let extracts = workflow.extractions();
 
     // Assert
-    assert!(extracts.len() >= 1, "Expected at least 1 extract event");
+    assert!(!extracts.is_empty(), "Expected at least 1 extract event");
 
     let result = workflow.validate();
     assert!(
@@ -367,7 +367,7 @@ fn test_extract_from_example_file() {
     let extracts = workflow.extractions();
 
     // Assert
-    assert!(extracts.len() > 0, "Expected extract events from example");
+    assert!(!extracts.is_empty(), "Expected extract events from example");
 
     let result = workflow.validate();
     assert!(

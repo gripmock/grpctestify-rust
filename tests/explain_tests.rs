@@ -218,7 +218,7 @@ fn test_explain_with_assertions() {
     let doc = parse_gctf(Path::new(path)).unwrap();
     let plan = ExecutionPlan::from_document(&doc);
 
-    assert!(plan.assertions.len() > 0, "Expected assertions, got none");
+    assert!(!plan.assertions.is_empty(), "Expected assertions, got none");
 }
 
 /// Test explain summary accuracy

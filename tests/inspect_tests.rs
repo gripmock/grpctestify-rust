@@ -130,7 +130,7 @@ fn test_inspect_extraction_detection() {
     // Find EXTRACT sections
     let extract_sections = doc.sections_by_type(grpctestify::parser::ast::SectionType::Extract);
 
-    assert!(extract_sections.len() > 0, "Expected EXTRACT section");
+    assert!(!extract_sections.is_empty(), "Expected EXTRACT section");
 }
 
 /// Test inspect with diagnostics
@@ -153,7 +153,7 @@ fn test_inspect_with_diagnostics() {
     assert!(diagnostics.section_headers > 0, "Expected sections");
 
     // Use doc to avoid unused warning
-    assert!(doc.sections.len() > 0, "Expected sections in document");
+    assert!(!doc.sections.is_empty(), "Expected sections in document");
 }
 
 /// Test inspect detects inline options
@@ -170,7 +170,7 @@ fn test_inspect_inline_options() {
     // Find RESPONSE sections
     let response_sections = doc.sections_by_type(grpctestify::parser::ast::SectionType::Response);
 
-    assert!(response_sections.len() > 0, "Expected RESPONSE section");
+    assert!(!response_sections.is_empty(), "Expected RESPONSE section");
 
     // Check inline options
     let response = &response_sections[0];
@@ -193,7 +193,7 @@ fn test_inspect_tolerance_option() {
 
     let response_sections = doc.sections_by_type(grpctestify::parser::ast::SectionType::Response);
 
-    assert!(response_sections.len() > 0, "Expected RESPONSE section");
+    assert!(!response_sections.is_empty(), "Expected RESPONSE section");
 
     let response = &response_sections[0];
     assert!(
@@ -220,7 +220,7 @@ fn test_inspect_redact_option() {
 
     let response_sections = doc.sections_by_type(grpctestify::parser::ast::SectionType::Response);
 
-    assert!(response_sections.len() > 0, "Expected RESPONSE section");
+    assert!(!response_sections.is_empty(), "Expected RESPONSE section");
 
     let response = &response_sections[0];
     assert!(
@@ -256,7 +256,7 @@ fn test_inspect_with_asserts_option() {
 
     let response_sections = doc.sections_by_type(grpctestify::parser::ast::SectionType::Response);
 
-    assert!(response_sections.len() > 0, "Expected RESPONSE section");
+    assert!(!response_sections.is_empty(), "Expected RESPONSE section");
 
     let response = &response_sections[0];
     assert!(

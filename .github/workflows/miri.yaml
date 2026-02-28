@@ -1,6 +1,5 @@
 # Miri - undefined behavior detection
 name: Miri
-
 on:
   push:
     branches:
@@ -8,31 +7,26 @@ on:
   pull_request:
   schedule:
     - cron: "0 0 * * 0"
-
 permissions:
   contents: read
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
-
 jobs:
   miri:
     name: Miri
     runs-on: ubuntu-latest
-
+    env:
+      MIRIFLAGS: -Zmiri-disable-isolation
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Install Rust nightly
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: nightly
           components: miri
-
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
       - name: Run
         run: cargo miri test --workspace --all-features

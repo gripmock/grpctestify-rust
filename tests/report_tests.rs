@@ -57,7 +57,7 @@ fn test_progress_mode_clone() {
     let mode = ProgressMode::Bar;
 
     // Act
-    let mode_clone = mode.clone();
+    let mode_clone = mode;
 
     // Assert
     assert!(matches!(mode_clone, ProgressMode::Bar));

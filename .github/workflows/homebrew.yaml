@@ -1,50 +1,41 @@
 # Homebrew Update workflow
 name: Homebrew Update
-
 on:
   release:
     types: [published]
-
 permissions:
   contents: write
   packages: write
-
 env:
   # Hardcoded deadline - do not change unless intentionally extending support
   FORMULA_DEADLINE: "2027-12-31"
-
 jobs:
   update-formula:
     name: Update Homebrew Formula
     runs-on: ubuntu-latest
-
     steps:
       - name: Get version
         id: version
         run: |
           VERSION="${{ github.event.release.tag_name }}"
           echo "VERSION=${VERSION#v}" >> $GITHUB_OUTPUT
-
       - name: Download binary
         uses: robinraju/release-downloader@v1
         with:
           latest: true
           tarBall: false
           zipBall: false
-
       - name: Calculate checksum
         id: checksum
         run: |
           CHECKSUM=$(sha256sum grpctestify-linux-amd64 | awk '{print $1}')
           echo "CHECKSUM=$CHECKSUM" >> $GITHUB_OUTPUT
-
       - name: Clone tap repo
         run: |
           git clone https://${{ github.actor }}:${{ secrets.HOMEBREW_TOKEN }}@github.com/gripmock/homebrew-tap.git
           cd homebrew-tap
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-
       - name: Update formula
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
@@ -76,45 +67,38 @@ jobs:
             end
           end
           EOF
-
       - name: Commit formula
         run: |
           cd homebrew-tap
           git add Formula/grpctestify.rb
           git commit -m "chore: update formula to ${{ steps.version.outputs.VERSION }} (deprecated)"
           git push origin master
-
   update-cask:
     name: Update Homebrew Cask
     runs-on: ubuntu-latest
-
     steps:
       - name: Get version
         id: version
         run: |
           VERSION="${{ github.event.release.tag_name }}"
           echo "VERSION=${VERSION#v}" >> $GITHUB_OUTPUT
-
       - name: Download macOS binary
         uses: robinraju/release-downloader@v1
         with:
           latest: true
           tarBall: false
           zipBall: false
-
       - name: Calculate checksum
         id: checksum
         run: |
           CHECKSUM=$(sha256sum grpctestify-macos-arm64 | awk '{print $1}')
           echo "CHECKSUM=$CHECKSUM" >> $GITHUB_OUTPUT
-
       - name: Clone tap repo
         run: |
           git clone https://${{ github.actor }}:${{ secrets.HOMEBREW_TOKEN }}@github.com/gripmock/homebrew-tap.git
           cd homebrew-tap
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-
       - name: Update cask
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
@@ -138,7 +122,6 @@ jobs:
             ]
           end
           EOF
-
       - name: Commit cask
         run: |
           cd homebrew-tap

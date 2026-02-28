@@ -469,8 +469,10 @@ mod tests {
         let handler = ResponseHandler::new(false);
         let actual = json!({"id": 123, "name": "test", "extra": "field"});
         let expected = json!({"id": 123});
-        let mut options = InlineOptions::default();
-        options.partial = true;
+        let options = InlineOptions {
+            partial: true,
+            ..InlineOptions::default()
+        };
 
         let result = handler.validate_message(&actual, &expected, &options);
         assert!(result.is_ok());

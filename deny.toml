@@ -9,8 +9,11 @@ targets = [
 ]
 
 [advisories]
-vulnerability = "deny"
-unmaintained = "deny"
+ignore = [
+  { id = "RUSTSEC-2025-0119", reason = "transitive via indicatif; no maintained replacement selected yet" },
+  { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is still required by tonic and existing cert-loading paths" },
+]
+unmaintained = "all"
 yanked = "deny"
 
 [licenses]
@@ -21,11 +24,12 @@ allow = [
   "BSD-2-Clause",
   "BSD-3-Clause",
   "ISC",
-  "Unicode-DFS-2016",
+  "Unicode-3.0",
   "MPL-2.0",
   "CC0-1.0",
   "0BSD",
   "Unlicense",
+  "OpenSSL",
 ]
 
 [[licenses.clarify]]
