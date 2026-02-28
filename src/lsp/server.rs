@@ -12,14 +12,17 @@ use crate::parser::ast::SectionType;
 use crate::parser::{self, GctfDocument};
 use crate::plugins::{PluginManager, PluginPurity, PluginReturnKind};
 
+type DocumentMap<T> = Arc<RwLock<HashMap<String, T>>>;
+type VersionedMap<T> = Arc<RwLock<HashMap<String, (i32, T)>>>;
+
 pub struct GrpctestifyLsp {
     client: Client,
-    documents: Arc<RwLock<HashMap<String, String>>>,
-    doc_versions: Arc<RwLock<HashMap<String, i32>>>,
-    parsed_docs: Arc<RwLock<HashMap<String, GctfDocument>>>,
-    parsed_doc_versions: Arc<RwLock<HashMap<String, i32>>>,
-    semantic_tokens_cache: Arc<RwLock<HashMap<String, (i32, SemanticTokens)>>>,
-    inlay_hints_cache: Arc<RwLock<HashMap<String, (i32, Vec<InlayHint>)>>>,
+    documents: DocumentMap<String>,
+    doc_versions: DocumentMap<i32>,
+    parsed_docs: DocumentMap<GctfDocument>,
+    parsed_doc_versions: DocumentMap<i32>,
+    semantic_tokens_cache: VersionedMap<SemanticTokens>,
+    inlay_hints_cache: VersionedMap<Vec<InlayHint>>,
 }
 
 impl GrpctestifyLsp {
