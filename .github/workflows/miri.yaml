@@ -24,7 +24,5 @@ jobs:
         with:
           toolchain: nightly
           components: miri
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: Run
         run: cargo miri test --lib --all-features

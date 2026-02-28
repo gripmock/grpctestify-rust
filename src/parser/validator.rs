@@ -19,7 +19,6 @@ pub struct ValidationError {
 pub enum ErrorSeverity {
     Error,
     Warning,
-    #[allow(dead_code)]
     Info,
 }
 
@@ -292,7 +291,6 @@ fn validate_structure(document: &GctfDocument, errors: &mut Vec<ValidationError>
 }
 
 /// Check if validation passed (no errors)
-#[allow(dead_code)]
 pub fn validation_passed(errors: &[ValidationError]) -> bool {
     !errors.iter().any(|e| e.severity == ErrorSeverity::Error)
 }

@@ -10,20 +10,16 @@ use crate::lsp::variable_definition;
 use crate::parser::ast::SectionType;
 use crate::parser::{self, GctfDocument};
 
-#[allow(dead_code)]
 pub struct GrpctestifyLsp {
     client: Client,
-    default_address: RwLock<Option<String>>,
     documents: Arc<RwLock<HashMap<String, String>>>,
     parsed_docs: Arc<RwLock<HashMap<String, GctfDocument>>>,
 }
 
-#[allow(dead_code)]
 impl GrpctestifyLsp {
     pub fn new(client: Client) -> Self {
         Self {
             client,
-            default_address: RwLock::new(None),
             documents: Arc::new(RwLock::new(HashMap::new())),
             parsed_docs: Arc::new(RwLock::new(HashMap::new())),
         }

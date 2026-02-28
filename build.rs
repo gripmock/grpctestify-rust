@@ -1,19 +1,20 @@
-// Build script for grpctestify-rust
-// Handles both main proto compilation (optional) and test server proto compilation
-
-#[cfg(feature = "proto-build")]
+#[cfg(any(feature = "proto-build", feature = "test-servers"))]
 use std::env;
-#[cfg(feature = "proto-build")]
-use std::path::PathBuf;
+
+#[cfg(any(feature = "proto-build", feature = "test-servers"))]
+fn use_vendored_protoc() -> Result<(), Box<dyn std::error::Error>> {
+    // Use vendored protoc binary (no system protoc required)
+    unsafe {
+        env::set_var("PROTOC", protoc_bin_vendored::protoc_bin_path()?);
+    }
+    Ok(())
+}
 
 #[cfg(feature = "proto-build")]
 fn compile_main_protos() -> Result<(), Box<dyn std::error::Error>> {
-    // Use vendored protoc binary (no system protoc required)
-    unsafe {
-        env::set_var("PROTOC", protoc_bin_vendored::protoc_bin_path().unwrap());
-    }
+    use_vendored_protoc()?;
 
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let out_dir = std::path::PathBuf::from(env::var("OUT_DIR").unwrap());
     tonic_prost_build::configure()
         .file_descriptor_set_path(out_dir.join("helloworld_descriptor.bin"))
         .compile_protos(&["tests/server/helloworld.proto"], &["tests/server"])?;
@@ -26,10 +27,10 @@ fn compile_main_protos() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(feature = "test-servers")]
 fn compile_test_server_protos() -> Result<(), Box<dyn std::error::Error>> {
-    use std::env;
+    use_vendored_protoc()?;
 
-    // Always compile test server protos if they exist
     let test_proto_dir = std::path::Path::new("tests/servers/proto");
 
     if !test_proto_dir.exists() {
@@ -59,6 +60,11 @@ fn compile_test_server_protos() -> Result<(), Box<dyn std::error::Error>> {
         .file_descriptor_set_path(out_dir.join("test_servers_descriptor.bin"))
         .compile_protos(&proto_files, &[test_proto_dir.to_path_buf()])?;
 
+    Ok(())
+}
+
+#[cfg(not(feature = "test-servers"))]
+fn compile_test_server_protos() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
