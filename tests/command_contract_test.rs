@@ -12,8 +12,23 @@ fn fixture_path(rel: &str) -> String {
 }
 
 fn run_cli(args: &[&str]) -> Output {
-    Command::new(get_binary())
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
+    let binary = get_binary();
+    let runner = std::env::var("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER")
+        .ok()
+        .or_else(|| std::env::var("CROSS_RUNNER").ok());
+
+    let mut cmd = if let Some(runner) = runner {
+        let mut parts = runner.split_whitespace();
+        let program = parts.next().expect("Runner must not be empty");
+        let mut command = Command::new(program);
+        command.args(parts);
+        command.arg(&binary);
+        command
+    } else {
+        Command::new(&binary)
+    };
+
+    cmd.current_dir(env!("CARGO_MANIFEST_DIR"))
         .args(args)
         .output()
         .expect("Failed to execute CLI command")
