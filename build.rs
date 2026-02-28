@@ -1,5 +1,7 @@
+#[cfg(any(feature = "proto-build", feature = "test-servers"))]
 use std::env;
 
+#[cfg(any(feature = "proto-build", feature = "test-servers"))]
 fn use_vendored_protoc() -> Result<(), Box<dyn std::error::Error>> {
     // Use vendored protoc binary (no system protoc required)
     unsafe {
@@ -25,12 +27,8 @@ fn compile_main_protos() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(feature = "test-servers")]
 fn compile_test_server_protos() -> Result<(), Box<dyn std::error::Error>> {
-    // Test server protos are only needed when test-servers feature is enabled.
-    if env::var_os("CARGO_FEATURE_TEST_SERVERS").is_none() {
-        return Ok(());
-    }
-
     use_vendored_protoc()?;
 
     let test_proto_dir = std::path::Path::new("tests/servers/proto");
@@ -62,6 +60,11 @@ fn compile_test_server_protos() -> Result<(), Box<dyn std::error::Error>> {
         .file_descriptor_set_path(out_dir.join("test_servers_descriptor.bin"))
         .compile_protos(&proto_files, &[test_proto_dir.to_path_buf()])?;
 
+    Ok(())
+}
+
+#[cfg(not(feature = "test-servers"))]
+fn compile_test_server_protos() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
