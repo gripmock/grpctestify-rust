@@ -1,0 +1,13 @@
+--- ENDPOINT ---
+calculator.Calculator/Divide
+
+--- REQUEST ---
+{
+  "a": 10.0,
+  "b": 3.0
+}
+
+--- RESPONSE tolerance=0.01 ---
+{
+  "result": 3.33
+}

@@ -1,0 +1,55 @@
+{
+  "file_path": "tests/gctf/basic/unary.gctf",
+  "connection": {
+    "address": "localhost:4770",
+    "source": "default"
+  },
+  "target": {
+    "endpoint": "echo.EchoService/SayHello",
+    "package": "echo",
+    "service": "EchoService",
+    "method": "SayHello"
+  },
+  "headers": null,
+  "requests": [
+    {
+      "index": 1,
+      "content": {
+        "message": "World"
+      },
+      "content_type": "json",
+      "line_start": 7,
+      "line_end": 10
+    }
+  ],
+  "expectations": [
+    {
+      "index": 1,
+      "expectation_type": "response",
+      "content": {
+        "message": "Hello, World!"
+      },
+      "message_count": null,
+      "comparison_options": {
+        "partial": false,
+        "redact": [],
+        "tolerance": null,
+        "unordered_arrays": false,
+        "with_asserts": false
+      },
+      "line_start": 12,
+      "line_end": 15
+    }
+  ],
+  "assertions": [],
+  "extractions": [],
+  "rpc_mode": "unary",
+  "summary": {
+    "total_requests": 1,
+    "total_responses": 1,
+    "error_expected": false,
+    "assertion_blocks": 0,
+    "variable_extractions": 0,
+    "rpc_mode_name": "unary"
+  }
+}

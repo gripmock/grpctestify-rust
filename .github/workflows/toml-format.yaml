@@ -1,0 +1,25 @@
+# TOML format - TOML file formatting check
+name: TOML Format
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+jobs:
+  taplo:
+    name: TOML Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install taplo
+        uses: taiki-e/install-action@v2
+        with:
+          tool: taplo-cli
+      - name: Check
+        run: taplo fmt --check

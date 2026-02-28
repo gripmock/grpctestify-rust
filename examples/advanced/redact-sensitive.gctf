@@ -1,0 +1,17 @@
+--- ENDPOINT ---
+auth.AuthService/Register
+
+--- REQUEST ---
+{
+  "username": "newuser",
+  "password": "secret123"
+}
+
+--- RESPONSE redact=password,token ---
+{
+  "user_id": 123,
+  "token": "abc123"
+}
+
+--- ASSERTS ---
+@uuid(.user_id)

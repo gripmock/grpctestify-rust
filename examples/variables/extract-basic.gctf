@@ -1,0 +1,18 @@
+--- ENDPOINT ---
+auth.AuthService/Login
+
+--- REQUEST ---
+{
+  "username": "admin",
+  "password": "secret"
+}
+
+--- RESPONSE ---
+{
+  "token": "abc123",
+  "user_id": 42
+}
+
+--- EXTRACT ---
+auth_token = .token
+user_id = .user_id

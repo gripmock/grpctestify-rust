@@ -1,0 +1,13 @@
+--- ENDPOINT ---
+users.UserService/GetUser
+
+--- REQUEST ---
+{
+  "id": 999
+}
+
+--- ERROR ---
+{
+  "code": 5,
+  "message": "User not found"
+}

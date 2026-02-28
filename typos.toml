@@ -1,0 +1,21 @@
+# https://github.com/crate-ci/typos/blob/master/docs/reference.md
+# Configuration for typos checker
+
+[files]
+extend-exclude = ["*.profraw", "*.profdata", "target/", "Cargo.lock"]
+
+[default]
+extend-ignore-re = [
+  # Ignore UUIDs and hashes
+  "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+  "[0-9a-f]{64}",
+  # Ignore base64-like strings
+  "[A-Za-z0-9+/]{40,}",
+]
+
+[default.extend-identifiers]
+# Add identifiers that should be ignored
+
+[default.extend-words]
+# Add words that should be ignored
+# Example: "teh" = "teh"  # intentional typo for testing

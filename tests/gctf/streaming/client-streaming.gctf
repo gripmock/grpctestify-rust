@@ -1,0 +1,28 @@
+/// TEST: Client streaming with multiple requests
+/// EXPECT: PASS
+/// EXPLAIN: ClientStreaming
+--- ENDPOINT ---
+echo.EchoService/Repeat
+
+--- REQUEST ---
+{
+  "message": "Hello"
+}
+--- REQUEST ---
+{
+  "message": "World"
+}
+--- REQUEST ---
+{
+  "message": "Test"
+}
+
+--- RESPONSE ---
+{
+  "total_messages": 3,
+  "concatenated": "Hello World Test"
+}
+
+--- ASSERTS ---
+.total_messages == 3
+@len(.concatenated) > 0

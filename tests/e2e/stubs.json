@@ -1,0 +1,16 @@
+[
+  {
+    "service": "helloworld.Greeter",
+    "method": "SayHello",
+    "input": {
+      "matches": {
+        "name": "World"
+      }
+    },
+    "output": {
+      "data": {
+        "message": "Hello World"
+      }
+    }
+  }
+]

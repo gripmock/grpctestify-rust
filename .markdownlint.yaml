@@ -1,0 +1,11 @@
+# https://github.com/DavidAnson/markdownlint
+# Configuration for markdownlint
+# MD013: Line length
+MD013:
+  line_length: 120
+  code_blocks: false
+  tables: false
+# MD033: Inline HTML (allowed for badges)
+MD033: false
+# MD041: First line should be a top level header
+MD041: false

@@ -1,0 +1,21 @@
+// Test expecting an error
+// This test file assumes the server returns an error if name is "Error"
+
+--- ADDRESS ---
+localhost:4770
+
+--- ENDPOINT ---
+helloworld.Greeter/SayHello
+
+--- PROTO ---
+files: helloworld.proto
+import_paths: .
+
+--- REQUEST ---
+{
+  "name": "Error"
+}
+
+--- ERROR ---
+// Expecting a specific error message.
+"triggering error"

@@ -1,0 +1,21 @@
+--- ADDRESS ---
+localhost:4770
+
+--- ENDPOINT ---
+helloworld.Greeter/SayHello
+
+--- REQUEST ---
+{
+    // This is a single line comment
+    name: 'world', /* This is a block comment */
+    trailing_comma: "yes",
+    unquoted_key: 123,
+    hex_number: 0x10,
+    float_number: 1.5,
+    "quoted_key": "value",
+}
+
+--- RESPONSE ---
+{
+    message: "Hello world",
+}
