@@ -116,7 +116,6 @@ pub enum SectionType {
 
 impl SectionType {
     /// Get section name as string
-    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             SectionType::Address => "ADDRESS",
