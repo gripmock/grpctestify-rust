@@ -1,3 +1,5 @@
+#![cfg(not(miri))]
+
 use std::process::{Command, Output};
 
 fn get_binary() -> String {
