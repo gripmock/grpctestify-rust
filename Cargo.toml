@@ -224,8 +224,16 @@ required-features = ["test-servers"]
 
 [features]
 default = []
-proto-build = ["dep:tonic-prost", "dep:tonic-prost-build", "dep:protoc-bin-vendored"]
-test-servers = ["dep:tonic-prost", "dep:tonic-prost-build", "dep:protoc-bin-vendored"]
+proto-build = [
+  "dep:tonic-prost",
+  "dep:tonic-prost-build",
+  "dep:protoc-bin-vendored",
+]
+test-servers = [
+  "dep:tonic-prost",
+  "dep:tonic-prost-build",
+  "dep:protoc-bin-vendored",
+]
 
 [build-dependencies]
 tonic-prost-build = { version = "0.14.5", optional = true }
