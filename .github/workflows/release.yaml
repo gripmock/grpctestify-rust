@@ -1,8 +1,11 @@
-# Release - build and upload binaries
+# Release - build and upload release artifacts
 name: Release
 on:
   release:
     types: [published]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
 permissions:
   contents: write
 env:
@@ -16,10 +19,36 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            name: grpctestify-linux-amd64
-          - os: macos-latest
+            artifact_name: grpctestify-linux-amd64.tar.gz
+            exe_suffix: ""
+            package_globs: |
+              grpctestify_*_amd64.deb
+              grpctestify-*.x86_64.rpm
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: grpctestify-linux-arm64.tar.gz
+            exe_suffix: ""
+            package_globs: ""
+          - os: macos-14
             target: aarch64-apple-darwin
-            name: grpctestify-macos-arm64
+            artifact_name: grpctestify-macos-arm64.tar.gz
+            exe_suffix: ""
+            package_globs: ""
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact_name: grpctestify-macos-amd64.tar.gz
+            exe_suffix: ""
+            package_globs: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: grpctestify-windows-amd64.zip
+            exe_suffix: .exe
+            package_globs: ""
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            artifact_name: grpctestify-windows-arm64.zip
+            exe_suffix: .exe
+            package_globs: ""
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -27,12 +56,64 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: ${{ matrix.target }}
-      - name: Build
+      - name: Install cross
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      - name: Build with cargo
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
         run: cargo build --release --target ${{ matrix.target }}
-      - name: Upload
+      - name: Build with cross
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: cross build --release --target ${{ matrix.target }}
+      - name: Prepare package directory (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          rm -rf release-package
+          mkdir -p release-package
+          cp "target/${{ matrix.target }}/release/grpctestify${{ matrix.exe_suffix }}" "release-package/grpctestify${{ matrix.exe_suffix }}"
+          for extra_name in README.md LICENSE LICENSE-MIT LICENSE-APACHE; do
+            if [ -f "${extra_name}" ]; then
+              cp "${extra_name}" "release-package/${extra_name}"
+            fi
+          done
+      - name: Create tar.gz archive (Unix)
+        if: runner.os != 'Windows'
+        run: tar -C release-package -czf "${{ matrix.artifact_name }}" .
+      - name: Prepare package directory (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force release-package -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path release-package | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/grpctestify${{ matrix.exe_suffix }}" "release-package/grpctestify${{ matrix.exe_suffix }}"
+          foreach ($extraName in @("README.md", "LICENSE", "LICENSE-MIT", "LICENSE-APACHE")) {
+            if (Test-Path $extraName) {
+              Copy-Item $extraName "release-package/$extraName"
+            }
+          }
+      - name: Create zip archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path "release-package/*" -DestinationPath "${{ matrix.artifact_name }}" -Force
+      - name: Build Linux packages (deb/rpm)
+        if: matrix.package_globs != ''
+        env:
+          VERSION: ${{ github.event.release.tag_name }}
+        run: |
+          gem install --no-document fpm
+          mkdir -p pkg/usr/bin
+          install -m 0755 "target/${{ matrix.target }}/release/grpctestify" pkg/usr/bin/grpctestify
+          RELEASE_VERSION="${VERSION#v}"
+          fpm -s dir -t deb -n grpctestify -v "${RELEASE_VERSION}" -a amd64 --license MIT --url "https://github.com/gripmock/grpctestify-rust" --description "gRPC testing utility written in Rust" -C pkg usr/bin/grpctestify
+          fpm -s dir -t rpm -n grpctestify -v "${RELEASE_VERSION}" -a x86_64 --license MIT --url "https://github.com/gripmock/grpctestify-rust" --description "gRPC testing utility written in Rust" -C pkg usr/bin/grpctestify
+      - name: Upload artifacts
         uses: softprops/action-gh-release@v2
         with:
-          files: target/${{ matrix.target }}/release/grpctestify
+          files: |
+            ${{ matrix.artifact_name }}
+            ${{ matrix.package_globs }}
   checksums:
     name: Checksums
     runs-on: ubuntu-latest
@@ -41,11 +122,15 @@ jobs:
       - name: Download assets
         uses: robinraju/release-downloader@v1
         with:
-          latest: true
+          tag: ${{ github.event.release.tag_name }}
+          latest: false
           tarBall: false
           zipBall: false
       - name: Create checksums
-        run: sha256sum grpctestify-* > checksums.txt
+        run: |
+          shopt -s nullglob
+          files=(grpctestify-* grpctestify_*)
+          sha256sum "${files[@]}" > checksums.txt
       - name: Upload
         uses: softprops/action-gh-release@v2
         with:
