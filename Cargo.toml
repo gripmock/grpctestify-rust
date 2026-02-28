@@ -244,8 +244,7 @@ protoc-bin-vendored = { version = "3", optional = true }
 tempfile = "3.10"
 uuid = { workspace = true }
 
-# Test servers
-tonic = { workspace = true }
-tokio = { workspace = true }
-tokio-stream = { workspace = true }
-prost = { workspace = true }
+[package.metadata.cargo-machete]
+# Used only in feature-gated proto generation paths (`proto-build`, `test-servers`)
+# and referenced by generated code.
+ignored = ["tonic-prost", "tonic-prost-build", "protoc-bin-vendored"]
