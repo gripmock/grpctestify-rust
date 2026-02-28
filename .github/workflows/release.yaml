@@ -15,6 +15,7 @@ jobs:
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -29,12 +30,12 @@ jobs:
             artifact_name: grpctestify-linux-arm64.tar.gz
             exe_suffix: ""
             package_globs: ""
-          - os: macos-14
+          - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: grpctestify-macos-arm64.tar.gz
             exe_suffix: ""
             package_globs: ""
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: grpctestify-macos-amd64.tar.gz
             exe_suffix: ""
@@ -56,6 +57,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: ${{ matrix.target }}
+          cache: false
       - name: Install cross
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         uses: taiki-e/install-action@v2
@@ -102,7 +104,9 @@ jobs:
         env:
           VERSION: ${{ github.event.release.tag_name }}
         run: |
-          gem install --no-document fpm
+          sudo apt-get update
+          sudo apt-get install -y rpm
+          sudo gem install --no-document fpm
           mkdir -p pkg/usr/bin
           install -m 0755 "target/${{ matrix.target }}/release/grpctestify" pkg/usr/bin/grpctestify
           RELEASE_VERSION="${VERSION#v}"
