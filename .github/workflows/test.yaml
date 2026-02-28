@@ -34,7 +34,7 @@ jobs:
         run: brew install protobuf
       - name: Install protoc (Windows)
         if: runner.os == 'Windows'
-        run: choco install protobuf -y
+        run: choco install protoc -y
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
