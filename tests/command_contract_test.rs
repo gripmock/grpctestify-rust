@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::process::{Command, Output};
 
 fn get_binary() -> String {
     env!("CARGO_BIN_EXE_grpctestify").to_string()
@@ -11,17 +11,37 @@ fn fixture_path(rel: &str) -> String {
         .into_owned()
 }
 
+fn run_cli(args: &[&str]) -> Output {
+    Command::new(get_binary())
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(args)
+        .output()
+        .expect("Failed to execute CLI command")
+}
+
+fn parse_json_stdout(output: &Output) -> serde_json::Value {
+    assert!(
+        output.status.success(),
+        "CLI failed with status {:?}\nstderr:\n{}\nstdout:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+        panic!(
+            "Invalid JSON output: {e}\nstderr:\n{}\nstdout:\n{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        )
+    })
+}
+
 #[test]
 fn test_check_valid_file_json_output() {
-    let binary = get_binary();
     let file = fixture_path("tests/data/gctf/valid_simple.gctf");
-    let output = Command::new(&binary)
-        .args(["check", &file, "--format", "json"])
-        .output()
-        .expect("Failed to execute check command");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Invalid JSON output");
+    let output = run_cli(&["check", &file, "--format", "json"]);
+    let json = parse_json_stdout(&output);
 
     assert!(json.get("diagnostics").is_some());
     assert!(json.get("summary").is_some());
@@ -30,15 +50,9 @@ fn test_check_valid_file_json_output() {
 
 #[test]
 fn test_check_missing_file_json_output() {
-    let binary = get_binary();
     let file = fixture_path("tests/data/gctf/nonexistent.gctf");
-    let output = Command::new(&binary)
-        .args(["check", &file, "--format", "json"])
-        .output()
-        .expect("Failed to execute check command");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Invalid JSON output");
+    let output = run_cli(&["check", &file, "--format", "json"]);
+    let json = parse_json_stdout(&output);
 
     assert!(!json["diagnostics"].as_array().unwrap().is_empty());
     assert_eq!(json["diagnostics"][0]["code"], "FILE_NOT_FOUND");
@@ -46,15 +60,9 @@ fn test_check_missing_file_json_output() {
 
 #[test]
 fn test_inspect_valid_file_json_output() {
-    let binary = get_binary();
     let file = fixture_path("tests/data/gctf/valid_simple.gctf");
-    let output = Command::new(&binary)
-        .args(["inspect", &file, "--format", "json"])
-        .output()
-        .expect("Failed to execute inspect command");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Invalid JSON output");
+    let output = run_cli(&["inspect", &file, "--format", "json"]);
+    let json = parse_json_stdout(&output);
 
     assert!(json.get("file").is_some());
     assert!(json.get("ast").is_some());
@@ -64,15 +72,9 @@ fn test_inspect_valid_file_json_output() {
 
 #[test]
 fn test_inssect_sections_have_required_fields() {
-    let binary = get_binary();
     let file = fixture_path("tests/data/gctf/valid_simple.gctf");
-    let output = Command::new(&binary)
-        .args(["inspect", &file, "--format", "json"])
-        .output()
-        .expect("Failed to execute inspect command");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Invalid JSON output");
+    let output = run_cli(&["inspect", &file, "--format", "json"]);
+    let json = parse_json_stdout(&output);
 
     let sections = json["ast"]["sections"]
         .as_array()
@@ -87,32 +89,24 @@ fn test_inssect_sections_have_required_fields() {
 
 #[test]
 fn test_fmt_stdout_output() {
-    let binary = get_binary();
     let file = fixture_path("tests/data/gctf/valid_simple.gctf");
-    let output = Command::new(&binary)
-        .args(["fmt", &file])
-        .output()
-        .expect("Failed to execute fmt command");
-
-    assert!(output.status.success());
+    let output = run_cli(&["fmt", &file]);
+    assert!(
+        output.status.success(),
+        "fmt command failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--- ENDPOINT ---"));
 }
 
 #[test]
 fn test_fmt_idempotent() {
-    let binary = get_binary();
     let file = fixture_path("tests/data/gctf/valid_simple.gctf");
 
-    let output1 = Command::new(&binary)
-        .args(["fmt", &file])
-        .output()
-        .expect("Failed to execute fmt command");
-
-    let output2 = Command::new(&binary)
-        .args(["fmt", &file])
-        .output()
-        .expect("Failed to execute fmt command");
+    let output1 = run_cli(&["fmt", &file]);
+    let output2 = run_cli(&["fmt", &file]);
 
     let stdout1 = String::from_utf8_lossy(&output1.stdout);
     let stdout2 = String::from_utf8_lossy(&output2.stdout);
@@ -122,15 +116,9 @@ fn test_fmt_idempotent() {
 
 #[test]
 fn test_list_json_output() {
-    let binary = get_binary();
     let dir = fixture_path("tests/data/gctf");
-    let output = Command::new(&binary)
-        .args(["list", &dir, "--format", "json"])
-        .output()
-        .expect("Failed to execute list command");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Invalid JSON output");
+    let output = run_cli(&["list", &dir, "--format", "json"]);
+    let json = parse_json_stdout(&output);
 
     assert!(json.get("tests").is_some());
     let tests = json["tests"].as_array().expect("tests should be array");
@@ -145,15 +133,9 @@ fn test_list_json_output() {
 
 #[test]
 fn test_list_with_range() {
-    let binary = get_binary();
     let dir = fixture_path("tests/data/gctf");
-    let output = Command::new(&binary)
-        .args(["list", &dir, "--format", "json", "--with-range"])
-        .output()
-        .expect("Failed to execute list command");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&stdout).expect("Invalid JSON output");
+    let output = run_cli(&["list", &dir, "--format", "json", "--with-range"]);
+    let json = parse_json_stdout(&output);
 
     let tests = json["tests"].as_array().expect("tests should be array");
     for test in tests {
