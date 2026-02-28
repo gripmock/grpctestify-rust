@@ -315,7 +315,6 @@ impl LanguageServer for GrpctestifyLsp {
                         SectionType::Address => items.extend(handlers::get_address_completions()),
                         SectionType::Endpoint => items.extend(
                             handlers::get_address_from_document(&content)
-                                .await
                                 .map(|_| vec![])
                                 .unwrap_or_else(|| {
                                     vec![CompletionItem {
