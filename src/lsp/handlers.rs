@@ -238,7 +238,7 @@ pub fn get_extract_completions() -> Vec<CompletionItem> {
 }
 
 /// Extract address from document using AST
-pub async fn get_address_from_document(content: &str) -> Option<String> {
+pub fn get_address_from_document(content: &str) -> Option<String> {
     let doc = parser::parse_gctf_from_str(content, "temp.gctf").ok()?;
     for section in &doc.sections {
         if section.section_type == SectionType::Address
@@ -370,24 +370,24 @@ mod tests {
         assert!(labels.contains(&"@email(.field)"));
     }
 
-    #[tokio::test]
-    async fn test_get_address_from_document_with_address() {
+    #[test]
+    fn test_get_address_from_document_with_address() {
         let content = r#"--- ADDRESS ---
 localhost:4770
 
 --- ENDPOINT ---
 test.Service/Method
 "#;
-        let address = get_address_from_document(content).await;
+        let address = get_address_from_document(content);
         assert_eq!(address, Some("localhost:4770".to_string()));
     }
 
-    #[tokio::test]
-    async fn test_get_address_from_document_no_address() {
+    #[test]
+    fn test_get_address_from_document_no_address() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 "#;
-        let address = get_address_from_document(content).await;
+        let address = get_address_from_document(content);
         assert!(address.is_none());
     }
 

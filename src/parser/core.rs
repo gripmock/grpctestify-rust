@@ -655,6 +655,7 @@ Service/Method
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_parse_gctf() {
         let content = r#"--- ENDPOINT ---
 Service/Method
@@ -670,12 +671,14 @@ Service/Method
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_parse_gctf_nonexistent_file() {
         let result = parse_gctf(Path::new("/nonexistent/file.gctf"));
         assert!(result.is_err());
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_parse_gctf_with_diagnostics() {
         let content = r#"--- ENDPOINT ---
 Service/Method
