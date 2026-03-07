@@ -364,8 +364,31 @@ fn print_detailed_workflow(
                     if let Some(message) = value.get("message") {
                         println!("    Message: {}", message);
                     }
+                    if let Some(details) = value.get("details") {
+                        println!("    Details: required (strict match)");
+                        if let Some(items) = details.as_array() {
+                            println!("    Details Count: {}", items.len());
+                            let types: Vec<String> = items
+                                .iter()
+                                .filter_map(|item| item.get("@type").and_then(|v| v.as_str()))
+                                .map(ToString::to_string)
+                                .collect();
+                            if !types.is_empty() {
+                                println!("    Details Types: {}", types.join(", "));
+                            }
+                        }
+                    } else {
+                        println!("    Details: must be absent on backend");
+                    }
                 }
-                println!("  Action: Verify gRPC error status and message");
+                let mut option_flags = Vec::new();
+                if section.inline_options.with_asserts {
+                    option_flags.push("with_asserts");
+                }
+                if !option_flags.is_empty() {
+                    println!("  Options: {}", option_flags.join(", "));
+                }
+                println!("  Action: Verify gRPC error status, message, and details policy");
                 step += 1;
             }
             SectionType::Extract => {

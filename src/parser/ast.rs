@@ -163,7 +163,7 @@ impl SectionType {
 
     /// Check if section supports inline options
     pub fn supports_inline_options(&self) -> bool {
-        matches!(self, SectionType::Response)
+        matches!(self, SectionType::Response | SectionType::Error)
     }
 }
 
@@ -363,6 +363,7 @@ mod tests {
     #[test]
     fn test_section_type_supports_inline_options() {
         assert!(SectionType::Response.supports_inline_options());
+        assert!(SectionType::Error.supports_inline_options());
         assert!(!SectionType::Request.supports_inline_options());
         assert!(!SectionType::Address.supports_inline_options());
     }
