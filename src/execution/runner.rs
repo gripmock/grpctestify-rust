@@ -487,6 +487,23 @@ fn tls_env_defaults() -> HashMap<String, String> {
     defaults
 }
 
+fn resolve_tls_path(value: &str, from_env: bool, document_path: &Path) -> String {
+    let path = Path::new(value);
+    if path.is_absolute() {
+        return path.to_string_lossy().to_string();
+    }
+
+    if from_env {
+        if let Ok(cwd) = std::env::current_dir() {
+            return cwd.join(path).to_string_lossy().to_string();
+        }
+    }
+
+    FileUtils::resolve_relative_path(document_path, value)
+        .to_string_lossy()
+        .to_string()
+}
+
 impl TestRunner {
     pub fn full_service_name(package: &str, service: &str) -> String {
         if package.is_empty() {
@@ -601,41 +618,55 @@ impl TestRunner {
         let document_path = Path::new(&document.file_path);
 
         let tls_defaults = tls_env_defaults();
-        let tls_config = document
-            .get_tls_config_with_defaults(&tls_defaults)
-            .map(|tls_map| TlsConfig {
-                ca_cert_path: tls_map
-                    .get("ca_cert")
-                    .or_else(|| tls_map.get("ca_file"))
-                    .map(|p| {
-                        FileUtils::resolve_relative_path(document_path, p)
-                            .to_string_lossy()
-                            .to_string()
-                    }),
-                client_cert_path: tls_map
-                    .get("client_cert")
-                    .or_else(|| tls_map.get("cert"))
-                    .or_else(|| tls_map.get("cert_file"))
-                    .map(|p| {
-                        FileUtils::resolve_relative_path(document_path, p)
-                            .to_string_lossy()
-                            .to_string()
-                    }),
-                client_key_path: tls_map
-                    .get("client_key")
-                    .or_else(|| tls_map.get("key"))
-                    .or_else(|| tls_map.get("key_file"))
-                    .map(|p| {
-                        FileUtils::resolve_relative_path(document_path, p)
-                            .to_string_lossy()
-                            .to_string()
-                    }),
-                server_name: tls_map.get("server_name").cloned(),
-                insecure_skip_verify: tls_map
-                    .get("insecure")
-                    .map(|s| parse_bool_flag(s))
-                    .unwrap_or(false),
-            });
+        let tls_section = document.get_tls_config();
+
+        let pick_tls_value = |keys: &[&str]| -> Option<(String, bool)> {
+            if let Some(section_map) = tls_section.as_ref() {
+                for key in keys {
+                    if let Some(value) = section_map.get(*key) {
+                        return Some((value.clone(), false));
+                    }
+                }
+            }
+
+            for key in keys {
+                if let Some(value) = tls_defaults.get(*key) {
+                    return Some((value.clone(), true));
+                }
+            }
+
+            None
+        };
+
+        let ca_cert_path = pick_tls_value(&["ca_cert", "ca_file"])
+            .map(|(v, from_env)| resolve_tls_path(&v, from_env, document_path));
+        let client_cert_path = pick_tls_value(&["client_cert", "cert", "cert_file"])
+            .map(|(v, from_env)| resolve_tls_path(&v, from_env, document_path));
+        let client_key_path = pick_tls_value(&["client_key", "key", "key_file"])
+            .map(|(v, from_env)| resolve_tls_path(&v, from_env, document_path));
+        let server_name = pick_tls_value(&["server_name"]).map(|(v, _)| v);
+        let insecure_skip_verify = tls_section
+            .as_ref()
+            .and_then(|m| m.get("insecure"))
+            .map(|s| parse_bool_flag(s))
+            .unwrap_or(false);
+
+        let tls_config = if ca_cert_path.is_some()
+            || client_cert_path.is_some()
+            || client_key_path.is_some()
+            || server_name.is_some()
+            || insecure_skip_verify
+        {
+            Some(TlsConfig {
+                ca_cert_path,
+                client_cert_path,
+                client_key_path,
+                server_name,
+                insecure_skip_verify,
+            })
+        } else {
+            None
+        };
 
         // Check for Proto config in document
         let proto_config = if let Some(proto_map) = document.get_proto_config() {
@@ -1761,6 +1792,24 @@ mod tests {
         assert!(!parse_bool_flag("0"));
         assert!(!parse_bool_flag("off"));
         assert!(!parse_bool_flag(""));
+    }
+
+    #[test]
+    fn test_resolve_tls_path_from_env_uses_cwd() {
+        let cwd = std::env::current_dir().unwrap();
+        let document_path = Path::new("tests/fixtures/sample.gctf");
+        let resolved = resolve_tls_path("certs/ca.crt", true, document_path);
+        assert_eq!(resolved, cwd.join("certs/ca.crt").to_string_lossy());
+    }
+
+    #[test]
+    fn test_resolve_tls_path_from_document_uses_document_dir() {
+        let document_path = Path::new("tests/fixtures/sample.gctf");
+        let resolved = resolve_tls_path("certs/ca.crt", false, document_path);
+        assert_eq!(
+            resolved,
+            Path::new("tests/fixtures/certs/ca.crt").to_string_lossy()
+        );
     }
 
     #[test]
