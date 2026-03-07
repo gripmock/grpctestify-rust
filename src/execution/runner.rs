@@ -493,10 +493,8 @@ fn resolve_tls_path(value: &str, from_env: bool, document_path: &Path) -> String
         return path.to_string_lossy().to_string();
     }
 
-    if from_env {
-        if let Ok(cwd) = std::env::current_dir() {
-            return cwd.join(path).to_string_lossy().to_string();
-        }
+    if from_env && let Ok(cwd) = std::env::current_dir() {
+        return cwd.join(path).to_string_lossy().to_string();
     }
 
     FileUtils::resolve_relative_path(document_path, value)
@@ -1799,7 +1797,7 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         let document_path = Path::new("tests/fixtures/sample.gctf");
         let resolved = resolve_tls_path("certs/ca.crt", true, document_path);
-        assert_eq!(resolved, cwd.join("certs/ca.crt").to_string_lossy());
+        assert_eq!(Path::new(&resolved), cwd.join("certs/ca.crt"));
     }
 
     #[test]
@@ -1807,8 +1805,8 @@ mod tests {
         let document_path = Path::new("tests/fixtures/sample.gctf");
         let resolved = resolve_tls_path("certs/ca.crt", false, document_path);
         assert_eq!(
-            resolved,
-            Path::new("tests/fixtures/certs/ca.crt").to_string_lossy()
+            Path::new(&resolved),
+            Path::new("tests/fixtures").join("certs").join("ca.crt")
         );
     }
 
