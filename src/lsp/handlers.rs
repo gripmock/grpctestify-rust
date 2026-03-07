@@ -7,6 +7,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use tower_lsp::lsp_types::*;
 
+use crate::config;
 use crate::parser::{self, ast::SectionType};
 use crate::plugins::{PluginManager, PluginPurity};
 
@@ -243,7 +244,7 @@ pub fn get_address_from_document(content: &str) -> Option<String> {
             return Some(addr.trim().to_string());
         }
     }
-    std::env::var("GRPCTESTIFY_ADDRESS").ok()
+    std::env::var(config::ENV_GRPCTESTIFY_ADDRESS).ok()
 }
 
 /// Convert validation error to LSP diagnostic

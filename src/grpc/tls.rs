@@ -195,12 +195,14 @@ pub enum CompressionMode {
 impl CompressionMode {
     /// Get compression mode from environment variable
     pub fn from_env() -> Self {
-        match std::env::var("GRPCTESTIFY_COMPRESSION")
+        match std::env::var(crate::config::ENV_GRPCTESTIFY_COMPRESSION)
             .unwrap_or_default()
-            .to_lowercase()
+            .trim()
+            .to_ascii_lowercase()
             .as_str()
         {
             "gzip" => Self::Gzip,
+            "" | "none" => Self::None,
             _ => Self::None,
         }
     }

@@ -316,6 +316,28 @@ impl GctfDocument {
         None
     }
 
+    /// Get TLS configuration merged with defaults (section values override defaults)
+    pub fn get_tls_config_with_defaults(
+        &self,
+        defaults: &HashMap<String, String>,
+    ) -> Option<HashMap<String, String>> {
+        let mut merged = defaults.clone();
+
+        if let Some(section) = self.first_section(SectionType::Tls)
+            && let SectionContent::KeyValues(config) = &section.content
+        {
+            for (key, value) in config {
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+
+        if merged.is_empty() {
+            None
+        } else {
+            Some(merged)
+        }
+    }
+
     /// Get PROTO configuration
     pub fn get_proto_config(&self) -> Option<HashMap<String, String>> {
         if let Some(section) = self.first_section(SectionType::Proto)
@@ -655,6 +677,39 @@ mod tests {
 
         let result = doc.get_tls_config().unwrap();
         assert_eq!(result.get("ca_cert"), Some(&"/path/to/ca.pem".to_string()));
+    }
+
+    #[test]
+    fn test_gctf_document_get_tls_config_with_defaults_env_only() {
+        let doc = GctfDocument::new("test.gctf".to_string());
+        let mut defaults = HashMap::new();
+        defaults.insert("server_name".to_string(), "example.com".to_string());
+
+        let result = doc.get_tls_config_with_defaults(&defaults).unwrap();
+        assert_eq!(result.get("server_name"), Some(&"example.com".to_string()));
+    }
+
+    #[test]
+    fn test_gctf_document_get_tls_config_with_defaults_section_overrides() {
+        let mut doc = GctfDocument::new("test.gctf".to_string());
+        let mut config = HashMap::new();
+        config.insert("insecure".to_string(), "true".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Tls,
+            content: SectionContent::KeyValues(config),
+            inline_options: InlineOptions::default(),
+            raw_content: "".to_string(),
+            start_line: 1,
+            end_line: 2,
+        });
+
+        let mut defaults = HashMap::new();
+        defaults.insert("insecure".to_string(), "false".to_string());
+        defaults.insert("server_name".to_string(), "example.com".to_string());
+
+        let result = doc.get_tls_config_with_defaults(&defaults).unwrap();
+        assert_eq!(result.get("insecure"), Some(&"true".to_string()));
+        assert_eq!(result.get("server_name"), Some(&"example.com".to_string()));
     }
 
     #[test]
