@@ -8,6 +8,7 @@ use crate::assert::{AssertionEngine, JsonComparator, get_json_diff};
 use crate::grpc::{CompressionMode, GrpcClient, GrpcClientConfig, ProtoConfig, TlsConfig};
 use crate::optimizer;
 use crate::parser::ast::{SectionContent, SectionType};
+use crate::polyfill::runtime;
 use crate::report::CoverageCollector;
 use crate::utils::file::FileUtils;
 use anyhow::Result;
@@ -493,8 +494,13 @@ fn resolve_tls_path(value: &str, from_env: bool, document_path: &Path) -> String
         return path.to_string_lossy().to_string();
     }
 
-    if from_env && let Ok(cwd) = std::env::current_dir() {
-        return cwd.join(path).to_string_lossy().to_string();
+    if from_env {
+        if runtime::supports(runtime::Capability::IsolatedFsIo)
+            && let Ok(cwd) = std::env::current_dir()
+        {
+            return cwd.join(path).to_string_lossy().to_string();
+        }
+        return path.to_string_lossy().to_string();
     }
 
     FileUtils::resolve_relative_path(document_path, value)
@@ -1794,10 +1800,25 @@ mod tests {
 
     #[test]
     fn test_resolve_tls_path_from_env_uses_cwd() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
+
         let cwd = std::env::current_dir().unwrap();
         let document_path = Path::new("tests/fixtures/sample.gctf");
         let resolved = resolve_tls_path("certs/ca.crt", true, document_path);
         assert_eq!(Path::new(&resolved), cwd.join("certs/ca.crt"));
+    }
+
+    #[test]
+    fn test_resolve_tls_path_from_env_without_fs_capability_returns_relative() {
+        if runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
+
+        let document_path = Path::new("tests/fixtures/sample.gctf");
+        let resolved = resolve_tls_path("certs/ca.crt", true, document_path);
+        assert_eq!(resolved, "certs/ca.crt");
     }
 
     #[test]
