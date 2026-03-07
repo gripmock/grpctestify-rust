@@ -627,4 +627,34 @@ fn print_logic_flow(doc: &parser::GctfDocument) {
     if partial_count > 0 {
         println!("  Partial Matching: {} section(s)", partial_count);
     }
+
+    let strict_error_details_count = doc
+        .sections
+        .iter()
+        .filter(|s| {
+            s.section_type == parser::ast::SectionType::Error
+                && matches!(s.content, parser::ast::SectionContent::Json(ref v) if v.get("details").is_none())
+        })
+        .count();
+    if strict_error_details_count > 0 {
+        println!(
+            "  Error Details Policy: strict absence for {} ERROR section(s)",
+            strict_error_details_count
+        );
+    }
+
+    let required_error_details_count = doc
+        .sections
+        .iter()
+        .filter(|s| {
+            s.section_type == parser::ast::SectionType::Error
+                && matches!(s.content, parser::ast::SectionContent::Json(ref v) if v.get("details").is_some())
+        })
+        .count();
+    if required_error_details_count > 0 {
+        println!(
+            "  Error Details Policy: required for {} ERROR section(s)",
+            required_error_details_count
+        );
+    }
 }

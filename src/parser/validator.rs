@@ -182,6 +182,43 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                             severity: ErrorSeverity::Error,
                         });
                     }
+
+                    if section_type == SectionType::Error
+                        && let Some(details) = json.get("details")
+                    {
+                        if !details.is_array() {
+                            errors.push(ValidationError {
+                                message: "ERROR section field 'details' must be an array"
+                                    .to_string(),
+                                line: Some(section.start_line),
+                                severity: ErrorSeverity::Error,
+                            });
+                        } else if let Some(detail_items) = details.as_array() {
+                            for detail in detail_items {
+                                if !detail.is_object() {
+                                    errors.push(ValidationError {
+                                        message: "ERROR section 'details' items must be objects"
+                                            .to_string(),
+                                        line: Some(section.start_line),
+                                        severity: ErrorSeverity::Error,
+                                    });
+                                    break;
+                                }
+
+                                if let Some(type_value) = detail.get("@type")
+                                    && !type_value.is_string()
+                                {
+                                    errors.push(ValidationError {
+                                        message:
+                                            "ERROR.details item field '@type' must be a string"
+                                                .to_string(),
+                                        line: Some(section.start_line),
+                                        severity: ErrorSeverity::Error,
+                                    });
+                                }
+                            }
+                        }
+                    }
                 }
                 SectionContent::JsonLines(values) => {
                     if section_type != SectionType::Response {
@@ -269,14 +306,35 @@ fn validate_structure(document: &GctfDocument, errors: &mut Vec<ValidationError>
 
     // Validate inline options are only on supported sections
     for section in &document.sections {
-        if !section.section_type.supports_inline_options() {
-            let has_inline_options = section.inline_options.with_asserts
-                || section.inline_options.partial
-                || section.inline_options.tolerance.is_some()
-                || !section.inline_options.redact.is_empty()
-                || section.inline_options.unordered_arrays;
+        let has_any_inline_options = section.inline_options.with_asserts
+            || section.inline_options.partial
+            || section.inline_options.tolerance.is_some()
+            || !section.inline_options.redact.is_empty()
+            || section.inline_options.unordered_arrays;
 
-            if has_inline_options {
+        if !has_any_inline_options {
+            continue;
+        }
+
+        match section.section_type {
+            SectionType::Response => {
+                // All known options are supported for RESPONSE section
+            }
+            SectionType::Error => {
+                if section.inline_options.partial
+                    || section.inline_options.tolerance.is_some()
+                    || !section.inline_options.redact.is_empty()
+                    || section.inline_options.unordered_arrays
+                {
+                    errors.push(ValidationError {
+                        message: "ERROR section only supports with_asserts inline option"
+                            .to_string(),
+                        line: Some(section.start_line),
+                        severity: ErrorSeverity::Warning,
+                    });
+                }
+            }
+            _ => {
                 errors.push(ValidationError {
                     message: format!(
                         "Inline options are not supported for {:?} section",
@@ -556,6 +614,52 @@ mod tests {
         // Valid JSON should have no errors
         let has_json_errors = errors.iter().any(|e| e.message.contains("JSON"));
         assert!(!has_json_errors);
+    }
+
+    #[test]
+    fn test_validate_error_details_must_be_array() {
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Error,
+            content: SectionContent::Json(serde_json::json!({
+                "code": 3,
+                "details": {"@type": "type.googleapis.com/google.rpc.ErrorInfo"}
+            })),
+            inline_options: InlineOptions::default(),
+            raw_content: "".to_string(),
+            start_line: 5,
+            end_line: 8,
+        });
+
+        let errors = validate_document_diagnostics(&doc);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("field 'details' must be an array"))
+        );
+    }
+
+    #[test]
+    fn test_validate_error_details_items_must_be_objects() {
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Error,
+            content: SectionContent::Json(serde_json::json!({
+                "code": 3,
+                "details": ["not-an-object"]
+            })),
+            inline_options: InlineOptions::default(),
+            raw_content: "".to_string(),
+            start_line: 5,
+            end_line: 8,
+        });
+
+        let errors = validate_document_diagnostics(&doc);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("'details' items must be objects"))
+        );
     }
 
     #[test]

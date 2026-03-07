@@ -1116,32 +1116,78 @@ impl TestRunner {
                                         self.substitute_variables(&mut expected, &variables);
 
                                         // Try to extract tonic Status from anyhow::Error
-                                        let got = if let Some(status) =
+                                        let (matches, got, mismatch_reason) = if let Some(status) =
                                             e.downcast_ref::<tonic::Status>()
                                         {
                                             let status_name = Self::grpc_code_name_from_numeric(
                                                 status.code() as i64,
                                             )
                                             .unwrap_or("Unknown");
-                                            format!(
-                                                "status: {}, message: \"{}\"",
-                                                status_name,
-                                                status.message()
+                                            (
+                                                super::error_handler::ErrorHandler::status_matches_expected(
+                                                    status,
+                                                    &expected,
+                                                ),
+                                                format!(
+                                                    "status: {}, message: \"{}\"",
+                                                    status_name,
+                                                    status.message()
+                                                ),
+                                                super::error_handler::ErrorHandler::status_mismatch_reason(
+                                                    status,
+                                                    &expected,
+                                                ),
                                             )
                                         } else {
                                             // Fallback to error string representation
-                                            e.to_string()
+                                            let text = e.to_string();
+                                            (
+                                                Self::error_matches_expected(&text, &expected),
+                                                text,
+                                                None,
+                                            )
                                         };
 
                                         if self.verbose {
                                             println!("🔍 gRPC error received: '{}'", got);
+                                            if let Some(status) = e.downcast_ref::<tonic::Status>()
+                                            {
+                                                let details_json = super::error_handler::ErrorHandler::status_details_json(status);
+                                                if details_json != Value::Null
+                                                    && details_json
+                                                        .as_array()
+                                                        .is_some_and(|arr| !arr.is_empty())
+                                                {
+                                                    println!(
+                                                        "🔍 gRPC error details: {}",
+                                                        details_json
+                                                    );
+                                                }
+                                            }
                                         }
 
-                                        if !Self::error_matches_expected(&got, &expected) {
+                                        if !matches {
                                             failure_reasons.push(format!(
-                                                "Error mismatch at line {}: expected {}, got '{}'",
-                                                section.start_line, expected, got
+                                                "Error mismatch at line {}:",
+                                                section.start_line
                                             ));
+                                            if let Some(reason) = mismatch_reason {
+                                                failure_reasons.push(format!("  - {}", reason));
+                                            }
+                                            if let Some(status) = e.downcast_ref::<tonic::Status>()
+                                            {
+                                                let actual_json =
+                                                    super::error_handler::ErrorHandler::status_to_json(
+                                                        status,
+                                                    );
+                                                failure_reasons
+                                                    .push(get_json_diff(&expected, &actual_json));
+                                            } else {
+                                                failure_reasons.push(format!(
+                                                    "  - expected {}, got '{}'",
+                                                    expected, got
+                                                ));
+                                            }
                                         }
                                     }
                                 } else {
@@ -1164,13 +1210,29 @@ impl TestRunner {
                     // Expect an error from the stream
                     match response_stream.as_mut().unwrap().next().await {
                         Some(Err(status)) => {
-                            let err_msg = status.message();
+                            let status_name =
+                                Self::grpc_code_name_from_numeric(status.code() as i64)
+                                    .unwrap_or("Unknown");
+                            let got = format!(
+                                "status: {}, message: \"{}\"",
+                                status_name,
+                                status.message()
+                            );
 
                             if self.no_assert {
                                 println!("--- RESPONSE (Error) ---");
-                                println!("{}", err_msg);
+                                println!("{}", got);
                             } else if self.verbose {
-                                println!("🔍 gRPC error received: '{}'", err_msg);
+                                println!("🔍 gRPC error received: '{}'", got);
+                                let details_json =
+                                    super::error_handler::ErrorHandler::status_details_json(
+                                        &status,
+                                    );
+                                if details_json != Value::Null
+                                    && details_json.as_array().is_some_and(|arr| !arr.is_empty())
+                                {
+                                    println!("🔍 gRPC error details: {}", details_json);
+                                }
                             }
 
                             if !self.no_assert {
@@ -1178,11 +1240,27 @@ impl TestRunner {
                                     let mut expected = expected_json.clone();
                                     self.substitute_variables(&mut expected, &variables);
 
-                                    if !Self::error_matches_expected(err_msg, &expected) {
+                                    if !super::error_handler::ErrorHandler::status_matches_expected(
+                                        &status, &expected,
+                                    ) {
                                         failure_reasons.push(format!(
-                                            "Error mismatch at line {}: expected {}, got '{}'",
-                                            section.start_line, expected, err_msg
+                                            "Error mismatch at line {}:",
+                                            section.start_line
                                         ));
+                                        if let Some(reason) =
+                                            super::error_handler::ErrorHandler::status_mismatch_reason(
+                                                &status,
+                                                &expected,
+                                            )
+                                        {
+                                            failure_reasons.push(format!("  - {}", reason));
+                                        }
+                                        let actual_json =
+                                            super::error_handler::ErrorHandler::status_to_json(
+                                                &status,
+                                            );
+                                        failure_reasons
+                                            .push(get_json_diff(&expected, &actual_json));
                                     }
                                 }
 
@@ -1192,7 +1270,7 @@ impl TestRunner {
                                     && next_section.section_type == SectionType::Asserts
                                     && let SectionContent::Assertions(lines) = &next_section.content
                                 {
-                                    let error_value = Value::String(err_msg.to_string());
+                                    let error_value = Value::String(status.message().to_string());
                                     self.run_assertions(
                                         lines,
                                         &error_value,
