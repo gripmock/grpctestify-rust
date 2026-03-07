@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 
 use crate::cli::args::ReflectArgs;
+use crate::config;
 use crate::grpc::client::{GrpcClient, GrpcClientConfig};
 
 pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
@@ -10,7 +11,7 @@ pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
     let address = if let Some(addr) = &args.address {
         addr.clone()
     } else {
-        std::env::var("GRPCTESTIFY_ADDRESS").unwrap_or_else(|_| "localhost:4770".to_string())
+        std::env::var(config::ENV_GRPCTESTIFY_ADDRESS).unwrap_or_else(|_| config::default_address())
     };
 
     // Build client config

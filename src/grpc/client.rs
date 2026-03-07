@@ -748,12 +748,25 @@ mod tests {
     fn test_compression_mode_from_env() {
         let _guard = ENV_MUTEX.lock().unwrap();
         unsafe {
-            std::env::set_var("GRPCTESTIFY_COMPRESSION", "gzip");
+            std::env::set_var(crate::config::ENV_GRPCTESTIFY_COMPRESSION, "gzip");
         }
         let mode = CompressionMode::from_env();
         assert_eq!(mode, CompressionMode::Gzip);
         unsafe {
-            std::env::remove_var("GRPCTESTIFY_COMPRESSION");
+            std::env::remove_var(crate::config::ENV_GRPCTESTIFY_COMPRESSION);
+        }
+    }
+
+    #[test]
+    fn test_compression_mode_none_from_env() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::set_var(crate::config::ENV_GRPCTESTIFY_COMPRESSION, "none");
+        }
+        let mode = CompressionMode::from_env();
+        assert_eq!(mode, CompressionMode::None);
+        unsafe {
+            std::env::remove_var(crate::config::ENV_GRPCTESTIFY_COMPRESSION);
         }
     }
 
@@ -762,7 +775,7 @@ mod tests {
         let _guard = ENV_MUTEX.lock().unwrap();
         // Ensure env var is not set
         unsafe {
-            std::env::remove_var("GRPCTESTIFY_COMPRESSION");
+            std::env::remove_var(crate::config::ENV_GRPCTESTIFY_COMPRESSION);
         }
         let mode = CompressionMode::from_env();
         assert_eq!(mode, CompressionMode::None);

@@ -461,6 +461,32 @@ pub struct TestRunner {
     assertion_handler: AssertionHandler,
 }
 
+fn parse_bool_flag(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "true" | "1" | "yes" | "on"
+    )
+}
+
+fn tls_env_defaults() -> HashMap<String, String> {
+    let mut defaults = HashMap::new();
+
+    if let Ok(value) = std::env::var(crate::config::ENV_GRPCTESTIFY_TLS_CA_FILE) {
+        defaults.insert("ca_cert".to_string(), value);
+    }
+    if let Ok(value) = std::env::var(crate::config::ENV_GRPCTESTIFY_TLS_CERT_FILE) {
+        defaults.insert("client_cert".to_string(), value);
+    }
+    if let Ok(value) = std::env::var(crate::config::ENV_GRPCTESTIFY_TLS_KEY_FILE) {
+        defaults.insert("client_key".to_string(), value);
+    }
+    if let Ok(value) = std::env::var(crate::config::ENV_GRPCTESTIFY_TLS_SERVER_NAME) {
+        defaults.insert("server_name".to_string(), value);
+    }
+
+    defaults
+}
+
 impl TestRunner {
     pub fn full_service_name(package: &str, service: &str) -> String {
         if package.is_empty() {
@@ -574,28 +600,42 @@ impl TestRunner {
         // Configure Client
         let document_path = Path::new(&document.file_path);
 
-        let tls_config = document.get_tls_config().map(|tls_map| TlsConfig {
-            ca_cert_path: tls_map.get("ca_cert").map(|p| {
-                FileUtils::resolve_relative_path(document_path, p)
-                    .to_string_lossy()
-                    .to_string()
-            }),
-            client_cert_path: tls_map.get("client_cert").map(|p| {
-                FileUtils::resolve_relative_path(document_path, p)
-                    .to_string_lossy()
-                    .to_string()
-            }),
-            client_key_path: tls_map.get("client_key").map(|p| {
-                FileUtils::resolve_relative_path(document_path, p)
-                    .to_string_lossy()
-                    .to_string()
-            }),
-            server_name: tls_map.get("server_name").cloned(),
-            insecure_skip_verify: tls_map
-                .get("insecure")
-                .map(|s| s == "true")
-                .unwrap_or(false),
-        });
+        let tls_defaults = tls_env_defaults();
+        let tls_config = document
+            .get_tls_config_with_defaults(&tls_defaults)
+            .map(|tls_map| TlsConfig {
+                ca_cert_path: tls_map
+                    .get("ca_cert")
+                    .or_else(|| tls_map.get("ca_file"))
+                    .map(|p| {
+                        FileUtils::resolve_relative_path(document_path, p)
+                            .to_string_lossy()
+                            .to_string()
+                    }),
+                client_cert_path: tls_map
+                    .get("client_cert")
+                    .or_else(|| tls_map.get("cert"))
+                    .or_else(|| tls_map.get("cert_file"))
+                    .map(|p| {
+                        FileUtils::resolve_relative_path(document_path, p)
+                            .to_string_lossy()
+                            .to_string()
+                    }),
+                client_key_path: tls_map
+                    .get("client_key")
+                    .or_else(|| tls_map.get("key"))
+                    .or_else(|| tls_map.get("key_file"))
+                    .map(|p| {
+                        FileUtils::resolve_relative_path(document_path, p)
+                            .to_string_lossy()
+                            .to_string()
+                    }),
+                server_name: tls_map.get("server_name").cloned(),
+                insecure_skip_verify: tls_map
+                    .get("insecure")
+                    .map(|s| parse_bool_flag(s))
+                    .unwrap_or(false),
+            });
 
         // Check for Proto config in document
         let proto_config = if let Some(proto_map) = document.get_proto_config() {
@@ -1616,20 +1656,36 @@ impl TestRunner {
             }
         }
 
-        // Show TLS config if present
-        if let Some(tls_config) = document.get_tls_config() {
+        // Show TLS config if present (including environment defaults)
+        let tls_defaults = tls_env_defaults();
+        if let Some(tls_config) = document.get_tls_config_with_defaults(&tls_defaults) {
             println!();
             println!("🔒 TLS Configuration:");
-            if tls_config.contains_key("ca_cert") {
-                println!("   CA Cert: {}", tls_config.get("ca_cert").unwrap());
+            if let Some(ca_cert) = tls_config
+                .get("ca_cert")
+                .or_else(|| tls_config.get("ca_file"))
+            {
+                println!("   CA Cert: {}", ca_cert);
             }
-            if tls_config.contains_key("cert") {
-                println!("   Client Cert: {}", tls_config.get("cert").unwrap());
+            if let Some(client_cert) = tls_config
+                .get("client_cert")
+                .or_else(|| tls_config.get("cert"))
+                .or_else(|| tls_config.get("cert_file"))
+            {
+                println!("   Client Cert: {}", client_cert);
             }
-            if tls_config.contains_key("key") {
-                println!("   Client Key: {}", tls_config.get("key").unwrap());
+            if let Some(client_key) = tls_config
+                .get("client_key")
+                .or_else(|| tls_config.get("key"))
+                .or_else(|| tls_config.get("key_file"))
+            {
+                println!("   Client Key: {}", client_key);
             }
-            if tls_config.get("insecure") == Some(&"true".to_string()) {
+            if tls_config
+                .get("insecure")
+                .map(|s| parse_bool_flag(s))
+                .unwrap_or(false)
+            {
                 println!("   Insecure Skip Verify: true");
             }
         }
@@ -1689,6 +1745,54 @@ mod tests {
     fn test_test_runner_with_write_mode() {
         let runner = TestRunner::new(false, 30, false, true, false, None);
         assert!(runner.write_mode);
+    }
+
+    #[test]
+    fn test_parse_bool_flag_truthy_values() {
+        assert!(parse_bool_flag("true"));
+        assert!(parse_bool_flag("1"));
+        assert!(parse_bool_flag("YES"));
+        assert!(parse_bool_flag("on"));
+    }
+
+    #[test]
+    fn test_parse_bool_flag_falsy_values() {
+        assert!(!parse_bool_flag("false"));
+        assert!(!parse_bool_flag("0"));
+        assert!(!parse_bool_flag("off"));
+        assert!(!parse_bool_flag(""));
+    }
+
+    #[test]
+    fn test_tls_env_defaults_uses_grpctestify_prefix() {
+        unsafe {
+            std::env::set_var(crate::config::ENV_GRPCTESTIFY_TLS_CA_FILE, "/tmp/ca.pem");
+            std::env::set_var(
+                crate::config::ENV_GRPCTESTIFY_TLS_CERT_FILE,
+                "/tmp/cert.pem",
+            );
+            std::env::set_var(crate::config::ENV_GRPCTESTIFY_TLS_KEY_FILE, "/tmp/key.pem");
+            std::env::set_var(crate::config::ENV_GRPCTESTIFY_TLS_SERVER_NAME, "localhost");
+        }
+
+        let defaults = tls_env_defaults();
+        assert_eq!(defaults.get("ca_cert"), Some(&"/tmp/ca.pem".to_string()));
+        assert_eq!(
+            defaults.get("client_cert"),
+            Some(&"/tmp/cert.pem".to_string())
+        );
+        assert_eq!(
+            defaults.get("client_key"),
+            Some(&"/tmp/key.pem".to_string())
+        );
+        assert_eq!(defaults.get("server_name"), Some(&"localhost".to_string()));
+
+        unsafe {
+            std::env::remove_var(crate::config::ENV_GRPCTESTIFY_TLS_CA_FILE);
+            std::env::remove_var(crate::config::ENV_GRPCTESTIFY_TLS_CERT_FILE);
+            std::env::remove_var(crate::config::ENV_GRPCTESTIFY_TLS_KEY_FILE);
+            std::env::remove_var(crate::config::ENV_GRPCTESTIFY_TLS_SERVER_NAME);
+        }
     }
 
     #[test]

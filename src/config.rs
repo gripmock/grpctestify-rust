@@ -91,8 +91,14 @@ pub struct CoverageConfig {
     pub output: Option<String>,
 }
 
-// Default values
+// Environment variable names
 pub const ENV_GRPCTESTIFY_ADDRESS: &str = "GRPCTESTIFY_ADDRESS";
+pub const ENV_GRPCTESTIFY_COMPRESSION: &str = "GRPCTESTIFY_COMPRESSION";
+
+pub const ENV_GRPCTESTIFY_TLS_CERT_FILE: &str = "GRPCTESTIFY_TLS_CERT_FILE";
+pub const ENV_GRPCTESTIFY_TLS_KEY_FILE: &str = "GRPCTESTIFY_TLS_KEY_FILE";
+pub const ENV_GRPCTESTIFY_TLS_CA_FILE: &str = "GRPCTESTIFY_TLS_CA_FILE";
+pub const ENV_GRPCTESTIFY_TLS_SERVER_NAME: &str = "GRPCTESTIFY_TLS_SERVER_NAME";
 
 pub fn default_address() -> String {
     String::from("localhost:4770")
