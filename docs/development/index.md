@@ -48,7 +48,8 @@ jobs:
 2. `grpctestify check <paths...>` - parse + structural + semantic validation
 3. `grpctestify <paths...>` - real execution against gRPC service
 
-This split keeps failure causes explicit (style vs validation vs runtime) and mirrors common tooling workflows (`rustfmt --check` + linters/tests).
+This split keeps failure causes explicit (style vs validation vs runtime)
+and mirrors common tooling workflows (`rustfmt --check` + linters/tests).
 
 ### Docker Integration
 

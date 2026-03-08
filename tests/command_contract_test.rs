@@ -527,6 +527,24 @@ example.v1.Greeter/SayHello
 }
 
 #[test]
+fn test_fmt_check_mode_ignores_crlf_only_diff() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("crlf-formatted.gctf");
+    let content = "--- ENDPOINT ---\r\nexample.v1.Greeter/SayHello\r\n\r\n--- REQUEST ---\r\n{\r\n  \"name\": \"World\"\r\n}\r\n\r\n--- RESPONSE ---\r\n{\r\n  \"message\": \"Hello World!\"\r\n}\r\n";
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["fmt", &path]);
+
+    assert!(
+        output.status.success(),
+        "fmt check mode should ignore CRLF-only diff\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
 fn test_fmt_applies_optimizer_by_default() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("fmt-opt-default.gctf");

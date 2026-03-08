@@ -218,7 +218,24 @@ fn ensure_single_section_separator(output: &mut Vec<String>, has_next_section: b
     }
 }
 
+fn detect_line_ending(source: &str) -> &'static str {
+    if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
+fn normalize_eol_for_compare(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.contains("\r\n") {
+        std::borrow::Cow::Owned(s.replace("\r\n", "\n"))
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
+}
+
 fn format_gctf_preserve_comments(doc: &crate::parser::GctfDocument, source: &str) -> String {
+    let eol = detect_line_ending(source);
     let lines: Vec<&str> = source.lines().collect();
     let mut output: Vec<String> = Vec::with_capacity(lines.len());
     let mut current_line = 0usize;
@@ -318,9 +335,9 @@ fn format_gctf_preserve_comments(doc: &crate::parser::GctfDocument, source: &str
         current_line += 1;
     }
 
-    let mut rendered = output.join("\n");
+    let mut rendered = output.join(eol);
     if source.ends_with('\n') {
-        rendered.push('\n');
+        rendered.push_str(eol);
     }
     rendered
 }
@@ -331,6 +348,7 @@ pub fn format_gctf_content(source: &str, file_name: &str) -> Result<String> {
 }
 
 fn apply_optimizer_rewrites(source: &str, file_name: &str) -> Result<String> {
+    let eol = detect_line_ending(source);
     let doc = parser::parse_gctf_from_str(source, file_name)?;
     let hints = optimizer::collect_assertion_optimizations(&doc);
     if hints.is_empty() {
@@ -351,9 +369,9 @@ fn apply_optimizer_rewrites(source: &str, file_name: &str) -> Result<String> {
         }
     }
 
-    let mut rewritten = lines.join("\n");
+    let mut rewritten = lines.join(eol);
     if source.ends_with('\n') {
-        rewritten.push('\n');
+        rewritten.push_str(eol);
     }
     Ok(rewritten)
 }
@@ -473,7 +491,10 @@ pub async fn handle_fmt(args: &FmtArgs) -> Result<()> {
                 has_error = true;
             }
         } else {
-            if formatted != original {
+            let formatted_cmp = normalize_eol_for_compare(&formatted);
+            let original_cmp = normalize_eol_for_compare(&original);
+
+            if formatted_cmp != original_cmp {
                 println!(
                     "{}:1: [FORMAT_NEEDED] File is not formatted",
                     file.display()
