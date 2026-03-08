@@ -267,7 +267,7 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                     for (key, value) in kv {
                         match key.as_str() {
                             "timeout" => {
-                                if value.trim().parse::<u64>().ok().map_or(true, |v| v == 0) {
+                                if value.trim().parse::<u64>().ok().is_none_or(|v| v == 0) {
                                     errors.push(ValidationError {
                                         message: format!(
                                             "OPTIONS.timeout must be a positive integer, got '{}'",
@@ -308,7 +308,7 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                                 }
                             }
                             "retry-delay" | "retry_delay" => {
-                                if value.trim().parse::<f64>().ok().map_or(true, |v| v < 0.0) {
+                                if value.trim().parse::<f64>().ok().is_none_or(|v| v < 0.0) {
                                     errors.push(ValidationError {
                                         message: format!(
                                             "OPTIONS.retry-delay must be a non-negative number, got '{}'",
