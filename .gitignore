@@ -22,3 +22,4 @@ src/proto/
 
 # Docs
 node_modules/
+docs/.vitepress/
