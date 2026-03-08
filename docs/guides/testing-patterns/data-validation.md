@@ -32,5 +32,6 @@ Use `RESPONSE` for strict matching or `ASSERTS` for flexible checks.
 ```
 
 Notes:
+
 - `OPTIONS` section is parsed but not applied at runtime
 - Use `RESPONSE with_asserts=true` when you need both response match and assertions

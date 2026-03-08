@@ -5,6 +5,7 @@ Resources for developers and continuous integration with gRPC Testify.
 ## CI/CD Integration
 
 ### GitHub Actions
+
 ```yaml
 name: gRPC Tests
 on: [push, pull_request]
@@ -30,6 +31,7 @@ jobs:
 ```
 
 ### Docker Integration
+
 ```dockerfile
 FROM rust:1.89-alpine AS builder
 RUN cargo install --git https://github.com/gripmock/grpctestify-rust grpctestify
@@ -41,14 +43,14 @@ CMD ["grpctestify", "/tests"]
 ```
 
 ### Environment Variables
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `GRPCTESTIFY_ADDRESS` | Default server address | `localhost:4770` |
-| `GRPCTESTIFY_COMPRESSION` | Request compression mode | `none` |
+
+- `GRPCTESTIFY_ADDRESS` - default server address (`localhost:4770`)
+- `GRPCTESTIFY_COMPRESSION` - request compression mode (`none`)
 
 ## Contributing
 
 ### Development Setup
+
 ```bash
 # Clone and setup
 git clone https://github.com/gripmock/grpctestify-rust.git
@@ -62,12 +64,14 @@ cargo test
 ```
 
 ### Code Style
+
 - Follow Rust best practices and clippy suggestions
 - Use consistent naming conventions
 - Add comments for complex logic
 - Include tests for new features
 
 ### Release Process
+
 1. Update version numbers
 2. Update changelog
 3. Create release branch

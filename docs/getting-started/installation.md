@@ -23,9 +23,7 @@ cargo install --git https://github.com/gripmock/grpctestify-rust grpctestify
 
 ### Prebuilt binaries
 
-Download from:
-
-https://github.com/gripmock/grpctestify-rust/releases/latest
+Download from [GitHub Releases](https://github.com/gripmock/grpctestify-rust/releases/latest).
 
 Available targets include macOS/Linux/Windows (amd64/arm64).
 

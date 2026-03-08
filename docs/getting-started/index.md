@@ -34,5 +34,7 @@ grpctestify --version
 
 ## Next Steps
 
-Start with [Installation](installation.md). For usage examples, see [Examples](../guides/examples/). If you run into issues, visit the [Troubleshooting Guide](../advanced/troubleshooting.md).
-
+Start with [Installation](installation.md).
+For usage examples, see [Examples](../guides/examples/).
+If you run into issues, visit
+[Troubleshooting](../advanced/troubleshooting.md).

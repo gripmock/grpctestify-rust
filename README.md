@@ -8,9 +8,9 @@ Native CLI for gRPC testing with `.gctf` files.
 
 ## Documentation
 
-- Docs: https://gripmock.github.io/grpctestify-rust/
-- Generator: https://gripmock.github.io/grpctestify-rust/generator
-- Repository: https://github.com/gripmock/grpctestify-rust
+- [Docs](https://gripmock.github.io/grpctestify-rust/)
+- [Generator](https://gripmock.github.io/grpctestify-rust/generator)
+- [Repository](https://github.com/gripmock/grpctestify-rust)
 
 ## Key Features
 
@@ -42,7 +42,7 @@ cargo install --git https://github.com/gripmock/grpctestify-rust grpctestify
 
 ### Prebuilt binaries (GitHub Releases)
 
-- Download from: https://github.com/gripmock/grpctestify-rust/releases/latest
+- Download from [GitHub Releases](https://github.com/gripmock/grpctestify-rust/releases/latest)
 - Available for macOS, Linux, and Windows (amd64/arm64)
 
 Verify installation:
@@ -53,7 +53,7 @@ grpctestify --version
 
 ## Quick Start
 
-1) Create `hello.gctf`:
+1. Create `hello.gctf`:
 
 ```gctf
 --- ADDRESS ---
@@ -71,7 +71,7 @@ hello.HelloService/SayHello
 .message == "Hello, World!"
 ```
 
-2) Run test:
+1. Run test:
 
 ```bash
 grpctestify hello.gctf
@@ -101,7 +101,7 @@ grpctestify fmt -w tests/**/*.gctf
 
 ## Contributing
 
-Issues and PRs are welcome: https://github.com/gripmock/grpctestify-rust/issues
+Issues and PRs are welcome: [GitHub Issues](https://github.com/gripmock/grpctestify-rust/issues)
 
 ## License
 

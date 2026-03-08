@@ -14,4 +14,4 @@ The State API is not exposed as a public runtime interface.
 
 If you need a stable external extension API, open a feature request:
 
-https://github.com/gripmock/grpctestify-rust/issues
+[GitHub Issues](https://github.com/gripmock/grpctestify-rust/issues)

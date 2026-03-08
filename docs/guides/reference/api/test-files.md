@@ -73,7 +73,13 @@ server_name: api.example.com
 insecure: false
 ```
 
-Supported keys include `ca_cert`/`ca_file`, `cert`/`client_cert`/`cert_file`, `key`/`client_key`/`key_file`, `server_name`, `insecure`.
+Supported keys include:
+
+- `ca_cert` or `ca_file`
+- `cert`, `client_cert`, or `cert_file`
+- `key`, `client_key`, or `key_file`
+- `server_name`
+- `insecure`
 
 ## PROTO Section
 

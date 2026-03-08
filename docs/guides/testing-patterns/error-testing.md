@@ -33,5 +33,6 @@ user.UserService/GetUser
 ```
 
 Notes:
+
 - `RESPONSE` and `ERROR` cannot be in the same test file
 - `ERROR` supports `with_asserts=true|false`

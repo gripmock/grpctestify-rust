@@ -32,7 +32,7 @@ sudo install -m 0755 grpctestify /usr/local/bin/grpctestify
 
 For other targets (macOS arm64/amd64, Linux arm64, Windows amd64/arm64), use release assets:
 
-https://github.com/gripmock/grpctestify-rust/releases/latest
+[GitHub Releases](https://github.com/gripmock/grpctestify-rust/releases/latest)
 
 ## Verify Installation
 

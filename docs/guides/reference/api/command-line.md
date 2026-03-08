@@ -45,7 +45,8 @@ grpctestify [OPTIONS] [TEST_PATHS]... [COMMAND]
 - `--coverage-format <text|json>` - coverage output format
 - `-w, --write` - snapshot mode: write actual responses back to files
 
-Note: retry-related flags are currently compatibility options; rely on timeout/parallel/reporting controls for deterministic behavior.
+Note: retry-related flags are currently compatibility options.
+Prefer timeout, parallel, and reporting controls for deterministic behavior.
 
 ## Examples
 
