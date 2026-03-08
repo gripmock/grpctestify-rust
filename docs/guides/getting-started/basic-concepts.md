@@ -31,7 +31,7 @@ package.Service/Method
 - `REQUEST_HEADERS` - request metadata
 - `TLS` - TLS/mTLS parameters
 - `PROTO` - descriptor/reflection configuration
-- `OPTIONS` - parsed and validated, currently not applied at runtime
+- `OPTIONS` - parsed, validated, and used for per-test runtime overrides (`timeout`, `retry`, `retry-delay`, `no-retry`)
 
 ## RPC patterns
 

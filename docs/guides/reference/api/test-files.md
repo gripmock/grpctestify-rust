@@ -32,7 +32,7 @@ package.Service/Method
 - `REQUEST_HEADERS` (or `HEADERS`) - request metadata
 - `TLS` - TLS/mTLS config
 - `PROTO` - descriptor/reflection configuration
-- `OPTIONS` - parsed and validated, but currently not applied at runtime
+- `OPTIONS` - parsed, validated, and applied for per-test runtime overrides (`timeout`, `retry`, `retry-delay`, `no-retry`)
 
 ## Validation Rules
 

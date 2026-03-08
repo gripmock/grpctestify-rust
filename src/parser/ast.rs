@@ -186,6 +186,58 @@ pub struct InlineOptions {
     pub unordered_arrays: bool,
 }
 
+impl InlineOptions {
+    pub fn to_header_tokens(&self) -> Vec<String> {
+        let mut parts = Vec::new();
+        if self.with_asserts {
+            parts.push("with_asserts=true".to_string());
+        }
+        if self.partial {
+            parts.push("partial=true".to_string());
+        }
+        if let Some(tolerance) = self.tolerance {
+            parts.push(format!("tolerance={}", tolerance));
+        }
+        if !self.redact.is_empty() {
+            let quoted = self
+                .redact
+                .iter()
+                .map(|field| format!("\"{}\"", field))
+                .collect::<Vec<_>>()
+                .join(",");
+            parts.push(format!("redact=[{}]", quoted));
+        }
+        if self.unordered_arrays {
+            parts.push("unordered_arrays=true".to_string());
+        }
+        parts
+    }
+
+    pub fn is_empty(&self) -> bool {
+        !self.with_asserts
+            && !self.partial
+            && self.tolerance.is_none()
+            && self.redact.is_empty()
+            && !self.unordered_arrays
+    }
+}
+
+impl Section {
+    pub fn format_header(&self) -> String {
+        let section = self.section_type.as_str();
+        if self.section_type.supports_inline_options() {
+            let parts = self.inline_options.to_header_tokens();
+            if parts.is_empty() {
+                format!("--- {} ---", section)
+            } else {
+                format!("--- {} {} ---", section, parts.join(" "))
+            }
+        } else {
+            format!("--- {} ---", section)
+        }
+    }
+}
+
 /// GCTF file header with inline options
 /// Format: --- SECTION_NAME key=value ... ---
 #[derive(Debug, Clone, PartialEq)]
@@ -309,6 +361,16 @@ impl GctfDocument {
     /// Get TLS configuration
     pub fn get_tls_config(&self) -> Option<HashMap<String, String>> {
         if let Some(section) = self.first_section(SectionType::Tls)
+            && let SectionContent::KeyValues(config) = &section.content
+        {
+            return Some(config.clone());
+        }
+        None
+    }
+
+    /// Get OPTIONS configuration
+    pub fn get_options(&self) -> Option<HashMap<String, String>> {
+        if let Some(section) = self.first_section(SectionType::Options)
             && let SectionContent::KeyValues(config) = &section.content
         {
             return Some(config.clone());
@@ -680,6 +742,26 @@ mod tests {
     }
 
     #[test]
+    fn test_gctf_document_get_options() {
+        let mut doc = GctfDocument::new("test.gctf".to_string());
+        let mut options = HashMap::new();
+        options.insert("dry_run".to_string(), "true".to_string());
+        options.insert("timeout".to_string(), "10".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Options,
+            content: SectionContent::KeyValues(options.clone()),
+            inline_options: InlineOptions::default(),
+            raw_content: "".to_string(),
+            start_line: 1,
+            end_line: 2,
+        });
+
+        let result = doc.get_options().unwrap();
+        assert_eq!(result.get("dry_run"), Some(&"true".to_string()));
+        assert_eq!(result.get("timeout"), Some(&"10".to_string()));
+    }
+
+    #[test]
     fn test_gctf_document_get_tls_config_with_defaults_env_only() {
         let doc = GctfDocument::new("test.gctf".to_string());
         let mut defaults = HashMap::new();
@@ -764,6 +846,30 @@ mod tests {
         assert!(options.tolerance.is_none());
         assert!(options.redact.is_empty());
         assert!(!options.unordered_arrays);
+    }
+
+    #[test]
+    fn test_section_format_header_with_inline_options() {
+        let section = Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"ok": true})),
+            inline_options: InlineOptions {
+                with_asserts: true,
+                partial: true,
+                tolerance: Some(0.1),
+                redact: vec!["token".to_string()],
+                unordered_arrays: true,
+            },
+            raw_content: "".to_string(),
+            start_line: 0,
+            end_line: 0,
+        };
+
+        let header = section.format_header();
+        assert_eq!(
+            header,
+            "--- RESPONSE with_asserts=true partial=true tolerance=0.1 redact=[\"token\"] unordered_arrays=true ---"
+        );
     }
 
     #[test]

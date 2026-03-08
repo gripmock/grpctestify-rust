@@ -570,8 +570,29 @@ impl TestRunner {
 
     /// Run a single test
     pub async fn run_test(&self, document: &GctfDocument) -> Result<TestExecutionResult> {
+        let effective_dry_run = self.dry_run;
+        let effective_no_assert = self.no_assert;
+        let effective_write_mode = self.write_mode;
+
+        let options = document.get_options().unwrap_or_default();
+        let effective_timeout_seconds = match options.get("timeout") {
+            Some(value) => match value.trim().parse::<u64>() {
+                Ok(v) if v > 0 => v,
+                _ => {
+                    return Ok(TestExecutionResult::fail(
+                        format!(
+                            "OPTIONS.timeout must be a positive integer, got '{}'",
+                            value
+                        ),
+                        None,
+                    ));
+                }
+            },
+            None => self.timeout_seconds,
+        };
+
         // Validate file path in update mode
-        if self.write_mode {
+        if effective_write_mode {
             let file_path = Path::new(&document.file_path);
             if !file_path.exists() {
                 return Ok(TestExecutionResult::fail(
@@ -621,7 +642,7 @@ impl TestRunner {
             ));
         }
 
-        if self.dry_run {
+        if effective_dry_run {
             // In dry-run, show detailed preview of what will be executed
             self.print_dry_run_preview(document, &address, &package, &service, &method);
             return Ok(TestExecutionResult::pass(None));
@@ -728,7 +749,7 @@ impl TestRunner {
 
         let client_config = GrpcClientConfig {
             address,
-            timeout_seconds: self.timeout_seconds,
+            timeout_seconds: effective_timeout_seconds,
             tls_config,
             proto_config,
             metadata: document.get_request_headers(),
@@ -803,7 +824,7 @@ impl TestRunner {
         let mut skip_next_section = false;
 
         // Capture full response for write mode
-        let mut captured_response = if self.write_mode {
+        let mut captured_response = if effective_write_mode {
             Some(crate::grpc::GrpcResponse::new())
         } else {
             None
@@ -907,7 +928,7 @@ impl TestRunner {
                                                 .unwrap_or_else(|_| msg.to_string())
                                         );
 
-                                        if self.no_assert {
+                                        if effective_no_assert {
                                             println!("--- RESPONSE (Raw) ---");
                                             println!(
                                                 "{}",
@@ -922,7 +943,7 @@ impl TestRunner {
                                             );
                                         }
 
-                                        if !self.no_assert {
+                                        if !effective_no_assert {
                                             let mut expected = expected_template.clone();
                                             self.substitute_variables(&mut expected, &variables);
 
@@ -978,7 +999,7 @@ impl TestRunner {
                                         if let Some(resp) = &mut captured_response {
                                             resp.trailers.extend(t);
                                         }
-                                        if !self.no_assert {
+                                        if !effective_no_assert {
                                             failure_reasons.push(format!(
                                                 "Expected message for RESPONSE section at line {}, but received Trailers (End of Stream)",
                                                 section.start_line
@@ -992,7 +1013,7 @@ impl TestRunner {
                                 if let Some(resp) = &mut captured_response {
                                     resp.error = Some(status.message().to_string());
                                 }
-                                if !self.no_assert {
+                                if !effective_no_assert {
                                     failure_reasons.push(format!(
                                         "Expected message for RESPONSE section at line {}, but received Error: {}",
                                         section.start_line,
@@ -1005,7 +1026,7 @@ impl TestRunner {
                                 break;
                             }
                             None => {
-                                if !self.no_assert {
+                                if !effective_no_assert {
                                     failure_reasons.push(format!(
                                         "Expected message for RESPONSE section at line {}, but stream ended",
                                         section.start_line
@@ -1020,7 +1041,7 @@ impl TestRunner {
                         && let Some(next_section) = sections.get(i + 1)
                         && next_section.section_type == SectionType::Asserts
                     {
-                        if !self.no_assert
+                        if !effective_no_assert
                             && let SectionContent::Assertions(lines) = &next_section.content
                         {
                             for msg in &received_messages_for_section {
@@ -1038,7 +1059,7 @@ impl TestRunner {
                             }
                         }
                         skip_next_section = true;
-                    } else if section.inline_options.with_asserts && !self.no_assert {
+                    } else if section.inline_options.with_asserts && !effective_no_assert {
                         failure_reasons.push(format!(
                             "RESPONSE at line {} has 'with_asserts' but is not followed by ASSERTS",
                             section.start_line
@@ -1082,7 +1103,7 @@ impl TestRunner {
                     // If stream is unavailable but we already captured an ERROR,
                     // evaluate assertions against that error context.
                     let Some(stream) = response_stream.as_mut() else {
-                        if !self.no_assert
+                        if !effective_no_assert
                             && let SectionContent::Assertions(lines) = &section.content
                         {
                             if let Some(error_message) = &last_error_message {
@@ -1115,7 +1136,7 @@ impl TestRunner {
                                     .unwrap_or_else(|_| msg.to_string())
                             );
 
-                            if self.no_assert {
+                            if effective_no_assert {
                                 println!("--- RESPONSE (Raw) ---");
                                 println!(
                                     "{}",
@@ -1124,7 +1145,7 @@ impl TestRunner {
                                 );
                             }
 
-                            if !self.no_assert
+                            if !effective_no_assert
                                 && let SectionContent::Assertions(lines) = &section.content
                             {
                                 self.run_assertions(
@@ -1139,7 +1160,7 @@ impl TestRunner {
                         }
                         Some(Ok(crate::grpc::client::StreamItem::Trailers(t))) => {
                             captured_trailers.extend(t);
-                            if !self.no_assert {
+                            if !effective_no_assert {
                                 failure_reasons.push(format!(
                                     "Expected message for ASSERTS section at line {}, but received Trailers",
                                     section.start_line
@@ -1150,7 +1171,7 @@ impl TestRunner {
                             last_error_message = Some(status.message().to_string());
                             captured_trailers
                                 .extend(Self::metadata_map_to_hashmap(status.metadata()));
-                            if !self.no_assert {
+                            if !effective_no_assert {
                                 failure_reasons.push(format!(
                                      "Expected message for ASSERTS section at line {}, but received Error: {}",
                                      section.start_line, status.message()
@@ -1161,7 +1182,7 @@ impl TestRunner {
                             }
                         }
                         None => {
-                            if !self.no_assert {
+                            if !effective_no_assert {
                                 failure_reasons.push(format!(
                                     "Expected message for ASSERTS section at line {}, but stream ended",
                                     section.start_line
@@ -1224,7 +1245,7 @@ impl TestRunner {
                             Ok(Err(e)) => {
                                 // If ERROR section is expected, startup failures from unary/client-streaming
                                 // calls may represent the expected application error.
-                                if !self.no_assert {
+                                if !effective_no_assert {
                                     if let SectionContent::Json(expected_json) = &section.content {
                                         let mut expected = expected_json.clone();
                                         self.substitute_variables(&mut expected, &variables);
@@ -1340,7 +1361,7 @@ impl TestRunner {
                                 status.message()
                             );
 
-                            if self.no_assert {
+                            if effective_no_assert {
                                 println!("--- RESPONSE (Error) ---");
                                 println!("{}", got);
                             } else if self.verbose {
@@ -1356,7 +1377,7 @@ impl TestRunner {
                                 }
                             }
 
-                            if !self.no_assert {
+                            if !effective_no_assert {
                                 if let SectionContent::Json(expected_json) = &section.content {
                                     let mut expected = expected_json.clone();
                                     self.substitute_variables(&mut expected, &variables);
@@ -1416,7 +1437,7 @@ impl TestRunner {
                             }
                         }
                         Some(Ok(msg_item)) => {
-                            if !self.no_assert {
+                            if !effective_no_assert {
                                 failure_reasons.push(format!(
                                     "Expected ERROR at line {}, but received success message or trailers",
                                     section.start_line
@@ -1434,7 +1455,7 @@ impl TestRunner {
                             }
                         }
                         None => {
-                            if !self.no_assert {
+                            if !effective_no_assert {
                                 failure_reasons.push(format!(
                                     "Expected ERROR at line {}, but stream ended successfully",
                                     section.start_line
@@ -1497,7 +1518,7 @@ impl TestRunner {
             // Even if failed, we might want to return captured response?
             // Usually snapshot update only happens if user asks for it.
             // If write_mode is true, we should probably ignore failures?
-            if self.write_mode {
+            if effective_write_mode {
                 // In write mode, failures (mismatches) are expected because we are updating!
                 // But validation errors (like invalid JSON) might still be relevant.
                 // Let's assume update mode implies "I want to overwrite whatever happens".

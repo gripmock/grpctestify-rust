@@ -15,7 +15,7 @@ grpctestify inspect test.gctf --format json
 grpctestify check tests/**/*.gctf
 
 # Format files
-grpctestify fmt -w tests/**/*.gctf
+grpctestify fmt -w .
 
 # Query server reflection
 grpctestify reflect package.Service/Method

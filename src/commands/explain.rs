@@ -429,7 +429,34 @@ fn print_detailed_workflow(
                 println!("  Action: Evaluate optimized assertions (must all pass)");
                 step += 1;
             }
-            SectionType::Options | SectionType::Tls | SectionType::Proto => {
+            SectionType::Options => {
+                println!();
+                println!(
+                    "Step {}: OPTIONS [lines {}-{}]",
+                    step,
+                    section.start_line + 1,
+                    section.end_line + 1
+                );
+                if let SectionContent::KeyValues(options) = &section.content {
+                    if options.is_empty() {
+                        println!("  (no runtime overrides)");
+                    } else {
+                        println!("  Runtime overrides:");
+                        for (key, value) in options {
+                            let behavior = match key.as_str() {
+                                "timeout" => "per-test timeout (seconds)",
+                                "retry" => "number of retries for network failures",
+                                "retry-delay" | "retry_delay" => "delay between retries (seconds)",
+                                "no-retry" | "no_retry" => "disable retries",
+                                _ => "unknown option (ignored at runtime)",
+                            };
+                            println!("    {}: {} ({})", key, value, behavior);
+                        }
+                    }
+                }
+                step += 1;
+            }
+            SectionType::Tls | SectionType::Proto => {
                 println!();
                 println!(
                     "Step {}: {} [lines {}-{}]",

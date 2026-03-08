@@ -14,6 +14,28 @@ use crate::report;
 use crate::state::{TestResult, TestResults};
 use crate::utils::FileUtils;
 
+fn parse_bool_option(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn should_retry_message(message: &str) -> bool {
+    let msg = message.to_ascii_lowercase();
+    msg.contains("deadline")
+        || msg.contains("timeout")
+        || msg.contains("timed out")
+        || msg.contains("connection refused")
+        || msg.contains("connection reset")
+        || msg.contains("transport")
+        || msg.contains("unavailable")
+        || msg.contains("broken pipe")
+        || msg.contains("temporarily")
+        || msg.contains("network")
+}
+
 pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
     // Get parallel job count
     let parallel_jobs = cli.parallel_jobs();
@@ -131,10 +153,10 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
     // Execute tests
     let start_time = std::time::Instant::now();
     let runner = Arc::new(execution::TestRunner::new(
-        cli.run_args.dry_run,
-        cli.run_args.timeout,
-        cli.run_args.no_assert,
-        cli.run_args.write,
+        args.dry_run,
+        args.timeout,
+        args.no_assert,
+        args.write,
         cli.verbose,
         coverage_collector.clone(),
     ));
@@ -157,7 +179,15 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
                 }
 
                 let test_start = std::time::Instant::now();
-                let mut test_result = match run_single_test(&runner, &file_clone).await {
+                let mut test_result = match run_single_test(
+                    &runner,
+                    &file_clone,
+                    args.retry,
+                    args.retry_delay,
+                    args.no_retry,
+                )
+                .await
+                {
                     Ok(res) => {
                         let grpc_duration = res.grpc_duration_ms;
                         match res.status {
@@ -229,6 +259,9 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
 async fn run_single_test(
     runner: &execution::TestRunner,
     file: &std::path::Path,
+    retry: u32,
+    retry_delay: f64,
+    no_retry: bool,
 ) -> Result<execution::TestExecutionResult> {
     // Parse document
     let doc = match parser::parse_gctf(file) {
@@ -249,8 +282,80 @@ async fn run_single_test(
         ));
     }
 
-    // Run test
-    let result = runner.run_test(&doc).await?;
+    let options = doc.get_options().unwrap_or_default();
+
+    let effective_no_retry = match options.get("no-retry").or_else(|| options.get("no_retry")) {
+        Some(value) => match parse_bool_option(value) {
+            Some(v) => v,
+            None => {
+                return Ok(execution::TestExecutionResult::fail(
+                    format!("OPTIONS.no_retry must be a boolean, got '{}'", value),
+                    None,
+                ));
+            }
+        },
+        None => no_retry,
+    };
+
+    let effective_retry = match options.get("retry") {
+        Some(value) => match value.trim().parse::<u32>() {
+            Ok(v) => v,
+            Err(_) => {
+                return Ok(execution::TestExecutionResult::fail(
+                    format!(
+                        "OPTIONS.retry must be a non-negative integer, got '{}'",
+                        value
+                    ),
+                    None,
+                ));
+            }
+        },
+        None => retry,
+    };
+
+    let effective_retry_delay = match options
+        .get("retry-delay")
+        .or_else(|| options.get("retry_delay"))
+    {
+        Some(value) => match value.trim().parse::<f64>() {
+            Ok(v) if v >= 0.0 => v,
+            _ => {
+                return Ok(execution::TestExecutionResult::fail(
+                    format!(
+                        "OPTIONS.retry_delay must be a non-negative number, got '{}'",
+                        value
+                    ),
+                    None,
+                ));
+            }
+        },
+        None => retry_delay,
+    };
+
+    let max_retries = if effective_no_retry {
+        0
+    } else {
+        effective_retry
+    };
+
+    let mut attempt = 0u32;
+    let result = loop {
+        let current = runner.run_test(&doc).await?;
+
+        let should_retry = match &current.status {
+            execution::TestExecutionStatus::Pass => false,
+            execution::TestExecutionStatus::Fail(msg) => should_retry_message(msg),
+        };
+
+        if !should_retry || attempt >= max_retries {
+            break current;
+        }
+
+        attempt += 1;
+        if effective_retry_delay > 0.0 {
+            tokio::time::sleep(std::time::Duration::from_secs_f64(effective_retry_delay)).await;
+        }
+    };
 
     // Update file if requested
     if let Some(resp) = &result.captured_response

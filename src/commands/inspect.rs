@@ -628,6 +628,17 @@ fn print_logic_flow(doc: &parser::GctfDocument) {
         println!("  Partial Matching: {} section(s)", partial_count);
     }
 
+    if let Some(options) = doc.get_options()
+        && !options.is_empty()
+    {
+        let mut sorted: Vec<_> = options.into_iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        println!("  OPTIONS Overrides:");
+        for (key, value) in sorted {
+            println!("    - {}: {}", key, value);
+        }
+    }
+
     let strict_error_details_count = doc
         .sections
         .iter()

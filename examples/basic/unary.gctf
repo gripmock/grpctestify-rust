@@ -8,5 +8,5 @@ helloworld.Greeter/SayHello
 
 --- RESPONSE ---
 {
-  "message": "Hello World"
+  "message": "Hello, World!"
 }

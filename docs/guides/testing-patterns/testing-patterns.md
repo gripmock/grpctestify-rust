@@ -22,4 +22,4 @@ grpctestify tests/ --parallel 4 --timeout 30
 grpctestify tests/ --log-format json --log-output results.json
 ```
 
-Note: `OPTIONS` blocks are parsed but not applied at runtime.
+`OPTIONS` blocks support per-test overrides for `timeout`, `retry`, `retry-delay`, and `no-retry`.
