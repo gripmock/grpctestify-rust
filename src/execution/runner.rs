@@ -20,6 +20,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
+use tonic::metadata::KeyAndValueRef;
 
 /// Execution plan for inspect workflow visualization
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -777,6 +778,7 @@ impl TestRunner {
 
         let mut variables: HashMap<String, Value> = HashMap::new();
         let mut last_message: Option<Value> = None;
+        let mut last_error_message: Option<String> = None;
         let mut captured_headers: HashMap<String, String> = HashMap::new();
         let mut captured_trailers: HashMap<String, String> = HashMap::new();
         let mut failure_reasons: Vec<String> = Vec::new();
@@ -1076,8 +1078,34 @@ impl TestRunner {
                         }
                     }
 
-                    // Standalone Asserts - consumes a new message
-                    match response_stream.as_mut().unwrap().next().await {
+                    // Standalone ASSERTS usually consumes a new message.
+                    // If stream is unavailable but we already captured an ERROR,
+                    // evaluate assertions against that error context.
+                    let Some(stream) = response_stream.as_mut() else {
+                        if !self.no_assert
+                            && let SectionContent::Assertions(lines) = &section.content
+                        {
+                            if let Some(error_message) = &last_error_message {
+                                let error_value = Value::String(error_message.clone());
+                                self.run_assertions(
+                                    lines,
+                                    &error_value,
+                                    &captured_headers,
+                                    &captured_trailers,
+                                    &mut failure_reasons,
+                                    format!("after ERROR at line {}", section.start_line),
+                                );
+                            } else {
+                                failure_reasons.push(format!(
+                                    "ASSERTS section at line {} has no active response/error context",
+                                    section.start_line
+                                ));
+                            }
+                        }
+                        continue;
+                    };
+
+                    match stream.next().await {
                         Some(Ok(crate::grpc::client::StreamItem::Message(msg))) => {
                             last_message = Some(msg.clone());
 
@@ -1119,6 +1147,9 @@ impl TestRunner {
                             }
                         }
                         Some(Err(status)) => {
+                            last_error_message = Some(status.message().to_string());
+                            captured_trailers
+                                .extend(Self::metadata_map_to_hashmap(status.metadata()));
                             if !self.no_assert {
                                 failure_reasons.push(format!(
                                      "Expected message for ASSERTS section at line {}, but received Error: {}",
@@ -1202,6 +1233,10 @@ impl TestRunner {
                                         let (matches, got, mismatch_reason) = if let Some(status) =
                                             e.downcast_ref::<tonic::Status>()
                                         {
+                                            last_error_message = Some(status.message().to_string());
+                                            captured_trailers.extend(
+                                                Self::metadata_map_to_hashmap(status.metadata()),
+                                            );
                                             let status_name = Self::grpc_code_name_from_numeric(
                                                 status.code() as i64,
                                             )
@@ -1293,6 +1328,9 @@ impl TestRunner {
                     // Expect an error from the stream
                     match response_stream.as_mut().unwrap().next().await {
                         Some(Err(status)) => {
+                            last_error_message = Some(status.message().to_string());
+                            captured_trailers
+                                .extend(Self::metadata_map_to_hashmap(status.metadata()));
                             let status_name =
                                 Self::grpc_code_name_from_numeric(status.code() as i64)
                                     .unwrap_or("Unknown");
@@ -1490,6 +1528,26 @@ impl TestRunner {
     ) -> TestExecutionResult {
         // Delegate to ResponseHandler
         self.response_handler.validate_document(document, response)
+    }
+
+    fn metadata_map_to_hashmap(metadata: &tonic::metadata::MetadataMap) -> HashMap<String, String> {
+        let mut out = HashMap::new();
+        for entry in metadata.iter() {
+            match entry {
+                KeyAndValueRef::Ascii(key, value) => {
+                    if let Ok(v) = value.to_str() {
+                        out.insert(key.to_string(), v.to_string());
+                    }
+                }
+                KeyAndValueRef::Binary(key, value) => {
+                    out.insert(
+                        key.to_string(),
+                        String::from_utf8_lossy(value.as_encoded_bytes()).into_owned(),
+                    );
+                }
+            }
+        }
+        out
     }
 
     fn substitute_variables(&self, value: &mut Value, variables: &HashMap<String, Value>) {
@@ -2025,5 +2083,22 @@ mod tests {
         // Returns 1 because the content is Json, even though it's a Request section
         assert_eq!(values.len(), 1);
         assert_eq!(values[0], json!({"key": "value"}));
+    }
+
+    #[test]
+    fn test_metadata_map_to_hashmap_extracts_ascii_values() {
+        let mut metadata = tonic::metadata::MetadataMap::new();
+        metadata.insert("code", "EXTERNAL_SERVICE_ERROR_CODE".parse().unwrap());
+        metadata.insert("message", "External service error message".parse().unwrap());
+
+        let trailers = TestRunner::metadata_map_to_hashmap(&metadata);
+        assert_eq!(
+            trailers.get("code"),
+            Some(&"EXTERNAL_SERVICE_ERROR_CODE".to_string())
+        );
+        assert_eq!(
+            trailers.get("message"),
+            Some(&"External service error message".to_string())
+        );
     }
 }
