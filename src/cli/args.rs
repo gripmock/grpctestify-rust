@@ -248,10 +248,6 @@ pub struct FmtArgs {
     /// Write changes to file instead of stdout
     #[arg(short = 'w', long, default_value_t = false)]
     pub write: bool,
-
-    /// Apply safe optimizer rewrites before formatting
-    #[arg(short = 'o', long = "optimize", default_value_t = false)]
-    pub optimize: bool,
 }
 
 impl Cli {

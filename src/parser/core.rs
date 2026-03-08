@@ -132,8 +132,12 @@ fn parse_sections(lines: &[&str]) -> Result<(Vec<Section>, usize)> {
             let inline_options_str = captures.get(2).map(|m| m.as_str());
 
             if let Some(section_type) = SectionType::from_keyword(section_name) {
-                let inline_options = if let Some(opts_str) = inline_options_str {
-                    parse_inline_options(opts_str)?
+                let inline_options = if section_type.supports_inline_options() {
+                    if let Some(opts_str) = inline_options_str {
+                        parse_inline_options(opts_str)?
+                    } else {
+                        InlineOptions::default()
+                    }
                 } else {
                     InlineOptions::default()
                 };
@@ -306,6 +310,99 @@ fn parse_inline_options(s: &str) -> Result<InlineOptions> {
     Ok(inline_options)
 }
 
+fn parse_response_json_values(content: &str) -> Option<Vec<serde_json::Value>> {
+    let mut values = Vec::new();
+    let mut current_lines: Vec<&str> = Vec::new();
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut started = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() && current_lines.is_empty() {
+            continue;
+        }
+
+        current_lines.push(line);
+
+        let mut chars = line.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+
+            if ch == '"' {
+                in_string = !in_string;
+                started = true;
+                continue;
+            }
+
+            if in_string {
+                continue;
+            }
+
+            if ch == '#' {
+                break;
+            }
+            if ch == '/'
+                && let Some('/') = chars.peek()
+            {
+                break;
+            }
+
+            match ch {
+                '{' | '[' => {
+                    depth += 1;
+                    started = true;
+                }
+                '}' | ']' => {
+                    depth -= 1;
+                    started = true;
+                    if depth < 0 {
+                        return None;
+                    }
+                }
+                c if !c.is_whitespace() => {
+                    started = true;
+                }
+                _ => {}
+            }
+        }
+
+        if started && depth == 0 {
+            let chunk = current_lines.join("\n");
+            let chunk = chunk.trim();
+            if chunk.is_empty() {
+                current_lines.clear();
+                started = false;
+                continue;
+            }
+
+            let value = json_mod::from_str(chunk).ok()?;
+            values.push(value);
+            current_lines.clear();
+            started = false;
+        }
+    }
+
+    if !current_lines.is_empty() {
+        return None;
+    }
+
+    if values.len() >= 2 {
+        Some(values)
+    } else {
+        None
+    }
+}
+
 /// Parse section content based on section type
 fn parse_section_content(section_type: SectionType, content: &str) -> Result<SectionContent> {
     let content = content.trim();
@@ -331,28 +428,8 @@ fn parse_section_content(section_type: SectionType, content: &str) -> Result<Sec
                 return Ok(SectionContent::Json(json_value));
             }
 
-            // Legacy-compatible mode: newline-delimited JSON objects within one RESPONSE block
-            // Example:
-            //   { ... }
-            //   { ... }
-            let mut values = Vec::new();
-            let mut all_lines_json = true;
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-
-                match json_mod::from_str(trimmed) {
-                    Ok(v) => values.push(v),
-                    Err(_) => {
-                        all_lines_json = false;
-                        break;
-                    }
-                }
-            }
-
-            if all_lines_json && values.len() >= 2 {
+            // Streaming mode: multiple JSON payloads within one RESPONSE block
+            if let Some(values) = parse_response_json_values(content) {
                 Ok(SectionContent::JsonLines(values))
             } else {
                 // Preserve original parse error behavior for malformed single-content responses
@@ -645,6 +722,76 @@ Service/Method
         let document = parse_gctf_from_str(content, "test.gctf").unwrap();
         assert_eq!(document.file_path, "test.gctf");
         assert_eq!(document.sections.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_gctf_from_str_multiline_response_values() {
+        let content = r#"--- ENDPOINT ---
+Service/StreamMethod
+
+--- REQUEST ---
+{"id": "abc"}
+
+--- RESPONSE ---
+{
+  "seq": 1,
+  "ok": true
+}
+{
+  "seq": 2,
+  "ok": true
+}
+"#;
+
+        let document = parse_gctf_from_str(content, "test.gctf").unwrap();
+        let response = document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Response)
+            .expect("missing response section");
+
+        match &response.content {
+            SectionContent::JsonLines(values) => {
+                assert_eq!(values.len(), 2);
+                assert_eq!(values[0]["seq"], 1);
+                assert_eq!(values[1]["seq"], 2);
+            }
+            other => panic!("expected JsonLines, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_gctf_from_str_multiline_response_values_with_comments() {
+        let content = r#"--- ENDPOINT ---
+Service/StreamMethod
+
+--- REQUEST ---
+{"id": "abc"}
+
+--- RESPONSE ---
+{
+  "seq": 1
+} # first
+{
+  "seq": 2
+} # second
+"#;
+
+        let document = parse_gctf_from_str(content, "test.gctf").unwrap();
+        let response = document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Response)
+            .expect("missing response section");
+
+        match &response.content {
+            SectionContent::JsonLines(values) => {
+                assert_eq!(values.len(), 2);
+                assert_eq!(values[0]["seq"], 1);
+                assert_eq!(values[1]["seq"], 2);
+            }
+            other => panic!("expected JsonLines, got {:?}", other),
+        }
     }
 
     #[test]

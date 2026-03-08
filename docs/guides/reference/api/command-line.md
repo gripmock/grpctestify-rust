@@ -64,8 +64,19 @@ grpctestify tests/ --log-format junit --log-output test-results.xml
 grpctestify check tests/**/*.gctf
 
 # Format files in-place
-grpctestify fmt -w tests/**/*.gctf
+grpctestify fmt -w .
+
+# Check formatting (non-zero exit if changes are needed)
+grpctestify fmt .
 ```
+
+## Fmt Behavior
+
+- `grpctestify fmt <files...>` works as a formatting check and exits with code `1` if any file needs reformatting.
+- `grpctestify fmt -w <files...>` rewrites files in place.
+- Safe optimizer rewrites are applied by default during formatting.
+
+For CI, run both `fmt` and `check`: `fmt` enforces style, while `check` enforces parse/validation/semantics.
 
 ## See Also
 

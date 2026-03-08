@@ -19,6 +19,18 @@ jobs:
         run: |
           brew tap gripmock/tap
           brew install gripmock/tap/grpctestify
+
+      # 1) Formatting gate (check mode, non-zero if reformat is needed)
+      - name: Check GCTF formatting
+        run: |
+          grpctestify fmt .
+
+      # 2) Syntax/semantic validation gate
+      - name: Validate GCTF files
+        run: |
+          grpctestify check .
+
+      # 3) Runtime execution gate
       - name: Run Tests
         run: |
           grpctestify tests/ --log-format junit --log-output results.xml
@@ -29,6 +41,14 @@ jobs:
           path: results.xml
           reporter: java-junit
 ```
+
+### Recommended CI order
+
+1. `grpctestify fmt <paths...>` - style/formatting check (fails if files need changes)
+2. `grpctestify check <paths...>` - parse + structural + semantic validation
+3. `grpctestify <paths...>` - real execution against gRPC service
+
+This split keeps failure causes explicit (style vs validation vs runtime) and mirrors common tooling workflows (`rustfmt --check` + linters/tests).
 
 ### Docker Integration
 

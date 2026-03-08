@@ -15,7 +15,7 @@ X-Request-ID: req-001
 
 --- RESPONSE ---
 {
-  "message": "Hello World"
+  "message": "Hello, World!"
 }
 
 --- ASSERTS ---

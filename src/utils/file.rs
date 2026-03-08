@@ -3,6 +3,8 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+use crate::utils::gctf_style::trailing_blank_line_count;
+
 /// File utilities for cross-platform operations
 pub struct FileUtils;
 
@@ -99,9 +101,9 @@ impl FileUtils {
 
         // Iterate over existing sections
         for section in &document.sections {
-            // Add lines before this section
-            // section.start_line is 1-based
-            while current_line < section.start_line - 1 {
+            // Add lines before this section.
+            // Parser stores 0-based line indexes for section boundaries.
+            while current_line < section.start_line {
                 if current_line < lines.len() {
                     new_lines.push(lines[current_line].to_string());
                 }
@@ -111,15 +113,32 @@ impl FileUtils {
             match section.section_type {
                 SectionType::Response => {
                     // Replace this section with updated response
-                    if msg_idx < response.messages.len() {
-                        let msg = &response.messages[msg_idx];
-                        msg_idx += 1;
+                    let expected_count = match &section.content {
+                        crate::parser::ast::SectionContent::JsonLines(values) => {
+                            values.len().max(1)
+                        }
+                        _ => 1,
+                    };
 
-                        new_lines.push(format!("--- {} ---", SectionType::Response.as_str()));
+                    let remaining = response.messages.len().saturating_sub(msg_idx);
+                    let write_count = expected_count.min(remaining);
 
-                        // Format JSON
-                        let json_str = serde_json::to_string_pretty(msg)?;
-                        new_lines.push(json_str);
+                    if write_count > 0 {
+                        new_lines.push(section.format_header());
+
+                        for idx in 0..write_count {
+                            let msg = &response.messages[msg_idx + idx];
+                            let json_str = serde_json::to_string_pretty(msg)?;
+                            new_lines.push(json_str);
+                        }
+                        msg_idx += write_count;
+
+                        let content_start = section.start_line.saturating_add(1);
+                        let trailing_blanks =
+                            trailing_blank_line_count(&lines, content_start, section.end_line);
+                        for _ in 0..trailing_blanks {
+                            new_lines.push(String::new());
+                        }
 
                         // Skip original lines of this section
                         current_line = section.end_line;
@@ -484,5 +503,111 @@ Service/Method
 
         let updated_content = std::fs::read_to_string(temp_file.path()).unwrap();
         assert!(updated_content.contains("\"result\": \"new\""));
+    }
+
+    #[test]
+    fn test_update_test_file_with_parsed_zero_based_sections() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
+
+        let temp_file = NamedTempFile::new().unwrap();
+        let content =
+            "--- ENDPOINT ---\nService/Method\n\n--- RESPONSE ---\n{\"result\": \"old\"}\n";
+        std::fs::write(temp_file.path(), content).unwrap();
+
+        let doc = crate::parser::parse_gctf(temp_file.path()).unwrap();
+        let response = crate::grpc::GrpcResponse {
+            headers: std::collections::HashMap::new(),
+            trailers: std::collections::HashMap::new(),
+            messages: vec![serde_json::json!({"result": "new"})],
+            error: None,
+        };
+
+        let result = FileUtils::update_test_file(temp_file.path(), &doc, &response);
+        assert!(result.is_ok());
+
+        let updated_content = std::fs::read_to_string(temp_file.path()).unwrap();
+        assert!(updated_content.contains("\"result\": \"new\""));
+    }
+
+    #[test]
+    fn test_update_test_file_preserves_response_inline_options() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
+
+        let temp_file = NamedTempFile::new().unwrap();
+        let content = "--- ENDPOINT ---\nService/Method\n\n--- REQUEST ---\n{\"name\":\"World\"}\n\n--- RESPONSE partial=true tolerance=0.1 ---\n{\"result\": \"old\", \"extra\": 1}\n";
+        std::fs::write(temp_file.path(), content).unwrap();
+
+        let doc = crate::parser::parse_gctf(temp_file.path()).unwrap();
+        let response = crate::grpc::GrpcResponse {
+            headers: std::collections::HashMap::new(),
+            trailers: std::collections::HashMap::new(),
+            messages: vec![serde_json::json!({"result": "new"})],
+            error: None,
+        };
+
+        let result = FileUtils::update_test_file(temp_file.path(), &doc, &response);
+        assert!(result.is_ok());
+
+        let updated_content = std::fs::read_to_string(temp_file.path()).unwrap();
+        assert!(updated_content.contains("--- RESPONSE partial=true tolerance=0.1 ---"));
+        assert!(updated_content.contains("\"result\": \"new\""));
+    }
+
+    #[test]
+    fn test_update_test_file_matches_fmt_output() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
+
+        let temp_file = NamedTempFile::new().unwrap();
+        let content = "--- ENDPOINT ---\nsvc.Greeter/SayHello\n\n--- REQUEST ---\n{}\n\n--- RESPONSE partial=true ---\n{\"result\":\"old\"}\n";
+        std::fs::write(temp_file.path(), content).unwrap();
+
+        let doc = crate::parser::parse_gctf(temp_file.path()).unwrap();
+        let response = crate::grpc::GrpcResponse {
+            headers: std::collections::HashMap::new(),
+            trailers: std::collections::HashMap::new(),
+            messages: vec![serde_json::json!({"result": "new"})],
+            error: None,
+        };
+
+        FileUtils::update_test_file(temp_file.path(), &doc, &response).unwrap();
+        let updated = std::fs::read_to_string(temp_file.path()).unwrap();
+
+        let formatted = crate::commands::fmt::format_gctf_content(&updated, "temp.gctf").unwrap();
+        assert_eq!(updated, formatted);
+    }
+
+    #[test]
+    fn test_update_test_file_updates_jsonlines_response_count() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
+
+        let temp_file = NamedTempFile::new().unwrap();
+        let content = "--- ENDPOINT ---\nsvc.Stream/Read\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{\"seq\":1}\n{\"seq\":2}\n";
+        std::fs::write(temp_file.path(), content).unwrap();
+
+        let doc = crate::parser::parse_gctf(temp_file.path()).unwrap();
+        let response = crate::grpc::GrpcResponse {
+            headers: std::collections::HashMap::new(),
+            trailers: std::collections::HashMap::new(),
+            messages: vec![
+                serde_json::json!({"seq": 10, "ok": true}),
+                serde_json::json!({"seq": 11, "ok": true}),
+            ],
+            error: None,
+        };
+
+        FileUtils::update_test_file(temp_file.path(), &doc, &response).unwrap();
+        let updated = std::fs::read_to_string(temp_file.path()).unwrap();
+
+        assert!(updated.contains("\"seq\": 10"));
+        assert!(updated.contains("\"seq\": 11"));
+        assert!(updated.contains("\"ok\": true"));
     }
 }

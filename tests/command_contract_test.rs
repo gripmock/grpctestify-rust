@@ -117,20 +117,466 @@ example.Service/Call
     std::fs::write(&file, content).expect("failed to write temp gctf file");
 
     let path = file.to_string_lossy().into_owned();
-    let output = run_cli(&["fmt", &path]);
+    let output = run_cli(&["fmt", "-w", &path]);
     assert!(
         output.status.success(),
-        "fmt command failed\nstderr:\n{}\nstdout:\n{}",
+        "fmt -w command failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let updated = std::fs::read_to_string(&file).expect("failed to read rewritten gctf file");
+    assert!(updated.contains("// file header comment"));
+    assert!(updated.contains("// endpoint comment"));
+    assert!(updated.contains("// assert explanation"));
+    assert!(updated.contains("\"a\": 1"));
+    assert!(updated.contains("\"b\": 2"));
+}
+
+#[test]
+fn test_fmt_write_rewrites_json_inside_sections() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("rewrite-json.gctf");
+    let content = r#"--- ENDPOINT ---
+example.v1.Greeter/SayHello
+
+--- REQUEST ---
+{"name":"World","meta":{"id":1}}
+
+--- RESPONSE partial=true ---
+{"message":"Hello","ok":true}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["fmt", "-w", &path]);
+    assert!(
+        output.status.success(),
+        "fmt -w command failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let updated =
+        std::fs::read_to_string(&file).expect("failed to read rewritten gctf file content");
+    assert!(updated.contains("\"name\": \"World\""));
+    assert!(updated.contains("\"meta\": {"));
+    assert!(updated.contains("\"id\": 1"));
+    assert!(updated.contains("--- RESPONSE partial=true ---"));
+    assert!(updated.contains("\"ok\": true"));
+}
+
+#[test]
+fn test_fmt_write_preserves_inline_json_comments() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("preserve-json-comments.gctf");
+    let content = r#"--- ENDPOINT ---
+scalar.FileService/UploadFile
+
+--- REQUEST ---
+{
+  "content": "aGVsbG8="  # "hello" in Base64
+}
+
+--- RESPONSE ---
+{
+  "checksum": "5d41402abc4b2a76b9719d911017c592"  # MD5 hash of "hello"
+}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["fmt", "-w", &path]);
+    assert!(
+        output.status.success(),
+        "fmt -w command failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let updated =
+        std::fs::read_to_string(&file).expect("failed to read rewritten gctf file content");
+    assert!(updated.contains("# \"hello\" in Base64"));
+    assert!(updated.contains("# MD5 hash of \"hello\""));
+}
+
+#[test]
+fn test_fmt_write_preserves_blank_line_between_sections() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("preserve-section-spacing.gctf");
+    let content = r#"--- ENDPOINT ---
+weather.WeatherService/GetCurrentForecast
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{"condition":"Sunny","date":{"day":5,"month":10,"year":2023},"temperatureC":22.5}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["fmt", "-w", &path]);
+    assert!(
+        output.status.success(),
+        "fmt -w command failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let updated =
+        std::fs::read_to_string(&file).expect("failed to read rewritten gctf file content");
+    assert!(updated.contains("--- REQUEST ---\n{}\n\n--- RESPONSE ---"));
+    assert!(updated.contains("\"temperatureC\": 22.5"));
+}
+
+#[test]
+fn test_fmt_write_inserts_blank_line_between_adjacent_sections() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("insert-section-spacing.gctf");
+    let content = r#"--- ENDPOINT ---
+weather.WeatherService/GetCurrentForecast
+--- REQUEST ---
+{}
+--- RESPONSE ---
+{"condition":"Sunny"}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["fmt", "-w", &path]);
+    assert!(
+        output.status.success(),
+        "fmt -w command failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let updated =
+        std::fs::read_to_string(&file).expect("failed to read rewritten gctf file content");
+    assert!(updated.contains("GetCurrentForecast\n\n--- REQUEST ---"));
+    assert!(updated.contains("--- REQUEST ---\n{}\n\n--- RESPONSE ---"));
+}
+
+#[test]
+fn test_fmt_write_preserves_response_trailing_hash_comment() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("response-trailing-hash-comment.gctf");
+    let content = r#"--- ENDPOINT ---
+scalar.FileService/UploadFile
+
+--- REQUEST ---
+{
+    "content": "aGVsbG8="  # "hello" in Base64
+}
+
+--- RESPONSE ---
+{
+    "checksum": "5d41402abc4b2a76b9719d911017c592"}  # MD5 hash of "hello"
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["fmt", "-w", &path]);
+    assert!(
+        output.status.success(),
+        "fmt -w command failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let updated =
+        std::fs::read_to_string(&file).expect("failed to read rewritten gctf file content");
+    assert!(updated.contains("# \"hello\" in Base64"));
+    assert!(updated.contains("# MD5 hash of \"hello\""));
+    assert!(updated.contains("--- RESPONSE ---"));
+}
+
+#[test]
+fn test_fmt_write_preserves_inline_block_comment_in_json() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("preserve-inline-block-comment.gctf");
+    let content = r#"--- ENDPOINT ---
+weather.WeatherService/GetCurrentForecast
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{"condition":"Sunny","date":{"day":5 /** five */,"month":10,"year":2023},"temperatureC":22.5}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["fmt", "-w", &path]);
+    assert!(
+        output.status.success(),
+        "fmt -w command failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let updated =
+        std::fs::read_to_string(&file).expect("failed to read rewritten gctf file content");
+    assert!(updated.contains("/** five */"));
+    assert!(updated.contains("\"day\": 5 /** five */"));
+    assert!(updated.contains("\"temperatureC\": 22.5"));
+}
+
+#[test]
+fn test_fmt_write_formats_json5_to_canonical_json() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("json5-canonical.gctf");
+    let content = r#"--- ENDPOINT ---
+example.v1.Greeter/SayHello
+
+--- REQUEST ---
+{
+  name: 'World',
+  meta: { id: 1, },
+}
+
+--- RESPONSE ---
+{ message: 'Hello World' }
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["fmt", "-w", &path]);
+    assert!(
+        output.status.success(),
+        "fmt -w command failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let updated = std::fs::read_to_string(&file).expect("failed to read rewritten gctf file");
+    assert!(updated.contains("\"name\": \"World\""));
+    assert!(updated.contains("\"meta\": {"));
+    assert!(updated.contains("\"id\": 1"));
+    assert!(updated.contains("\"message\": \"Hello World\""));
+    assert!(!updated.contains("'World'"));
+    assert!(!updated.contains("name:"));
+}
+
+#[test]
+fn test_fmt_write_formats_response_jsonlines() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("jsonlines-response.gctf");
+    let content = r#"--- ENDPOINT ---
+track.StreamService/Read
+
+--- REQUEST ---
+{"id":"abc"}
+
+--- RESPONSE ---
+{"seq":1,"ok":true}
+{"seq":2,"ok":true}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["fmt", "-w", &path]);
+    assert!(
+        output.status.success(),
+        "fmt -w command failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let updated = std::fs::read_to_string(&file).expect("failed to read rewritten gctf file");
+    assert!(updated.contains("\"seq\": 1"));
+    assert!(updated.contains("\"seq\": 2"));
+    assert!(updated.contains("\"ok\": true"));
+}
+
+#[test]
+fn test_fmt_write_formats_jsonc_and_preserves_line_comments() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("jsonc-comments.gctf");
+    let content = r#"--- ENDPOINT ---
+weather.WeatherService/GetCurrentForecast
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{
+  // weather payload
+  "condition":"Sunny",
+  "temperatureC":22.5
+}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["fmt", "-w", &path]);
+    assert!(
+        output.status.success(),
+        "fmt -w command failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let updated = std::fs::read_to_string(&file).expect("failed to read rewritten gctf file");
+    assert!(updated.contains("// weather payload"));
+    assert!(updated.contains("\"condition\": \"Sunny\""));
+    assert!(updated.contains("\"temperatureC\": 22.5"));
+}
+
+#[test]
+fn test_fmt_write_preserves_hash_inside_string() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("hash-in-string.gctf");
+    let content = r#"--- ENDPOINT ---
+weather.WeatherService/GetCurrentForecast
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{"station":"MS#00006","temperatureC":22.5}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["fmt", "-w", &path]);
+    assert!(
+        output.status.success(),
+        "fmt -w command failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let updated = std::fs::read_to_string(&file).expect("failed to read rewritten gctf file");
+    assert!(updated.contains("\"station\": \"MS#00006\""));
+    assert!(updated.contains("\"temperatureC\": 22.5"));
+}
+
+#[test]
+fn test_fmt_write_preserves_multiline_block_comment_in_json() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("multiline-block-comment.gctf");
+    let content = r#"--- ENDPOINT ---
+weather.WeatherService/GetCurrentForecast
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{
+  "date": {
+    "day": 5,
+    /* this is
+       a multiline
+       block comment */
+    "month": 10,
+    "year": 2023
+  }
+}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["fmt", "-w", &path]);
+    assert!(
+        output.status.success(),
+        "fmt -w command failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let updated = std::fs::read_to_string(&file).expect("failed to read rewritten gctf file");
+    assert!(updated.contains("/* this is"));
+    assert!(updated.contains("a multiline"));
+    assert!(updated.contains("block comment */"));
+    assert!(updated.contains("\"month\": 10"));
+}
+
+#[test]
+fn test_fmt_check_mode_reports_each_file_needing_format() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file1 = dir.path().join("needs-format-1.gctf");
+    let file2 = dir.path().join("needs-format-2.gctf");
+    let content = r#"--- ENDPOINT ---
+example.v1.Greeter/SayHello
+
+--- REQUEST ---
+{"name":"World"}
+
+--- RESPONSE ---
+{"message":"Hello World"}
+"#;
+    std::fs::write(&file1, content).expect("failed to write temp gctf file 1");
+    std::fs::write(&file2, content).expect("failed to write temp gctf file 2");
+
+    let path1 = file1.to_string_lossy().into_owned();
+    let path2 = file2.to_string_lossy().into_owned();
+    let output = run_cli(&["fmt", &path1, &path2]);
+
+    assert!(
+        !output.status.success(),
+        "fmt check mode must fail when formatting is needed\nstderr:\n{}\nstdout:\n{}",
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("// file header comment"));
-    assert!(stdout.contains("// endpoint comment"));
-    assert!(stdout.contains("// request comment"));
-    assert!(stdout.contains("// inline comment"));
-    assert!(stdout.contains("// assert explanation"));
+    assert!(stdout.contains("needs-format-1.gctf:1: [FORMAT_NEEDED]"));
+    assert!(stdout.contains("needs-format-2.gctf:1: [FORMAT_NEEDED]"));
+}
+
+#[test]
+fn test_fmt_applies_optimizer_by_default() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("fmt-opt-default.gctf");
+    let content = r#"--- ENDPOINT ---
+example.v1.Greeter/SayHello
+
+--- REQUEST ---
+{"name": "World"}
+
+--- RESPONSE ---
+{"message": "Hello World"}
+
+--- ASSERTS ---
+@has_header("x-request-id") == true
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["fmt", "-w", &path]);
+    assert!(
+        output.status.success(),
+        "fmt -w command failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let updated = std::fs::read_to_string(&file).expect("failed to read rewritten gctf file");
+    assert!(updated.contains("@has_header(\"x-request-id\")"));
+    assert!(!updated.contains("@has_header(\"x-request-id\") == true"));
+}
+
+#[test]
+fn test_fmt_rejects_removed_optimize_flag() {
+    let file = fixture_path("tests/data/gctf/valid_simple.gctf");
+    let output = run_cli(&["fmt", "-o", &file]);
+
+    assert!(
+        !output.status.success(),
+        "fmt -o must fail after optimize flag removal\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unexpected argument '-o'")
+            || stderr.contains("unexpected argument '--optimize'"),
+        "expected clap error about removed -o flag, got:\n{}",
+        stderr
+    );
 }
 
 #[test]
@@ -406,7 +852,7 @@ fn test_inssect_sections_have_required_fields() {
 }
 
 #[test]
-fn test_fmt_stdout_output() {
+fn test_fmt_check_mode_ok_output() {
     let file = fixture_path("tests/data/gctf/valid_simple.gctf");
     let output = run_cli(&["fmt", &file]);
     assert!(
@@ -416,15 +862,59 @@ fn test_fmt_stdout_output() {
         String::from_utf8_lossy(&output.stdout)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("--- ENDPOINT ---"));
+    assert!(stdout.contains("... OK"));
 }
 
 #[test]
-fn test_fmt_idempotent() {
-    let file = fixture_path("tests/data/gctf/valid_simple.gctf");
+fn test_fmt_check_mode_fails_when_format_needed() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("needs-format.gctf");
+    let content = r#"--- ENDPOINT ---
+example.v1.Greeter/SayHello
 
-    let output1 = run_cli(&["fmt", &file]);
-    let output2 = run_cli(&["fmt", &file]);
+--- REQUEST ---
+{"name":"World"}
+
+--- RESPONSE ---
+{"message":"Hello World"}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["fmt", &path]);
+
+    assert!(
+        !output.status.success(),
+        "fmt check mode must fail when formatting is needed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("[FORMAT_NEEDED]"));
+}
+
+#[test]
+fn test_fmt_write_then_check_is_idempotent() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("idempotent.gctf");
+    let content = r#"--- ENDPOINT ---
+example.v1.Greeter/SayHello
+
+--- REQUEST ---
+{"name": "World"}
+
+--- RESPONSE ---
+{"message": "Hello World"}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+    let path = file.to_string_lossy().into_owned();
+
+    let write_output = run_cli(&["fmt", "-w", &path]);
+    assert!(write_output.status.success());
+
+    let output1 = run_cli(&["fmt", &path]);
+    let output2 = run_cli(&["fmt", &path]);
 
     let stdout1 = String::from_utf8_lossy(&output1.stdout);
     let stdout2 = String::from_utf8_lossy(&output2.stdout);
