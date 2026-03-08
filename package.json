@@ -1,0 +1,24 @@
+{
+  "name": "grpctestify-docs",
+  "version": "1.0.0",
+  "_comment": "Version is managed via src/bashly.yml - this is for npm only",
+  "description": "gRPC Testify Documentation",
+  "type": "module",
+  "scripts": {
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs",
+    "docs:serve": "vitepress serve docs"
+  },
+  "devDependencies": {
+    "vitepress": "^v2.0.0-alpha.16"
+  },
+  "keywords": [
+    "grpc",
+    "testing",
+    "documentation",
+    "vitepress"
+  ],
+  "author": "gRPC Testify Team",
+  "license": "MIT"
+}
