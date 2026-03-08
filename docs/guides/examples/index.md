@@ -1,6 +1,8 @@
 # Examples
 
-## Available
+Only maintained example scenarios are listed here.
+
+## Available scenario
 
 - [Real-time Chat](basic/real-time-chat)
 

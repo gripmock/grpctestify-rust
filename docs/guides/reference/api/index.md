@@ -2,7 +2,7 @@
 
 Reference pages for CLI usage and `.gctf` syntax.
 
-## Sections
+## Start with
 
 - [Command Line Interface](./command-line)
 - [Test File Format](./test-files)
@@ -10,7 +10,6 @@ Reference pages for CLI usage and `.gctf` syntax.
 - [Type Validation](./type-validation)
 - [Report Formats](./report-formats)
 - [Plugin Development](./plugin-development)
-- [Plugin System](../../plugins/)
 
 ## Quick Example
 
@@ -33,4 +32,4 @@ service.Method
 ## See Also
 
 - [Getting Started](../../getting-started/installation)
-- [Examples](../../examples/)
+- [Real-time Chat Example](../../examples/basic/real-time-chat)

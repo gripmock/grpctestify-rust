@@ -18,7 +18,7 @@ brew install gripmock/tap/grpctestify
 ### Cargo
 
 ```bash
-cargo install --git https://github.com/gripmock/grpctestify-rust grpctestify
+cargo install grpctestify
 ```
 
 ### Prebuilt binaries (GitHub Releases)
@@ -75,5 +75,5 @@ grpctestify test.gctf
 
 ## Support
 
-- [Troubleshooting Guide](../../advanced/troubleshooting)
+- [Troubleshooting Guide](../troubleshooting)
 - [GitHub Issues](https://github.com/gripmock/grpctestify-rust/issues)

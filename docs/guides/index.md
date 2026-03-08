@@ -1,26 +1,18 @@
 # Guides
 
-## Start Here
+Use this section as a practical path from setup to advanced checks.
 
-- [Installation](getting-started/installation)
-- [Your First Test](getting-started/first-test)
-- [Basic Concepts](getting-started/basic-concepts)
+## Recommended path
 
-## Testing
+1. Install and verify the CLI: [Installation](getting-started/installation)
+2. Create and run a first test: [First Test](getting-started/first-test)
+3. Learn `.gctf` structure: [Basic Concepts](getting-started/basic-concepts)
+4. Add stronger checks: [Testing Patterns](testing-patterns/testing-patterns)
+5. Use command details when needed: [CLI Reference](reference/api/command-line)
+6. Fix common failures fast: [Troubleshooting](troubleshooting)
 
-- [Testing Patterns](testing-patterns/testing-patterns)
-- [Assertion Patterns](testing-patterns/assertion-patterns)
-- [Security Testing](testing-patterns/security-testing)
-- [Performance Testing](testing-patterns/performance-testing)
+## One working example
 
-## Reference
+Use the complete chat scenario as a reference template:
 
-- [Command Line](reference/api/command-line)
-- [Test Files](reference/api/test-files)
-- [Assertions](reference/api/assertions)
-- [Report Formats](reference/api/report-formats)
-
-## Examples
-
-- [Examples](examples/)
 - [Real-time Chat](examples/basic/real-time-chat)
