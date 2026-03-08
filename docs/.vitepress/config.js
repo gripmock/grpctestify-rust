@@ -3,7 +3,7 @@ import { defineConfig } from 'vitepress'
 export default defineConfig({
   title: 'gRPC Testify',
   description: 'Automate gRPC testing with simple .gctf files',
-  ignoreDeadLinks: true,
+  ignoreDeadLinks: false,
 
   base: '/grpctestify-rust/',
   
@@ -24,85 +24,56 @@ export default defineConfig({
 
     nav: [
       { text: 'Home', link: '/' },
-      { text: 'Guides', link: '/guides/' },
+      { text: 'Install', link: '/guides/getting-started/installation' },
+      { text: 'CLI', link: '/guides/reference/api/command-line' },
       { text: 'Generator', link: '/generator' }
     ],
 
     sidebar: {
-              '/guides/': [
-          {
-            text: 'Getting Started',
-            items: [
-              { text: 'Installation', link: '/guides/getting-started/installation' },
-              { text: 'First Test', link: '/guides/getting-started/first-test' },
-              { text: 'Basic Concepts', link: '/guides/getting-started/basic-concepts' }
-            ]
-          },
-          {
-                               text: 'Testing Patterns',
-                   items: [
-                     { text: 'Testing Patterns', link: '/guides/testing-patterns/testing-patterns' },
-                     { text: 'Data Validation', link: '/guides/testing-patterns/data-validation' },
-                     { text: 'Error Testing', link: '/guides/testing-patterns/error-testing' },
-                     { text: 'Security Testing', link: '/guides/testing-patterns/security-testing' },
-                     { text: 'Performance Testing', link: '/guides/testing-patterns/performance-testing' },
-                     { text: 'Assertion Patterns', link: '/guides/testing-patterns/assertion-patterns' }
-                   ]
-          },
-          {
-            text: 'Technical Reference',
-            items: [
-              { text: 'Overview', link: '/guides/reference/' },
-              { text: 'Command Line', link: '/guides/reference/api/command-line' },
-              { text: 'Test Files', link: '/guides/reference/api/test-files' },
-              { text: 'Assertions', link: '/guides/reference/api/assertions' },
-              { text: 'Report Formats', link: '/guides/reference/api/report-formats' },
-              { text: 'Type Validation', link: '/guides/reference/api/type-validation' },
-              { text: 'Plugin Development', link: '/guides/reference/api/plugin-development' }
-            ]
-          },
-          {
-            text: 'Plugin System',
-            items: [
-              { text: 'Overview', link: '/guides/plugins/' },
-              { text: 'Plugin Development', link: '/guides/plugins/development/' },
-              { text: 'State API', link: '/guides/plugins/development/state-api' }
-            ]
-          },
-          {
-            text: 'Examples',
-            items: [
-              { text: 'Overview', link: '/guides/examples/' },
-              { text: 'Basic Examples', items: [
-                { text: 'User Management', link: '/guides/examples/basic/user-management' },
-                { text: 'Real-time Chat', link: '/guides/examples/basic/real-time-chat' },
-                { text: 'IoT Monitoring', link: '/guides/examples/basic/iot-monitoring' }
-              ]},
-              { text: 'Advanced Examples', items: [
-                { text: 'E-commerce ShopFlow', link: '/guides/examples/advanced/shopflow-ecommerce' },
-                { text: 'Media Streaming', link: '/guides/examples/advanced/media-streaming' },
-                { text: 'AI Chat', link: '/guides/examples/advanced/ai-chat' }
-              ]},
-              { text: 'Security Examples', items: [
-                { text: 'Fintech Payment', link: '/guides/examples/security/fintech-payment' },
-                { text: 'File Storage', link: '/guides/examples/security/file-storage' }
-              ]},
-              { text: 'Plugin Examples', items: [
-                { text: 'Custom Plugins', link: '/guides/examples/plugins/custom-plugins' }
-              ]}
-            ]
-          }
-        ],
-
-
-
-
-
-      '/development/': [
+      '/guides/': [
         {
-          text: 'Project Development',
+          text: 'Start',
           items: [
-            { text: 'Overview', link: '/development/' }
+            { text: 'Installation', link: '/guides/getting-started/installation' },
+            { text: 'First Test', link: '/guides/getting-started/first-test' },
+            { text: 'Basic Concepts', link: '/guides/getting-started/basic-concepts' },
+            { text: 'Troubleshooting', link: '/guides/troubleshooting' }
+          ]
+        },
+        {
+          text: 'Testing Patterns',
+          items: [
+            { text: 'Testing Patterns', link: '/guides/testing-patterns/testing-patterns' },
+            { text: 'Data Validation', link: '/guides/testing-patterns/data-validation' },
+            { text: 'Error Testing', link: '/guides/testing-patterns/error-testing' },
+            { text: 'Security Testing', link: '/guides/testing-patterns/security-testing' },
+            { text: 'Performance Testing', link: '/guides/testing-patterns/performance-testing' },
+            { text: 'Assertion Patterns', link: '/guides/testing-patterns/assertion-patterns' }
+          ]
+        },
+        {
+          text: 'Reference',
+          items: [
+            { text: 'Command Line', link: '/guides/reference/api/command-line' },
+            { text: 'Test Files', link: '/guides/reference/api/test-files' },
+            { text: 'Assertions', link: '/guides/reference/api/assertions' },
+            { text: 'Report Formats', link: '/guides/reference/api/report-formats' },
+            { text: 'Type Validation', link: '/guides/reference/api/type-validation' },
+            { text: 'Plugin Development', link: '/guides/reference/api/plugin-development' },
+            { text: 'Core gRPC Execution', link: '/guides/reference/api/grpc-default-test' }
+          ]
+        },
+        {
+          text: 'Plugins',
+          items: [
+            { text: 'Plugin System', link: '/guides/plugins/' },
+            { text: 'State API', link: '/guides/plugins/development/state-api' }
+          ]
+        },
+        {
+          text: 'Example',
+          items: [
+            { text: 'Real-time Chat', link: '/guides/examples/basic/real-time-chat' }
           ]
         }
       ]

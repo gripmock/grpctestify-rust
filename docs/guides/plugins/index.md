@@ -33,6 +33,17 @@ Rust version includes built-in assertion plugins available in `ASSERTS`.
 - External runtime plugin commands are not part of current CLI
 - Plugin support is native and loaded by default
 
+## Development
+
+Built-in plugins are implemented as native Rust modules in this repository.
+
+To add a new built-in plugin:
+
+1. Add a plugin module in `src/plugins/`
+2. Register it in `src/plugins/mod.rs`
+3. Add parser/execution tests for the new behavior
+4. Update docs with a usage example
+
 ## Related
 
 - [Assertion Reference](../reference/api/assertions.md)
