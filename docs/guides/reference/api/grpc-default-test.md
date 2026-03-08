@@ -46,5 +46,5 @@ grpctestify tests/ --verbose
 
 ## Notes
 
-- `OPTIONS` section is parsed but not applied at runtime
+- `OPTIONS` section can override per-test runtime flags (`timeout`, `retry`, `retry-delay`, `no-retry`)
 - `PROTO files=...` is not supported in native mode

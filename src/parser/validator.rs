@@ -262,6 +262,76 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                         });
                     }
                 }
+
+                if section_type == SectionType::Options {
+                    for (key, value) in kv {
+                        match key.as_str() {
+                            "timeout" => {
+                                if value.trim().parse::<u64>().ok().map_or(true, |v| v == 0) {
+                                    errors.push(ValidationError {
+                                        message: format!(
+                                            "OPTIONS.timeout must be a positive integer, got '{}'",
+                                            value
+                                        ),
+                                        line: Some(section.start_line),
+                                        severity: ErrorSeverity::Error,
+                                    });
+                                }
+                            }
+                            "no-retry" | "no_retry" => {
+                                let normalized = value.trim().to_ascii_lowercase();
+                                let is_bool = matches!(
+                                    normalized.as_str(),
+                                    "true" | "1" | "yes" | "on" | "false" | "0" | "no" | "off"
+                                );
+                                if !is_bool {
+                                    errors.push(ValidationError {
+                                        message: format!(
+                                            "OPTIONS.{} must be a boolean, got '{}'",
+                                            key, value
+                                        ),
+                                        line: Some(section.start_line),
+                                        severity: ErrorSeverity::Error,
+                                    });
+                                }
+                            }
+                            "retry" => {
+                                if value.trim().parse::<u32>().is_err() {
+                                    errors.push(ValidationError {
+                                        message: format!(
+                                            "OPTIONS.retry must be a non-negative integer, got '{}'",
+                                            value
+                                        ),
+                                        line: Some(section.start_line),
+                                        severity: ErrorSeverity::Error,
+                                    });
+                                }
+                            }
+                            "retry-delay" | "retry_delay" => {
+                                if value.trim().parse::<f64>().ok().map_or(true, |v| v < 0.0) {
+                                    errors.push(ValidationError {
+                                        message: format!(
+                                            "OPTIONS.retry-delay must be a non-negative number, got '{}'",
+                                            value
+                                        ),
+                                        line: Some(section.start_line),
+                                        severity: ErrorSeverity::Error,
+                                    });
+                                }
+                            }
+                            _ => {
+                                errors.push(ValidationError {
+                                    message: format!(
+                                        "Unknown OPTIONS key '{}'. Supported keys: timeout, retry, retry-delay, no-retry",
+                                        key
+                                    ),
+                                    line: Some(section.start_line),
+                                    severity: ErrorSeverity::Warning,
+                                });
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -695,6 +765,132 @@ mod tests {
         unsafe {
             std::env::remove_var(crate::config::ENV_GRPCTESTIFY_ADDRESS);
         }
+    }
+
+    #[test]
+    fn test_validate_options_unknown_key_warning() {
+        let mut doc = create_test_document();
+        let mut options = std::collections::HashMap::new();
+        options.insert("unknown".to_string(), "value".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Options,
+            content: SectionContent::KeyValues(options),
+            inline_options: InlineOptions::default(),
+            raw_content: "unknown: value".to_string(),
+            start_line: 5,
+            end_line: 6,
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 7,
+            end_line: 8,
+        });
+
+        let diagnostics = validate_document_diagnostics(&doc);
+        assert!(diagnostics.iter().any(|d| {
+            d.severity == ErrorSeverity::Warning && d.message.contains("Unknown OPTIONS key")
+        }));
+    }
+
+    #[test]
+    fn test_validate_options_dry_run_is_unknown_key_warning() {
+        let mut doc = create_test_document();
+        let mut options = std::collections::HashMap::new();
+        options.insert("dry_run".to_string(), "true".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Options,
+            content: SectionContent::KeyValues(options),
+            inline_options: InlineOptions::default(),
+            raw_content: "dry_run: true".to_string(),
+            start_line: 5,
+            end_line: 6,
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 7,
+            end_line: 8,
+        });
+
+        let diagnostics = validate_document_diagnostics(&doc);
+        assert!(diagnostics.iter().any(|d| {
+            d.severity == ErrorSeverity::Warning
+                && d.message
+                    .contains("Unknown OPTIONS key 'dry_run'. Supported keys: timeout, retry, retry-delay, no-retry")
+        }));
+    }
+
+    #[test]
+    fn test_validate_options_timeout_invalid_error() {
+        let mut doc = create_test_document();
+        let mut options = std::collections::HashMap::new();
+        options.insert("timeout".to_string(), "0".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Options,
+            content: SectionContent::KeyValues(options),
+            inline_options: InlineOptions::default(),
+            raw_content: "timeout: 0".to_string(),
+            start_line: 5,
+            end_line: 6,
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 7,
+            end_line: 8,
+        });
+
+        let diagnostics = validate_document_diagnostics(&doc);
+        assert!(diagnostics.iter().any(|d| {
+            d.severity == ErrorSeverity::Error
+                && d.message
+                    .contains("OPTIONS.timeout must be a positive integer")
+        }));
+    }
+
+    #[test]
+    fn test_validate_options_kebab_case_keys_are_supported() {
+        let mut doc = create_test_document();
+        let mut options = std::collections::HashMap::new();
+        options.insert("timeout".to_string(), "5".to_string());
+        options.insert("retry".to_string(), "2".to_string());
+        options.insert("retry-delay".to_string(), "0.5".to_string());
+        options.insert("no-retry".to_string(), "false".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Options,
+            content: SectionContent::KeyValues(options),
+            inline_options: InlineOptions::default(),
+            raw_content: "".to_string(),
+            start_line: 5,
+            end_line: 8,
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 9,
+            end_line: 10,
+        });
+
+        let diagnostics = validate_document_diagnostics(&doc);
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("Unknown OPTIONS key"))
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.severity == ErrorSeverity::Error)
+        );
     }
 
     #[test]

@@ -42,4 +42,4 @@ grpctestify tests/ --log-format junit --log-output perf-results.xml
 ## Notes
 
 - Use CLI flags for execution tuning
-- `OPTIONS` section is parsed but not currently applied at runtime
+- `OPTIONS` section can override per-test runtime behavior (`timeout`, `retry`, `retry-delay`, `no-retry`)

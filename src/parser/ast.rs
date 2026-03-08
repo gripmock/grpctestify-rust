@@ -316,6 +316,16 @@ impl GctfDocument {
         None
     }
 
+    /// Get OPTIONS configuration
+    pub fn get_options(&self) -> Option<HashMap<String, String>> {
+        if let Some(section) = self.first_section(SectionType::Options)
+            && let SectionContent::KeyValues(config) = &section.content
+        {
+            return Some(config.clone());
+        }
+        None
+    }
+
     /// Get TLS configuration merged with defaults (section values override defaults)
     pub fn get_tls_config_with_defaults(
         &self,
@@ -677,6 +687,26 @@ mod tests {
 
         let result = doc.get_tls_config().unwrap();
         assert_eq!(result.get("ca_cert"), Some(&"/path/to/ca.pem".to_string()));
+    }
+
+    #[test]
+    fn test_gctf_document_get_options() {
+        let mut doc = GctfDocument::new("test.gctf".to_string());
+        let mut options = HashMap::new();
+        options.insert("dry_run".to_string(), "true".to_string());
+        options.insert("timeout".to_string(), "10".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Options,
+            content: SectionContent::KeyValues(options.clone()),
+            inline_options: InlineOptions::default(),
+            raw_content: "".to_string(),
+            start_line: 1,
+            end_line: 2,
+        });
+
+        let result = doc.get_options().unwrap();
+        assert_eq!(result.get("dry_run"), Some(&"true".to_string()));
+        assert_eq!(result.get("timeout"), Some(&"10".to_string()));
     }
 
     #[test]

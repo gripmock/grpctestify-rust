@@ -134,6 +134,110 @@ example.Service/Call
 }
 
 #[test]
+fn test_run_subcommand_uses_dry_run_flag() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("dry-run.gctf");
+    let content = r#"--- ENDPOINT ---
+example.v1.Greeter/SayHello
+
+--- REQUEST ---
+{"name": "World"}
+
+--- RESPONSE ---
+{"message": "Hello World"}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["run", &path, "--dry-run"]);
+
+    assert!(
+        output.status.success(),
+        "run --dry-run command failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Dry-Run Preview"),
+        "expected dry-run preview output, got:\n{}",
+        stdout
+    );
+}
+
+#[test]
+fn test_explain_shows_options_section_details() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("explain-options.gctf");
+    let content = r#"--- ENDPOINT ---
+example.v1.Greeter/SayHello
+
+--- OPTIONS ---
+timeout: 5
+retry: 2
+
+--- REQUEST ---
+{"name": "World"}
+
+--- RESPONSE ---
+{"message": "Hello World"}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["explain", &path]);
+
+    assert!(
+        output.status.success(),
+        "explain command failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Step 2: OPTIONS"));
+    assert!(stdout.contains("Runtime overrides"));
+    assert!(stdout.contains("timeout: 5"));
+    assert!(stdout.contains("retry: 2"));
+}
+
+#[test]
+fn test_inspect_shows_options_overrides_in_flow() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("inspect-options.gctf");
+    let content = r#"--- ENDPOINT ---
+example.v1.Greeter/SayHello
+
+--- OPTIONS ---
+timeout: 5
+retry: 2
+
+--- REQUEST ---
+{"name": "World"}
+
+--- RESPONSE ---
+{"message": "Hello World"}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["inspect", &path]);
+
+    assert!(
+        output.status.success(),
+        "inspect command failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("OPTIONS Overrides:"));
+    assert!(stdout.contains("- retry: 2"));
+    assert!(stdout.contains("- timeout: 5"));
+}
+
+#[test]
 fn test_check_valid_file_json_output() {
     let file = fixture_path("tests/data/gctf/valid_simple.gctf");
     let output = run_cli(&["check", &file, "--format", "json"]);
