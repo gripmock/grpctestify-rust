@@ -472,16 +472,24 @@ fn parse_bool_flag(value: &str) -> bool {
 fn tls_env_defaults() -> HashMap<String, String> {
     let mut defaults = HashMap::new();
 
-    if let Ok(value) = std::env::var(crate::config::ENV_GRPCTESTIFY_TLS_CA_FILE) {
+    if let Ok(value) = std::env::var(crate::config::ENV_GRPCTESTIFY_TLS_CA_FILE)
+        && !value.trim().is_empty()
+    {
         defaults.insert("ca_cert".to_string(), value);
     }
-    if let Ok(value) = std::env::var(crate::config::ENV_GRPCTESTIFY_TLS_CERT_FILE) {
+    if let Ok(value) = std::env::var(crate::config::ENV_GRPCTESTIFY_TLS_CERT_FILE)
+        && !value.trim().is_empty()
+    {
         defaults.insert("client_cert".to_string(), value);
     }
-    if let Ok(value) = std::env::var(crate::config::ENV_GRPCTESTIFY_TLS_KEY_FILE) {
+    if let Ok(value) = std::env::var(crate::config::ENV_GRPCTESTIFY_TLS_KEY_FILE)
+        && !value.trim().is_empty()
+    {
         defaults.insert("client_key".to_string(), value);
     }
-    if let Ok(value) = std::env::var(crate::config::ENV_GRPCTESTIFY_TLS_SERVER_NAME) {
+    if let Ok(value) = std::env::var(crate::config::ENV_GRPCTESTIFY_TLS_SERVER_NAME)
+        && !value.trim().is_empty()
+    {
         defaults.insert("server_name".to_string(), value);
     }
 
@@ -1747,6 +1755,9 @@ impl TestRunner {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::Mutex;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_test_runner_new() {
@@ -1833,6 +1844,8 @@ mod tests {
 
     #[test]
     fn test_tls_env_defaults_uses_grpctestify_prefix() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+
         unsafe {
             std::env::set_var(crate::config::ENV_GRPCTESTIFY_TLS_CA_FILE, "/tmp/ca.pem");
             std::env::set_var(
@@ -1854,6 +1867,28 @@ mod tests {
             Some(&"/tmp/key.pem".to_string())
         );
         assert_eq!(defaults.get("server_name"), Some(&"localhost".to_string()));
+
+        unsafe {
+            std::env::remove_var(crate::config::ENV_GRPCTESTIFY_TLS_CA_FILE);
+            std::env::remove_var(crate::config::ENV_GRPCTESTIFY_TLS_CERT_FILE);
+            std::env::remove_var(crate::config::ENV_GRPCTESTIFY_TLS_KEY_FILE);
+            std::env::remove_var(crate::config::ENV_GRPCTESTIFY_TLS_SERVER_NAME);
+        }
+    }
+
+    #[test]
+    fn test_tls_env_defaults_ignores_empty_values() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+
+        unsafe {
+            std::env::set_var(crate::config::ENV_GRPCTESTIFY_TLS_CA_FILE, "");
+            std::env::set_var(crate::config::ENV_GRPCTESTIFY_TLS_CERT_FILE, "   ");
+            std::env::set_var(crate::config::ENV_GRPCTESTIFY_TLS_KEY_FILE, "");
+            std::env::set_var(crate::config::ENV_GRPCTESTIFY_TLS_SERVER_NAME, " ");
+        }
+
+        let defaults = tls_env_defaults();
+        assert!(defaults.is_empty());
 
         unsafe {
             std::env::remove_var(crate::config::ENV_GRPCTESTIFY_TLS_CA_FILE);
