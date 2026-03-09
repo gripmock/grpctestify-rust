@@ -1,5 +1,7 @@
 # gRPC Testify (Rust)
 
+<img align="right" width="150" height="150" src="https://github.com/user-attachments/assets/d331a8db-4f4c-4296-950c-86b91ea5540a">
+
 [![Release](https://img.shields.io/github/v/release/gripmock/grpctestify-rust?logo=github)](https://github.com/gripmock/grpctestify-rust/releases/latest)
 [![Documentation](https://img.shields.io/badge/Docs-VitePress-646CFF?logo=vitepress)](https://gripmock.github.io/grpctestify-rust/)
 [![VS Code Extension](https://img.shields.io/badge/VS_Code-Marketplace-blue?logo=visualstudiocode)](https://marketplace.visualstudio.com/items?itemName=gripmock.grpctestify)
