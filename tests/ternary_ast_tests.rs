@@ -2,7 +2,7 @@
 
 use grpctestify::parser::{
     parse_gctf_from_str,
-    ternary_ast::{ExtractValue, ExtractVar, TernaryExpr},
+    ternary_ast::{ExtractValue, ExtractVar},
 };
 
 // ============================================================================
@@ -44,11 +44,13 @@ fn test_extract_value_ast_ternary_basic() {
     let value = ExtractValue::parse(input);
 
     // Assert
-    assert!(
-        matches!(value, ExtractValue::Ternary(ref ternary) if ternary.condition == ".status == 200")
-    );
+    assert!(matches!(value, ExtractValue::Ternary(_)));
     assert!(value.to_jq().starts_with("if"));
     assert!(value.to_jq().ends_with("end"));
+    assert_eq!(
+        value.to_jq(),
+        "if .status == 200 then \"OK\" else \"Error\" end"
+    );
 }
 
 #[test]
@@ -76,7 +78,10 @@ fn test_extract_value_ast_ternary_nested() {
     let value = ExtractValue::parse(input);
 
     // Assert
-    assert!(matches!(value, ExtractValue::Ternary(ternary) if ternary.condition == ".a > 0"));
+    assert!(matches!(value, ExtractValue::Ternary(_)));
+    let jq = value.to_jq();
+    assert!(jq.contains("if .a > 0 then"));
+    assert!(jq.contains("if .a > 10 then"));
 }
 
 #[test]
@@ -200,70 +205,36 @@ fn test_extract_var_ast_with_spaces() {
 }
 
 // ============================================================================
-// TernaryExpr AST Tests
+// Ternary to JQ Conversion Tests
 // ============================================================================
 
 #[test]
-fn test_ternary_expr_ast_creation() {
-    // Arrange & Act
-    let ternary = TernaryExpr::new(
-        ".status == 200".to_string(),
-        "\"OK\"".to_string(),
-        "\"Error\"".to_string(),
+fn test_ternary_conversion_to_jq() {
+    // Test basic ternary converts to if-then-else
+    let value = ExtractValue::parse(".status == 200 ? \"OK\" : \"Error\"");
+    assert!(matches!(value, ExtractValue::Ternary(_)));
+    assert_eq!(
+        value.to_jq(),
+        "if .status == 200 then \"OK\" else \"Error\" end"
     );
-
-    // Assert
-    assert_eq!(ternary.condition, ".status == 200");
-    assert_eq!(ternary.true_expr, "\"OK\"");
-    assert_eq!(ternary.false_expr, "\"Error\"");
 }
 
 #[test]
-fn test_ternary_expr_ast_to_jq() {
-    // Arrange
-    let ternary = TernaryExpr::new(
-        ".status == 200".to_string(),
-        "\"OK\"".to_string(),
-        "\"Error\"".to_string(),
-    );
-
-    // Act
-    let jq = ternary.to_jq();
-
-    // Assert
-    assert_eq!(jq, "if .status == 200 then \"OK\" else \"Error\" end");
+fn test_ternary_conversion_nested() {
+    // Test nested ternary converts recursively
+    let value = ExtractValue::parse(".a > 0 ? (.a > 10 ? \"big\" : \"small\") : \"zero\"");
+    let jq = value.to_jq();
+    assert!(jq.starts_with("if .a > 0 then"));
+    assert!(jq.contains("if .a > 10 then"));
+    assert!(jq.ends_with("end"));
 }
 
 #[test]
-fn test_ternary_expr_ast_complex_condition() {
-    // Arrange
-    let ternary = TernaryExpr::new(
-        "(.items | length) > 0 and .status == 200".to_string(),
-        "\"valid\"".to_string(),
-        "\"invalid\"".to_string(),
-    );
-
-    // Act
-    let jq = ternary.to_jq();
-
-    // Assert
-    assert!(jq.contains("if (.items | length) > 0 and .status == 200 then"));
-}
-
-#[test]
-fn test_ternary_expr_ast_with_plugin() {
-    // Arrange
-    let ternary = TernaryExpr::new(
-        "@header(\"x-status\") == \"success\"".to_string(),
-        "\"ok\"".to_string(),
-        "\"error\"".to_string(),
-    );
-
-    // Act
-    let jq = ternary.to_jq();
-
-    // Assert
-    assert!(jq.contains("if @header(\"x-status\") == \"success\" then"));
+fn test_ternary_conversion_with_plugins() {
+    // Test ternary with plugin calls
+    let value = ExtractValue::parse("@header(\"x\") != null ? @header(\"x\") : \"default\"");
+    let jq = value.to_jq();
+    assert!(jq.starts_with("if @header(\"x\") != null then"));
 }
 
 // ============================================================================
