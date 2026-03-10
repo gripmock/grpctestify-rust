@@ -117,7 +117,7 @@ fn find_matching_colon(expr: &str) -> Option<usize> {
     let mut quote_char = None;
     let mut paren_depth = 0;
     let mut bracket_depth = 0;
-    let mut ternary_depth = 0;  // Count nested ? without matching :
+    let mut ternary_depth = 0; // Count nested ? without matching :
 
     for (i, c) in expr.char_indices() {
         match c {
@@ -182,7 +182,8 @@ mod tests {
     fn test_ternary_nested() {
         // Nested ternary - all levels are recursively converted
         let input = ".a > 0 ? (.a > 10 ? \"big\" : \"medium\") : \"small\"";
-        let expected = "if .a > 0 then (if .a > 10 then \"big\" else \"medium\" end) else \"small\" end";
+        let expected =
+            "if .a > 0 then (if .a > 10 then \"big\" else \"medium\" end) else \"small\" end";
         assert_eq!(ternary_to_jq(input), expected);
     }
 
@@ -224,7 +225,8 @@ mod tests {
     #[test]
     fn test_ternary_nested_deep() {
         // Deep nested: 3 levels
-        let input = ".a > 0 ? (.a > 10 ? (.a > 20 ? \"very big\" : \"big\") : \"medium\") : \"small\"";
+        let input =
+            ".a > 0 ? (.a > 10 ? (.a > 20 ? \"very big\" : \"big\") : \"medium\") : \"small\"";
         let result = ternary_to_jq(input);
         assert!(result.contains("if .a > 0 then"));
         assert!(result.contains("if .a > 10 then"));
@@ -263,7 +265,7 @@ mod tests {
         use serde_json::json;
 
         let engine = AssertionEngine::new();
-        
+
         // Test 1: Simple ternary
         let input = ".status == 200 ? \"OK\" : \"Error\"";
         let jq = ternary_to_jq(input);
@@ -286,10 +288,10 @@ mod tests {
         use serde_json::json;
 
         let engine = AssertionEngine::new();
-        
+
         let input = ".a > 0 ? (.a > 10 ? \"big\" : \"medium\") : \"small\"";
         let jq = ternary_to_jq(input);
-        
+
         // Test a=5 (positive but not big)
         let response = json!({"a": 5});
         let results = engine.query(&jq, &response).unwrap();
@@ -316,10 +318,10 @@ mod tests {
         use serde_json::json;
 
         let engine = AssertionEngine::new();
-        
+
         let input = ".a > 0 ? .b > 0 ? \"both positive\" : \"a only\" : \"none\"";
         let jq = ternary_to_jq(input);
-        
+
         // Test a=1, b=1 (both positive)
         let response = json!({"a": 1, "b": 1});
         let results = engine.query(&jq, &response).unwrap();
@@ -355,10 +357,11 @@ mod tests {
         use serde_json::json;
 
         let engine = AssertionEngine::new();
-        
-        let input = ".a > 0 ? (.a > 10 ? (.a > 20 ? \"very big\" : \"big\") : \"medium\") : \"small\"";
+
+        let input =
+            ".a > 0 ? (.a > 10 ? (.a > 20 ? \"very big\" : \"big\") : \"medium\") : \"small\"";
         let jq = ternary_to_jq(input);
-        
+
         // Test a=25 (very big)
         let response = json!({"a": 25});
         let results = engine.query(&jq, &response).unwrap();
@@ -391,10 +394,10 @@ mod tests {
         use serde_json::json;
 
         let engine = AssertionEngine::new();
-        
+
         let input = ".items | length > 0 ? .items[0] : null";
         let jq = ternary_to_jq(input);
-        
+
         // Test with non-empty array
         let response = json!({"items": ["first", "second"]});
         let results = engine.query(&jq, &response).unwrap();
@@ -415,10 +418,10 @@ mod tests {
         use serde_json::json;
 
         let engine = AssertionEngine::new();
-        
+
         let input = ".status == \"ok\" ? \"success\" : \"failure\"";
         let jq = ternary_to_jq(input);
-        
+
         // Test matching string
         let response = json!({"status": "ok"});
         let results = engine.query(&jq, &response).unwrap();
@@ -439,10 +442,10 @@ mod tests {
         use serde_json::json;
 
         let engine = AssertionEngine::new();
-        
+
         let input = ".score >= 90 ? \"A\" : (.score >= 80 ? \"B\" : \"C\")";
         let jq = ternary_to_jq(input);
-        
+
         // Test A grade
         let response = json!({"score": 95});
         let results = engine.query(&jq, &response).unwrap();
@@ -469,11 +472,11 @@ mod tests {
         use serde_json::json;
 
         let engine = AssertionEngine::new();
-        
+
         // Ternary in comparison
         let input = "(.a > 0 ? .a : 0) > 10";
         let jq = ternary_to_jq(input);
-        
+
         // Test positive > 10
         let response = json!({"a": 15});
         let results = engine.query(&jq, &response).unwrap();
@@ -500,10 +503,10 @@ mod tests {
         use serde_json::json;
 
         let engine = AssertionEngine::new();
-        
+
         let input = ".value != null ? .value : \"default\"";
         let jq = ternary_to_jq(input);
-        
+
         // Test with value
         let response = json!({"value": "custom"});
         let results = engine.query(&jq, &response).unwrap();
@@ -524,10 +527,10 @@ mod tests {
         use serde_json::json;
 
         let engine = AssertionEngine::new();
-        
+
         let input = "(.a > 0 and .b > 0) ? \"both positive\" : \"at least one non-positive\"";
         let jq = ternary_to_jq(input);
-        
+
         // Test both positive
         let response = json!({"a": 1, "b": 2});
         let results = engine.query(&jq, &response).unwrap();
@@ -548,11 +551,11 @@ mod tests {
         use serde_json::json;
 
         let engine = AssertionEngine::new();
-        
+
         // Simulate: token = .status == 200 ? .access_token : .refresh_token
         let input = ".status == 200 ? .access_token : .refresh_token";
         let jq = ternary_to_jq(input);
-        
+
         // Test success response
         let response = json!({"status": 200, "access_token": "abc123", "refresh_token": "xyz789"});
         let results = engine.query(&jq, &response).unwrap();
@@ -573,16 +576,16 @@ mod tests {
         use serde_json::json;
 
         let engine = AssertionEngine::new();
-        
+
         // .a > 0 ? .b > 0 ? "both" : "a only" : "none"
         let input = ".a > 0 ? .b > 0 ? \"both positive\" : \"a only\" : \"none\"";
         let jq = ternary_to_jq(input);
-        
+
         // Verify generated JQ structure
         assert!(jq.starts_with("if .a > 0 then"));
         assert!(jq.contains("if .b > 0 then"));
         assert_eq!(jq.matches(" end").count(), 2);
-        
+
         // Execute all 4 combinations
         let test_cases = [
             (json!({"a": 1, "b": 1}), json!("both positive")),
@@ -590,7 +593,7 @@ mod tests {
             (json!({"a": -1, "b": 1}), json!("none")),
             (json!({"a": -1, "b": -1}), json!("none")),
         ];
-        
+
         for (response, expected) in test_cases {
             let results = engine.query(&jq, &response).unwrap();
             assert_eq!(results.len(), 1, "Failed for input: {:?}", response);

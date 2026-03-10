@@ -384,158 +384,162 @@ fn suggest_reflexive_idempotent_inequality(
 /// Parse if-then-else expression and extract parts
 fn parse_if_then_else(expr: &str) -> Option<(&str, &str, &str)> {
     let expr = expr.trim();
-    
+
     if !expr.starts_with("if ") {
         return None;
     }
-    
+
     let mut paren_depth = 0;
     let mut if_depth = 0;
     let mut then_pos = None;
-    
+
     let bytes = expr.as_bytes();
     let mut i = 0;
-    
+
     while i < bytes.len() - 4 {
-        match &bytes[i..i+1] {
+        match &bytes[i..i + 1] {
             b"(" => paren_depth += 1,
             b")" => paren_depth -= 1,
             _ => {}
         }
-        
-        if paren_depth == 0 && i < bytes.len() - 2 && &bytes[i..i+3] == b"if " {
+
+        if paren_depth == 0 && i < bytes.len() - 2 && &bytes[i..i + 3] == b"if " {
             if_depth += 1;
         }
-        
-        if paren_depth == 0 && if_depth == 1 && i < bytes.len() - 5 && &bytes[i..i+6] == b" then " {
+
+        if paren_depth == 0 && if_depth == 1 && i < bytes.len() - 5 && &bytes[i..i + 6] == b" then "
+        {
             then_pos = Some(i);
             break;
         }
-        
+
         i += 1;
     }
-    
+
     let then_pos = then_pos?;
     let condition = expr[3..then_pos].trim();
-    
+
     let rest = &expr[then_pos + 6..];
     let mut else_pos = None;
     let mut nested_if = 0;
     paren_depth = 0;
-    
+
     let bytes = rest.as_bytes();
     i = 0;
-    
+
     while i < bytes.len() - 5 {
-        match &bytes[i..i+1] {
+        match &bytes[i..i + 1] {
             b"(" => paren_depth += 1,
             b")" => paren_depth -= 1,
             _ => {}
         }
-        
-        if paren_depth == 0 && i < bytes.len() - 2 && &bytes[i..i+3] == b"if " {
+
+        if paren_depth == 0 && i < bytes.len() - 2 && &bytes[i..i + 3] == b"if " {
             nested_if += 1;
         }
-        
-        if paren_depth == 0 && i < bytes.len() - 5 && &bytes[i..i+6] == b" else " {
+
+        if paren_depth == 0 && i < bytes.len() - 5 && &bytes[i..i + 6] == b" else " {
             if nested_if == 0 {
                 else_pos = Some(i);
                 break;
             }
             nested_if -= 1;
         }
-        
+
         i += 1;
     }
-    
+
     let else_pos = else_pos?;
     let then_expr = rest[..else_pos].trim();
-    
+
     let else_and_end = &rest[else_pos + 6..];
     let else_expr = else_and_end.strip_suffix(" end")?.trim();
-    
+
     Some((condition, then_expr, else_expr))
 }
 
 /// Dead branch elimination: if true then A else B = A
 fn suggest_dead_branch_elimination(expr: &str) -> Option<(&'static str, String)> {
     let (condition, then_expr, else_expr) = parse_if_then_else(expr)?;
-    
+
     if condition == "true" {
         return Some(("OPT_I001", then_expr.to_string()));
     }
-    
+
     if condition == "false" {
         return Some(("OPT_I001", else_expr.to_string()));
     }
-    
+
     None
 }
 
 /// Branch merging: if C then X else X = X
 fn suggest_branch_merging(expr: &str) -> Option<(&'static str, String)> {
     let (_condition, then_expr, else_expr) = parse_if_then_else(expr)?;
-    
+
     if then_expr == else_expr {
         return Some(("OPT_I002", then_expr.to_string()));
     }
-    
+
     None
 }
 
 /// Nested if simplification: if A then (if A then X else Y) else Z = if A then X else Z
 fn suggest_nested_if_simplification(expr: &str) -> Option<(&'static str, String)> {
     let (outer_cond, inner_expr, else_expr) = parse_if_then_else(expr)?;
-    
+
     // Strip parentheses from inner expression if present
     let inner_stripped = inner_expr.trim();
     let inner_stripped = if inner_stripped.starts_with('(') && inner_stripped.ends_with(')') {
-        &inner_stripped[1..inner_stripped.len()-1]
+        &inner_stripped[1..inner_stripped.len() - 1]
     } else {
         inner_stripped
     };
-    
+
     let (inner_cond, inner_then, _inner_else) = parse_if_then_else(inner_stripped)?;
-    
+
     if outer_cond == inner_cond {
-        let result = format!("if {} then {} else {} end", outer_cond, inner_then, else_expr);
+        let result = format!(
+            "if {} then {} else {} end",
+            outer_cond, inner_then, else_expr
+        );
         return Some(("OPT_I003", result));
     }
-    
+
     None
 }
 
 /// Boolean simplification: if C then true else false = C
 fn suggest_boolean_simplification(expr: &str) -> Option<(&'static str, String)> {
     let (condition, then_expr, else_expr) = parse_if_then_else(expr)?;
-    
+
     if then_expr == "true" && else_expr == "false" {
         return Some(("OPT_I004", condition.to_string()));
     }
-    
+
     None
 }
 
 /// Condition inversion: if C then false else true = !C
 fn suggest_condition_inversion(expr: &str) -> Option<(&'static str, String)> {
     let (condition, then_expr, else_expr) = parse_if_then_else(expr)?;
-    
+
     if then_expr == "false" && else_expr == "true" {
         return Some(("OPT_I005", format!("!{}", condition)));
     }
-    
+
     None
 }
 
 /// Boolean identity/absorption: A or true = true, A and false = false
 fn suggest_boolean_identity_laws(expr: &str) -> Option<(&'static str, String)> {
     let expr = expr.trim();
-    
+
     // Check for "or true" / "or false"
     if let Some(or_pos) = expr.find(" or ") {
         let left = expr[..or_pos].trim();
         let right = expr[or_pos + 4..].trim();
-        
+
         if right == "true" || left == "true" {
             return Some(("OPT_B009", "true".to_string()));
         }
@@ -546,12 +550,12 @@ fn suggest_boolean_identity_laws(expr: &str) -> Option<(&'static str, String)> {
             return Some(("OPT_B009", right.to_string()));
         }
     }
-    
+
     // Check for "and true" / "and false"
     if let Some(and_pos) = expr.find(" and ") {
         let left = expr[..and_pos].trim();
         let right = expr[and_pos + 5..].trim();
-        
+
         if left == "true" {
             return Some(("OPT_B010", right.to_string()));
         }
@@ -562,26 +566,26 @@ fn suggest_boolean_identity_laws(expr: &str) -> Option<(&'static str, String)> {
             return Some(("OPT_B010", "false".to_string()));
         }
     }
-    
+
     None
 }
 
 /// Plugin-specific: @len(.x) == 0 → @empty(.x)
 fn suggest_plugin_length_simplification(expr: &str) -> Option<(&'static str, String)> {
     let expr = expr.trim();
-    
+
     // Patterns: @len(.x) == 0, @len(.x) != 0, @len(.x) > 0
     let operators = [(" == ", "=="), (" != ", "!="), (" > ", ">"), (" < ", "<")];
-    
+
     for (op_str, op_name) in operators {
         if let Some(op_pos) = expr.find(op_str) {
             let left = expr[..op_pos].trim();
             let right = expr[op_pos + op_str.len()..].trim();
-            
+
             // Check if left side is @len(...) and right side is 0
             if left.starts_with("@len(") && left.ends_with(')') && right == "0" {
-                let inner = &left[5..left.len()-1]; // Extract content inside @len(...)
-                
+                let inner = &left[5..left.len() - 1]; // Extract content inside @len(...)
+
                 if op_name == "==" {
                     return Some(("OPT_P001", format!("@empty({})", inner)));
                 }
@@ -593,11 +597,11 @@ fn suggest_plugin_length_simplification(expr: &str) -> Option<(&'static str, Str
                     return Some(("OPT_P001", "false".to_string()));
                 }
             }
-            
+
             // Check reverse: 0 == @len(.x)
             if right.starts_with("@len(") && right.ends_with(')') && left == "0" {
-                let inner = &right[5..right.len()-1];
-                
+                let inner = &right[5..right.len() - 1];
+
                 if op_name == "==" {
                     return Some(("OPT_P001", format!("@empty({})", inner)));
                 }
@@ -607,20 +611,20 @@ fn suggest_plugin_length_simplification(expr: &str) -> Option<(&'static str, Str
             }
         }
     }
-    
+
     None
 }
 
 /// Comparison negation: not (.x == 5) → .x != 5
 fn suggest_comparison_negation(expr: &str) -> Option<(&'static str, String)> {
     let expr = expr.trim();
-    
+
     if !expr.starts_with("not (") || !expr.ends_with(')') {
         return None;
     }
-    
-    let inner = expr[5..expr.len()-1].trim();
-    
+
+    let inner = expr[5..expr.len() - 1].trim();
+
     // Comparison operators to negate
     let negations = [
         (" == ", " != "),
@@ -630,18 +634,18 @@ fn suggest_comparison_negation(expr: &str) -> Option<(&'static str, String)> {
         (" >= ", " < "),
         (" <= ", " > "),
     ];
-    
+
     for (op, neg_op) in negations {
         if let Some(op_pos) = inner.find(op) {
             let left = inner[..op_pos].trim();
             let right = inner[op_pos + op.len()..].trim();
-            
+
             if !left.is_empty() && !right.is_empty() {
                 return Some(("OPT_N002", format!("{}{}{}", left, neg_op, right)));
             }
         }
     }
-    
+
     None
 }
 
@@ -876,9 +880,8 @@ test.Service/Method
     fn test_rewrite_rule_metadata_is_complete() {
         let expected = [
             "OPT_B001", "OPT_B002", "OPT_B003", "OPT_B004", "OPT_B005", "OPT_B006", "OPT_B007",
-            "OPT_B008", "OPT_B009", "OPT_B010", "OPT_N001", "OPT_N002",
-            "OPT_I001", "OPT_I002", "OPT_I003", "OPT_I004", "OPT_I005",
-            "OPT_P001",
+            "OPT_B008", "OPT_B009", "OPT_B010", "OPT_N001", "OPT_N002", "OPT_I001", "OPT_I002",
+            "OPT_I003", "OPT_I004", "OPT_I005", "OPT_P001",
         ];
 
         for id in expected {
@@ -966,21 +969,24 @@ test.Service/Method
 
     #[test]
     fn test_dead_branch_elimination_true() {
-        let (rule_id, rewritten) = suggest_dead_branch_elimination("if true then \"yes\" else \"no\" end").unwrap();
+        let (rule_id, rewritten) =
+            suggest_dead_branch_elimination("if true then \"yes\" else \"no\" end").unwrap();
         assert_eq!(rule_id, "OPT_I001");
         assert_eq!(rewritten, "\"yes\"");
     }
 
     #[test]
     fn test_dead_branch_elimination_false() {
-        let (rule_id, rewritten) = suggest_dead_branch_elimination("if false then \"yes\" else \"no\" end").unwrap();
+        let (rule_id, rewritten) =
+            suggest_dead_branch_elimination("if false then \"yes\" else \"no\" end").unwrap();
         assert_eq!(rule_id, "OPT_I001");
         assert_eq!(rewritten, "\"no\"");
     }
 
     #[test]
     fn test_branch_merging() {
-        let (rule_id, rewritten) = suggest_branch_merging("if .x > 0 then \"same\" else \"same\" end").unwrap();
+        let (rule_id, rewritten) =
+            suggest_branch_merging("if .x > 0 then \"same\" else \"same\" end").unwrap();
         assert_eq!(rule_id, "OPT_I002");
         assert_eq!(rewritten, "\"same\"");
     }
@@ -989,7 +995,8 @@ test.Service/Method
     fn test_nested_if_simplification() {
         // Pattern: if A then (if A then X else Y end) else Z end
         // Simplified: if A then X else Z end
-        let input = "if .a > 0 then (if .a > 0 then \"inner\" else \"other\" end) else \"outer\" end";
+        let input =
+            "if .a > 0 then (if .a > 0 then \"inner\" else \"other\" end) else \"outer\" end";
         let result = suggest_nested_if_simplification(input);
         assert!(result.is_some());
         let (rule_id, rewritten) = result.unwrap();
@@ -999,7 +1006,8 @@ test.Service/Method
 
     #[test]
     fn test_parse_if_then_else_simple() {
-        let (cond, then_expr, else_expr) = parse_if_then_else("if .x > 0 then \"yes\" else \"no\" end").unwrap();
+        let (cond, then_expr, else_expr) =
+            parse_if_then_else("if .x > 0 then \"yes\" else \"no\" end").unwrap();
         assert_eq!(cond, ".x > 0");
         assert_eq!(then_expr, "\"yes\"");
         assert_eq!(else_expr, "\"no\"");
@@ -1008,8 +1016,9 @@ test.Service/Method
     #[test]
     fn test_parse_if_then_else_nested() {
         let (cond, then_expr, else_expr) = parse_if_then_else(
-            "if .a > 0 then (if .b > 0 then \"both\" else \"a only\" end) else \"none\" end"
-        ).unwrap();
+            "if .a > 0 then (if .b > 0 then \"both\" else \"a only\" end) else \"none\" end",
+        )
+        .unwrap();
         assert_eq!(cond, ".a > 0");
         assert_eq!(then_expr, "(if .b > 0 then \"both\" else \"a only\" end)");
         assert_eq!(else_expr, "\"none\"");
@@ -1049,18 +1058,16 @@ if .x > 0 then "same" else "same" end
 
     #[test]
     fn test_boolean_simplification() {
-        let (rule_id, rewritten) = suggest_boolean_simplification(
-            "if .x > 0 then true else false end"
-        ).unwrap();
+        let (rule_id, rewritten) =
+            suggest_boolean_simplification("if .x > 0 then true else false end").unwrap();
         assert_eq!(rule_id, "OPT_I004");
         assert_eq!(rewritten, ".x > 0");
     }
 
     #[test]
     fn test_condition_inversion() {
-        let (rule_id, rewritten) = suggest_condition_inversion(
-            "if .x > 0 then false else true end"
-        ).unwrap();
+        let (rule_id, rewritten) =
+            suggest_condition_inversion("if .x > 0 then false else true end").unwrap();
         assert_eq!(rule_id, "OPT_I005");
         assert_eq!(rewritten, "!.x > 0");
     }
@@ -1138,22 +1145,26 @@ if .status == 200 then false else true end
     #[test]
     fn test_plugin_length_simplification() {
         // @len(.x) == 0 → @empty(.x)
-        let (rule_id, rewritten) = suggest_plugin_length_simplification("@len(.items) == 0").unwrap();
+        let (rule_id, rewritten) =
+            suggest_plugin_length_simplification("@len(.items) == 0").unwrap();
         assert_eq!(rule_id, "OPT_P001");
         assert_eq!(rewritten, "@empty(.items)");
 
         // @len(.x) != 0 → @not_empty(.x)
-        let (rule_id, rewritten) = suggest_plugin_length_simplification("@len(.items) != 0").unwrap();
+        let (rule_id, rewritten) =
+            suggest_plugin_length_simplification("@len(.items) != 0").unwrap();
         assert_eq!(rule_id, "OPT_P001");
         assert_eq!(rewritten, "@not_empty(.items)");
 
         // @len(.x) > 0 → @not_empty(.x)
-        let (rule_id, rewritten) = suggest_plugin_length_simplification("@len(.items) > 0").unwrap();
+        let (rule_id, rewritten) =
+            suggest_plugin_length_simplification("@len(.items) > 0").unwrap();
         assert_eq!(rule_id, "OPT_P001");
         assert_eq!(rewritten, "@not_empty(.items)");
 
         // 0 == @len(.x) → @empty(.x)
-        let (rule_id, rewritten) = suggest_plugin_length_simplification("0 == @len(.items)").unwrap();
+        let (rule_id, rewritten) =
+            suggest_plugin_length_simplification("0 == @len(.items)").unwrap();
         assert_eq!(rule_id, "OPT_P001");
         assert_eq!(rewritten, "@empty(.items)");
     }
