@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use futures::stream::{Stream, StreamExt};
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage, Kind, MessageDescriptor, SerializeOptions};
@@ -418,7 +418,19 @@ async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<DescriptorPoo
         ));
     }
 
-    let cache_key = if let Some(target) = &config.target_service {
+    let cache_key = if let Some(proto_config) = &config.proto_config {
+        if let Some(descriptor_path) = &proto_config.descriptor {
+            if let Some(target) = &config.target_service {
+                format!("descriptor:{}::{}", descriptor_path, target)
+            } else {
+                format!("descriptor:{}", descriptor_path)
+            }
+        } else if let Some(target) = &config.target_service {
+            format!("{}::{}", config.address, target)
+        } else {
+            config.address.clone()
+        }
+    } else if let Some(target) = &config.target_service {
         format!("{}::{}", config.address, target)
     } else {
         config.address.clone()
@@ -444,7 +456,15 @@ async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<DescriptorPoo
 
     tracing::debug!("Cache miss for descriptors from {}, loading...", cache_key);
 
-    let pool = load_descriptors_via_reflection(config).await?;
+    let pool = if let Some(proto_config) = &config.proto_config {
+        if let Some(descriptor_path) = &proto_config.descriptor {
+            load_descriptors_from_descriptor_file(descriptor_path)?
+        } else {
+            load_descriptors_via_reflection(config).await?
+        }
+    } else {
+        load_descriptors_via_reflection(config).await?
+    };
     let pool_arc = Arc::new(pool);
 
     {
@@ -453,6 +473,26 @@ async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<DescriptorPoo
     }
 
     Ok(pool_arc)
+}
+
+fn load_descriptors_from_descriptor_file(path: &str) -> Result<DescriptorPool> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("Failed to read descriptor file: {}", path))?;
+    let descriptor_set = prost_types::FileDescriptorSet::decode(bytes.as_slice())
+        .with_context(|| format!("Failed to decode descriptor set: {}", path))?;
+
+    if descriptor_set.file.is_empty() {
+        return Err(anyhow!("Descriptor file contains no descriptors: {}", path));
+    }
+
+    let mut pool = DescriptorPool::global();
+    pool.add_file_descriptor_set(descriptor_set).map_err(|_| {
+        anyhow!(
+            "Failed to create descriptor pool from descriptor file: {}",
+            path
+        )
+    })?;
+    Ok(pool)
 }
 
 /// Load descriptors via Server Reflection

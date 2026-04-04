@@ -33,22 +33,14 @@ pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
 
     let pool = client.descriptor_pool();
 
-    // Get all services from the global descriptor pool
     println!("\nAvailable services:");
 
-    // List all services from the pool
     let mut count = 0;
-    for fd in pool.file_descriptor_protos() {
-        for service in &fd.service {
-            if let Some(name) = &service.name {
-                println!("  {}.{}", fd.name.as_ref().unwrap_or(&"".to_string()), name);
-                for method in &service.method {
-                    if let Some(method_name) = &method.name {
-                        println!("    - {}", method_name);
-                        count += 1;
-                    }
-                }
-            }
+    for service in pool.services() {
+        println!("  {}", service.full_name());
+        for method in service.methods() {
+            println!("    - {}", method.name());
+            count += 1;
         }
     }
 

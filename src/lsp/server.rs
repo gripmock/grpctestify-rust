@@ -1,10 +1,14 @@
 use anyhow::Result;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result as LspResult;
 use tower_lsp::{Client, LanguageServer, LspService, Server, lsp_types::*};
 
+use crate::config;
+use crate::grpc::client::{GrpcClient, GrpcClientConfig, ProtoConfig};
 use crate::lsp::handlers;
 use crate::lsp::variable_definition;
 use crate::optimizer;
@@ -23,6 +27,7 @@ pub struct GrpctestifyLsp {
     parsed_doc_versions: DocumentMap<i32>,
     semantic_tokens_cache: VersionedMap<SemanticTokens>,
     inlay_hints_cache: VersionedMap<Vec<InlayHint>>,
+    endpoint_completion_cache: Arc<RwLock<HashMap<String, (Instant, Vec<CompletionItem>)>>>,
 }
 
 impl GrpctestifyLsp {
@@ -35,7 +40,493 @@ impl GrpctestifyLsp {
             parsed_doc_versions: Arc::new(RwLock::new(HashMap::new())),
             semantic_tokens_cache: Arc::new(RwLock::new(HashMap::new())),
             inlay_hints_cache: Arc::new(RwLock::new(HashMap::new())),
+            endpoint_completion_cache: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    fn parse_string_list(raw: &str) -> Vec<String> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Vec::new();
+        }
+
+        if let Ok(values) = serde_json::from_str::<Vec<String>>(trimmed) {
+            return values;
+        }
+
+        trimmed
+            .split(',')
+            .map(|value| value.trim().trim_matches('"').trim_matches('\''))
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    fn resolve_relative_path(base_dir: &Path, value: &str) -> String {
+        let path = PathBuf::from(value);
+        if path.is_absolute() {
+            return value.to_string();
+        }
+        base_dir.join(path).to_string_lossy().to_string()
+    }
+
+    fn proto_config_from_document(doc: &GctfDocument, uri: &Url) -> Option<ProtoConfig> {
+        let config = doc.get_proto_config()?;
+        let base_dir = uri
+            .to_file_path()
+            .ok()
+            .and_then(|path| path.parent().map(ToOwned::to_owned))
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let descriptor = config
+            .get("descriptor")
+            .map(|value| Self::resolve_relative_path(&base_dir, value));
+
+        let files = config
+            .get("files")
+            .map(|value| Self::parse_string_list(value))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| Self::resolve_relative_path(&base_dir, &value))
+            .collect::<Vec<_>>();
+
+        let import_paths = config
+            .get("import_paths")
+            .map(|value| Self::parse_string_list(value))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| Self::resolve_relative_path(&base_dir, &value))
+            .collect::<Vec<_>>();
+
+        if descriptor.is_none() && files.is_empty() {
+            return None;
+        }
+
+        Some(ProtoConfig {
+            files,
+            import_paths,
+            descriptor,
+        })
+    }
+
+    async fn create_schema_client(
+        &self,
+        address: &str,
+        proto_config: Option<ProtoConfig>,
+        target_service: Option<String>,
+    ) -> Option<GrpcClient> {
+        const SCHEMA_TIMEOUT: Duration = Duration::from_secs(3);
+
+        let config = GrpcClientConfig {
+            address: address.to_string(),
+            timeout_seconds: 3,
+            tls_config: None,
+            proto_config,
+            metadata: None,
+            target_service,
+            compression: Default::default(),
+        };
+
+        let created = tokio::time::timeout(SCHEMA_TIMEOUT, GrpcClient::new(config)).await;
+        let Ok(Ok(client)) = created else {
+            return None;
+        };
+        Some(client)
+    }
+
+    async fn schema_endpoint_completions(
+        &self,
+        address: &str,
+        proto_config: Option<ProtoConfig>,
+    ) -> Vec<CompletionItem> {
+        const CACHE_TTL: Duration = Duration::from_secs(30);
+        let cache_key = format!(
+            "{}|{:?}",
+            address,
+            proto_config.as_ref().map(|config| (
+                config.descriptor.clone(),
+                config.files.clone(),
+                config.import_paths.clone(),
+            ))
+        );
+
+        {
+            let cache = self.endpoint_completion_cache.read().await;
+            if let Some((cached_at, cached_items)) = cache.get(&cache_key)
+                && cached_at.elapsed() < CACHE_TTL
+            {
+                return cached_items.clone();
+            }
+        }
+
+        let Some(client) = self.create_schema_client(address, proto_config, None).await else {
+            return Vec::new();
+        };
+
+        let mut items = Vec::new();
+        for service in client.descriptor_pool().services() {
+            let service_name = service.full_name().to_string();
+            for method in service.methods() {
+                let endpoint = format!("{}/{}", service_name, method.name());
+                items.push(CompletionItem {
+                    label: endpoint.clone(),
+                    kind: Some(CompletionItemKind::METHOD),
+                    detail: Some(format!("Reflected from {}", address)),
+                    insert_text: Some(endpoint),
+                    ..CompletionItem::default()
+                });
+            }
+        }
+        items.sort_by(|a, b| a.label.cmp(&b.label));
+        items.dedup_by(|a, b| a.label == b.label);
+
+        self.endpoint_completion_cache
+            .write()
+            .await
+            .insert(cache_key, (Instant::now(), items.clone()));
+
+        items
+    }
+
+    async fn schema_message_field_completions(
+        &self,
+        doc: &GctfDocument,
+        uri: &Url,
+        content: &str,
+        section_start_line: usize,
+        cursor_line: usize,
+        for_response: bool,
+    ) -> Vec<CompletionItem> {
+        let endpoint = match doc.get_endpoint() {
+            Some(value) => value,
+            None => return Vec::new(),
+        };
+
+        let mut parts = endpoint.split('/');
+        let service_name = match parts.next() {
+            Some(value) if !value.is_empty() => value,
+            _ => return Vec::new(),
+        };
+        let method_name = match parts.next() {
+            Some(value) if !value.is_empty() => value,
+            _ => return Vec::new(),
+        };
+
+        let address = doc
+            .get_address(
+                std::env::var(config::ENV_GRPCTESTIFY_ADDRESS)
+                    .ok()
+                    .as_deref(),
+            )
+            .unwrap_or_else(config::default_address);
+        let proto_config = Self::proto_config_from_document(doc, uri);
+
+        let Some(client) = self
+            .create_schema_client(&address, proto_config, Some(service_name.to_string()))
+            .await
+        else {
+            return Vec::new();
+        };
+
+        let Some(service) = client.descriptor_pool().get_service_by_name(service_name) else {
+            return Vec::new();
+        };
+        let Some(method) = service
+            .methods()
+            .find(|method| method.name() == method_name)
+        else {
+            return Vec::new();
+        };
+
+        let message_desc = if for_response {
+            method.output()
+        } else {
+            method.input()
+        };
+
+        let json_path = Self::infer_json_object_path(content, section_start_line, cursor_line);
+        let target_message = Self::resolve_message_path(&message_desc, &json_path)
+            .unwrap_or_else(|| message_desc.clone());
+
+        let mut items: Vec<CompletionItem> = target_message
+            .fields()
+            .map(|field| {
+                let value_snippet = Self::json_value_snippet_for_field(&field, 0, 2);
+                CompletionItem {
+                    label: format!("{}", field.name()),
+                    kind: Some(CompletionItemKind::FIELD),
+                    detail: Some(format!(
+                        "{} field from {} schema",
+                        if for_response { "Response" } else { "Request" },
+                        service_name
+                    )),
+                    insert_text: Some(format!("\"{}\": {}", field.name(), value_snippet)),
+                    insert_text_format: Some(InsertTextFormat::SNIPPET),
+                    ..CompletionItem::default()
+                }
+            })
+            .collect();
+
+        if items.is_empty() {
+            items.push(CompletionItem {
+                label: "\"field\": \"value\"".to_string(),
+                kind: Some(CompletionItemKind::SNIPPET),
+                detail: Some("JSON field template (schema unavailable)".to_string()),
+                insert_text: Some("\"${1:field}\": \"${2:value}\"".to_string()),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                ..CompletionItem::default()
+            });
+        }
+
+        items
+    }
+
+    fn resolve_message_path(
+        root: &prost_reflect::MessageDescriptor,
+        path: &[String],
+    ) -> Option<prost_reflect::MessageDescriptor> {
+        let mut current = root.clone();
+        for segment in path {
+            let Some(field) = current.fields().find(|field| field.name() == segment) else {
+                return None;
+            };
+            let prost_reflect::Kind::Message(child) = field.kind() else {
+                return None;
+            };
+            current = child;
+        }
+        Some(current)
+    }
+
+    fn infer_json_object_path(
+        content: &str,
+        section_start_line: usize,
+        cursor_line: usize,
+    ) -> Vec<String> {
+        let lines: Vec<&str> = content.lines().collect();
+        if lines.is_empty() {
+            return Vec::new();
+        }
+
+        let start = section_start_line.saturating_sub(1);
+        let end = cursor_line.min(lines.len().saturating_sub(1));
+        let mut object_stack: Vec<Option<String>> = Vec::new();
+        let mut pending_key: Option<String> = None;
+
+        for line in lines.iter().take(end + 1).skip(start) {
+            let mut chars = line.chars().peekable();
+            let mut in_string = false;
+            let mut escaped = false;
+            let mut string_buf = String::new();
+
+            while let Some(ch) = chars.next() {
+                if in_string {
+                    if escaped {
+                        escaped = false;
+                        string_buf.push(ch);
+                        continue;
+                    }
+                    match ch {
+                        '\\' => escaped = true,
+                        '"' => {
+                            in_string = false;
+
+                            let mut lookahead = chars.clone();
+                            while let Some(next) = lookahead.peek() {
+                                if next.is_whitespace() {
+                                    lookahead.next();
+                                } else {
+                                    break;
+                                }
+                            }
+                            if matches!(lookahead.peek(), Some(':')) {
+                                pending_key = Some(string_buf.clone());
+                            }
+                            string_buf.clear();
+                        }
+                        _ => string_buf.push(ch),
+                    }
+                    continue;
+                }
+
+                if ch == '#' {
+                    break;
+                }
+
+                if ch == '/' && matches!(chars.peek(), Some('/')) {
+                    break;
+                }
+
+                match ch {
+                    '"' => {
+                        in_string = true;
+                        escaped = false;
+                        string_buf.clear();
+                    }
+                    '{' => {
+                        object_stack.push(pending_key.take());
+                    }
+                    '}' => {
+                        if !object_stack.is_empty() {
+                            object_stack.pop();
+                        }
+                        pending_key = None;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        object_stack.into_iter().flatten().collect()
+    }
+
+    async fn schema_assert_path_completions(
+        &self,
+        doc: &GctfDocument,
+        uri: &Url,
+    ) -> Vec<CompletionItem> {
+        let endpoint = match doc.get_endpoint() {
+            Some(value) => value,
+            None => return Vec::new(),
+        };
+
+        let mut parts = endpoint.split('/');
+        let service_name = match parts.next() {
+            Some(value) if !value.is_empty() => value,
+            _ => return Vec::new(),
+        };
+        let method_name = match parts.next() {
+            Some(value) if !value.is_empty() => value,
+            _ => return Vec::new(),
+        };
+
+        let address = doc
+            .get_address(
+                std::env::var(config::ENV_GRPCTESTIFY_ADDRESS)
+                    .ok()
+                    .as_deref(),
+            )
+            .unwrap_or_else(config::default_address);
+        let proto_config = Self::proto_config_from_document(doc, uri);
+
+        let Some(client) = self
+            .create_schema_client(&address, proto_config, Some(service_name.to_string()))
+            .await
+        else {
+            return Vec::new();
+        };
+
+        let Some(service) = client.descriptor_pool().get_service_by_name(service_name) else {
+            return Vec::new();
+        };
+        let Some(method) = service
+            .methods()
+            .find(|method| method.name() == method_name)
+        else {
+            return Vec::new();
+        };
+
+        let mut paths = Vec::new();
+        Self::collect_message_json_paths(&method.output(), String::new(), 0, 3, &mut paths);
+
+        paths.sort();
+        paths.dedup();
+        paths
+            .into_iter()
+            .map(|path| CompletionItem {
+                label: path.clone(),
+                kind: Some(CompletionItemKind::PROPERTY),
+                detail: Some("Response JSON path from schema".to_string()),
+                insert_text: Some(path),
+                ..CompletionItem::default()
+            })
+            .collect()
+    }
+
+    fn collect_message_json_paths(
+        message_desc: &prost_reflect::MessageDescriptor,
+        prefix: String,
+        depth: usize,
+        max_depth: usize,
+        out: &mut Vec<String>,
+    ) {
+        if depth > max_depth {
+            return;
+        }
+
+        for field in message_desc.fields() {
+            let base = if prefix.is_empty() {
+                format!(".{}", field.name())
+            } else {
+                format!("{}.{}", prefix, field.name())
+            };
+
+            if field.is_list() {
+                out.push(format!("{}[]", base));
+                continue;
+            }
+            if field.is_map() {
+                out.push(format!("{}.<key>", base));
+                continue;
+            }
+
+            out.push(base.clone());
+            if let prost_reflect::Kind::Message(child) = field.kind() {
+                Self::collect_message_json_paths(&child, base, depth + 1, max_depth, out);
+            }
+        }
+    }
+
+    fn json_value_snippet_for_field(
+        field: &prost_reflect::FieldDescriptor,
+        depth: usize,
+        max_depth: usize,
+    ) -> String {
+        if field.is_list() {
+            return "[]".to_string();
+        }
+        if field.is_map() {
+            return "{}".to_string();
+        }
+
+        match field.kind() {
+            prost_reflect::Kind::Bool => "false".to_string(),
+            prost_reflect::Kind::String | prost_reflect::Kind::Bytes => {
+                "\"${1:value}\"".to_string()
+            }
+            prost_reflect::Kind::Double | prost_reflect::Kind::Float => "0.0".to_string(),
+            prost_reflect::Kind::Enum(enum_desc) => enum_desc
+                .values()
+                .next()
+                .map(|value| format!("\"{}\"", value.name()))
+                .unwrap_or_else(|| "\"\"".to_string()),
+            prost_reflect::Kind::Message(message_desc) => {
+                Self::json_object_snippet_for_message(&message_desc, depth + 1, max_depth)
+            }
+            _ => "0".to_string(),
+        }
+    }
+
+    fn json_object_snippet_for_message(
+        message_desc: &prost_reflect::MessageDescriptor,
+        depth: usize,
+        max_depth: usize,
+    ) -> String {
+        if depth > max_depth {
+            return "{}".to_string();
+        }
+
+        let fields: Vec<_> = message_desc.fields().take(6).collect();
+        if fields.is_empty() {
+            return "{}".to_string();
+        }
+
+        let mut lines = Vec::new();
+        for field in fields {
+            let value = Self::json_value_snippet_for_field(&field, depth, max_depth);
+            lines.push(format!("  \"{}\": {}", field.name(), value));
+        }
+        format!("{{\n{}\n}}", lines.join(",\n"))
     }
 
     fn inlay_cache_key(uri: &Url, range: &Range) -> String {
@@ -160,6 +651,11 @@ impl LanguageServer for GrpctestifyLsp {
                         "@".to_string(),
                         ":".to_string(),
                         "#".to_string(),
+                        "\"".to_string(),
+                        "{".to_string(),
+                        "[".to_string(),
+                        ",".to_string(),
+                        " ".to_string(),
                     ]),
                     ..Default::default()
                 }),
@@ -175,25 +671,7 @@ impl LanguageServer for GrpctestifyLsp {
                     retrigger_characters: None,
                     work_done_progress_options: Default::default(),
                 }),
-                semantic_tokens_provider: Some(
-                    SemanticTokensServerCapabilities::SemanticTokensOptions(
-                        SemanticTokensOptions {
-                            legend: SemanticTokensLegend {
-                                token_types: vec![
-                                    SemanticTokenType::KEYWORD, // Section headers (--- ENDPOINT ---), JQ keywords (if, then, else, end)
-                                    SemanticTokenType::VARIABLE, // Variable references ({{ var }})
-                                    SemanticTokenType::FUNCTION, // Plugin names (@uuid, @email), JQ functions (select, map)
-                                    SemanticTokenType::NUMBER,   // Numbers
-                                    SemanticTokenType::OPERATOR, // Operators (+, -, *, /, |, etc.)
-                                ],
-                                token_modifiers: vec![],
-                            },
-                            range: Some(true),
-                            full: Some(SemanticTokensFullOptions::Bool(true)),
-                            ..Default::default()
-                        },
-                    ),
-                ),
+                semantic_tokens_provider: None,
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 ..Default::default()
@@ -291,54 +769,122 @@ impl LanguageServer for GrpctestifyLsp {
         };
 
         let mut items = Vec::new();
+        let current_line_raw = content.lines().nth(position.line as usize).unwrap_or("");
+        let current_line = current_line_raw.trim();
+        let line_prefix = current_line_raw
+            .chars()
+            .take(position.character as usize)
+            .collect::<String>();
+        let line_prefix_trimmed = line_prefix.trim();
+        let typing_section_header_prefix = line_prefix_trimmed.chars().all(|ch| ch == '-')
+            || line_prefix_trimmed.starts_with("--- ");
+        let on_section_header_line =
+            current_line.starts_with("---") && current_line.ends_with("---");
+
+        if typing_section_header_prefix {
+            items.extend(handlers::get_section_completions());
+        }
 
         // Use AST for context-aware completions
         if let Some(doc) = self.get_or_parse_document(&uri, &content).await {
             let line_num = position.line as usize + 1;
 
-            // Check if we're on an empty line or section header line
-            let on_empty_or_header = doc.sections.iter().any(|s| {
-                s.start_line == line_num
-                    || (s.start_line > 0 && line_num == s.start_line - 1)
-                    || (s.end_line < doc.sections.len() && line_num == s.end_line + 1)
-            }) || content
-                .lines()
-                .nth(position.line as usize)
-                .map(|l| l.trim().is_empty())
-                .unwrap_or(true);
-
-            if on_empty_or_header {
+            let in_any_section = doc
+                .sections
+                .iter()
+                .any(|s| s.start_line <= line_num && line_num <= s.end_line);
+            if current_line.is_empty() && !in_any_section {
                 items.extend(handlers::get_section_completions());
             }
 
             // Context-aware completions based on section type
             for section in &doc.sections {
                 if section.start_line <= line_num && line_num <= section.end_line {
+                    let on_section_header =
+                        line_num == section.start_line || on_section_header_line;
+                    if on_section_header {
+                        items.extend(handlers::get_section_header_option_completions(
+                            &section.section_type,
+                        ));
+                    }
+
                     match section.section_type {
-                        SectionType::Address => items.extend(handlers::get_address_completions()),
-                        SectionType::Endpoint => items.extend(
-                            handlers::get_address_from_document(&content)
-                                .map(|_| vec![])
-                                .unwrap_or_else(|| {
-                                    vec![CompletionItem {
-                                        label: "package.Service/Method".to_string(),
-                                        kind: Some(CompletionItemKind::SNIPPET),
-                                        detail: Some("gRPC endpoint template".to_string()),
-                                        insert_text: Some(
-                                            "${1:package}.${2:Service}/${3:Method}".to_string(),
-                                        ),
-                                        insert_text_format: Some(InsertTextFormat::SNIPPET),
-                                        ..CompletionItem::default()
-                                    }]
-                                }),
-                        ),
-                        SectionType::Asserts => items.extend(handlers::get_assertion_completions()),
-                        SectionType::Extract => items.extend(handlers::get_extract_completions()),
+                        SectionType::Address if !on_section_header => {
+                            items.extend(handlers::get_address_completions())
+                        }
+                        SectionType::Endpoint => {
+                            if !on_section_header {
+                                items.push(CompletionItem {
+                                    label: "package.Service/Method".to_string(),
+                                    kind: Some(CompletionItemKind::SNIPPET),
+                                    detail: Some("gRPC endpoint template".to_string()),
+                                    insert_text: Some(
+                                        "${1:package}.${2:Service}/${3:Method}".to_string(),
+                                    ),
+                                    insert_text_format: Some(InsertTextFormat::SNIPPET),
+                                    ..CompletionItem::default()
+                                });
+
+                                let address = handlers::get_address_from_document(&content)
+                                    .or_else(|| std::env::var(config::ENV_GRPCTESTIFY_ADDRESS).ok())
+                                    .unwrap_or_else(config::default_address);
+                                let proto_config = Self::proto_config_from_document(&doc, &uri);
+                                items.extend(
+                                    self.schema_endpoint_completions(&address, proto_config)
+                                        .await,
+                                );
+                            }
+                        }
+                        SectionType::Request if !on_section_header => {
+                            items.extend(
+                                self.schema_message_field_completions(
+                                    &doc,
+                                    &uri,
+                                    &content,
+                                    section.start_line as usize,
+                                    position.line as usize,
+                                    false,
+                                )
+                                .await,
+                            );
+                        }
+                        SectionType::Response if !on_section_header => {
+                            items.extend(
+                                self.schema_message_field_completions(
+                                    &doc,
+                                    &uri,
+                                    &content,
+                                    section.start_line as usize,
+                                    position.line as usize,
+                                    true,
+                                )
+                                .await,
+                            );
+                        }
+                        SectionType::Asserts if !on_section_header => {
+                            items.extend(handlers::get_assertion_completions());
+                            items.extend(self.schema_assert_path_completions(&doc, &uri).await);
+                        }
+                        SectionType::Extract if !on_section_header => {
+                            items.extend(handlers::get_extract_completions())
+                        }
+                        SectionType::Proto | SectionType::Tls | SectionType::Options
+                            if !on_section_header =>
+                        {
+                            items.extend(handlers::get_section_key_completions(
+                                &section.section_type,
+                            ));
+                        }
                         _ => {}
                     }
                     break;
                 }
             }
+        }
+
+        if !items.is_empty() {
+            let mut seen = std::collections::HashSet::new();
+            items.retain(|item| seen.insert(item.label.clone()));
         }
 
         Ok(if items.is_empty() {
