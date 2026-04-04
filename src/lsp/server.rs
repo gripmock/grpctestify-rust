@@ -18,6 +18,7 @@ use crate::plugins::{PluginManager, PluginPurity, PluginReturnKind};
 
 type DocumentMap<T> = Arc<RwLock<HashMap<String, T>>>;
 type VersionedMap<T> = Arc<RwLock<HashMap<String, (i32, T)>>>;
+type EndpointCompletionCache = Arc<RwLock<HashMap<String, (Instant, Vec<CompletionItem>)>>>;
 
 pub struct GrpctestifyLsp {
     client: Client,
@@ -27,7 +28,7 @@ pub struct GrpctestifyLsp {
     parsed_doc_versions: DocumentMap<i32>,
     semantic_tokens_cache: VersionedMap<SemanticTokens>,
     inlay_hints_cache: VersionedMap<Vec<InlayHint>>,
-    endpoint_completion_cache: Arc<RwLock<HashMap<String, (Instant, Vec<CompletionItem>)>>>,
+    endpoint_completion_cache: EndpointCompletionCache,
 }
 
 impl GrpctestifyLsp {
@@ -253,7 +254,7 @@ impl GrpctestifyLsp {
             .map(|field| {
                 let value_snippet = Self::json_value_snippet_for_field(&field, 0, 2);
                 CompletionItem {
-                    label: format!("{}", field.name()),
+                    label: field.name().to_string(),
                     kind: Some(CompletionItemKind::FIELD),
                     detail: Some(format!(
                         "{} field from {} schema",
@@ -287,9 +288,7 @@ impl GrpctestifyLsp {
     ) -> Option<prost_reflect::MessageDescriptor> {
         let mut current = root.clone();
         for segment in path {
-            let Some(field) = current.fields().find(|field| field.name() == segment) else {
-                return None;
-            };
+            let field = current.fields().find(|field| field.name() == segment)?;
             let prost_reflect::Kind::Message(child) = field.kind() else {
                 return None;
             };
@@ -841,7 +840,7 @@ impl LanguageServer for GrpctestifyLsp {
                                     &doc,
                                     &uri,
                                     &content,
-                                    section.start_line as usize,
+                                    section.start_line,
                                     position.line as usize,
                                     false,
                                 )
@@ -854,7 +853,7 @@ impl LanguageServer for GrpctestifyLsp {
                                     &doc,
                                     &uri,
                                     &content,
-                                    section.start_line as usize,
+                                    section.start_line,
                                     position.line as usize,
                                     true,
                                 )
