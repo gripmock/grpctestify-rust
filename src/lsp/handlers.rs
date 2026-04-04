@@ -234,6 +234,69 @@ pub fn get_extract_completions() -> Vec<CompletionItem> {
     .collect()
 }
 
+pub fn get_section_key_completions(section_type: &SectionType) -> Vec<CompletionItem> {
+    let entries: Vec<(&str, &str)> = match section_type {
+        SectionType::Proto => vec![
+            ("descriptor", "Path to descriptor set (.desc/.binpb)"),
+            ("files", "List of .proto files"),
+            ("import_paths", "List of import search paths"),
+        ],
+        SectionType::Tls => vec![
+            ("ca_file", "CA certificate path"),
+            ("cert_file", "Client certificate path"),
+            ("key_file", "Client private key path"),
+            ("server_name", "TLS SNI server name"),
+            ("insecure", "Disable certificate verification"),
+        ],
+        SectionType::Options => vec![
+            ("timeout", "Request timeout (e.g. 5s)"),
+            ("retries", "Retry count"),
+            ("parallel", "Run test execution in parallel"),
+            ("sort", "Execution order (path, random)"),
+            ("dry_run", "Parse/validate only without gRPC call"),
+        ],
+        _ => vec![],
+    };
+
+    entries
+        .into_iter()
+        .map(|(label, detail)| CompletionItem {
+            label: format!("{}:", label),
+            kind: Some(CompletionItemKind::PROPERTY),
+            detail: Some(detail.to_string()),
+            insert_text: Some(format!("{}: ", label)),
+            ..CompletionItem::default()
+        })
+        .collect()
+}
+
+pub fn get_section_header_option_completions(section_type: &SectionType) -> Vec<CompletionItem> {
+    let entries: Vec<(&str, &str)> = match section_type {
+        SectionType::Response => vec![
+            ("partial=true", "Enable partial response matching"),
+            ("with_asserts=true", "Run ASSERTS after RESPONSE comparison"),
+            ("tolerance=0.001", "Numeric tolerance for float comparisons"),
+            (
+                "unordered_arrays=true",
+                "Ignore array order while comparing",
+            ),
+            ("redact=$.token", "Redact field path in comparisons"),
+        ],
+        _ => vec![],
+    };
+
+    entries
+        .into_iter()
+        .map(|(label, detail)| CompletionItem {
+            label: label.to_string(),
+            kind: Some(CompletionItemKind::PROPERTY),
+            detail: Some(detail.to_string()),
+            insert_text: Some(label.to_string()),
+            ..CompletionItem::default()
+        })
+        .collect()
+}
+
 /// Extract address from document using AST
 pub fn get_address_from_document(content: &str) -> Option<String> {
     let doc = parser::parse_gctf_from_str(content, "temp.gctf").ok()?;
