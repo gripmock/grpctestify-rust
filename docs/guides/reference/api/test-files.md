@@ -102,6 +102,7 @@ Examples of built-in plugins:
 @header("x-request-id") != null
 @uuid(.user.id, "v4")
 @email(.user.email)
+@elapsed_ms() >= 10
 ```
 
 See also: [Assertions](./assertions.md), [Type Validation](./type-validation.md).

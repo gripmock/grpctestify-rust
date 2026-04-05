@@ -6,6 +6,7 @@ pub mod ip;
 pub mod len;
 pub mod regex;
 pub mod timestamp;
+pub mod timing;
 pub mod trailer_extract;
 pub mod url;
 pub mod uuid;
@@ -61,6 +62,46 @@ pub struct PluginContext<'a> {
     pub response: &'a Value,
     pub headers: Option<&'a HashMap<String, String>>,
     pub trailers: Option<&'a HashMap<String, String>>,
+    pub timing: Option<&'a AssertionTiming>,
+}
+
+impl<'a> PluginContext<'a> {
+    pub fn new(response: &'a Value) -> Self {
+        Self {
+            response,
+            headers: None,
+            trailers: None,
+            timing: None,
+        }
+    }
+
+    pub fn with_headers(mut self, headers: Option<&'a HashMap<String, String>>) -> Self {
+        self.headers = headers;
+        self
+    }
+
+    pub fn with_trailers(mut self, trailers: Option<&'a HashMap<String, String>>) -> Self {
+        self.trailers = trailers;
+        self
+    }
+
+    pub fn with_timing(mut self, timing: Option<&'a AssertionTiming>) -> Self {
+        self.timing = timing;
+        self
+    }
+}
+
+/// Timing context available for assertion plugins.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssertionTiming {
+    /// Duration for current assertion scope (message or batch).
+    pub elapsed_ms: u64,
+    /// Cumulative duration across all completed assertion scopes.
+    pub total_elapsed_ms: u64,
+    /// Number of messages in current scope.
+    pub scope_message_count: usize,
+    /// Monotonic index of current scope (1-based).
+    pub scope_index: usize,
 }
 
 /// Result of a plugin execution
@@ -142,6 +183,10 @@ impl PluginManager {
         self.register(Arc::new(len::LenPlugin));
         self.register(Arc::new(env::EnvPlugin));
         self.register(Arc::new(regex::RegexPlugin));
+        self.register(Arc::new(timing::ElapsedMsPlugin));
+        self.register(Arc::new(timing::TotalElapsedMsPlugin));
+        self.register(Arc::new(timing::ScopeMessageCountPlugin));
+        self.register(Arc::new(timing::ScopeIndexPlugin));
     }
 
     pub fn register(&mut self, plugin: Arc<dyn Plugin>) {
@@ -227,11 +272,7 @@ mod tests {
         let manager = PluginManager::new();
         // Test execution with real plugin (uuid)
         let plugin = manager.get("uuid").unwrap();
-        let context = PluginContext {
-            response: &Value::Null,
-            headers: None,
-            trailers: None,
-        };
+        let context = PluginContext::new(&Value::Null);
         let result = plugin.execute(&[Value::String("test".to_string())], &context);
         // UUID plugin should return a value
         assert!(result.is_ok());

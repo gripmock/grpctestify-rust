@@ -8,6 +8,7 @@ use crate::assert::{AssertionEngine, JsonComparator, get_json_diff};
 use crate::grpc::{CompressionMode, GrpcClient, GrpcClientConfig, ProtoConfig, TlsConfig};
 use crate::optimizer;
 use crate::parser::ast::{SectionContent, SectionType};
+use crate::plugins::AssertionTiming;
 use crate::polyfill::runtime;
 use crate::report::CoverageCollector;
 use crate::utils::file::FileUtils;
@@ -425,6 +426,39 @@ pub struct TestExecutionResult {
     pub captured_response: Option<crate::grpc::GrpcResponse>,
 }
 
+#[derive(Debug, Default, Clone)]
+struct AssertionScopeTimingState {
+    last_message_elapsed_ms: Option<u64>,
+    total_scope_elapsed_ms: u64,
+    scope_index: usize,
+}
+
+impl AssertionScopeTimingState {
+    fn finish_scope(
+        &mut self,
+        scope_start_ms: u64,
+        scope_end_ms: u64,
+        scope_message_count: usize,
+    ) -> Option<AssertionTiming> {
+        if scope_message_count == 0 {
+            return None;
+        }
+
+        let elapsed_ms = scope_end_ms.saturating_sub(scope_start_ms);
+        self.scope_index += 1;
+        self.total_scope_elapsed_ms = self.total_scope_elapsed_ms.saturating_add(elapsed_ms);
+
+        let timing = AssertionTiming {
+            elapsed_ms,
+            total_elapsed_ms: self.total_scope_elapsed_ms,
+            scope_message_count,
+            scope_index: self.scope_index,
+        };
+
+        Some(timing)
+    }
+}
+
 impl TestExecutionResult {
     pub fn pass(grpc_duration_ms: Option<u64>) -> Self {
         Self {
@@ -800,9 +834,11 @@ impl TestRunner {
         let mut variables: HashMap<String, Value> = HashMap::new();
         let mut last_message: Option<Value> = None;
         let mut last_error_message: Option<String> = None;
+        let mut last_error_timing: Option<AssertionTiming> = None;
         let mut captured_headers: HashMap<String, String> = HashMap::new();
         let mut captured_trailers: HashMap<String, String> = HashMap::new();
         let mut failure_reasons: Vec<String> = Vec::new();
+        let mut assertion_timing = AssertionScopeTimingState::default();
 
         // Iterator for sections
         // We iterate by index to allow lookahead
@@ -876,6 +912,10 @@ impl TestRunner {
                     }
                 }
                 SectionType::Response => {
+                    let scope_start_ms = assertion_timing.last_message_elapsed_ms.unwrap_or(0);
+                    let mut scope_end_ms = scope_start_ms;
+                    let mut scope_message_count = 0usize;
+
                     if sections[i + 1..]
                         .iter()
                         .all(|s| s.section_type != SectionType::Request)
@@ -916,8 +956,14 @@ impl TestRunner {
                             Some(Ok(item)) => {
                                 match item {
                                     crate::grpc::client::StreamItem::Message(msg) => {
+                                        let now_elapsed_ms =
+                                            start_time.elapsed().as_millis() as u64;
                                         last_message = Some(msg.clone());
                                         received_messages_for_section.push(msg.clone());
+                                        scope_end_ms = now_elapsed_ms;
+                                        scope_message_count += 1;
+                                        assertion_timing.last_message_elapsed_ms =
+                                            Some(now_elapsed_ms);
                                         if let Some(resp) = &mut captured_response {
                                             resp.messages.push(msg.clone());
                                         }
@@ -1010,6 +1056,14 @@ impl TestRunner {
                                 }
                             }
                             Some(Err(status)) => {
+                                let scope_start_ms =
+                                    assertion_timing.last_message_elapsed_ms.unwrap_or(0);
+                                let scope_end_ms = start_time.elapsed().as_millis() as u64;
+                                assertion_timing.last_message_elapsed_ms = Some(scope_end_ms);
+                                last_error_timing =
+                                    assertion_timing.finish_scope(scope_start_ms, scope_end_ms, 1);
+                                last_error_message = Some(status.message().to_string());
+
                                 if let Some(resp) = &mut captured_response {
                                     resp.error = Some(status.message().to_string());
                                 }
@@ -1044,6 +1098,12 @@ impl TestRunner {
                         if !effective_no_assert
                             && let SectionContent::Assertions(lines) = &next_section.content
                         {
+                            let scope_timing = assertion_timing.finish_scope(
+                                scope_start_ms,
+                                scope_end_ms,
+                                scope_message_count,
+                            );
+
                             for msg in &received_messages_for_section {
                                 self.run_assertions(
                                     lines,
@@ -1055,6 +1115,7 @@ impl TestRunner {
                                         "(attached to RESPONSE at line {})",
                                         section.start_line
                                     ),
+                                    scope_timing.as_ref(),
                                 );
                             }
                         }
@@ -1115,6 +1176,7 @@ impl TestRunner {
                                     &captured_trailers,
                                     &mut failure_reasons,
                                     format!("after ERROR at line {}", section.start_line),
+                                    last_error_timing.as_ref(),
                                 );
                             } else {
                                 failure_reasons.push(format!(
@@ -1128,6 +1190,13 @@ impl TestRunner {
 
                     match stream.next().await {
                         Some(Ok(crate::grpc::client::StreamItem::Message(msg))) => {
+                            let scope_start_ms =
+                                assertion_timing.last_message_elapsed_ms.unwrap_or(0);
+                            let scope_end_ms = start_time.elapsed().as_millis() as u64;
+                            assertion_timing.last_message_elapsed_ms = Some(scope_end_ms);
+                            let scope_timing =
+                                assertion_timing.finish_scope(scope_start_ms, scope_end_ms, 1);
+
                             last_message = Some(msg.clone());
 
                             tracing::debug!(
@@ -1155,6 +1224,7 @@ impl TestRunner {
                                     &captured_trailers,
                                     &mut failure_reasons,
                                     format!("at line {}", section.start_line),
+                                    scope_timing.as_ref(),
                                 );
                             }
                         }
@@ -1168,6 +1238,13 @@ impl TestRunner {
                             }
                         }
                         Some(Err(status)) => {
+                            let scope_start_ms =
+                                assertion_timing.last_message_elapsed_ms.unwrap_or(0);
+                            let scope_end_ms = start_time.elapsed().as_millis() as u64;
+                            assertion_timing.last_message_elapsed_ms = Some(scope_end_ms);
+                            last_error_timing =
+                                assertion_timing.finish_scope(scope_start_ms, scope_end_ms, 1);
+
                             last_error_message = Some(status.message().to_string());
                             captured_trailers
                                 .extend(Self::metadata_map_to_hashmap(status.metadata()));
@@ -1349,7 +1426,15 @@ impl TestRunner {
                     // Expect an error from the stream
                     match response_stream.as_mut().unwrap().next().await {
                         Some(Err(status)) => {
+                            let scope_start_ms =
+                                assertion_timing.last_message_elapsed_ms.unwrap_or(0);
+                            let scope_end_ms = start_time.elapsed().as_millis() as u64;
+                            assertion_timing.last_message_elapsed_ms = Some(scope_end_ms);
+                            let error_scope_timing =
+                                assertion_timing.finish_scope(scope_start_ms, scope_end_ms, 1);
+
                             last_error_message = Some(status.message().to_string());
+                            last_error_timing = error_scope_timing.clone();
                             captured_trailers
                                 .extend(Self::metadata_map_to_hashmap(status.metadata()));
                             let status_name =
@@ -1423,6 +1508,7 @@ impl TestRunner {
                                             "(attached to ERROR at line {})",
                                             section.start_line
                                         ),
+                                        error_scope_timing.as_ref(),
                                     );
                                     skip_next_section = true;
                                 }
@@ -1628,6 +1714,7 @@ impl TestRunner {
         trailers: &HashMap<String, String>,
         failure_reasons: &mut Vec<String>,
         context: String,
+        timing: Option<&AssertionTiming>,
     ) {
         let optimized_lines: Vec<String> = lines
             .iter()
@@ -1641,6 +1728,7 @@ impl TestRunner {
             headers,
             trailers,
             &context,
+            timing,
         );
 
         if !result.passed {
@@ -2121,5 +2209,44 @@ mod tests {
             trailers.get("message"),
             Some(&"External service error message".to_string())
         );
+    }
+
+    #[test]
+    fn test_assertion_scope_timing_single_message_scope() {
+        let mut timing = AssertionScopeTimingState::default();
+
+        let first = timing.finish_scope(0, 12, 1).unwrap();
+
+        assert_eq!(first.elapsed_ms, 12);
+        assert_eq!(first.total_elapsed_ms, 12);
+        assert_eq!(first.scope_message_count, 1);
+        assert_eq!(first.scope_index, 1);
+    }
+
+    #[test]
+    fn test_assertion_scope_timing_batch_scope_uses_full_section_window() {
+        let mut timing = AssertionScopeTimingState::default();
+
+        let batch = timing.finish_scope(0, 27, 2).unwrap();
+
+        assert_eq!(batch.elapsed_ms, 27);
+        assert_eq!(batch.total_elapsed_ms, 27);
+        assert_eq!(batch.scope_message_count, 2);
+        assert_eq!(batch.scope_index, 1);
+    }
+
+    #[test]
+    fn test_assertion_scope_timing_accumulates_total_duration() {
+        let mut timing = AssertionScopeTimingState::default();
+
+        let first = timing.finish_scope(0, 10, 1).unwrap();
+        let second = timing.finish_scope(10, 35, 3).unwrap();
+
+        assert_eq!(first.elapsed_ms, 10);
+        assert_eq!(first.total_elapsed_ms, 10);
+        assert_eq!(second.elapsed_ms, 25);
+        assert_eq!(second.total_elapsed_ms, 35);
+        assert_eq!(second.scope_message_count, 3);
+        assert_eq!(second.scope_index, 2);
     }
 }

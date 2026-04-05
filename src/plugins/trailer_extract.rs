@@ -152,19 +152,13 @@ mod tests {
     });
 
     fn create_context_with_trailers() -> PluginContext<'static> {
-        PluginContext {
-            response: &Value::Null,
-            headers: None,
-            trailers: Some(&TRAILERS),
-        }
+        PluginContext::new(&Value::Null)
+            .with_headers(None)
+            .with_trailers(Some(&TRAILERS))
     }
 
     fn create_context_no_trailers() -> PluginContext<'static> {
-        PluginContext {
-            response: &Value::Null,
-            headers: None,
-            trailers: None,
-        }
+        PluginContext::new(&Value::Null)
     }
 
     #[test]

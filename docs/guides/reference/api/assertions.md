@@ -20,6 +20,35 @@ Use `ASSERTS` to validate responses.
 @trailer("x-processing-time") != null
 ```
 
+## Timing helpers
+
+Timing helpers are available inside `ASSERTS` and are most useful with `RESPONSE with_asserts=true`:
+
+```gctf
+--- RESPONSE with_asserts=true ---
+{
+  "status": "NOT_SERVING"
+}
+{
+  "status": "SERVING"
+}
+
+--- ASSERTS ---
+@scope_message_count() == 2
+@elapsed_ms() >= 10
+@total_elapsed_ms() >= 10
+```
+
+- `@elapsed_ms()` - elapsed for current assertion scope.
+- `@total_elapsed_ms()` - cumulative elapsed across completed assertion scopes.
+- `@scope_message_count()` - number of response messages in current scope.
+- `@scope_index()` - current scope index (1-based).
+
+Scope behavior:
+
+- Single message in `RESPONSE` section -> single-message scope.
+- Multiple messages in one `RESPONSE` section -> batch scope for the whole section.
+
 ## Type helpers
 
 ```gctf

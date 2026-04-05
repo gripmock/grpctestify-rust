@@ -61,11 +61,7 @@ mod tests {
     use super::*;
 
     fn create_context() -> PluginContext<'static> {
-        PluginContext {
-            response: &Value::Null,
-            headers: None,
-            trailers: None,
-        }
+        PluginContext::new(&Value::Null)
     }
 
     #[test]
