@@ -2,6 +2,7 @@
 // Parses as much as possible and collects all errors
 
 use crate::diagnostics::{DiagnosticCode, DiagnosticCollection, Range};
+use crate::parser::assertions::strip_assertion_comments;
 use crate::parser::ast::{DocumentMetadata, GctfDocument, Section, SectionContent, SectionType};
 use std::path::Path;
 
@@ -235,8 +236,7 @@ fn parse_section_content(
             // Collect assertion lines
             let assertions: Vec<String> = content
                 .iter()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .filter_map(|line| strip_assertion_comments(line))
                 .collect();
             SectionContent::Assertions(assertions)
         }
@@ -411,5 +411,71 @@ another = .field2
 
         // Should parse valid extracts and warn about invalid
         assert!(result.diagnostics.has_warnings());
+    }
+
+    #[test]
+    fn test_parse_with_recovery_asserts_double_slash_comments() {
+        let content = r#"--- ENDPOINT ---
+grpc.health.v1.Health/Watch
+
+--- REQUEST ---
+{"service": "examples.health.watch"}
+
+--- ASSERTS ---
+// Watch delay in stubs.yaml is 10ms.
+// Delay applies before the first message in the scope.
+@scope_message_count() == 2
+@elapsed_ms() >= 10
+@total_elapsed_ms() >= 10
+"#;
+
+        let result = parse_content_with_recovery(content, "test.gctf");
+        let asserts = result
+            .document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Asserts)
+            .expect("ASSERTS section should be parsed");
+
+        if let SectionContent::Assertions(lines) = &asserts.content {
+            assert_eq!(lines.len(), 3);
+            assert_eq!(lines[0], "@scope_message_count() == 2");
+            assert_eq!(lines[1], "@elapsed_ms() >= 10");
+            assert_eq!(lines[2], "@total_elapsed_ms() >= 10");
+        } else {
+            panic!("expected assertions content");
+        }
+    }
+
+    #[test]
+    fn test_parse_with_recovery_asserts_inline_comments() {
+        let content = r#"--- ENDPOINT ---
+grpc.health.v1.Health/Watch
+
+--- REQUEST ---
+{"service": "examples.health.watch"}
+
+--- ASSERTS ---
+@scope_message_count() == 2 // exactly two updates expected
+@elapsed_ms() >= 10 # startup delay should be applied
+@regex(.note, "^https://example.com")
+"#;
+
+        let result = parse_content_with_recovery(content, "test.gctf");
+        let asserts = result
+            .document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Asserts)
+            .expect("ASSERTS section should be parsed");
+
+        if let SectionContent::Assertions(lines) = &asserts.content {
+            assert_eq!(lines.len(), 3);
+            assert_eq!(lines[0], "@scope_message_count() == 2");
+            assert_eq!(lines[1], "@elapsed_ms() >= 10");
+            assert_eq!(lines[2], "@regex(.note, \"^https://example.com\")");
+        } else {
+            panic!("expected assertions content");
+        }
     }
 }

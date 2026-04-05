@@ -4,12 +4,37 @@
 use anyhow::Result;
 use regex::Regex;
 use serde_json::Value;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::assert::engine::AssertionResult;
 use crate::plugins::{
     AssertionTiming, PluginContext, PluginManager, PluginResult, normalize_plugin_name,
 };
+
+thread_local! {
+    static REGEX_CACHE: RefCell<HashMap<String, std::result::Result<Rc<Regex>, String>>> =
+        RefCell::new(HashMap::new());
+}
+
+fn cached_regex(pattern: &str) -> std::result::Result<Rc<Regex>, String> {
+    if let Some(cached) = REGEX_CACHE.with(|cache| cache.borrow().get(pattern).cloned()) {
+        return cached;
+    }
+
+    let compiled = Regex::new(pattern)
+        .map(Rc::new)
+        .map_err(|err| err.to_string());
+
+    REGEX_CACHE.with(|cache| {
+        cache
+            .borrow_mut()
+            .insert(pattern.to_string(), compiled.clone());
+    });
+
+    compiled
+}
 
 /// Evaluate assertion expression (plugins and operators)
 pub fn evaluate_assertion(
@@ -179,20 +204,57 @@ fn evaluate_expression(
 }
 
 fn parse_value(s: &str) -> Value {
-    if s.starts_with('"') {
+    if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
         let inner = s.trim_matches('"');
         Value::String(inner.to_string())
-    } else if let Ok(_n) = s.parse::<f64>() {
-        serde_json::from_str(s).unwrap_or(Value::Null)
     } else if s == "true" {
         Value::Bool(true)
     } else if s == "false" {
         Value::Bool(false)
     } else if s == "null" {
         Value::Null
+    } else if let Ok(i) = s.parse::<i64>() {
+        Value::Number(serde_json::Number::from(i))
+    } else if let Ok(f) = s.parse::<f64>() {
+        serde_json::Number::from_f64(f)
+            .map(Value::Number)
+            .unwrap_or(Value::Null)
     } else {
         Value::String(s.to_string())
     }
+}
+
+fn compare_numeric_values(lhs: &Value, rhs: &Value, op: &str) -> Option<bool> {
+    let lhs_num = lhs.as_number()?;
+    let rhs_num = rhs.as_number()?;
+
+    let lhs_i = lhs_num
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| lhs_num.as_u64().map(i128::from));
+    let rhs_i = rhs_num
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| rhs_num.as_u64().map(i128::from));
+
+    if let (Some(l), Some(r)) = (lhs_i, rhs_i) {
+        return Some(match op {
+            ">" => l > r,
+            "<" => l < r,
+            ">=" => l >= r,
+            "<=" => l <= r,
+            _ => return None,
+        });
+    }
+
+    let (l, r) = (lhs_num.as_f64()?, rhs_num.as_f64()?);
+    Some(match op {
+        ">" => l > r,
+        "<" => l < r,
+        ">=" => l >= r,
+        "<=" => l <= r,
+        _ => return None,
+    })
 }
 
 fn parse_plugin_arguments(
@@ -302,34 +364,10 @@ fn compare(
     let pass = match op {
         "==" => lhs == rhs,
         "!=" => lhs != rhs,
-        ">" => {
-            if let (Some(l), Some(r)) = (lhs.as_f64(), rhs.as_f64()) {
-                l > r
-            } else {
-                false
-            }
-        }
-        "<" => {
-            if let (Some(l), Some(r)) = (lhs.as_f64(), rhs.as_f64()) {
-                l < r
-            } else {
-                false
-            }
-        }
-        ">=" => {
-            if let (Some(l), Some(r)) = (lhs.as_f64(), rhs.as_f64()) {
-                l >= r
-            } else {
-                false
-            }
-        }
-        "<=" => {
-            if let (Some(l), Some(r)) = (lhs.as_f64(), rhs.as_f64()) {
-                l <= r
-            } else {
-                false
-            }
-        }
+        ">" => compare_numeric_values(&lhs, &rhs, op).unwrap_or(false),
+        "<" => compare_numeric_values(&lhs, &rhs, op).unwrap_or(false),
+        ">=" => compare_numeric_values(&lhs, &rhs, op).unwrap_or(false),
+        "<=" => compare_numeric_values(&lhs, &rhs, op).unwrap_or(false),
         "contains" => match (&lhs, &rhs) {
             (Value::String(l), Value::String(r)) => l.contains(r),
             (Value::Array(l), r) => l.contains(r),
@@ -346,7 +384,7 @@ fn compare(
         },
         "matches" => match (&lhs, &rhs) {
             (Value::String(l), Value::String(r)) => {
-                if let Ok(re) = Regex::new(r) {
+                if let Ok(re) = cached_regex(r) {
                     re.is_match(l)
                 } else {
                     return Ok(AssertionResult::Error(format!("Invalid regex: {}", r)));

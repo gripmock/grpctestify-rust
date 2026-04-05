@@ -290,7 +290,10 @@ impl ExecutionPlan {
                 let assertions = if let SectionContent::Assertions(lines) = &section.content {
                     lines
                         .iter()
-                        .map(|line| optimizer::rewrite_assertion_expression_fixed_point(line))
+                        .map(|line| {
+                            optimizer::rewrite_assertion_expression_fixed_point_if_changed(line)
+                                .unwrap_or_else(|| line.clone())
+                        })
                         .collect()
                 } else {
                     vec![]
@@ -564,6 +567,48 @@ impl TestRunner {
         } else {
             format!("{}.{}", package, service)
         }
+    }
+
+    fn format_json_pretty(value: &Value) -> String {
+        serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+    }
+
+    fn interpolate_variables(template: &str, variables: &HashMap<String, Value>) -> Option<String> {
+        let mut out = String::with_capacity(template.len());
+        let mut cursor = 0usize;
+        let mut changed = false;
+
+        while let Some(open_rel) = template[cursor..].find("{{") {
+            let open = cursor + open_rel;
+            out.push_str(&template[cursor..open]);
+
+            let after_open = open + 2;
+            let Some(close_rel) = template[after_open..].find("}}") else {
+                out.push_str(&template[open..]);
+                return changed.then_some(out);
+            };
+            let close = after_open + close_rel;
+
+            let key = template[after_open..close].trim();
+            if let Some(val) = variables.get(key) {
+                match val {
+                    Value::String(s) => out.push_str(s),
+                    _ => out.push_str(&val.to_string()),
+                }
+                changed = true;
+            } else {
+                out.push_str(&template[open..close + 2]);
+            }
+
+            cursor = close + 2;
+        }
+
+        if !changed {
+            return None;
+        }
+
+        out.push_str(&template[cursor..]);
+        Some(out)
     }
 
     pub fn expected_values_for_response_section(
@@ -934,9 +979,11 @@ impl TestRunner {
                     {
                         match handle.await {
                             Ok(Ok((h, stream))) => {
-                                captured_headers = h.clone();
                                 if let Some(resp) = &mut captured_response {
+                                    captured_headers = h.clone();
                                     resp.headers = h;
+                                } else {
+                                    captured_headers = h;
                                 }
                                 response_stream = Some(stream);
                             }
@@ -964,35 +1011,43 @@ impl TestRunner {
                                     crate::grpc::client::StreamItem::Message(msg) => {
                                         let now_elapsed_ms =
                                             start_time.elapsed().as_millis() as u64;
-                                        last_message = Some(msg.clone());
-                                        received_messages_for_section.push(msg.clone());
+
+                                        let msg_for_state = msg.clone();
+                                        last_message = Some(msg_for_state.clone());
+                                        if section.inline_options.with_asserts {
+                                            received_messages_for_section
+                                                .push(msg_for_state.clone());
+                                        }
                                         scope_end_ms = now_elapsed_ms;
                                         scope_message_count += 1;
                                         assertion_timing.last_message_elapsed_ms =
                                             Some(now_elapsed_ms);
                                         if let Some(resp) = &mut captured_response {
-                                            resp.messages.push(msg.clone());
+                                            resp.messages.push(msg_for_state);
                                         }
 
-                                        tracing::debug!(
-                                            "Received Response:\n{}",
-                                            serde_json::to_string_pretty(&msg)
-                                                .unwrap_or_else(|_| msg.to_string())
-                                        );
+                                        let should_format_message =
+                                            tracing::enabled!(tracing::Level::DEBUG)
+                                                || effective_no_assert
+                                                || self.verbose;
+                                        let msg_pretty = should_format_message
+                                            .then(|| Self::format_json_pretty(&msg));
+
+                                        if let Some(pretty) = msg_pretty.as_deref()
+                                            && tracing::enabled!(tracing::Level::DEBUG)
+                                        {
+                                            tracing::debug!("Received Response:\n{}", pretty);
+                                        }
 
                                         if effective_no_assert {
                                             println!("--- RESPONSE (Raw) ---");
-                                            println!(
-                                                "{}",
-                                                serde_json::to_string_pretty(&msg)
-                                                    .unwrap_or_else(|_| msg.to_string())
-                                            );
+                                            if let Some(pretty) = msg_pretty.as_deref() {
+                                                println!("{}", pretty);
+                                            }
                                         } else if self.verbose {
-                                            println!(
-                                                "🔍 gRPC response received: '{}'",
-                                                serde_json::to_string_pretty(&msg)
-                                                    .unwrap_or_else(|_| msg.to_string())
-                                            );
+                                            if let Some(pretty) = msg_pretty.as_deref() {
+                                                println!("🔍 gRPC response received: '{}'", pretty);
+                                            }
                                         }
 
                                         if !effective_no_assert {
@@ -1047,9 +1102,13 @@ impl TestRunner {
                                         }
                                     }
                                     crate::grpc::client::StreamItem::Trailers(t) => {
-                                        captured_trailers.extend(t.clone());
                                         if let Some(resp) = &mut captured_response {
+                                            captured_trailers.extend(
+                                                t.iter().map(|(k, v)| (k.clone(), v.clone())),
+                                            );
                                             resp.trailers.extend(t);
+                                        } else {
+                                            captured_trailers.extend(t);
                                         }
                                         if !effective_no_assert {
                                             failure_reasons.push(format!(
@@ -1115,10 +1174,7 @@ impl TestRunner {
                                     lines,
                                     msg,
                                     &mut failure_reasons,
-                                    format!(
-                                        "(attached to RESPONSE at line {})",
-                                        section.start_line
-                                    ),
+                                    section.start_line,
                                     AssertionContext {
                                         headers: &captured_headers,
                                         trailers: &captured_trailers,
@@ -1148,9 +1204,11 @@ impl TestRunner {
                     {
                         match handle.await {
                             Ok(Ok((h, stream))) => {
-                                captured_headers = h.clone();
                                 if let Some(resp) = &mut captured_response {
+                                    captured_headers = h.clone();
                                     resp.headers = h;
+                                } else {
+                                    captured_headers = h;
                                 }
                                 response_stream = Some(stream);
                             }
@@ -1181,7 +1239,7 @@ impl TestRunner {
                                     lines,
                                     &error_value,
                                     &mut failure_reasons,
-                                    format!("after ERROR at line {}", section.start_line),
+                                    section.start_line,
                                     AssertionContext {
                                         headers: &captured_headers,
                                         trailers: &captured_trailers,
@@ -1209,19 +1267,22 @@ impl TestRunner {
 
                             last_message = Some(msg.clone());
 
-                            tracing::debug!(
-                                "Received Response (for Asserts):\n{}",
-                                serde_json::to_string_pretty(&msg)
-                                    .unwrap_or_else(|_| msg.to_string())
-                            );
+                            let should_format_message =
+                                tracing::enabled!(tracing::Level::DEBUG) || effective_no_assert;
+                            let msg_pretty =
+                                should_format_message.then(|| Self::format_json_pretty(&msg));
+
+                            if let Some(pretty) = msg_pretty.as_deref()
+                                && tracing::enabled!(tracing::Level::DEBUG)
+                            {
+                                tracing::debug!("Received Response (for Asserts):\n{}", pretty);
+                            }
 
                             if effective_no_assert {
                                 println!("--- RESPONSE (Raw) ---");
-                                println!(
-                                    "{}",
-                                    serde_json::to_string_pretty(&msg)
-                                        .unwrap_or_else(|_| msg.to_string())
-                                );
+                                if let Some(pretty) = msg_pretty.as_deref() {
+                                    println!("{}", pretty);
+                                }
                             }
 
                             if !effective_no_assert
@@ -1231,7 +1292,7 @@ impl TestRunner {
                                     lines,
                                     &msg,
                                     &mut failure_reasons,
-                                    format!("at line {}", section.start_line),
+                                    section.start_line,
                                     AssertionContext {
                                         headers: &captured_headers,
                                         trailers: &captured_trailers,
@@ -1325,9 +1386,11 @@ impl TestRunner {
                     {
                         match handle.await {
                             Ok(Ok((h, stream))) => {
-                                captured_headers = h.clone();
                                 if let Some(resp) = &mut captured_response {
+                                    captured_headers = h.clone();
                                     resp.headers = h;
+                                } else {
+                                    captured_headers = h;
                                 }
                                 response_stream = Some(stream);
                             }
@@ -1445,24 +1508,28 @@ impl TestRunner {
                             let error_scope_timing =
                                 assertion_timing.finish_scope(scope_start_ms, scope_end_ms, 1);
 
-                            last_error_message = Some(status.message().to_string());
-                            last_error_timing = error_scope_timing.clone();
+                            let status_message = status.message();
+                            last_error_message = Some(status_message.to_string());
+                            last_error_timing = error_scope_timing;
                             captured_trailers
                                 .extend(Self::metadata_map_to_hashmap(status.metadata()));
-                            let status_name =
-                                Self::grpc_code_name_from_numeric(status.code() as i64)
-                                    .unwrap_or("Unknown");
-                            let got = format!(
-                                "status: {}, message: \"{}\"",
-                                status_name,
-                                status.message()
-                            );
+                            let should_format_error = effective_no_assert || self.verbose;
+                            let got = should_format_error.then(|| {
+                                let status_name =
+                                    Self::grpc_code_name_from_numeric(status.code() as i64)
+                                        .unwrap_or("Unknown");
+                                format!("status: {}, message: \"{}\"", status_name, status_message)
+                            });
 
                             if effective_no_assert {
                                 println!("--- RESPONSE (Error) ---");
-                                println!("{}", got);
+                                if let Some(got) = got.as_deref() {
+                                    println!("{}", got);
+                                }
                             } else if self.verbose {
-                                println!("🔍 gRPC error received: '{}'", got);
+                                if let Some(got) = got.as_deref() {
+                                    println!("🔍 gRPC error received: '{}'", got);
+                                }
                                 let details_json =
                                     super::error_handler::ErrorHandler::status_details_json(
                                         &status,
@@ -1514,14 +1581,11 @@ impl TestRunner {
                                         lines,
                                         &error_value,
                                         &mut failure_reasons,
-                                        format!(
-                                            "(attached to ERROR at line {})",
-                                            section.start_line
-                                        ),
+                                        section.start_line,
                                         AssertionContext {
                                             headers: &captured_headers,
                                             trailers: &captured_trailers,
-                                            timing: error_scope_timing.as_ref(),
+                                            timing: last_error_timing.as_ref(),
                                         },
                                     );
                                     skip_next_section = true;
@@ -1546,11 +1610,7 @@ impl TestRunner {
                                 // If we got a message instead of error in no_assert mode, print it
                                 if let crate::grpc::client::StreamItem::Message(msg) = msg_item {
                                     println!("--- RESPONSE (Raw) ---");
-                                    println!(
-                                        "{}",
-                                        serde_json::to_string_pretty(&msg)
-                                            .unwrap_or_else(|_| msg.to_string())
-                                    );
+                                    println!("{}", Self::format_json_pretty(&msg));
                                 }
                             }
                         }
@@ -1674,6 +1734,10 @@ impl TestRunner {
     fn substitute_variables(&self, value: &mut Value, variables: &HashMap<String, Value>) {
         match value {
             Value::String(s) => {
+                if !s.contains("{{") {
+                    return;
+                }
+
                 // Check for exact match "{{ var }}" to preserve type
                 if s.starts_with("{{") && s.ends_with("}}") {
                     let inner = s[2..s.len() - 2].trim();
@@ -1687,22 +1751,7 @@ impl TestRunner {
                 }
 
                 // String interpolation "prefix {{ var }} suffix"
-                let mut result = s.clone();
-                let mut changed = false;
-                for (key, val) in variables {
-                    let pattern = format!("{{{{ {} }}}}", key);
-                    if result.contains(&pattern) {
-                        if let Value::String(s_val) = val {
-                            result = result.replace(&pattern, s_val);
-                            changed = true;
-                        } else {
-                            // Fallback to JSON string representation
-                            result = result.replace(&pattern, &val.to_string());
-                            changed = true;
-                        }
-                    }
-                }
-                if changed {
+                if let Some(result) = Self::interpolate_variables(s, variables) {
                     *value = Value::String(result);
                 }
             }
@@ -1725,21 +1774,31 @@ impl TestRunner {
         lines: &[String],
         target_value: &Value,
         failure_reasons: &mut Vec<String>,
-        context: String,
+        line: usize,
         assertion_context: AssertionContext<'_>,
     ) {
-        let optimized_lines: Vec<String> = lines
-            .iter()
-            .map(|line| optimizer::rewrite_assertion_expression_fixed_point(line))
-            .collect();
+        let mut optimized_lines: Option<Vec<String>> = None;
+
+        for (idx, line) in lines.iter().enumerate() {
+            if let Some(rewritten) =
+                optimizer::rewrite_assertion_expression_fixed_point_if_changed(line)
+            {
+                let vec = optimized_lines.get_or_insert_with(|| lines[..idx].to_vec());
+                vec.push(rewritten);
+            } else if let Some(vec) = optimized_lines.as_mut() {
+                vec.push(line.clone());
+            }
+        }
+
+        let lines_to_evaluate: &[String] = optimized_lines.as_deref().unwrap_or(lines);
 
         // Use AssertionHandler for assertion evaluation
         let result = self.assertion_handler.evaluate_assertions_for_section(
-            &optimized_lines,
+            lines_to_evaluate,
             target_value,
             assertion_context.headers,
             assertion_context.trailers,
-            &context,
+            line,
             assertion_context.timing,
         );
 
@@ -1804,8 +1863,7 @@ impl TestRunner {
                         has_request = true;
                     }
                     if let SectionContent::Json(json) = &section.content {
-                        let json_str =
-                            serde_json::to_string_pretty(json).unwrap_or_else(|_| json.to_string());
+                        let json_str = Self::format_json_pretty(json);
                         println!("   ➤ REQUEST:");
                         println!("     {}", json_str.replace('\n', "\n     "));
                     }
@@ -1818,8 +1876,7 @@ impl TestRunner {
                     };
                     match &section.content {
                         SectionContent::Json(json) => {
-                            let json_str = serde_json::to_string_pretty(json)
-                                .unwrap_or_else(|_| json.to_string());
+                            let json_str = Self::format_json_pretty(json);
                             println!(
                                 "   ↤ RESPONSE (Line {}):{}",
                                 section.start_line, with_asserts
@@ -1834,8 +1891,7 @@ impl TestRunner {
                                 with_asserts
                             );
                             for value in values {
-                                let json_str = serde_json::to_string_pretty(value)
-                                    .unwrap_or_else(|_| value.to_string());
+                                let json_str = Self::format_json_pretty(value);
                                 println!("     {}", json_str.replace('\n', "\n     "));
                             }
                         }
@@ -1861,8 +1917,7 @@ impl TestRunner {
                         has_error = true;
                     }
                     if let SectionContent::Json(json) = &section.content {
-                        let json_str =
-                            serde_json::to_string_pretty(json).unwrap_or_else(|_| json.to_string());
+                        let json_str = Self::format_json_pretty(json);
                         println!("   {}", json_str);
                     }
                 }
@@ -2145,6 +2200,41 @@ mod tests {
             "package.Service"
         );
         assert_eq!(TestRunner::full_service_name("", "Service"), "Service");
+    }
+
+    #[test]
+    fn test_substitute_variables_exact_match_preserves_type() {
+        let runner = TestRunner::new(false, 30, false, false, false, None);
+        let mut value = json!("{{ count }}");
+        let mut vars = HashMap::new();
+        vars.insert("count".to_string(), json!(42));
+
+        runner.substitute_variables(&mut value, &vars);
+        assert_eq!(value, json!(42));
+    }
+
+    #[test]
+    fn test_substitute_variables_interpolation_single_pass() {
+        let runner = TestRunner::new(false, 30, false, false, false, None);
+        let mut value = json!("id={{id}}, user={{ user }}, ok={{ok}}");
+        let mut vars = HashMap::new();
+        vars.insert("id".to_string(), json!(7));
+        vars.insert("user".to_string(), json!("alice"));
+        vars.insert("ok".to_string(), json!(true));
+
+        runner.substitute_variables(&mut value, &vars);
+        assert_eq!(value, json!("id=7, user=alice, ok=true"));
+    }
+
+    #[test]
+    fn test_substitute_variables_keeps_unknown_placeholder() {
+        let runner = TestRunner::new(false, 30, false, false, false, None);
+        let mut value = json!("hello {{known}} and {{unknown}}");
+        let mut vars = HashMap::new();
+        vars.insert("known".to_string(), json!("world"));
+
+        runner.substitute_variables(&mut value, &vars);
+        assert_eq!(value, json!("hello world and {{unknown}}"));
     }
 
     #[test]

@@ -24,9 +24,5 @@ jobs:
         with:
           toolchain: nightly
           components: miri
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
       - name: Run
         run: cargo miri nextest run --lib --all-features -j num-cpus --fail-fast

@@ -2,7 +2,9 @@
 
 use anyhow::Result;
 use serde_json::Value;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 // Plugin imports
 use crate::plugins::AssertionTiming;
@@ -10,7 +12,7 @@ use crate::plugins::PluginManager;
 
 // Jaq imports
 use jaq_core::{Compiler, Ctx, Vars, data, load, unwrap_valr};
-use jaq_json::Val as JaqVal;
+use jaq_json::{Map as JaqMap, Num as JaqNum, Rc as JaqRc, Val as JaqVal};
 
 // Operators module
 use super::operators;
@@ -52,6 +54,12 @@ impl AssertionResult {
 /// Assertion engine
 pub struct AssertionEngine {
     plugin_manager: PluginManager,
+}
+
+type JaqFilter = jaq_core::Filter<data::JustLut<JaqVal>>;
+
+thread_local! {
+    static JAQ_FILTER_CACHE: RefCell<HashMap<String, Rc<JaqFilter>>> = RefCell::new(HashMap::new());
 }
 
 impl AssertionEngine {
@@ -103,13 +111,7 @@ impl AssertionEngine {
     /// Execute a JQ query and return the result(s)
     pub fn query(&self, expr: &str, input: &Value) -> Result<Vec<Value>> {
         let values = self.run_jaq(expr, input)?;
-        values
-            .into_iter()
-            .map(|val| {
-                serde_json::from_str(&val.to_string())
-                    .map_err(|e| anyhow::anyhow!("JQ output conversion error: {}", e))
-            })
-            .collect()
+        Ok(values.iter().map(jaq_to_json).collect())
     }
 
     fn evaluate_jaq(&self, expr: &str, response: &Value) -> Result<AssertionResult> {
@@ -147,8 +149,31 @@ impl AssertionEngine {
     }
 
     fn run_jaq(&self, expr: &str, input: &Value) -> Result<Vec<JaqVal>> {
+        let filter = Self::get_or_compile_jaq_filter(expr)?;
+
+        let input = json_to_jaq(input);
+
+        let ctx = Ctx::<data::JustLut<JaqVal>>::new(&filter.lut, Vars::new([]));
+        let out = filter.id.run((ctx, input)).map(unwrap_valr);
+
+        let mut values = Vec::new();
+        for item in out {
+            match item {
+                Ok(v) => values.push(v),
+                Err(e) => return Err(anyhow::anyhow!("JQ Runtime Error: {}", e)),
+            }
+        }
+
+        Ok(values)
+    }
+
+    fn get_or_compile_jaq_filter(expr: &str) -> Result<Rc<JaqFilter>> {
         use jaq_core::defs as core_defs;
         use jaq_core::funs as core_funs;
+
+        if let Some(cached) = JAQ_FILTER_CACHE.with(|cache| cache.borrow().get(expr).cloned()) {
+            return Ok(cached);
+        }
 
         let arena = load::Arena::default();
         let defs = core_defs().chain(jaq_std::defs()).chain(jaq_json::defs());
@@ -168,23 +193,14 @@ impl AssertionEngine {
             .compile(modules)
             .map_err(|errs| anyhow::anyhow!("Failed to compile JQ expression: {:?}", errs))?;
 
-        let input_json = serde_json::to_string(input)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize input for JQ: {}", e))?;
-        let input: JaqVal = jaq_json::read::parse_single(input_json.as_bytes())
-            .map_err(|e| anyhow::anyhow!("Failed to parse input for JQ: {}", e))?;
+        let filter = Rc::new(filter);
+        JAQ_FILTER_CACHE.with(|cache| {
+            cache
+                .borrow_mut()
+                .insert(expr.to_string(), Rc::clone(&filter));
+        });
 
-        let ctx = Ctx::<data::JustLut<JaqVal>>::new(&filter.lut, Vars::new([]));
-        let out = filter.id.run((ctx, input)).map(unwrap_valr);
-
-        let mut values = Vec::new();
-        for item in out {
-            match item {
-                Ok(v) => values.push(v),
-                Err(e) => return Err(anyhow::anyhow!("JQ Runtime Error: {}", e)),
-            }
-        }
-
-        Ok(values)
+        Ok(filter)
     }
 
     // Check if any assertion failed (re-exported wrapper)
@@ -228,6 +244,92 @@ impl AssertionEngine {
                     .unwrap_or_else(|e| AssertionResult::Error(format!("Internal error: {}", e)))
             })
             .collect()
+    }
+}
+
+fn json_to_jaq(value: &Value) -> JaqVal {
+    match value {
+        Value::Null => JaqVal::Null,
+        Value::Bool(v) => JaqVal::Bool(*v),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                JaqVal::Num(JaqNum::from_integral(i))
+            } else if let Some(u) = n.as_u64() {
+                JaqVal::Num(JaqNum::from_integral(u))
+            } else if let Some(f) = n.as_f64() {
+                JaqVal::Num(JaqNum::Float(f))
+            } else {
+                JaqVal::Null
+            }
+        }
+        Value::String(s) => JaqVal::utf8_str(s.clone()),
+        Value::Array(items) => JaqVal::Arr(JaqRc::new(items.iter().map(json_to_jaq).collect())),
+        Value::Object(obj) => {
+            let map: JaqMap = obj
+                .iter()
+                .map(|(k, v)| (JaqVal::utf8_str(k.clone()), json_to_jaq(v)))
+                .collect();
+            JaqVal::Obj(JaqRc::new(map))
+        }
+    }
+}
+
+fn jaq_to_json(value: &JaqVal) -> Value {
+    match value {
+        JaqVal::Null => Value::Null,
+        JaqVal::Bool(v) => Value::Bool(*v),
+        JaqVal::Num(n) => match n {
+            JaqNum::Int(v) => Value::Number(serde_json::Number::from(*v)),
+            JaqNum::Float(v) => serde_json::Number::from_f64(*v)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+            JaqNum::BigInt(bi) => {
+                // Try to fit in isize first (public API), then fall back to string parse
+                if let Some(i) = n.as_isize() {
+                    Value::Number(serde_json::Number::from(i))
+                } else {
+                    // BigInt too large for isize — avoid JSON parser on hot path
+                    let s = bi.to_string();
+                    if let Ok(i) = s.parse::<i64>() {
+                        Value::Number(serde_json::Number::from(i))
+                    } else if let Ok(u) = s.parse::<u64>() {
+                        Value::Number(serde_json::Number::from(u))
+                    } else {
+                        Value::Null
+                    }
+                }
+            }
+            JaqNum::Dec(s) => {
+                // Dec is a string like "3.14" — parse as f64 directly, no JSON parser
+                s.parse::<f64>()
+                    .ok()
+                    .and_then(serde_json::Number::from_f64)
+                    .map(Value::Number)
+                    .unwrap_or(Value::Null)
+            }
+        },
+        JaqVal::TStr(s) | JaqVal::BStr(s) => {
+            match std::str::from_utf8(s.as_ref()) {
+                Ok(v) => Value::String(v.to_string()),
+                Err(_) => Value::Null, // non-UTF8 bytes can't be represented in JSON
+            }
+        }
+        JaqVal::Arr(items) => Value::Array(items.iter().map(jaq_to_json).collect()),
+        JaqVal::Obj(obj) => {
+            let map: serde_json::Map<String, Value> = obj
+                .iter()
+                .filter_map(|(k, v)| {
+                    let key = match k {
+                        JaqVal::TStr(s) | JaqVal::BStr(s) => {
+                            std::str::from_utf8(s.as_ref()).ok().map(str::to_owned)
+                        }
+                        _ => None,
+                    }?;
+                    Some((key, jaq_to_json(v)))
+                })
+                .collect();
+            Value::Object(map)
+        }
     }
 }
 
@@ -715,5 +817,17 @@ mod tests {
 
         let results = engine.query("invalid[[[", &response);
         assert!(results.is_err());
+    }
+
+    #[test]
+    fn test_jaq_to_json_dec_number() {
+        let dec = JaqVal::Num(JaqNum::Dec(JaqRc::new("3.14".to_string())));
+        assert_eq!(jaq_to_json(&dec), json!(3.14));
+    }
+
+    #[test]
+    fn test_jaq_to_json_invalid_dec_number() {
+        let dec = JaqVal::Num(JaqNum::Dec(JaqRc::new("not-a-number".to_string())));
+        assert_eq!(jaq_to_json(&dec), Value::Null);
     }
 }

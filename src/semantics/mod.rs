@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use crate::parser;
 use crate::plugins::{
@@ -103,8 +104,10 @@ fn operator_contract(op: &str) -> Option<OperatorContract> {
     }
 }
 
-fn plugin_signatures() -> HashMap<String, PluginSignature> {
-    plugin_signature_map()
+fn plugin_signatures() -> &'static HashMap<String, PluginSignature> {
+    static PLUGIN_SIGNATURES: LazyLock<HashMap<String, PluginSignature>> =
+        LazyLock::new(plugin_signature_map);
+    &PLUGIN_SIGNATURES
 }
 
 fn section_content_line(start_line: usize, idx: usize) -> usize {
@@ -341,7 +344,7 @@ pub fn collect_assertion_type_mismatches(doc: &parser::GctfDocument) -> Vec<Asse
                 continue;
             }
 
-            if let Some(mut mismatch) = detect_type_mismatch(trimmed, &signatures) {
+            if let Some(mut mismatch) = detect_type_mismatch(trimmed, signatures) {
                 mismatch.line = section_content_line(section.start_line, idx);
                 mismatches.push(mismatch);
             }

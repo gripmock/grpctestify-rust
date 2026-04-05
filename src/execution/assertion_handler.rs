@@ -18,6 +18,31 @@ pub struct AssertionHandler {
     engine: AssertionEngine,
 }
 
+fn append_failures_with_context(
+    results: &[crate::assert::AssertionResult],
+    context: &str,
+    failure_messages: &mut Vec<String>,
+) {
+    for fail in results {
+        match fail {
+            crate::assert::AssertionResult::Fail {
+                message,
+                expected,
+                actual,
+            } => {
+                failure_messages.push(format!("Assertion failed {}: {}", context, message));
+                if let (Some(exp), Some(act)) = (expected, actual) {
+                    failure_messages.push(format!("    Expected: {}\n    Actual:   {}", exp, act));
+                }
+            }
+            crate::assert::AssertionResult::Error(msg) => {
+                failure_messages.push(format!("Assertion error {}: {}", context, msg));
+            }
+            _ => {}
+        }
+    }
+}
+
 impl AssertionHandler {
     /// Create new assertion handler
     pub fn new(_verbose: bool) -> Self {
@@ -45,33 +70,8 @@ impl AssertionHandler {
                     self.engine
                         .evaluate_all(lines, target_value, Some(headers), Some(trailers));
 
-                if self.engine.has_failures(&results) {
-                    for fail in self.engine.get_failures(&results) {
-                        match fail {
-                            crate::assert::AssertionResult::Fail {
-                                message,
-                                expected,
-                                actual,
-                            } => {
-                                let context = format!("at line {}", section.start_line);
-                                failure_messages
-                                    .push(format!("Assertion failed {}: {}", context, message));
-                                if let (Some(exp), Some(act)) = (expected, actual) {
-                                    failure_messages.push(format!(
-                                        "    Expected: {}\n    Actual:   {}",
-                                        exp, act
-                                    ));
-                                }
-                            }
-                            crate::assert::AssertionResult::Error(msg) => {
-                                let context = format!("at line {}", section.start_line);
-                                failure_messages
-                                    .push(format!("Assertion error {}: {}", context, msg));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+                let context = format!("at line {}", section.start_line);
+                append_failures_with_context(&results, &context, &mut failure_messages);
             }
         }
 
@@ -98,30 +98,8 @@ impl AssertionHandler {
                 self.engine
                     .evaluate_all(lines, target_value, Some(headers), Some(trailers));
 
-            if self.engine.has_failures(&results) {
-                for fail in self.engine.get_failures(&results) {
-                    match fail {
-                        crate::assert::AssertionResult::Fail {
-                            message,
-                            expected,
-                            actual,
-                        } => {
-                            let context = format!("at line {}", section.start_line);
-                            failure_messages
-                                .push(format!("Assertion failed {}: {}", context, message));
-                            if let (Some(exp), Some(act)) = (expected, actual) {
-                                failure_messages
-                                    .push(format!("    Expected: {}\n    Actual:   {}", exp, act));
-                            }
-                        }
-                        crate::assert::AssertionResult::Error(msg) => {
-                            let context = format!("at line {}", section.start_line);
-                            failure_messages.push(format!("Assertion error {}: {}", context, msg));
-                        }
-                        _ => {}
-                    }
-                }
-            }
+            let context = format!("at line {}", section.start_line);
+            append_failures_with_context(&results, &context, &mut failure_messages);
         }
 
         AssertionResult {
@@ -164,7 +142,7 @@ impl AssertionHandler {
         target_value: &Value,
         headers: &HashMap<String, String>,
         trailers: &HashMap<String, String>,
-        context: &str,
+        line: usize,
         timing: Option<&AssertionTiming>,
     ) -> AssertionResult {
         let mut failure_messages = Vec::new();
@@ -177,27 +155,8 @@ impl AssertionHandler {
             timing,
         );
 
-        if self.engine.has_failures(&results) {
-            for fail in self.engine.get_failures(&results) {
-                match fail {
-                    crate::assert::AssertionResult::Fail {
-                        message,
-                        expected,
-                        actual,
-                    } => {
-                        failure_messages.push(format!("Assertion failed {}: {}", context, message));
-                        if let (Some(exp), Some(act)) = (expected, actual) {
-                            failure_messages
-                                .push(format!("    Expected: {}\n    Actual:   {}", exp, act));
-                        }
-                    }
-                    crate::assert::AssertionResult::Error(msg) => {
-                        failure_messages.push(format!("Assertion error {}: {}", context, msg));
-                    }
-                    _ => {}
-                }
-            }
-        }
+        let context = format!("at line {}", line);
+        append_failures_with_context(&results, &context, &mut failure_messages);
 
         AssertionResult {
             passed: failure_messages.is_empty(),

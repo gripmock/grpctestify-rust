@@ -1,6 +1,7 @@
 // .gctf file parser with AST (Abstract Syntax Tree)
 // This module provides robust parsing of .gctf files into an AST
 
+pub(crate) mod assertions;
 pub mod ast;
 pub mod core;
 pub mod error_recovery;
