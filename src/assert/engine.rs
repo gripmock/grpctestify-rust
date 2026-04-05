@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 // Plugin imports
+use crate::plugins::AssertionTiming;
 use crate::plugins::PluginManager;
 
 // Jaq imports
@@ -69,6 +70,17 @@ impl AssertionEngine {
         headers: Option<&HashMap<String, String>>,
         trailers: Option<&HashMap<String, String>>,
     ) -> Result<AssertionResult> {
+        self.evaluate_with_timing(assertion, response, headers, trailers, None)
+    }
+
+    pub fn evaluate_with_timing(
+        &self,
+        assertion: &str,
+        response: &Value,
+        headers: Option<&HashMap<String, String>>,
+        trailers: Option<&HashMap<String, String>>,
+        timing: Option<&AssertionTiming>,
+    ) -> Result<AssertionResult> {
         let trimmed = assertion.trim();
 
         // 1. Try operators engine (handles @ functions and custom operators)
@@ -78,6 +90,7 @@ impl AssertionEngine {
             response,
             headers,
             trailers,
+            timing,
         ) {
             Ok(AssertionResult::Error(msg)) if msg.starts_with("Unsupported assertion syntax") => {
                 // Fallback to JQ
@@ -197,10 +210,21 @@ impl AssertionEngine {
         headers: Option<&HashMap<String, String>>,
         trailers: Option<&HashMap<String, String>>,
     ) -> Vec<AssertionResult> {
+        self.evaluate_all_with_timing(assertions, response, headers, trailers, None)
+    }
+
+    pub fn evaluate_all_with_timing(
+        &self,
+        assertions: &[String],
+        response: &serde_json::Value,
+        headers: Option<&HashMap<String, String>>,
+        trailers: Option<&HashMap<String, String>>,
+        timing: Option<&AssertionTiming>,
+    ) -> Vec<AssertionResult> {
         assertions
             .iter()
             .map(|assertion| {
-                self.evaluate(assertion, response, headers, trailers)
+                self.evaluate_with_timing(assertion, response, headers, trailers, timing)
                     .unwrap_or_else(|e| AssertionResult::Error(format!("Internal error: {}", e)))
             })
             .collect()

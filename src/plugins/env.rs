@@ -84,11 +84,7 @@ mod tests {
         let result = plugin
             .execute(
                 &[Value::String("TEST_VAR".to_string())],
-                &PluginContext {
-                    response: &Value::Null,
-                    headers: None,
-                    trailers: None,
-                },
+                &PluginContext::new(&Value::Null),
             )
             .unwrap();
 
@@ -109,11 +105,7 @@ mod tests {
         let result = plugin
             .execute(
                 &[Value::String("NONEXISTENT_VAR_12345".to_string())],
-                &PluginContext {
-                    response: &Value::Null,
-                    headers: None,
-                    trailers: None,
-                },
+                &PluginContext::new(&Value::Null),
             )
             .unwrap();
 
@@ -128,14 +120,7 @@ mod tests {
 
         // Act
         let result = plugin
-            .execute(
-                &[],
-                &PluginContext {
-                    response: &Value::Null,
-                    headers: None,
-                    trailers: None,
-                },
-            )
+            .execute(&[], &PluginContext::new(&Value::Null))
             .unwrap();
 
         // Assert
@@ -157,11 +142,7 @@ mod tests {
                     Value::String("VAR1".to_string()),
                     Value::String("VAR2".to_string()),
                 ],
-                &PluginContext {
-                    response: &Value::Null,
-                    headers: None,
-                    trailers: None,
-                },
+                &PluginContext::new(&Value::Null),
             )
             .unwrap();
 
@@ -181,11 +162,7 @@ mod tests {
         let result = plugin
             .execute(
                 &[Value::Number(123.into())],
-                &PluginContext {
-                    response: &Value::Null,
-                    headers: None,
-                    trailers: None,
-                },
+                &PluginContext::new(&Value::Null),
             )
             .unwrap();
 

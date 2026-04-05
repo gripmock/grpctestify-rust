@@ -67,6 +67,7 @@ export default defineConfig({
           text: 'Plugins',
           items: [
             { text: 'Plugin System', link: '/guides/plugins/' },
+            { text: 'Timing Assertions', link: '/guides/plugins/timing-assertions' },
             { text: 'State API', link: '/guides/plugins/development/state-api' }
           ]
         },

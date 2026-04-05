@@ -7,7 +7,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::assert::engine::AssertionResult;
-use crate::plugins::{PluginContext, PluginManager, PluginResult, normalize_plugin_name};
+use crate::plugins::{
+    AssertionTiming, PluginContext, PluginManager, PluginResult, normalize_plugin_name,
+};
 
 /// Evaluate assertion expression (plugins and operators)
 pub fn evaluate_assertion(
@@ -16,6 +18,7 @@ pub fn evaluate_assertion(
     response: &Value,
     headers: Option<&HashMap<String, String>>,
     trailers: Option<&HashMap<String, String>>,
+    timing: Option<&AssertionTiming>,
 ) -> Result<AssertionResult> {
     let trimmed = assertion.trim();
 
@@ -26,7 +29,14 @@ pub fn evaluate_assertion(
         && !trimmed.contains('>')
         && !trimmed.contains('<')
     {
-        return evaluate_boolean_function(plugin_manager, trimmed, response, headers, trailers);
+        return evaluate_boolean_function(
+            plugin_manager,
+            trimmed,
+            response,
+            headers,
+            trailers,
+            timing,
+        );
     }
 
     // List of operators sorted by length (descending)
@@ -63,7 +73,8 @@ pub fn evaluate_assertion(
                 continue;
             }
 
-            let lhs_val = evaluate_expression(plugin_manager, lhs_str, response, headers, trailers);
+            let lhs_val =
+                evaluate_expression(plugin_manager, lhs_str, response, headers, trailers, timing);
             let rhs_val = parse_value(rhs_str);
 
             return compare(lhs_val, op, rhs_val, lhs_str, rhs_str);
@@ -82,6 +93,7 @@ fn evaluate_boolean_function(
     response: &Value,
     headers: Option<&HashMap<String, String>>,
     trailers: Option<&HashMap<String, String>>,
+    timing: Option<&AssertionTiming>,
 ) -> Result<AssertionResult> {
     if let (Some(start_paren), Some(end_paren)) = (expr.find('('), expr.rfind(')')) {
         let func_name = &expr[0..start_paren];
@@ -90,13 +102,19 @@ fn evaluate_boolean_function(
         let resolved_name = normalize_plugin_name(func_name);
 
         if let Some(plugin) = plugin_manager.get(resolved_name) {
-            let context = PluginContext {
+            let context = PluginContext::new(response)
+                .with_headers(headers)
+                .with_trailers(trailers)
+                .with_timing(timing);
+
+            let args = parse_plugin_arguments(
+                plugin_manager,
+                arg_str,
                 response,
                 headers,
                 trailers,
-            };
-
-            let args = parse_plugin_arguments(plugin_manager, arg_str, response, headers, trailers);
+                timing,
+            );
 
             return match plugin.execute(&args, &context) {
                 Ok(PluginResult::Assertion(res)) => Ok(res),
@@ -126,6 +144,7 @@ fn evaluate_expression(
     response: &Value,
     headers: Option<&HashMap<String, String>>,
     trailers: Option<&HashMap<String, String>>,
+    timing: Option<&AssertionTiming>,
 ) -> Value {
     if expr.starts_with('@')
         && let (Some(start_paren), Some(end_paren)) = (expr.find('('), expr.rfind(')'))
@@ -136,13 +155,19 @@ fn evaluate_expression(
         let resolved_name = normalize_plugin_name(func_name);
 
         if let Some(plugin) = plugin_manager.get(resolved_name) {
-            let context = PluginContext {
+            let context = PluginContext::new(response)
+                .with_headers(headers)
+                .with_trailers(trailers)
+                .with_timing(timing);
+
+            let args = parse_plugin_arguments(
+                plugin_manager,
+                arg_str,
                 response,
                 headers,
                 trailers,
-            };
-
-            let args = parse_plugin_arguments(plugin_manager, arg_str, response, headers, trailers);
+                timing,
+            );
 
             match plugin.execute(&args, &context) {
                 Ok(PluginResult::Value(v)) => return v,
@@ -176,10 +201,13 @@ fn parse_plugin_arguments(
     response: &Value,
     headers: Option<&HashMap<String, String>>,
     trailers: Option<&HashMap<String, String>>,
+    timing: Option<&AssertionTiming>,
 ) -> Vec<Value> {
     split_arguments(arg_str)
         .into_iter()
-        .map(|token| parse_argument_value(plugin_manager, token, response, headers, trailers))
+        .map(|token| {
+            parse_argument_value(plugin_manager, token, response, headers, trailers, timing)
+        })
         .collect()
 }
 
@@ -237,6 +265,7 @@ fn parse_argument_value(
     response: &Value,
     headers: Option<&HashMap<String, String>>,
     trailers: Option<&HashMap<String, String>>,
+    timing: Option<&AssertionTiming>,
 ) -> Value {
     let t = token.trim();
     if t.is_empty() {
@@ -244,7 +273,7 @@ fn parse_argument_value(
     }
 
     if t.starts_with('@') && t.contains('(') && t.ends_with(')') {
-        return evaluate_expression(plugin_manager, t, response, headers, trailers);
+        return evaluate_expression(plugin_manager, t, response, headers, trailers, timing);
     }
 
     if t == "." || t.starts_with('.') {
@@ -414,7 +443,7 @@ mod tests {
         let pm = create_plugin_manager();
         let response = json!({"status": "success"});
         let result =
-            evaluate_assertion(&pm, ".status == \"success\"", &response, None, None).unwrap();
+            evaluate_assertion(&pm, ".status == \"success\"", &response, None, None, None).unwrap();
         assert!(matches!(result, AssertionResult::Pass));
     }
 
@@ -423,7 +452,7 @@ mod tests {
         let pm = create_plugin_manager();
         let response = json!({"status": "success"});
         let result =
-            evaluate_assertion(&pm, ".status == \"error\"", &response, None, None).unwrap();
+            evaluate_assertion(&pm, ".status == \"error\"", &response, None, None, None).unwrap();
         assert!(matches!(result, AssertionResult::Fail { .. }));
     }
 
@@ -432,7 +461,7 @@ mod tests {
         let pm = create_plugin_manager();
         let response = json!({"name": "test"});
         let result =
-            evaluate_assertion(&pm, ".name contains \"te\"", &response, None, None).unwrap();
+            evaluate_assertion(&pm, ".name contains \"te\"", &response, None, None, None).unwrap();
         assert!(matches!(result, AssertionResult::Pass));
     }
 
@@ -440,7 +469,7 @@ mod tests {
     fn test_evaluate_assertion_plugin() {
         let pm = create_plugin_manager();
         let response = json!({"id": "550e8400-e29b-41d4-a716-446655440000"});
-        let result = evaluate_assertion(&pm, "@uuid(.id)", &response, None, None).unwrap();
+        let result = evaluate_assertion(&pm, "@uuid(.id)", &response, None, None, None).unwrap();
         assert!(matches!(result, AssertionResult::Pass));
     }
 
@@ -456,6 +485,7 @@ mod tests {
             "@has_header(content-type) == true",
             &response,
             Some(&headers),
+            None,
             None,
         )
         .unwrap();
@@ -476,6 +506,7 @@ mod tests {
             &response,
             None,
             Some(&trailers),
+            None,
         )
         .unwrap();
 

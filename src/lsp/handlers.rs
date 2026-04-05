@@ -24,7 +24,7 @@ pub fn get_section_hover(section_type: &SectionType) -> Option<String> {
         SectionType::Proto => Some("**PROTO**\n\nProto file configuration.\n\nKeys:\n- `descriptor` - Path to .desc file\n- `files` - Comma-separated proto files\n- `import_paths` - Import paths".to_string()),
         SectionType::Options => Some("**OPTIONS**\n\nTest execution options.".to_string()),
         SectionType::Extract => Some("**EXTRACT**\n\nVariable extraction using JQ paths.\n\nExample:\n```\nuser_id: .id\ntoken: .auth.token\n```\n\nUse in REQUEST: `${user_id}`".to_string()),
-        SectionType::Asserts => Some("**ASSERTS**\n\nAssertion expressions.\n\nOperators: `==`, `!=`, `>`, `<`, `contains`, `matches`\nPlugins: `@uuid`, `@email`, `@ip`, `@url`, `@timestamp`\nJQ: `select`, `length`, `startswith`".to_string()),
+        SectionType::Asserts => Some("**ASSERTS**\n\nAssertion expressions.\n\nOperators: `==`, `!=`, `>`, `<`, `contains`, `matches`\nPlugins: `@uuid`, `@email`, `@ip`, `@url`, `@timestamp`, `@elapsed_ms`, `@total_elapsed_ms`\nJQ: `select`, `length`, `startswith`".to_string()),
     }
 }
 

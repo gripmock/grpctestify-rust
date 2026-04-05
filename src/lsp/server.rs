@@ -1466,12 +1466,12 @@ fn get_plugin_signatures() -> std::collections::HashMap<String, LspPluginSignatu
     for plugin in plugins {
         let normalized = plugin.name().trim_start_matches('@').to_string();
         let signature = plugin.signature();
-        let template: Vec<&str> = if signature.arg_names.is_empty() {
-            vec!["value"]
+        let template: Vec<&str> = signature.arg_names.to_vec();
+        let label = if template.is_empty() {
+            format!("@{}()", normalized)
         } else {
-            signature.arg_names.to_vec()
+            format!("@{}({})", normalized, template.join(", "))
         };
-        let label = format!("@{}({})", normalized, template.join(", "));
 
         let return_kind = match signature.return_kind {
             PluginReturnKind::Boolean => "bool",

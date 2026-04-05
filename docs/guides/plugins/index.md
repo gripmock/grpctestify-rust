@@ -17,6 +17,10 @@ Rust version includes built-in assertion plugins available in `ASSERTS`.
 - `@regex(value, pattern)`
 - `@empty(value)`
 - `@env("NAME")`
+- `@elapsed_ms()`
+- `@total_elapsed_ms()`
+- `@scope_message_count()`
+- `@scope_index()`
 
 ## Usage
 
@@ -27,6 +31,28 @@ Rust version includes built-in assertion plugins available in `ASSERTS`.
 @email(.user.email)
 @len(.items) > 0
 ```
+
+Timing assertions (`with_asserts=true`):
+
+```gctf
+--- RESPONSE with_asserts=true ---
+{
+  "status": "NOT_SERVING"
+}
+{
+  "status": "SERVING"
+}
+
+--- ASSERTS ---
+@scope_message_count() == 2
+@elapsed_ms() >= 10
+@total_elapsed_ms() >= 10
+```
+
+`@elapsed_ms()` uses current assertion scope:
+
+- If `RESPONSE` section has one expected message -> elapsed for that single message scope.
+- If `RESPONSE` section has multiple expected messages -> elapsed for the whole section batch scope.
 
 ## Notes
 

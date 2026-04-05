@@ -2,6 +2,7 @@
 
 use crate::assert::AssertionEngine;
 use crate::parser::ast::{Section, SectionContent, SectionType};
+use crate::plugins::AssertionTiming;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -164,12 +165,17 @@ impl AssertionHandler {
         headers: &HashMap<String, String>,
         trailers: &HashMap<String, String>,
         context: &str,
+        timing: Option<&AssertionTiming>,
     ) -> AssertionResult {
         let mut failure_messages = Vec::new();
 
-        let results = self
-            .engine
-            .evaluate_all(lines, target_value, Some(headers), Some(trailers));
+        let results = self.engine.evaluate_all_with_timing(
+            lines,
+            target_value,
+            Some(headers),
+            Some(trailers),
+            timing,
+        );
 
         if self.engine.has_failures(&results) {
             for fail in self.engine.get_failures(&results) {

@@ -321,9 +321,7 @@ pub fn validate_plugin_semantics_completeness() -> Vec<String> {
         if sig.return_kind == PluginReturnKind::Unknown {
             issues.push(format!("{}: return_kind is Unknown", name));
         }
-        if sig.arg_names.is_empty() {
-            issues.push(format!("{}: arg_names is empty", name));
-        }
+        let _ = sig.arg_names;
     }
     issues
 }
