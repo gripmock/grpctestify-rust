@@ -142,7 +142,7 @@ impl AssertionHandler {
         target_value: &Value,
         headers: &HashMap<String, String>,
         trailers: &HashMap<String, String>,
-        line: usize,
+        context: &str,
         timing: Option<&AssertionTiming>,
     ) -> AssertionResult {
         let mut failure_messages = Vec::new();
@@ -155,8 +155,7 @@ impl AssertionHandler {
             timing,
         );
 
-        let context = format!("at line {}", line);
-        append_failures_with_context(&results, &context, &mut failure_messages);
+        append_failures_with_context(&results, context, &mut failure_messages);
 
         AssertionResult {
             passed: failure_messages.is_empty(),

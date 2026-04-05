@@ -1174,7 +1174,10 @@ impl TestRunner {
                                     lines,
                                     msg,
                                     &mut failure_reasons,
-                                    section.start_line,
+                                    format!(
+                                        "(attached to RESPONSE at line {})",
+                                        section.start_line
+                                    ),
                                     AssertionContext {
                                         headers: &captured_headers,
                                         trailers: &captured_trailers,
@@ -1239,7 +1242,7 @@ impl TestRunner {
                                     lines,
                                     &error_value,
                                     &mut failure_reasons,
-                                    section.start_line,
+                                    format!("after ERROR at line {}", section.start_line),
                                     AssertionContext {
                                         headers: &captured_headers,
                                         trailers: &captured_trailers,
@@ -1292,7 +1295,7 @@ impl TestRunner {
                                     lines,
                                     &msg,
                                     &mut failure_reasons,
-                                    section.start_line,
+                                    format!("at line {}", section.start_line),
                                     AssertionContext {
                                         headers: &captured_headers,
                                         trailers: &captured_trailers,
@@ -1581,7 +1584,10 @@ impl TestRunner {
                                         lines,
                                         &error_value,
                                         &mut failure_reasons,
-                                        section.start_line,
+                                        format!(
+                                            "(attached to ERROR at line {})",
+                                            section.start_line
+                                        ),
                                         AssertionContext {
                                             headers: &captured_headers,
                                             trailers: &captured_trailers,
@@ -1774,7 +1780,7 @@ impl TestRunner {
         lines: &[String],
         target_value: &Value,
         failure_reasons: &mut Vec<String>,
-        line: usize,
+        context: String,
         assertion_context: AssertionContext<'_>,
     ) {
         let mut optimized_lines: Option<Vec<String>> = None;
@@ -1798,7 +1804,7 @@ impl TestRunner {
             target_value,
             assertion_context.headers,
             assertion_context.trailers,
-            line,
+            &context,
             assertion_context.timing,
         );
 
