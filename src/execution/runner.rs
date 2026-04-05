@@ -1044,10 +1044,10 @@ impl TestRunner {
                                             if let Some(pretty) = msg_pretty.as_deref() {
                                                 println!("{}", pretty);
                                             }
-                                        } else if self.verbose {
-                                            if let Some(pretty) = msg_pretty.as_deref() {
-                                                println!("🔍 gRPC response received: '{}'", pretty);
-                                            }
+                                        } else if self.verbose
+                                            && let Some(pretty) = msg_pretty.as_deref()
+                                        {
+                                            println!("🔍 gRPC response received: '{}'", pretty);
                                         }
 
                                         if !effective_no_assert {

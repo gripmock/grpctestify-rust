@@ -821,8 +821,8 @@ mod tests {
 
     #[test]
     fn test_jaq_to_json_dec_number() {
-        let dec = JaqVal::Num(JaqNum::Dec(JaqRc::new("3.14".to_string())));
-        assert_eq!(jaq_to_json(&dec), json!(3.14));
+        let dec = JaqVal::Num(JaqNum::Dec(JaqRc::new("2.5".to_string())));
+        assert_eq!(jaq_to_json(&dec), json!(2.5));
     }
 
     #[test]
