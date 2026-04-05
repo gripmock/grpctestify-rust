@@ -134,20 +134,24 @@ mod tests {
     use super::*;
     use crate::plugins::AssertionTiming;
 
-    fn context_with_timing(timing: AssertionTiming) -> PluginContext<'static> {
-        let timing_ref = Box::leak(Box::new(timing));
-        PluginContext::new(&Value::Null).with_timing(Some(timing_ref))
+    fn context_with_timing<'a>(
+        response: &'a Value,
+        timing: &'a AssertionTiming,
+    ) -> PluginContext<'a> {
+        PluginContext::new(response).with_timing(Some(timing))
     }
 
     #[test]
     fn test_elapsed_ms_plugin_returns_value() {
         let plugin = ElapsedMsPlugin;
-        let context = context_with_timing(AssertionTiming {
+        let response = Value::Null;
+        let timing = AssertionTiming {
             elapsed_ms: 15,
             total_elapsed_ms: 23,
             scope_message_count: 2,
             scope_index: 3,
-        });
+        };
+        let context = context_with_timing(&response, &timing);
 
         let result = plugin.execute(&[], &context).unwrap();
         assert!(matches!(result, PluginResult::Value(Value::Number(_))));
@@ -156,12 +160,14 @@ mod tests {
     #[test]
     fn test_total_elapsed_ms_plugin_returns_value() {
         let plugin = TotalElapsedMsPlugin;
-        let context = context_with_timing(AssertionTiming {
+        let response = Value::Null;
+        let timing = AssertionTiming {
             elapsed_ms: 10,
             total_elapsed_ms: 15,
             scope_message_count: 1,
             scope_index: 2,
-        });
+        };
+        let context = context_with_timing(&response, &timing);
 
         let result = plugin.execute(&[], &context).unwrap();
         assert!(matches!(result, PluginResult::Value(Value::Number(_))));
