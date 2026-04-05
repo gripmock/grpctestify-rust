@@ -51,7 +51,22 @@ impl ErrorHandler {
 
     /// Check if tonic::Status matches expected error JSON (supports details)
     pub fn status_matches_expected(status: &tonic::Status, expected: &Value) -> bool {
-        Self::status_mismatch_reason(status, expected).is_none()
+        if !Self::message_matches_status(status, expected)
+            || !Self::code_matches_status(status, expected)
+        {
+            return false;
+        }
+
+        let expects_details = expected.get("details").is_some();
+        if !expects_details {
+            return status.details().is_empty();
+        }
+
+        let Some(actual_details) = Self::decode_status_details(status.details()) else {
+            return false;
+        };
+
+        Self::compare_details(expected, actual_details).is_none()
     }
 
     /// Convert tonic::Status details to JSON array
@@ -64,17 +79,14 @@ impl ErrorHandler {
 
     /// Convert tonic::Status to JSON object for diff output
     pub fn status_to_json(status: &tonic::Status) -> Value {
-        let mut obj = Map::new();
-        obj.insert("code".to_string(), Value::from(status.code() as i64));
-        obj.insert(
-            "message".to_string(),
-            Value::String(status.message().to_string()),
-        );
+        let mut obj = Map::with_capacity(3);
+        obj.insert("code".into(), Value::from(status.code() as i64));
+        obj.insert("message".into(), Value::from(status.message()));
 
         if let Some(details) = Self::decode_status_details(status.details())
             && !details.is_empty()
         {
-            obj.insert("details".to_string(), Value::Array(details));
+            obj.insert("details".into(), Value::Array(details));
         }
 
         Value::Object(obj)

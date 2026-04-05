@@ -1,10 +1,28 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 
 use crate::parser;
+use crate::parser::assertions::strip_assertion_comments;
 use crate::plugins::{
     PluginReturnKind, PluginSignature, extract_plugin_call_name, plugin_signature_map,
 };
+
+fn likely_needs_assertion_rewrite(expr: &str) -> bool {
+    expr.contains("==")
+        || expr.contains("!=")
+        || expr.contains('>')
+        || expr.contains('<')
+        || expr.contains(" startswith ")
+        || expr.contains(" endswith ")
+        || expr.contains("!!")
+        || expr.contains("if ")
+        || expr.contains(" then ")
+        || expr.contains(" else ")
+        || expr.contains(" or ")
+        || expr.contains(" and ")
+        || expr.contains("@len(")
+}
 
 #[derive(Debug, Clone, Copy)]
 struct RewriteRuleMetadata {
@@ -156,25 +174,32 @@ fn build_hint(rule_id: &str, line: usize, before: &str, after: String) -> Optimi
     }
 }
 
-fn plugin_signatures() -> HashMap<String, PluginSignature> {
-    plugin_signature_map()
-}
+static PLUGIN_SIGNATURES: LazyLock<HashMap<String, PluginSignature>> =
+    LazyLock::new(plugin_signature_map);
 
-fn section_content_line(start_line: usize, idx: usize) -> usize {
-    start_line + idx + 2
-}
-
-fn boolean_plugins() -> HashSet<String> {
-    plugin_signatures()
-        .into_iter()
+static BOOLEAN_PLUGINS: LazyLock<HashSet<String>> = LazyLock::new(|| {
+    PLUGIN_SIGNATURES
+        .iter()
         .filter(|(_, signature)| {
             signature.return_kind == PluginReturnKind::Boolean
                 && signature.safe_for_rewrite
                 && signature.deterministic
                 && signature.idempotent
         })
-        .map(|(name, _)| name)
+        .map(|(name, _)| name.clone())
         .collect()
+});
+
+fn plugin_signatures() -> &'static HashMap<String, PluginSignature> {
+    &PLUGIN_SIGNATURES
+}
+
+fn section_content_line(start_line: usize, idx: usize) -> usize {
+    start_line + idx + 2
+}
+
+fn boolean_plugins() -> &'static HashSet<String> {
+    &BOOLEAN_PLUGINS
 }
 
 fn is_boolean_plugin_expr(expr: &str, bool_plugins: &HashSet<String>) -> bool {
@@ -256,16 +281,26 @@ fn parse_literal(expr: &str) -> Option<serde_json::Value> {
         return None;
     }
 
-    if trimmed == "true" || trimmed == "false" || trimmed == "null" {
-        return serde_json::from_str(trimmed).ok();
+    if trimmed == "true" {
+        return Some(serde_json::Value::Bool(true));
+    }
+    if trimmed == "false" {
+        return Some(serde_json::Value::Bool(false));
+    }
+    if trimmed == "null" {
+        return Some(serde_json::Value::Null);
     }
 
     if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
         return serde_json::from_str(trimmed).ok();
     }
 
-    if trimmed.parse::<f64>().is_ok() {
-        return serde_json::from_str(trimmed).ok();
+    if let Ok(i) = trimmed.parse::<i64>() {
+        return Some(serde_json::Value::Number(serde_json::Number::from(i)));
+    }
+
+    if let Ok(f) = trimmed.parse::<f64>() {
+        return serde_json::Number::from_f64(f).map(serde_json::Value::Number);
     }
 
     None
@@ -294,10 +329,7 @@ fn suggest_constant_folding(expr: &str) -> Option<(&'static str, String)> {
         let folded = match op {
             "==" => Some(lhs == rhs),
             "!=" => Some(lhs != rhs),
-            ">" => Some(lhs.as_f64()? > rhs.as_f64()?),
-            "<" => Some(lhs.as_f64()? < rhs.as_f64()?),
-            ">=" => Some(lhs.as_f64()? >= rhs.as_f64()?),
-            "<=" => Some(lhs.as_f64()? <= rhs.as_f64()?),
+            ">" | "<" | ">=" | "<=" => compare_literal_numbers(&lhs, &rhs, op),
             _ => None,
         }?;
 
@@ -305,6 +337,43 @@ fn suggest_constant_folding(expr: &str) -> Option<(&'static str, String)> {
     }
 
     None
+}
+
+fn compare_literal_numbers(
+    lhs: &serde_json::Value,
+    rhs: &serde_json::Value,
+    op: &str,
+) -> Option<bool> {
+    let lhs_num = lhs.as_number()?;
+    let rhs_num = rhs.as_number()?;
+
+    let lhs_i = lhs_num
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| lhs_num.as_u64().map(i128::from));
+    let rhs_i = rhs_num
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| rhs_num.as_u64().map(i128::from));
+
+    if let (Some(l), Some(r)) = (lhs_i, rhs_i) {
+        return Some(match op {
+            ">" => l > r,
+            "<" => l < r,
+            ">=" => l >= r,
+            "<=" => l <= r,
+            _ => return None,
+        });
+    }
+
+    let (l, r) = (lhs_num.as_f64()?, rhs_num.as_f64()?);
+    Some(match op {
+        ">" => l > r,
+        "<" => l < r,
+        ">=" => l >= r,
+        "<=" => l <= r,
+        _ => return None,
+    })
 }
 
 fn is_idempotent_expr(expr: &str, signatures: &HashMap<String, PluginSignature>) -> bool {
@@ -716,7 +785,7 @@ fn rewrite_assertion_expression_with_context(
 pub fn rewrite_assertion_expression(expr: &str) -> Option<(&'static str, String)> {
     let signatures = plugin_signatures();
     let bool_plugins = boolean_plugins();
-    rewrite_assertion_expression_with_context(expr, &signatures, &bool_plugins)
+    rewrite_assertion_expression_with_context(expr, signatures, bool_plugins)
 }
 
 pub fn rewrite_assertion_expression_fixed_point(expr: &str) -> String {
@@ -726,7 +795,7 @@ pub fn rewrite_assertion_expression_fixed_point(expr: &str) -> String {
     let mut current = expr.trim().to_string();
     for _ in 0..32 {
         let Some((_, rewritten)) =
-            rewrite_assertion_expression_with_context(&current, &signatures, &bool_plugins)
+            rewrite_assertion_expression_with_context(&current, signatures, bool_plugins)
         else {
             break;
         };
@@ -741,6 +810,20 @@ pub fn rewrite_assertion_expression_fixed_point(expr: &str) -> String {
     current
 }
 
+pub fn rewrite_assertion_expression_fixed_point_if_changed(expr: &str) -> Option<String> {
+    let trimmed = expr.trim();
+    if trimmed.is_empty() || !likely_needs_assertion_rewrite(trimmed) {
+        None
+    } else {
+        let rewritten = rewrite_assertion_expression_fixed_point(trimmed);
+        if rewritten == trimmed {
+            None
+        } else {
+            Some(rewritten)
+        }
+    }
+}
+
 pub fn collect_assertion_optimizations(doc: &parser::GctfDocument) -> Vec<OptimizationHint> {
     let signatures = plugin_signatures();
     let bool_plugins = boolean_plugins();
@@ -752,19 +835,22 @@ pub fn collect_assertion_optimizations(doc: &parser::GctfDocument) -> Vec<Optimi
         }
 
         for (idx, line) in section.raw_content.lines().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+            let Some(trimmed) = strip_assertion_comments(line) else {
+                continue;
+            };
+
+            if !likely_needs_assertion_rewrite(&trimmed) {
                 continue;
             }
 
             if let Some((rule_id, rewrite)) =
-                rewrite_assertion_expression_with_context(trimmed, &signatures, &bool_plugins)
+                rewrite_assertion_expression_with_context(&trimmed, signatures, bool_plugins)
             {
                 debug_assert!(rule_metadata(rule_id).is_some());
                 hints.push(build_hint(
                     rule_id,
                     section_content_line(section.start_line, idx),
-                    trimmed,
+                    &trimmed,
                     rewrite,
                 ));
             }
@@ -963,6 +1049,45 @@ test.Service/Method
         let expr = "true == @has_header(\"x-request-id\")";
         let rewritten = rewrite_assertion_expression_fixed_point(expr);
         assert_eq!(rewritten, "@has_header(\"x-request-id\")");
+    }
+
+    #[test]
+    fn test_rewrite_assertion_expression_fixed_point_if_changed() {
+        assert_eq!(
+            rewrite_assertion_expression_fixed_point_if_changed(
+                "true == @has_header(\"x-request-id\")"
+            ),
+            Some("@has_header(\"x-request-id\")".to_string())
+        );
+        assert_eq!(
+            rewrite_assertion_expression_fixed_point_if_changed(".status == 200"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_collect_assertion_optimizations_ignores_inline_comments() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+true == @has_header("x-request-id") // comment should be ignored
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let hints = collect_assertion_optimizations(&doc);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].rule_id, "OPT_B003");
+        assert_eq!(hints[0].after, "@has_header(\"x-request-id\")");
+    }
+
+    #[test]
+    fn test_likely_needs_assertion_rewrite_fast_path() {
+        assert!(!likely_needs_assertion_rewrite("@scope_message_count()"));
+        assert!(likely_needs_assertion_rewrite("@elapsed_ms() >= 10"));
+        assert!(likely_needs_assertion_rewrite("true == @has_header(\"x\")"));
+        assert!(likely_needs_assertion_rewrite(".name startswith \"abc\""));
+        assert!(likely_needs_assertion_rewrite("if true then 1 else 2 end"));
     }
 
     // === If-then-else optimization tests ===

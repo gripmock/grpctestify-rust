@@ -1,6 +1,7 @@
 // GCTF file parser - converts .gctf text to AST
 // Handles section extraction, comment removal, and inline option parsing
 
+use super::assertions::strip_assertion_comments;
 use super::ast::*;
 use super::json_mod;
 use anyhow::{Context, Result};
@@ -500,8 +501,7 @@ fn parse_key_value_section(content: &str) -> Result<HashMap<String, String>> {
 fn parse_assertions(content: &str) -> Result<Vec<String>> {
     let assertions: Vec<String> = content
         .lines()
-        .map(|line| line.trim().to_string())
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(strip_assertion_comments)
         .map(|line| normalize_regex_literals(&line))
         .collect();
 
@@ -706,6 +706,54 @@ key2: value2
         let result = parse_assertions(content).unwrap();
         assert_eq!(result.len(), 1);
         assert!(result.contains(&".status == 200".to_string()));
+    }
+
+    #[test]
+    fn test_parse_assertions_with_double_slash_comments() {
+        let content = r#"
+// Watch delay in stubs.yaml is 10ms.
+// Delay applies before the first message in the scope.
+@scope_message_count() == 2
+@elapsed_ms() >= 10
+@total_elapsed_ms() >= 10
+"#;
+        let result = parse_assertions(content).unwrap();
+        assert_eq!(result.len(), 3);
+        assert!(result.contains(&"@scope_message_count() == 2".to_string()));
+        assert!(result.contains(&"@elapsed_ms() >= 10".to_string()));
+        assert!(result.contains(&"@total_elapsed_ms() >= 10".to_string()));
+    }
+
+    #[test]
+    fn test_parse_assertions_keeps_double_slash_inside_string() {
+        let content = r#"
+@regex(.url, "^https://example.com")
+"#;
+        let result = parse_assertions(content).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], "@regex(.url, \"^https://example.com\")");
+    }
+
+    #[test]
+    fn test_parse_assertions_with_inline_double_slash_comment() {
+        let content = r#"
+@scope_message_count() == 2 // exactly two messages expected
+@elapsed_ms() >= 10 // first response has configured delay
+"#;
+        let result = parse_assertions(content).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], "@scope_message_count() == 2");
+        assert_eq!(result[1], "@elapsed_ms() >= 10");
+    }
+
+    #[test]
+    fn test_parse_assertions_with_inline_hash_comment() {
+        let content = r#"
+.status == "SERVING" # stream reached serving state
+"#;
+        let result = parse_assertions(content).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], ".status == \"SERVING\"");
     }
 
     #[test]

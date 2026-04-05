@@ -13,13 +13,13 @@ impl JsonComparator {
         let mut results = Vec::new();
 
         // 1. Redact fields if needed
-        let mut actual_redacted = actual.clone();
-        if !options.redact.is_empty() {
+        if options.redact.is_empty() {
+            Self::compare_recursive(actual, expected, "$", options, &mut results);
+        } else {
+            let mut actual_redacted = actual.clone();
             Self::redact_value(&mut actual_redacted, &options.redact);
+            Self::compare_recursive(&actual_redacted, expected, "$", options, &mut results);
         }
-
-        // 2. Compare
-        Self::compare_recursive(&actual_redacted, expected, "$", options, &mut results);
 
         results
     }

@@ -4,11 +4,37 @@
 use anyhow::Result;
 use regex::Regex;
 use serde_json::Value;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::assert::engine::AssertionResult;
 use crate::plugins::{
     Plugin, PluginContext, PluginPurity, PluginResult, PluginReturnKind, PluginSignature,
 };
+
+thread_local! {
+    static REGEX_CACHE: RefCell<HashMap<String, std::result::Result<Rc<Regex>, String>>> =
+        RefCell::new(HashMap::new());
+}
+
+fn cached_regex(pattern: &str) -> std::result::Result<Rc<Regex>, String> {
+    if let Some(cached) = REGEX_CACHE.with(|cache| cache.borrow().get(pattern).cloned()) {
+        return cached;
+    }
+
+    let compiled = Regex::new(pattern)
+        .map(Rc::new)
+        .map_err(|err| err.to_string());
+
+    REGEX_CACHE.with(|cache| {
+        cache
+            .borrow_mut()
+            .insert(pattern.to_string(), compiled.clone());
+    });
+
+    compiled
+}
 
 /// Regex plugin for pattern matching
 #[derive(Debug, Clone, Default)]
@@ -69,7 +95,7 @@ impl Plugin for RegexPlugin {
         };
 
         // Compile and match regex
-        match Regex::new(pattern) {
+        match cached_regex(pattern) {
             Ok(re) => {
                 if re.is_match(field_value) {
                     Ok(PluginResult::Assertion(AssertionResult::Pass))
