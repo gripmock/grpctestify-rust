@@ -25,4 +25,4 @@ jobs:
           toolchain: nightly
           components: miri
       - name: Run
-        run: cargo miri test --lib --all-features -- --fail-fast
+        run: cargo miri test -Z unstable-options --lib --all-features -- --fail-fast
