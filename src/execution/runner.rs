@@ -132,6 +132,12 @@ pub struct ExecutionSummary {
     pub rpc_mode_name: String,
 }
 
+struct AssertionContext<'a> {
+    headers: &'a HashMap<String, String>,
+    trailers: &'a HashMap<String, String>,
+    timing: Option<&'a AssertionTiming>,
+}
+
 impl ExecutionPlan {
     /// Build execution plan from a GctfDocument
     pub fn from_document(doc: &GctfDocument) -> Self {
@@ -1108,14 +1114,16 @@ impl TestRunner {
                                 self.run_assertions(
                                     lines,
                                     msg,
-                                    &captured_headers,
-                                    &captured_trailers,
                                     &mut failure_reasons,
                                     format!(
                                         "(attached to RESPONSE at line {})",
                                         section.start_line
                                     ),
-                                    scope_timing.as_ref(),
+                                    AssertionContext {
+                                        headers: &captured_headers,
+                                        trailers: &captured_trailers,
+                                        timing: scope_timing.as_ref(),
+                                    },
                                 );
                             }
                         }
@@ -1172,11 +1180,13 @@ impl TestRunner {
                                 self.run_assertions(
                                     lines,
                                     &error_value,
-                                    &captured_headers,
-                                    &captured_trailers,
                                     &mut failure_reasons,
                                     format!("after ERROR at line {}", section.start_line),
-                                    last_error_timing.as_ref(),
+                                    AssertionContext {
+                                        headers: &captured_headers,
+                                        trailers: &captured_trailers,
+                                        timing: last_error_timing.as_ref(),
+                                    },
                                 );
                             } else {
                                 failure_reasons.push(format!(
@@ -1220,11 +1230,13 @@ impl TestRunner {
                                 self.run_assertions(
                                     lines,
                                     &msg,
-                                    &captured_headers,
-                                    &captured_trailers,
                                     &mut failure_reasons,
                                     format!("at line {}", section.start_line),
-                                    scope_timing.as_ref(),
+                                    AssertionContext {
+                                        headers: &captured_headers,
+                                        trailers: &captured_trailers,
+                                        timing: scope_timing.as_ref(),
+                                    },
                                 );
                             }
                         }
@@ -1501,14 +1513,16 @@ impl TestRunner {
                                     self.run_assertions(
                                         lines,
                                         &error_value,
-                                        &captured_headers,
-                                        &captured_trailers,
                                         &mut failure_reasons,
                                         format!(
                                             "(attached to ERROR at line {})",
                                             section.start_line
                                         ),
-                                        error_scope_timing.as_ref(),
+                                        AssertionContext {
+                                            headers: &captured_headers,
+                                            trailers: &captured_trailers,
+                                            timing: error_scope_timing.as_ref(),
+                                        },
                                     );
                                     skip_next_section = true;
                                 }
@@ -1710,11 +1724,9 @@ impl TestRunner {
         &self,
         lines: &[String],
         target_value: &Value,
-        headers: &HashMap<String, String>,
-        trailers: &HashMap<String, String>,
         failure_reasons: &mut Vec<String>,
         context: String,
-        timing: Option<&AssertionTiming>,
+        assertion_context: AssertionContext<'_>,
     ) {
         let optimized_lines: Vec<String> = lines
             .iter()
@@ -1725,10 +1737,10 @@ impl TestRunner {
         let result = self.assertion_handler.evaluate_assertions_for_section(
             &optimized_lines,
             target_value,
-            headers,
-            trailers,
+            assertion_context.headers,
+            assertion_context.trailers,
             &context,
-            timing,
+            assertion_context.timing,
         );
 
         if !result.passed {
