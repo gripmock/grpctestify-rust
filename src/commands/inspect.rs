@@ -4,11 +4,19 @@ use anyhow::Result;
 use std::path::Path;
 
 use crate::cli::args::InspectArgs;
-use crate::execution;
-use crate::optimizer;
+use crate::execution::{ExecutionPlan, Workflow};
 use crate::parser;
 use crate::report::{AstOverview, InspectReport, SectionInfo};
-use crate::semantics;
+
+fn sort_report_diagnostics(diags: &mut [crate::report::Diagnostic]) {
+    diags.sort_by(|a, b| {
+        (a.range.start.line, a.code.as_str(), a.message.as_str()).cmp(&(
+            b.range.start.line,
+            b.code.as_str(),
+            b.message.as_str(),
+        ))
+    });
+}
 
 pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
     let file_path = &args.file;
@@ -40,12 +48,15 @@ pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
         eprintln!();
 
         for diagnostic in &diagnostics.diagnostics {
-            print_diagnostic(diagnostic);
+            crate::commands::print_diagnostic(diagnostic);
             eprintln!();
         }
     }
 
     let validation_start = std::time::Instant::now();
+
+    // Build workflow with full semantic analysis - single source of truth for inspect/explain
+    let workflow = Workflow::from_document_with_analysis(&doc);
     let validation_result = parser::validate_document(&doc);
     let validation_ms = validation_start.elapsed().as_secs_f64() * 1000.0;
 
@@ -66,64 +77,81 @@ pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
 
         // Check for deprecated HEADERS using AST
         for section in &doc.sections {
-            if let Some(source) = &doc.metadata.source {
-                let lines: Vec<&str> = source.lines().collect();
-                if section.start_line < lines.len() {
-                    let line = lines[section.start_line].trim();
-                    if line.to_uppercase() == "--- HEADERS ---" {
-                        inspect_diagnostics.push(
-                            crate::report::Diagnostic::warning(
-                                &file_str,
-                                "DEPRECATED_SECTION",
-                                "HEADERS section is deprecated, use REQUEST_HEADERS instead",
-                                section.start_line + 1,
-                            )
-                            .with_hint("Replace --- HEADERS --- with --- REQUEST_HEADERS ---"),
-                        );
-                    }
+            if doc.section_uses_deprecated_headers_alias(section) {
+                inspect_diagnostics.push(
+                    crate::report::Diagnostic::warning(
+                        &file_str,
+                        "DEPRECATED_SECTION",
+                        "HEADERS section is deprecated, use REQUEST_HEADERS instead",
+                        section.start_line + 1,
+                    )
+                    .with_hint("Replace --- HEADERS --- with --- REQUEST_HEADERS ---"),
+                );
+            }
+        }
+
+        // Extract semantic diagnostics from workflow events
+        for event in workflow.semantic_analysis() {
+            if let crate::execution::WorkflowEvent::SemanticAnalysis {
+                type_mismatches,
+                unknown_plugins,
+            } = event
+            {
+                for mismatch in type_mismatches {
+                    let hint_str = mismatch
+                        .expression
+                        .as_ref()
+                        .map(|e| format!("Expression: {}", e))
+                        .unwrap_or_default();
+                    let diag = crate::report::Diagnostic::error(
+                        &file_str,
+                        &mismatch.rule_id,
+                        &mismatch.message,
+                        mismatch.line,
+                    )
+                    .with_hint(&hint_str);
+                    semantic_diagnostics.push(diag.clone());
+                    inspect_diagnostics.push(diag);
+                }
+                for unknown in unknown_plugins {
+                    let hint_str = unknown
+                        .expression
+                        .as_ref()
+                        .map(|e| format!("Assertion: {}", e))
+                        .unwrap_or_default();
+                    let diag = crate::report::Diagnostic::error(
+                        &file_str,
+                        &unknown.rule_id,
+                        &unknown.message,
+                        unknown.line,
+                    )
+                    .with_hint(&hint_str);
+                    semantic_diagnostics.push(diag.clone());
+                    inspect_diagnostics.push(diag);
                 }
             }
         }
 
-        for mismatch in semantics::collect_assertion_type_mismatches(&doc) {
-            let diag = crate::report::Diagnostic::error(
-                &file_str,
-                &mismatch.rule_id,
-                &mismatch.message,
-                mismatch.line,
-            )
-            .with_hint(&format!("Expression: {}", mismatch.expression));
-            semantic_diagnostics.push(diag.clone());
-            inspect_diagnostics.push(diag);
+        // Extract optimization hints from workflow events
+        for event in workflow.optimization_hints() {
+            if let crate::execution::WorkflowEvent::OptimizationFound { hints } = event {
+                for hint in hints {
+                    let diag = crate::report::Diagnostic::hint(
+                        &file_str,
+                        &hint.rule_id,
+                        &format!("Safe rewrite available: {} -> {}", hint.before, hint.after),
+                        hint.line,
+                    )
+                    .with_hint("Boolean expression compared with true/false can be simplified");
+                    optimization_hints.push(diag.clone());
+                    inspect_diagnostics.push(diag);
+                }
+            }
         }
 
-        for unknown in semantics::collect_unknown_plugin_calls(&doc) {
-            let message = match &unknown.suggestion {
-                Some(suggestion) => format!("{} (use {})", unknown.message, suggestion),
-                None => unknown.message.clone(),
-            };
-            let diag = crate::report::Diagnostic::error(
-                &file_str,
-                &unknown.rule_id,
-                &message,
-                unknown.line,
-            )
-            .with_hint(&format!("Assertion: {}", unknown.expression));
-            semantic_diagnostics.push(diag.clone());
-            inspect_diagnostics.push(diag);
-        }
-
-        for hint in optimizer::collect_assertion_optimizations(&doc) {
-            let diag = crate::report::Diagnostic::hint(
-                &file_str,
-                &hint.rule_id,
-                &format!("Safe rewrite available: {} -> {}", hint.before, hint.after),
-                hint.line,
-            )
-            .with_hint("Boolean expression compared with true/false can be simplified");
-            optimization_hints.push(diag.clone());
-            inspect_diagnostics.push(diag);
-        }
+        sort_report_diagnostics(&mut inspect_diagnostics);
+        sort_report_diagnostics(&mut semantic_diagnostics);
+        sort_report_diagnostics(&mut optimization_hints);
 
         // Build sections info
         let sections_info: Vec<SectionInfo> = doc
@@ -154,8 +182,8 @@ pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
             .collect();
 
         // Infer RPC mode from execution plan
-        let execution_plan = execution::ExecutionPlan::from_document(&doc);
-        let inferred_rpc_mode = Some(execution_plan.summary.rpc_mode_name);
+        let execution_plan = ExecutionPlan::from_document(&doc);
+        let inferred_rpc_mode = Some(execution_plan.summary.rpc_mode_name.clone());
 
         let report = InspectReport {
             file: file_str,
@@ -175,6 +203,7 @@ pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
         // Print detailed technical AST analysis
         print_detailed_analysis(
             &doc,
+            &workflow,
             file_path,
             &parse_diagnostics,
             parse_ms,
@@ -186,38 +215,9 @@ pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
     Ok(())
 }
 
-fn print_diagnostic(diagnostic: &crate::diagnostics::Diagnostic) {
-    use crate::diagnostics::DiagnosticSeverity;
-
-    let severity_str = match diagnostic.severity {
-        DiagnosticSeverity::Error => "ERROR",
-        DiagnosticSeverity::Warning => "WARNING",
-        DiagnosticSeverity::Information => "INFO",
-        DiagnosticSeverity::Hint => "HINT",
-    };
-
-    eprintln!(
-        "[{}] {}: {}",
-        severity_str,
-        diagnostic.code.as_str(),
-        diagnostic.message
-    );
-
-    if let Some(context) = &diagnostic.context {
-        eprintln!("  {}", context);
-    }
-
-    if !diagnostic.suggestions.is_empty() {
-        eprintln!();
-        eprintln!("Suggestions:");
-        for suggestion in &diagnostic.suggestions {
-            eprintln!("  - {}", suggestion);
-        }
-    }
-}
-
 fn print_detailed_analysis(
     doc: &parser::GctfDocument,
+    workflow: &Workflow,
     file_path: &Path,
     parse_diagnostics: &parser::ParseDiagnostics,
     parse_ms: f64,
@@ -438,10 +438,29 @@ fn print_detailed_analysis(
         has_warnings = true;
     }
 
-    // Check each section for issues
-    let type_mismatches = semantics::collect_assertion_type_mismatches(doc);
-    let unknown_plugins = semantics::collect_unknown_plugin_calls(doc);
+    // Extract semantic analysis from workflow events
+    let mut type_mismatches = Vec::new();
+    let mut unknown_plugins = Vec::new();
+    let mut optimization_hints = Vec::new();
 
+    for event in workflow.semantic_analysis() {
+        if let crate::execution::WorkflowEvent::SemanticAnalysis {
+            type_mismatches: tm,
+            unknown_plugins: up,
+        } = event
+        {
+            type_mismatches = tm.clone();
+            unknown_plugins = up.clone();
+        }
+    }
+
+    for event in workflow.optimization_hints() {
+        if let crate::execution::WorkflowEvent::OptimizationFound { hints } = event {
+            optimization_hints = hints.clone();
+        }
+    }
+
+    // Check each section for issues
     for (i, section) in sections.iter().enumerate() {
         // Check for `with_asserts` without following ASSERTS
         if section.inline_options.with_asserts {
@@ -498,17 +517,23 @@ fn print_detailed_analysis(
 
     for mismatch in &type_mismatches {
         println!("  [ERROR] Line {}: {}", mismatch.line, mismatch.message);
-        println!("         Expression: {}", mismatch.expression);
+        println!(
+            "         Expression: {}",
+            mismatch.expression.as_ref().unwrap_or(&"".to_string())
+        );
         has_warnings = true;
     }
 
     for unknown in &unknown_plugins {
         println!("  [ERROR] Line {}: {}", unknown.line, unknown.message);
-        println!("         Assertion: {}", unknown.expression);
+        println!(
+            "         Assertion: {}",
+            unknown.expression.as_ref().unwrap_or(&"".to_string())
+        );
         has_warnings = true;
     }
 
-    for hint in optimizer::collect_assertion_optimizations(doc) {
+    for hint in &optimization_hints {
         println!(
             "  [HINT] Line {}: [{}] {} -> {}",
             hint.line, hint.rule_id, hint.before, hint.after

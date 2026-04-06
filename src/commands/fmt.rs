@@ -8,7 +8,6 @@ use crate::optimizer;
 use crate::parser;
 use crate::semantics;
 use crate::utils::FileUtils;
-use crate::utils::gctf_style::trailing_blank_line_count;
 
 fn normalize_hash_comment_line(line: &str) -> Option<String> {
     let trimmed = line.trim_start();
@@ -49,6 +48,7 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
     let mut escaped = false;
     let mut in_line_comment = false;
     let mut in_block_comment = false;
+    let mut saw_newline_gap = false;
 
     while let Some(ch) = chars.next() {
         if in_line_comment {
@@ -58,6 +58,7 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
                     out.push('\n');
                 }
                 push_indent(&mut out, indent);
+                saw_newline_gap = false;
             } else if ch != '\r' {
                 out.push(ch);
             }
@@ -78,6 +79,7 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
 
         if in_string {
             out.push(ch);
+            saw_newline_gap = false;
             if escaped {
                 escaped = false;
                 continue;
@@ -93,11 +95,17 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
         if ch == '"' {
             in_string = true;
             out.push(ch);
+            saw_newline_gap = false;
             continue;
         }
 
         if ch == '#' || (ch == '/' && matches!(chars.peek(), Some('/') | Some('*'))) {
-            if !out.ends_with('\n') && !out.ends_with(' ') {
+            if saw_newline_gap {
+                if !out.ends_with('\n') {
+                    out.push('\n');
+                }
+                push_indent(&mut out, indent);
+            } else if !out.is_empty() && !out.ends_with('\n') && !out.ends_with(' ') {
                 out.push(' ');
             }
 
@@ -118,9 +126,11 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
                     _ => out.push('/'),
                 }
             } else {
-                out.push('#');
+                out.push('/');
+                out.push('/');
                 in_line_comment = true;
             }
+            saw_newline_gap = false;
             continue;
         }
 
@@ -130,10 +140,12 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
                 out.push('\n');
                 indent += 1;
                 push_indent(&mut out, indent);
+                saw_newline_gap = false;
             }
             '}' | ']' => {
                 if (ch == '}' && out.ends_with('{')) || (ch == ']' && out.ends_with('[')) {
                     out.push(ch);
+                    saw_newline_gap = false;
                     continue;
                 }
                 indent = indent.saturating_sub(1);
@@ -145,18 +157,28 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
                 }
                 push_indent(&mut out, indent);
                 out.push(ch);
+                saw_newline_gap = false;
             }
             ',' => {
                 out.push(',');
                 out.push('\n');
                 push_indent(&mut out, indent);
+                saw_newline_gap = false;
             }
             ':' => {
                 out.push(':');
                 out.push(' ');
+                saw_newline_gap = false;
             }
-            c if c.is_whitespace() => {}
-            _ => out.push(ch),
+            c if c.is_whitespace() => {
+                if c == '\n' {
+                    saw_newline_gap = true;
+                }
+            }
+            _ => {
+                out.push(ch);
+                saw_newline_gap = false;
+            }
         }
     }
 
@@ -213,17 +235,16 @@ fn ensure_single_section_separator(output: &mut Vec<String>, has_next_section: b
     if !has_next_section {
         return;
     }
-    if output.last().is_some_and(|line| !line.trim().is_empty()) {
-        output.push(String::new());
+
+    while output.last().is_some_and(|line| line.trim().is_empty()) {
+        output.pop();
     }
+
+    output.push(String::new());
 }
 
-fn detect_line_ending(source: &str) -> &'static str {
-    if source.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    }
+fn canonical_line_ending() -> &'static str {
+    "\n"
 }
 
 fn normalize_eol_for_compare(s: &str) -> std::borrow::Cow<'_, str> {
@@ -234,109 +255,136 @@ fn normalize_eol_for_compare(s: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+fn normalize_lines(raw: &str) -> Vec<String> {
+    raw.lines()
+        .map(|line| normalize_hash_comment_line(line).unwrap_or_else(|| line.to_string()))
+        .collect()
+}
+
+fn format_non_json_section_lines(raw: &str) -> Vec<String> {
+    normalize_lines(raw)
+}
+
+fn format_key_values_section(raw: &str, sort_keys: bool) -> Vec<String> {
+    let lines = normalize_lines(raw);
+
+    let mut items: Vec<(usize, String, String)> = Vec::new();
+
+    for line in &lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") || trimmed.is_empty() {
+            continue;
+        } else if let Some((key, value)) = trimmed.split_once(':') {
+            let sort_key = if sort_keys {
+                key.trim().to_lowercase()
+            } else {
+                String::new()
+            };
+            items.push((
+                items.len(),
+                sort_key,
+                format!("{}: {}", key.trim(), value.trim()),
+            ));
+        }
+    }
+
+    if sort_keys {
+        items.sort_by(|a, b| a.1.cmp(&b.1));
+    }
+
+    items.into_iter().map(|(_, _, v)| v).collect()
+}
+
+fn trim_trailing_blank_lines(lines: &mut Vec<String>) {
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+}
+
+fn format_section_lines(section: &crate::parser::ast::Section) -> Vec<String> {
+    let mut lines = match (&section.section_type, &section.content) {
+        (
+            crate::parser::ast::SectionType::Request
+            | crate::parser::ast::SectionType::Error
+            | crate::parser::ast::SectionType::Response,
+            crate::parser::ast::SectionContent::Json(value),
+        ) => {
+            if has_json_style_comments(&section.raw_content) {
+                format_json_with_comments(&section.raw_content)
+            } else {
+                format_json_content(value)
+            }
+        }
+        (
+            crate::parser::ast::SectionType::Response,
+            crate::parser::ast::SectionContent::JsonLines(values),
+        ) => {
+            if has_json_style_comments(&section.raw_content) {
+                format_json_with_comments(&section.raw_content)
+            } else {
+                let mut out = Vec::new();
+                for value in values {
+                    out.extend(format_json_content(value));
+                }
+                out
+            }
+        }
+        // ASSERTS section uses raw_content directly (optimizer already applied)
+        (crate::parser::ast::SectionType::Asserts, _) => {
+            return normalize_lines(&section.raw_content);
+        }
+        (_, crate::parser::ast::SectionContent::KeyValues(_)) => {
+            format_key_values_section(&section.raw_content, true)
+        }
+        (_, crate::parser::ast::SectionContent::Extract(_)) => {
+            format_key_values_section(&section.raw_content, true)
+        }
+        _ => format_non_json_section_lines(&section.raw_content),
+    };
+
+    trim_trailing_blank_lines(&mut lines);
+    lines
+}
+
 fn format_gctf_preserve_comments(doc: &crate::parser::GctfDocument, source: &str) -> String {
-    let eol = detect_line_ending(source);
+    let eol = canonical_line_ending();
     let lines: Vec<&str> = source.lines().collect();
-    let mut output: Vec<String> = Vec::with_capacity(lines.len());
+    let mut output: Vec<String> = Vec::new();
     let mut current_line = 0usize;
 
     for (section_idx, section) in doc.sections.iter().enumerate() {
-        let has_next_section = section_idx + 1 < doc.sections.len();
-
         while current_line < section.start_line && current_line < lines.len() {
-            if let Some(normalized) = normalize_hash_comment_line(lines[current_line]) {
-                output.push(normalized);
-            } else {
-                output.push(lines[current_line].to_string());
-            }
+            output.push(
+                normalize_hash_comment_line(lines[current_line])
+                    .unwrap_or_else(|| lines[current_line].to_string()),
+            );
             current_line += 1;
         }
 
         output.push(section.format_header());
-        current_line = current_line.saturating_add(1);
+        output.extend(format_section_lines(section));
 
-        match (&section.section_type, &section.content) {
-            (
-                crate::parser::ast::SectionType::Request
-                | crate::parser::ast::SectionType::Error
-                | crate::parser::ast::SectionType::Response,
-                crate::parser::ast::SectionContent::Json(value),
-            ) => {
-                let content_start = current_line;
-                let end = section.end_line.min(lines.len());
-                if has_json_style_comments(&section.raw_content) {
-                    output.extend(format_json_with_comments(&section.raw_content));
-                    let trailing_blanks = trailing_blank_line_count(&lines, content_start, end);
-                    let blanks_to_keep = if has_next_section {
-                        trailing_blanks.max(1)
-                    } else {
-                        trailing_blanks
-                    };
-                    for _ in 0..blanks_to_keep {
-                        output.push(String::new());
-                    }
-                    current_line = end;
-                } else {
-                    output.extend(format_json_content(value));
-                    let trailing_blanks = trailing_blank_line_count(&lines, content_start, end);
-                    let blanks_to_keep = if has_next_section {
-                        trailing_blanks.max(1)
-                    } else {
-                        trailing_blanks
-                    };
-                    for _ in 0..blanks_to_keep {
-                        output.push(String::new());
-                    }
-                    current_line = end;
-                }
-            }
-            (
-                crate::parser::ast::SectionType::Response,
-                crate::parser::ast::SectionContent::JsonLines(values),
-            ) => {
-                let content_start = current_line;
-                for value in values {
-                    output.extend(format_json_content(value));
-                }
-                let end = section.end_line.min(lines.len());
-                let trailing_blanks = trailing_blank_line_count(&lines, content_start, end);
-                let blanks_to_keep = if has_next_section {
-                    trailing_blanks.max(1)
-                } else {
-                    trailing_blanks
-                };
-                for _ in 0..blanks_to_keep {
-                    output.push(String::new());
-                }
-                current_line = end;
-            }
-            _ => {
-                let end = section.end_line.min(lines.len());
-                while current_line < end {
-                    if let Some(normalized) = normalize_hash_comment_line(lines[current_line]) {
-                        output.push(normalized);
-                    } else {
-                        output.push(lines[current_line].to_string());
-                    }
-                    current_line += 1;
-                }
+        current_line = section.end_line.min(lines.len());
+
+        if section_idx + 1 < doc.sections.len() {
+            let next_start = doc.sections[section_idx + 1].start_line.min(lines.len());
+            let has_detached_lines = current_line < next_start;
+            if !has_detached_lines {
+                ensure_single_section_separator(&mut output, true);
             }
         }
-
-        ensure_single_section_separator(&mut output, has_next_section);
     }
 
     while current_line < lines.len() {
-        if let Some(normalized) = normalize_hash_comment_line(lines[current_line]) {
-            output.push(normalized);
-        } else {
-            output.push(lines[current_line].to_string());
-        }
+        output.push(
+            normalize_hash_comment_line(lines[current_line])
+                .unwrap_or_else(|| lines[current_line].to_string()),
+        );
         current_line += 1;
     }
 
     let mut rendered = output.join(eol);
-    if source.ends_with('\n') {
+    if !rendered.ends_with(eol) {
         rendered.push_str(eol);
     }
     rendered
@@ -347,12 +395,14 @@ pub fn format_gctf_content(source: &str, file_name: &str) -> Result<String> {
     Ok(format_gctf_preserve_comments(&doc, source))
 }
 
-fn apply_optimizer_rewrites(source: &str, file_name: &str) -> Result<String> {
-    let eol = detect_line_ending(source);
-    let doc = parser::parse_gctf_from_str(source, file_name)?;
-    let hints = optimizer::collect_assertion_optimizations(&doc);
+fn apply_optimizer_rewrites_to_doc(
+    doc: &crate::parser::GctfDocument,
+    source: &str,
+    eol: &str,
+) -> String {
+    let hints = optimizer::collect_assertion_optimizations(doc);
     if hints.is_empty() {
-        return Ok(source.to_string());
+        return source.to_string();
     }
 
     let mut lines: Vec<String> = source.lines().map(str::to_string).collect();
@@ -373,28 +423,19 @@ fn apply_optimizer_rewrites(source: &str, file_name: &str) -> Result<String> {
     if source.ends_with('\n') {
         rewritten.push_str(eol);
     }
-    Ok(rewritten)
+    rewritten
 }
 
-fn collect_check_errors_for_content(
-    source: &str,
-    file_name: &str,
+fn collect_check_errors_for_doc(
+    doc: &crate::parser::GctfDocument,
 ) -> Vec<(usize, String, String, Option<String>)> {
     let mut errors = Vec::new();
 
-    let doc = match parser::parse_gctf_from_str(source, file_name) {
-        Ok(doc) => doc,
-        Err(e) => {
-            errors.push((1, "PARSE_ERROR".to_string(), e.to_string(), None));
-            return errors;
-        }
-    };
-
-    if let Err(e) = parser::validate_document(&doc) {
+    if let Err(e) = parser::validate_document(doc) {
         errors.push((1, "VALIDATION_ERROR".to_string(), e.to_string(), None));
     }
 
-    for mismatch in semantics::collect_assertion_type_mismatches(&doc) {
+    for mismatch in semantics::collect_assertion_type_mismatches(doc) {
         errors.push((
             mismatch.line,
             mismatch.rule_id,
@@ -406,7 +447,7 @@ fn collect_check_errors_for_content(
         ));
     }
 
-    for unknown in semantics::collect_unknown_plugin_calls(&doc) {
+    for unknown in semantics::collect_unknown_plugin_calls(doc) {
         errors.push((
             unknown.line,
             unknown.rule_id,
@@ -452,7 +493,16 @@ pub async fn handle_fmt(args: &FmtArgs) -> Result<()> {
         };
 
         let file_name = file.to_string_lossy();
-        let check_errors = collect_check_errors_for_content(&original, &file_name);
+        let doc = match parser::parse_gctf_from_str(&original, &file_name) {
+            Ok(doc) => doc,
+            Err(e) => {
+                error!("{}:1: [PARSE_ERROR] {}", file.display(), e);
+                has_error = true;
+                continue;
+            }
+        };
+
+        let check_errors = collect_check_errors_for_doc(&doc);
         if !check_errors.is_empty() {
             for (line, code, message, hint) in check_errors {
                 error!("{}:{}: [{}] {}", file.display(), line, code, message);
@@ -464,27 +514,31 @@ pub async fn handle_fmt(args: &FmtArgs) -> Result<()> {
             continue;
         }
 
-        let preformatted = match apply_optimizer_rewrites(&original, &file_name) {
-            Ok(content) => content,
+        let eol = canonical_line_ending();
+        let preformatted = apply_optimizer_rewrites_to_doc(&doc, &original, eol);
+
+        // Re-parse to get fresh doc with updated raw_content after optimizer
+        let doc_after_optimize = match parser::parse_gctf_from_str(&preformatted, &file_name) {
+            Ok(d) => d,
             Err(e) => {
-                error!("Failed to optimize {}: {}", file.display(), e);
+                error!(
+                    "{}:1: [PARSE_ERROR] After optimization: {}",
+                    file.display(),
+                    e
+                );
                 has_error = true;
                 continue;
             }
         };
 
-        let formatted = match format_gctf_content(&preformatted, &file_name) {
-            Ok(formatted) => formatted,
-            Err(e) => {
-                error!("Failed to parse {}: {}", file.display(), e);
-                has_error = true;
-                continue;
-            }
-        };
+        let formatted = format_gctf_preserve_comments(&doc_after_optimize, &preformatted);
 
         if args.write {
             // Only write if content changed (idempotent check)
-            if formatted != original
+            // Normalize EOL for comparison to handle CRLF input
+            let formatted_cmp = normalize_eol_for_compare(&formatted);
+            let original_cmp = normalize_eol_for_compare(&original);
+            if formatted_cmp != original_cmp
                 && let Err(e) = std::fs::write(&file, &formatted)
             {
                 error!("Failed to write {}: {}", file.display(), e);
@@ -516,8 +570,1048 @@ pub async fn handle_fmt(args: &FmtArgs) -> Result<()> {
     }
 
     if has_error {
-        std::process::exit(1);
+        return Err(anyhow::anyhow!("Formatting failed with errors"));
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_gctf_content;
+
+    fn to_crlf(input: &str) -> String {
+        input.replace('\n', "\r\n")
+    }
+
+    #[test]
+    fn test_fmt_hash_comments_to_slashes() {
+        let source = r#"--- ENDPOINT ---
+grpc.health.v1.Health/Check
+
+--- REQUEST ---
+{
+  "service": "gripmock"
+}
+
+--- RESPONSE ---
+ # Protected behavior: even if a stub tries gripmock -> NOT_SERVING,
+# runtime must ignore it and return real status.
+{
+  "status": "SERVING"
+}
+"#;
+
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+grpc.health.v1.Health/Check
+
+--- REQUEST ---
+{
+  "service": "gripmock"
+}
+
+--- RESPONSE ---
+// Protected behavior: even if a stub tries gripmock -> NOT_SERVING,
+// runtime must ignore it and return real status.
+{
+  "status": "SERVING"
+}
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_jsonlines_preserves_comments() {
+        let source = r#"--- ENDPOINT ---
+grpc.health.v1.Health/Watch
+
+--- REQUEST ---
+{
+  "service": "examples.health.watch"
+}
+
+--- RESPONSE with_asserts=true ---
+# Delay applies before first message
+{
+  "status": "NOT_SERVING"
+}
+// Then service recovers
+{
+  "status": "SERVING"
+}
+
+--- ASSERTS ---
+@scope_message_count() == 2
+"#;
+
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+grpc.health.v1.Health/Watch
+
+--- REQUEST ---
+{
+  "service": "examples.health.watch"
+}
+
+--- RESPONSE with_asserts ---
+// Delay applies before first message
+{
+  "status": "NOT_SERVING"
+}
+// Then service recovers
+{
+  "status": "SERVING"
+}
+
+--- ASSERTS ---
+@scope_message_count() == 2
+"#;
+
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_hash_inside_string_not_comment() {
+        let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{
+  "value": "abc#def"
+}
+
+--- RESPONSE ---
+{
+  "ok": true
+}
+"#;
+
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{
+  "value": "abc#def"
+}
+
+--- RESPONSE ---
+{
+  "ok": true
+}
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_collapses_extra_blank_lines() {
+        let source = r#"--- ENDPOINT ---
+grpc.health.v1.Health/Check
+
+--- REQUEST ---
+{
+  "service": "gripmock"
+}
+
+--- RESPONSE with_asserts=true ---
+{
+  "status": "NOT_SERVING"
+}
+{
+  "status": "SERVING"
+}
+
+
+--- ASSERTS ---
+@scope_message_count() == 2
+"#;
+
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+grpc.health.v1.Health/Check
+
+--- REQUEST ---
+{
+  "service": "gripmock"
+}
+
+--- RESPONSE with_asserts ---
+{
+  "status": "NOT_SERVING"
+}
+{
+  "status": "SERVING"
+}
+
+--- ASSERTS ---
+@scope_message_count() == 2
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_inserts_blank_line_before_asserts() {
+        let source = r#"--- ENDPOINT ---
+grpc.health.v1.Health/Check
+
+--- REQUEST ---
+{
+  "service": "gripmock"
+}
+
+--- RESPONSE with_asserts=true ---
+{
+  "status": "NOT_SERVING"
+}
+{
+  "status": "SERVING"
+}
+--- ASSERTS --- 
+@scope_message_count() == 2
+"#;
+
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+grpc.health.v1.Health/Check
+
+--- REQUEST ---
+{
+  "service": "gripmock"
+}
+
+--- RESPONSE with_asserts ---
+{
+  "status": "NOT_SERVING"
+}
+{
+  "status": "SERVING"
+}
+
+--- ASSERTS ---
+@scope_message_count() == 2
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_crlf_to_lf_between_sections() {
+        let source_lf = r#"--- ENDPOINT ---
+grpc.health.v1.Health/Check
+
+--- REQUEST ---
+{
+  "service": "gripmock"
+}
+
+--- RESPONSE with_asserts=true ---
+{
+  "status": "NOT_SERVING"
+}
+{
+  "status": "SERVING"
+}
+--- ASSERTS ---
+@scope_message_count() == 2
+"#;
+        let source = to_crlf(source_lf);
+
+        let formatted = format_gctf_content(&source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+grpc.health.v1.Health/Check
+
+--- REQUEST ---
+{
+  "service": "gripmock"
+}
+
+--- RESPONSE with_asserts ---
+{
+  "status": "NOT_SERVING"
+}
+{
+  "status": "SERVING"
+}
+
+--- ASSERTS ---
+@scope_message_count() == 2
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_ends_with_newline() {
+        let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        assert!(formatted.ends_with('\n'));
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_crlf_to_lf_and_ends_with_newline() {
+        let source_lf = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}"#;
+        let source = to_crlf(source_lf);
+        let formatted = format_gctf_content(&source, "test.gctf").unwrap();
+        assert!(formatted.ends_with('\n'));
+        assert!(!formatted.contains("\r\n"));
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_section_address() {
+        let source = r#"--- ADDRESS ---
+localhost:4770
+
+--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ADDRESS ---
+localhost:4770
+
+--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_section_endpoint() {
+        let source = r#"--- ENDPOINT ---
+grpc.health.v1.Health/Check
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+grpc.health.v1.Health/Check
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_section_request() {
+        let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{
+  "id": 123,
+  "name": "test"
+}
+
+--- RESPONSE ---
+{}"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{
+  "id": 123,
+  "name": "test"
+}
+
+--- RESPONSE ---
+{}
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_section_response_with_inline_option_with_asserts() {
+        let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE with_asserts=true ---
+{
+  "status": "ok"
+}
+
+--- ASSERTS ---
+.status == "ok""#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE with_asserts ---
+{
+  "status": "ok"
+}
+
+--- ASSERTS ---
+.status == "ok"
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_section_response_with_inline_option_partial() {
+        let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE partial=true ---
+{
+  "id": 1,
+  "name": "test",
+  "extra": "ignored"
+}
+"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE partial ---
+{
+  "extra": "ignored",
+  "id": 1,
+  "name": "test"
+}
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_section_response_with_inline_option_tolerance() {
+        let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE tolerance=0.01 ---
+{
+  "value": 3.1415926
+}
+"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE tolerance=0.01 ---
+{
+  "value": 3.1415926
+}
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_section_response_with_inline_option_redact() {
+        let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE redact=["token","secret"] ---
+{
+  "token": "abc123",
+  "secret": "xyz789",
+  "public": "visible"
+}
+"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE redact=["secret","token"] ---
+{
+  "public": "visible",
+  "secret": "xyz789",
+  "token": "abc123"
+}
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_section_response_with_inline_option_unordered_arrays() {
+        let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE unordered_arrays=true ---
+{
+  "items": [3, 1, 2]
+}
+"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE unordered_arrays ---
+{
+  "items": [
+    3,
+    1,
+    2
+  ]
+}
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_section_response_with_multiple_inline_options() {
+        let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE with_asserts=true partial=true tolerance=0.1 ---
+{
+  "status": "ok"
+}
+
+--- ASSERTS ---
+.status == "ok"
+"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE partial tolerance=0.1 with_asserts ---
+{
+  "status": "ok"
+}
+
+--- ASSERTS ---
+.status == "ok"
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_section_error() {
+        let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- ERROR ---
+{
+  "code": 3,
+  "message": "Invalid argument"
+}
+"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- ERROR ---
+{
+  "code": 3,
+  "message": "Invalid argument"
+}
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_section_error_with_inline_options() {
+        let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- ERROR with_asserts=true ---
+{
+  "code": 3
+}
+
+--- ASSERTS ---
+.code == 3
+"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- ERROR with_asserts ---
+{
+  "code": 3
+}
+
+--- ASSERTS ---
+.code == 3
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_section_request_headers() {
+        let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST_HEADERS ---
+Content-Type: application/json
+Authorization: Bearer token123
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST_HEADERS ---
+Authorization: Bearer token123
+Content-Type: application/json
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_section_asserts() {
+        let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE with_asserts=true ---
+{
+  "status": "ok",
+  "count": 42
+}
+
+--- ASSERTS ---
+.status == "ok"
+.count == 42
+.count > 10
+"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE with_asserts ---
+{
+  "count": 42,
+  "status": "ok"
+}
+
+--- ASSERTS ---
+.status == "ok"
+.count == 42
+.count > 10
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_section_proto() {
+        let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- PROTO ---
+files: service.proto
+import_path: /proto
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- PROTO ---
+files: service.proto
+import_path: /proto
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_section_tls() {
+        let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- TLS ---
+insecure: false
+ca_cert: /path/to/ca.crt
+server_name: example.com
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- TLS ---
+ca_cert: /path/to/ca.crt
+insecure: false
+server_name: example.com
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_section_options() {
+        let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- OPTIONS ---
+timeout: 30
+dry_run: true
+retry_count: 3
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- OPTIONS ---
+dry_run: true
+retry_count: 3
+timeout: 30
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_section_extract() {
+        let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{
+  "id": 123,
+  "token": "abc456"
+}
+
+--- EXTRACT ---
+user_id: .id
+auth_token: .token
+"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{
+  "id": 123,
+  "token": "abc456"
+}
+
+--- EXTRACT ---
+auth_token: .token
+user_id: .id
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_all_sections_in_order() {
+        let source = r#"--- ADDRESS ---
+localhost:4770
+
+--- ENDPOINT ---
+grpc.health.v1.Health/Check
+
+--- REQUEST_HEADERS ---
+Content-Type: application/json
+Authorization: Bearer token
+
+--- PROTO ---
+files: health.proto
+
+--- TLS ---
+insecure: false
+
+--- OPTIONS ---
+timeout: 10
+
+--- REQUEST ---
+{
+  "service": "grpc.health.v1.Health"
+}
+
+--- RESPONSE ---
+{
+  "status": "SERVING"
+}
+
+--- ERROR ---
+{
+  "code": 5,
+  "message": "Service not found"
+}
+
+--- ASSERTS ---
+.status == "SERVING"
+
+--- EXTRACT ---
+status_code: .status
+"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ADDRESS ---
+localhost:4770
+
+--- ENDPOINT ---
+grpc.health.v1.Health/Check
+
+--- REQUEST_HEADERS ---
+Authorization: Bearer token
+Content-Type: application/json
+
+--- PROTO ---
+files: health.proto
+
+--- TLS ---
+insecure: false
+
+--- OPTIONS ---
+timeout: 10
+
+--- REQUEST ---
+{
+  "service": "grpc.health.v1.Health"
+}
+
+--- RESPONSE ---
+{
+  "status": "SERVING"
+}
+
+--- ERROR ---
+{
+  "code": 5,
+  "message": "Service not found"
+}
+
+--- ASSERTS ---
+.status == "SERVING"
+
+--- EXTRACT ---
+status_code: .status
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_inline_options_all_boolean_combinations() {
+        let combinations = [
+            ("", ""),
+            ("with_asserts=true", "with_asserts"),
+            ("partial=true", "partial"),
+            ("unordered_arrays=true", "unordered_arrays"),
+            ("with_asserts=true partial=true", "partial with_asserts"),
+            (
+                "with_asserts=true unordered_arrays=true",
+                "unordered_arrays with_asserts",
+            ),
+            (
+                "partial=true unordered_arrays=true",
+                "partial unordered_arrays",
+            ),
+            (
+                "with_asserts=true partial=true unordered_arrays=true",
+                "partial unordered_arrays with_asserts",
+            ),
+        ];
+
+        for (input_opts, expected_opts) in combinations {
+            let source = format!(
+                r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{{}}
+
+--- RESPONSE{} ---
+{{"status": "ok"}}
+"#,
+                if input_opts.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", input_opts)
+                }
+            );
+
+            let expected = format!(
+                r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{{}}
+
+--- RESPONSE{} ---
+{{
+  "status": "ok"
+}}
+"#,
+                if expected_opts.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", expected_opts)
+                }
+            );
+
+            let formatted = format_gctf_content(&source, "test.gctf").unwrap();
+            assert_eq!(formatted, expected, "Failed for options: {}", input_opts);
+        }
+    }
+
+    #[test]
+    fn test_fmt_detached_comments_preserved() {
+        let source = r#"// This is a detached comment before the endpoint
+--- ENDPOINT ---
+test.Service/Method
+
+// Another detached comment
+--- REQUEST ---
+{}
+
+// Comment before response
+--- RESPONSE ---
+{}
+"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"// This is a detached comment before the endpoint
+--- ENDPOINT ---
+test.Service/Method
+
+// Another detached comment
+
+--- REQUEST ---
+{
+}
+// Comment before response
+
+--- RESPONSE ---
+{}
+"#;
+        assert_eq!(formatted, expected);
+    }
 }

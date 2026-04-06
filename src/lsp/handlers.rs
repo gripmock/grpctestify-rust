@@ -428,43 +428,60 @@ pub fn collect_semantic_diagnostics(
     let mut diagnostics = Vec::new();
     let lines: Vec<&str> = content.lines().collect();
 
-    for mismatch in crate::semantics::collect_assertion_type_mismatches(doc) {
-        let lsp_line = mismatch.line.saturating_sub(1) as u32;
-        let full_line = lines.get(lsp_line as usize).copied().unwrap_or("");
-        let start_char = full_line.find(&mismatch.expression).unwrap_or(0) as u32;
-        let end_char = (start_char as usize + mismatch.expression.len()) as u32;
+    // Use Workflow for semantic analysis
+    let workflow = crate::execution::Workflow::from_document_with_analysis(doc);
 
-        diagnostics.push(Diagnostic {
-            range: Range::new(
-                Position::new(lsp_line, start_char),
-                Position::new(lsp_line, end_char),
-            ),
-            severity: Some(DiagnosticSeverity::ERROR),
-            code: Some(NumberOrString::String(mismatch.rule_id)),
-            source: Some("grpctestify-semantics".to_string()),
-            message: mismatch.message,
-            ..Diagnostic::default()
-        });
-    }
+    for event in &workflow.events {
+        if let crate::execution::WorkflowEvent::SemanticAnalysis {
+            type_mismatches,
+            unknown_plugins,
+        } = event
+        {
+            // Process type mismatches
+            for mismatch in type_mismatches {
+                let lsp_line = mismatch.line.saturating_sub(1) as u32;
+                let full_line = lines.get(lsp_line as usize).copied().unwrap_or("");
+                let empty_str = "".to_string();
+                let expr = mismatch.expression.as_ref().unwrap_or(&empty_str);
+                let start_char = full_line.find(expr).unwrap_or(0) as u32;
+                let end_char = (start_char as usize + expr.len()) as u32;
 
-    for unknown in crate::semantics::collect_unknown_plugin_calls(doc) {
-        let lsp_line = unknown.line.saturating_sub(1) as u32;
-        let full_line = lines.get(lsp_line as usize).copied().unwrap_or("");
-        let needle = format!("@{}(", unknown.plugin_name);
-        let start_char = full_line.find(&needle).unwrap_or(0) as u32;
-        let end_char = start_char + needle.len() as u32;
+                diagnostics.push(Diagnostic {
+                    range: Range::new(
+                        Position::new(lsp_line, start_char),
+                        Position::new(lsp_line, end_char),
+                    ),
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    code: Some(NumberOrString::String(mismatch.rule_id.clone())),
+                    source: Some("grpctestify-semantics".to_string()),
+                    message: mismatch.message.clone(),
+                    ..Diagnostic::default()
+                });
+            }
 
-        diagnostics.push(Diagnostic {
-            range: Range::new(
-                Position::new(lsp_line, start_char),
-                Position::new(lsp_line, end_char),
-            ),
-            severity: Some(DiagnosticSeverity::ERROR),
-            code: Some(NumberOrString::String(unknown.rule_id)),
-            source: Some("grpctestify-semantics".to_string()),
-            message: unknown.message,
-            ..Diagnostic::default()
-        });
+            // Process unknown plugins
+            for unknown in unknown_plugins {
+                let lsp_line = unknown.line.saturating_sub(1) as u32;
+                let full_line = lines.get(lsp_line as usize).copied().unwrap_or("");
+                let empty_str = "".to_string();
+                let plugin_name = unknown.plugin_name.as_ref().unwrap_or(&empty_str);
+                let needle = format!("@{}(", plugin_name);
+                let start_char = full_line.find(&needle).unwrap_or(0) as u32;
+                let end_char = start_char + needle.len() as u32;
+
+                diagnostics.push(Diagnostic {
+                    range: Range::new(
+                        Position::new(lsp_line, start_char),
+                        Position::new(lsp_line, end_char),
+                    ),
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    code: Some(NumberOrString::String(unknown.rule_id.clone())),
+                    source: Some("grpctestify-semantics".to_string()),
+                    message: unknown.message.clone(),
+                    ..Diagnostic::default()
+                });
+            }
+        }
     }
 
     diagnostics
@@ -901,5 +918,68 @@ test.Service/Method
             d.code == Some(NumberOrString::String("SEM_F001".to_string()))
                 && d.severity == Some(DiagnosticSeverity::ERROR)
         }));
+    }
+
+    #[test]
+    fn test_get_extract_completions() {
+        let completions = get_extract_completions();
+        assert!(completions.len() > 10);
+
+        let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"upper"));
+        assert!(labels.contains(&"lower"));
+        assert!(labels.contains(&"trim"));
+    }
+
+    #[test]
+    fn test_get_section_key_completions_proto() {
+        let completions = get_section_key_completions(&SectionType::Proto);
+        assert!(!completions.is_empty());
+
+        let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"descriptor:"));
+        assert!(labels.contains(&"files:"));
+    }
+
+    #[test]
+    fn test_get_section_key_completions_tls() {
+        let completions = get_section_key_completions(&SectionType::Tls);
+        assert!(!completions.is_empty());
+
+        let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"ca_file:"));
+        assert!(labels.contains(&"cert_file:"));
+    }
+
+    #[test]
+    fn test_get_section_key_completions_options() {
+        let completions = get_section_key_completions(&SectionType::Options);
+        assert!(!completions.is_empty());
+
+        let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"timeout:"));
+        assert!(labels.contains(&"retries:"));
+    }
+
+    #[test]
+    fn test_get_section_key_completions_others() {
+        assert!(get_section_key_completions(&SectionType::Address).is_empty());
+        assert!(get_section_key_completions(&SectionType::Response).is_empty());
+    }
+
+    #[test]
+    fn test_get_section_header_option_completions_response() {
+        let completions = get_section_header_option_completions(&SectionType::Response);
+        assert!(!completions.is_empty());
+
+        let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"partial=true"));
+        assert!(labels.contains(&"tolerance=0.001"));
+    }
+
+    #[test]
+    fn test_get_section_header_option_completions_others() {
+        assert!(get_section_header_option_completions(&SectionType::Address).is_empty());
+        assert!(get_section_header_option_completions(&SectionType::Request).is_empty());
     }
 }

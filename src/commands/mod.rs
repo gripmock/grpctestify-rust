@@ -1,5 +1,6 @@
 // Commands module - handles CLI command execution
 
+use crate::diagnostics::{Diagnostic, DiagnosticSeverity};
 use anyhow::Result;
 
 pub mod check;
@@ -19,6 +20,35 @@ pub use list::handle_list;
 pub use lsp::handle_lsp;
 pub use reflect::handle_reflect;
 pub use run::run_tests;
+
+/// Print diagnostic to stderr
+pub fn print_diagnostic(diagnostic: &Diagnostic) {
+    let severity_str = match diagnostic.severity {
+        DiagnosticSeverity::Error => "ERROR",
+        DiagnosticSeverity::Warning => "WARNING",
+        DiagnosticSeverity::Information => "INFO",
+        DiagnosticSeverity::Hint => "HINT",
+    };
+
+    eprintln!(
+        "[{}] {}: {}",
+        severity_str,
+        diagnostic.code.as_str(),
+        diagnostic.message
+    );
+
+    if let Some(context) = &diagnostic.context {
+        eprintln!("  {}", context);
+    }
+
+    if !diagnostic.suggestions.is_empty() {
+        eprintln!();
+        eprintln!("Suggestions:");
+        for suggestion in &diagnostic.suggestions {
+            eprintln!("  - {}", suggestion);
+        }
+    }
+}
 
 /// Handle shell completion
 pub fn handle_completion(shell_type: &str) -> Result<()> {

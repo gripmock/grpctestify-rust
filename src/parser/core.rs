@@ -223,6 +223,10 @@ fn parse_key_value_options(s: &str) -> Result<HashMap<String, String>> {
                 .trim_matches('\'')
                 .to_string();
             options.insert(key, value);
+        } else {
+            // Short boolean form: token without "=" means "true"
+            let key = token.trim().to_string();
+            options.insert(key, "true".to_string());
         }
     }
 
@@ -650,6 +654,58 @@ mod tests {
     fn test_parse_inline_options_invalid_tolerance() {
         let result = parse_inline_options("tolerance=invalid").unwrap();
         assert!(result.tolerance.is_none());
+    }
+
+    #[test]
+    fn test_parse_inline_options_short_boolean_with_asserts() {
+        let result = parse_inline_options("with_asserts").unwrap();
+        assert!(result.with_asserts);
+        assert!(!result.partial);
+        assert!(result.tolerance.is_none());
+        assert!(result.redact.is_empty());
+        assert!(!result.unordered_arrays);
+    }
+
+    #[test]
+    fn test_parse_inline_options_short_boolean_partial() {
+        let result = parse_inline_options("partial").unwrap();
+        assert!(!result.with_asserts);
+        assert!(result.partial);
+        assert!(result.tolerance.is_none());
+        assert!(result.redact.is_empty());
+        assert!(!result.unordered_arrays);
+    }
+
+    #[test]
+    fn test_parse_inline_options_short_boolean_unordered_arrays() {
+        let result = parse_inline_options("unordered_arrays").unwrap();
+        assert!(!result.with_asserts);
+        assert!(!result.partial);
+        assert!(result.tolerance.is_none());
+        assert!(result.redact.is_empty());
+        assert!(result.unordered_arrays);
+    }
+
+    #[test]
+    fn test_parse_inline_options_mixed_short_and_long() {
+        let result =
+            parse_inline_options("with_asserts partial=true tolerance=0.05 unordered_arrays")
+                .unwrap();
+        assert!(result.with_asserts);
+        assert!(result.partial);
+        assert_eq!(result.tolerance, Some(0.05));
+        assert!(result.redact.is_empty());
+        assert!(result.unordered_arrays);
+    }
+
+    #[test]
+    fn test_parse_key_value_options_short_boolean() {
+        let result =
+            parse_key_value_options("with_asserts partial tolerance=0.1 unordered_arrays").unwrap();
+        assert_eq!(result.get("with_asserts"), Some(&"true".to_string()));
+        assert_eq!(result.get("partial"), Some(&"true".to_string()));
+        assert_eq!(result.get("tolerance"), Some(&"0.1".to_string()));
+        assert_eq!(result.get("unordered_arrays"), Some(&"true".to_string()));
     }
 
     #[test]

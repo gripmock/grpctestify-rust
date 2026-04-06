@@ -162,7 +162,7 @@ example.v1.Greeter/SayHello
     assert!(updated.contains("\"name\": \"World\""));
     assert!(updated.contains("\"meta\": {"));
     assert!(updated.contains("\"id\": 1"));
-    assert!(updated.contains("--- RESPONSE partial=true ---"));
+    assert!(updated.contains("--- RESPONSE partial"));
     assert!(updated.contains("\"ok\": true"));
 }
 
@@ -196,8 +196,8 @@ scalar.FileService/UploadFile
 
     let updated =
         std::fs::read_to_string(&file).expect("failed to read rewritten gctf file content");
-    assert!(updated.contains("# \"hello\" in Base64"));
-    assert!(updated.contains("# MD5 hash of \"hello\""));
+    assert!(updated.contains("// \"hello\" in Base64"));
+    assert!(updated.contains("// MD5 hash of \"hello\""));
 }
 
 #[test]
@@ -287,8 +287,8 @@ scalar.FileService/UploadFile
 
     let updated =
         std::fs::read_to_string(&file).expect("failed to read rewritten gctf file content");
-    assert!(updated.contains("# \"hello\" in Base64"));
-    assert!(updated.contains("# MD5 hash of \"hello\""));
+    assert!(updated.contains("// \"hello\" in Base64"));
+    assert!(updated.contains("// MD5 hash of \"hello\""));
     assert!(updated.contains("--- RESPONSE ---"));
 }
 
@@ -573,7 +573,8 @@ example.v1.Greeter/SayHello
 
     let updated = std::fs::read_to_string(&file).expect("failed to read rewritten gctf file");
     assert!(updated.contains("@has_header(\"x-request-id\")"));
-    assert!(!updated.contains("@has_header(\"x-request-id\") == true"));
+    // Optimizer should simplify `@has_header(...) == true` to just `@has_header(...)`
+    assert!(!updated.contains("== true"));
 }
 
 #[test]

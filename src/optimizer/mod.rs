@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
@@ -82,6 +83,36 @@ const REWRITE_RULES: &[RewriteRuleMetadata] = &[
         proof_note: "Reflexive inequality over idempotent expressions is always false",
     },
     RewriteRuleMetadata {
+        id: "OPT_B013",
+        preconditions: "lhs is boolean plugin expr and rhs is true",
+        negative_cases: "lhs is non-boolean, side-effectful, or unsafe-for-rewrite",
+        proof_note: "Boolean negation: expr != true is equivalent to !expr",
+    },
+    RewriteRuleMetadata {
+        id: "OPT_B014",
+        preconditions: "lhs is boolean plugin expr and rhs is false",
+        negative_cases: "lhs is non-boolean, side-effectful, or unsafe-for-rewrite",
+        proof_note: "Boolean identity: expr != false is equivalent to expr",
+    },
+    RewriteRuleMetadata {
+        id: "OPT_B015",
+        preconditions: "lhs is true and rhs is boolean plugin expr",
+        negative_cases: "rhs is non-boolean, side-effectful, or unsafe-for-rewrite",
+        proof_note: "Boolean negation: true != expr is equivalent to !expr",
+    },
+    RewriteRuleMetadata {
+        id: "OPT_B016",
+        preconditions: "lhs is false and rhs is boolean plugin expr",
+        negative_cases: "rhs is non-boolean, side-effectful, or unsafe-for-rewrite",
+        proof_note: "Boolean identity: false != expr is equivalent to expr",
+    },
+    RewriteRuleMetadata {
+        id: "OPT_B017",
+        preconditions: "expression has form not not <bool-plugin-expr>",
+        negative_cases: "inner expr is not proven boolean-safe",
+        proof_note: "Word-style double negation elimination",
+    },
+    RewriteRuleMetadata {
         id: "OPT_N001",
         preconditions: "operator alias startswith/endswith is present",
         negative_cases: "already canonicalized form",
@@ -134,6 +165,12 @@ const REWRITE_RULES: &[RewriteRuleMetadata] = &[
         preconditions: "@len(expr) compared to zero",
         negative_cases: "comparison is not with zero or not @len plugin",
         proof_note: "Length check simplification: @len(x) == 0 = @empty(x)",
+    },
+    RewriteRuleMetadata {
+        id: "OPT_P002",
+        preconditions: "expression wrapped in outer parentheses only",
+        negative_cases: "inner expression has internal parentheses (ambiguity risk)",
+        proof_note: "Redundant parentheses removal: (expr) = expr",
     },
     RewriteRuleMetadata {
         id: "OPT_N002",
@@ -234,6 +271,75 @@ fn suggest_boolean_rewrite(
     None
 }
 
+fn suggest_not_not_rewrite(
+    expr: &str,
+    bool_plugins: &HashSet<String>,
+) -> Option<(&'static str, String)> {
+    let trimmed = expr.trim();
+    if !trimmed.starts_with("not not ") {
+        return None;
+    }
+
+    let inner = trimmed[8..].trim();
+    if is_boolean_plugin_expr(inner, bool_plugins) {
+        return Some(("OPT_B006", inner.to_string()));
+    }
+
+    None
+}
+
+fn suggest_inequality_rewrite(
+    expr: &str,
+    bool_plugins: &HashSet<String>,
+) -> Option<(&'static str, String)> {
+    let (lhs, rhs) = expr.split_once("!=")?;
+    let lhs = lhs.trim();
+    let rhs = rhs.trim();
+
+    if is_boolean_plugin_expr(lhs, bool_plugins) && rhs == "true" {
+        return Some(("OPT_B013", format!("!{}", lhs)));
+    }
+    if is_boolean_plugin_expr(lhs, bool_plugins) && rhs == "false" {
+        return Some(("OPT_B014", lhs.to_string()));
+    }
+    if lhs == "true" && is_boolean_plugin_expr(rhs, bool_plugins) {
+        return Some(("OPT_B015", format!("!{}", rhs)));
+    }
+    if lhs == "false" && is_boolean_plugin_expr(rhs, bool_plugins) {
+        return Some(("OPT_B016", rhs.to_string()));
+    }
+
+    None
+}
+
+/// Redundant parentheses: (expr) -> expr (single expression, no ambiguity)
+fn suggest_redundant_parens(expr: &str) -> Option<(&'static str, String)> {
+    let trimmed = expr.trim();
+    if !trimmed.starts_with('(') || !trimmed.ends_with(')') {
+        return None;
+    }
+
+    let inner = &trimmed[1..trimmed.len() - 1].trim();
+    if inner.is_empty() {
+        return None;
+    }
+
+    let balanced = inner.chars().fold(0i32, |acc, c| {
+        if c == '(' {
+            acc + 1
+        } else if c == ')' {
+            acc - 1
+        } else {
+            acc
+        }
+    });
+    if balanced != 0 {
+        return None;
+    }
+
+    Some(("OPT_P002", inner.to_string()))
+}
+
 fn suggest_double_negation_rewrite(
     expr: &str,
     bool_plugins: &HashSet<String>,
@@ -243,10 +349,7 @@ fn suggest_double_negation_rewrite(
         return None;
     }
 
-    let inner = trimmed
-        .trim_start_matches('!')
-        .trim_start_matches('!')
-        .trim();
+    let inner = trimmed[2..].trim();
     if is_boolean_plugin_expr(inner, bool_plugins) {
         return Some(("OPT_B005", inner.to_string()));
     }
@@ -255,24 +358,15 @@ fn suggest_double_negation_rewrite(
 }
 
 fn suggest_operator_canonicalization(expr: &str) -> Option<(&'static str, String)> {
-    let mut rewritten = expr.to_string();
-    let mut changed = false;
-
-    for (from, to) in [
-        (" startswith ", " startsWith "),
-        (" endswith ", " endsWith "),
-    ] {
-        if rewritten.contains(from) {
-            rewritten = rewritten.replace(from, to);
-            changed = true;
-        }
+    if expr.contains(" startswith ") {
+        let rewritten = expr.replace(" startswith ", " startsWith ");
+        return Some(("OPT_N001", rewritten));
     }
-
-    if changed {
-        Some(("OPT_N001", rewritten))
-    } else {
-        None
+    if expr.contains(" endswith ") {
+        let rewritten = expr.replace(" endswith ", " endsWith ");
+        return Some(("OPT_N001", rewritten));
     }
+    None
 }
 
 fn parse_literal(expr: &str) -> Option<serde_json::Value> {
@@ -362,7 +456,7 @@ fn compare_literal_numbers(
             "<" => l < r,
             ">=" => l >= r,
             "<=" => l <= r,
-            _ => return None,
+            _ => unreachable!(),
         });
     }
 
@@ -372,7 +466,7 @@ fn compare_literal_numbers(
         "<" => l < r,
         ">=" => l >= r,
         "<=" => l <= r,
-        _ => return None,
+        _ => unreachable!(),
     })
 }
 
@@ -404,11 +498,18 @@ fn is_idempotent_expr(expr: &str, signatures: &HashMap<String, PluginSignature>)
     false
 }
 
-fn suggest_reflexive_idempotent_equality(
+fn suggest_reflexive_idempotent(
     expr: &str,
     signatures: &HashMap<String, PluginSignature>,
 ) -> Option<(&'static str, String)> {
-    let (lhs, rhs) = expr.split_once("==")?;
+    let (_op, lhs, rhs, rule_id, result) = if let Some((l, r)) = expr.split_once("==") {
+        ("==", l, r, "OPT_B007", "true")
+    } else if let Some((l, r)) = expr.split_once("!=") {
+        ("!=", l, r, "OPT_B008", "false")
+    } else {
+        return None;
+    };
+
     let lhs = lhs.trim();
     let rhs = rhs.trim();
 
@@ -420,34 +521,11 @@ fn suggest_reflexive_idempotent_equality(
         return None;
     }
 
-    if is_idempotent_expr(lhs, signatures) {
-        Some(("OPT_B007", "true".to_string()))
-    } else {
-        None
-    }
-}
-
-fn suggest_reflexive_idempotent_inequality(
-    expr: &str,
-    signatures: &HashMap<String, PluginSignature>,
-) -> Option<(&'static str, String)> {
-    let (lhs, rhs) = expr.split_once("!=")?;
-    let lhs = lhs.trim();
-    let rhs = rhs.trim();
-
-    if lhs.is_empty() || rhs.is_empty() || lhs != rhs {
+    if !is_idempotent_expr(lhs, signatures) {
         return None;
     }
 
-    if parse_literal(lhs).is_some() && parse_literal(rhs).is_some() {
-        return None;
-    }
-
-    if is_idempotent_expr(lhs, signatures) {
-        Some(("OPT_B008", "false".to_string()))
-    } else {
-        None
-    }
+    Some((rule_id, result.to_string()))
 }
 
 /// Parse if-then-else expression and extract parts
@@ -458,25 +536,27 @@ fn parse_if_then_else(expr: &str) -> Option<(&str, &str, &str)> {
         return None;
     }
 
+    let bytes = expr.as_bytes();
     let mut paren_depth = 0;
     let mut if_depth = 0;
     let mut then_pos = None;
 
-    let bytes = expr.as_bytes();
     let mut i = 0;
-
-    while i < bytes.len() - 4 {
+    while i < bytes.len() {
         match &bytes[i..i + 1] {
             b"(" => paren_depth += 1,
             b")" => paren_depth -= 1,
             _ => {}
         }
 
-        if paren_depth == 0 && i < bytes.len() - 2 && &bytes[i..i + 3] == b"if " {
+        if paren_depth == 0 && i + 3 <= bytes.len() && &bytes[i..i + 3] == b"if " {
             if_depth += 1;
         }
 
-        if paren_depth == 0 && if_depth == 1 && i < bytes.len() - 5 && &bytes[i..i + 6] == b" then "
+        if paren_depth == 0
+            && if_depth == 1
+            && i + 6 <= bytes.len()
+            && &bytes[i..i + 6] == b" then "
         {
             then_pos = Some(i);
             break;
@@ -489,25 +569,24 @@ fn parse_if_then_else(expr: &str) -> Option<(&str, &str, &str)> {
     let condition = expr[3..then_pos].trim();
 
     let rest = &expr[then_pos + 6..];
+    let bytes = rest.as_bytes();
     let mut else_pos = None;
     let mut nested_if = 0;
     paren_depth = 0;
 
-    let bytes = rest.as_bytes();
     i = 0;
-
-    while i < bytes.len() - 5 {
+    while i < bytes.len() {
         match &bytes[i..i + 1] {
             b"(" => paren_depth += 1,
             b")" => paren_depth -= 1,
             _ => {}
         }
 
-        if paren_depth == 0 && i < bytes.len() - 2 && &bytes[i..i + 3] == b"if " {
+        if paren_depth == 0 && i + 3 <= bytes.len() && &bytes[i..i + 3] == b"if " {
             nested_if += 1;
         }
 
-        if paren_depth == 0 && i < bytes.len() - 5 && &bytes[i..i + 6] == b" else " {
+        if paren_depth == 0 && i + 6 <= bytes.len() && &bytes[i..i + 6] == b" else " {
             if nested_if == 0 {
                 else_pos = Some(i);
                 break;
@@ -644,7 +723,13 @@ fn suggest_plugin_length_simplification(expr: &str) -> Option<(&'static str, Str
     let expr = expr.trim();
 
     // Patterns: @len(.x) == 0, @len(.x) != 0, @len(.x) > 0
-    let operators = [(" == ", "=="), (" != ", "!="), (" > ", ">"), (" < ", "<")];
+    let operators = [
+        (" == ", "=="),
+        (" != ", "!="),
+        (" > ", ">"),
+        (" < ", "<"),
+        (" <= ", "<="),
+    ];
 
     for (op_str, op_name) in operators {
         if let Some(op_pos) = expr.find(op_str) {
@@ -658,12 +743,20 @@ fn suggest_plugin_length_simplification(expr: &str) -> Option<(&'static str, Str
                 if op_name == "==" {
                     return Some(("OPT_P001", format!("@empty({})", inner)));
                 }
-                if op_name == "!=" || op_name == ">" {
-                    return Some(("OPT_P001", format!("@not_empty({})", inner)));
+                if op_name == "!=" {
+                    return Some(("OPT_P001", format!("@len({}) > 0", inner)));
+                }
+                if op_name == ">" {
+                    // @len(.x) > 0 is already optimal, no simplification
+                    return None;
                 }
                 if op_name == "<" {
                     // @len(.x) < 0 is always false (length can't be negative)
                     return Some(("OPT_P001", "false".to_string()));
+                }
+                if op_name == "<=" {
+                    // @len(.x) <= 0 means empty (length is non-negative)
+                    return Some(("OPT_P001", format!("@empty({})", inner)));
                 }
             }
 
@@ -674,8 +767,17 @@ fn suggest_plugin_length_simplification(expr: &str) -> Option<(&'static str, Str
                 if op_name == "==" {
                     return Some(("OPT_P001", format!("@empty({})", inner)));
                 }
-                if op_name == "!=" || op_name == ">" {
-                    return Some(("OPT_P001", format!("@not_empty({})", inner)));
+                if op_name == "!=" {
+                    return Some(("OPT_P001", format!("@len({}) > 0", inner)));
+                }
+                if op_name == ">" {
+                    return Some(("OPT_P001", "false".to_string()));
+                }
+                if op_name == "<" {
+                    return None;
+                }
+                if op_name == "<=" {
+                    return Some(("OPT_P001", format!("@empty({})", inner)));
                 }
             }
         }
@@ -727,6 +829,14 @@ fn rewrite_assertion_expression_with_context(
         return Some((rule_id, rewrite));
     }
 
+    if let Some((rule_id, rewrite)) = suggest_not_not_rewrite(expr, bool_plugins) {
+        return Some((rule_id, rewrite));
+    }
+
+    if let Some((rule_id, rewrite)) = suggest_inequality_rewrite(expr, bool_plugins) {
+        return Some((rule_id, rewrite));
+    }
+
     if let Some((rule_id, rewrite)) = suggest_double_negation_rewrite(expr, bool_plugins) {
         return Some((rule_id, rewrite));
     }
@@ -739,11 +849,12 @@ fn rewrite_assertion_expression_with_context(
         return Some((rule_id, rewrite));
     }
 
-    if let Some((rule_id, rewrite)) = suggest_reflexive_idempotent_equality(expr, signatures) {
+    if let Some((rule_id, rewrite)) = suggest_reflexive_idempotent(expr, signatures) {
         return Some((rule_id, rewrite));
     }
 
-    if let Some((rule_id, rewrite)) = suggest_reflexive_idempotent_inequality(expr, signatures) {
+    // Redundant parentheses removal
+    if let Some((rule_id, rewrite)) = suggest_redundant_parens(expr) {
         return Some((rule_id, rewrite));
     }
 
@@ -792,7 +903,7 @@ pub fn rewrite_assertion_expression_fixed_point(expr: &str) -> String {
     let signatures = plugin_signatures();
     let bool_plugins = boolean_plugins();
 
-    let mut current = expr.trim().to_string();
+    let mut current = Cow::Borrowed(expr.trim());
     for _ in 0..32 {
         let Some((_, rewritten)) =
             rewrite_assertion_expression_with_context(&current, signatures, bool_plugins)
@@ -800,14 +911,14 @@ pub fn rewrite_assertion_expression_fixed_point(expr: &str) -> String {
             break;
         };
 
-        let normalized = rewritten.trim().to_string();
-        if normalized == current {
+        let normalized = rewritten.trim();
+        if normalized == current.as_ref() {
             break;
         }
-        current = normalized;
+        current = Cow::Owned(normalized.to_string());
     }
 
-    current
+    current.into_owned()
 }
 
 pub fn rewrite_assertion_expression_fixed_point_if_changed(expr: &str) -> Option<String> {
@@ -1275,17 +1386,15 @@ if .status == 200 then false else true end
         assert_eq!(rule_id, "OPT_P001");
         assert_eq!(rewritten, "@empty(.items)");
 
-        // @len(.x) != 0 → @not_empty(.x)
+        // @len(.x) != 0 → @len(.x) > 0
         let (rule_id, rewritten) =
             suggest_plugin_length_simplification("@len(.items) != 0").unwrap();
         assert_eq!(rule_id, "OPT_P001");
-        assert_eq!(rewritten, "@not_empty(.items)");
+        assert_eq!(rewritten, "@len(.items) > 0");
 
-        // @len(.x) > 0 → @not_empty(.x)
-        let (rule_id, rewritten) =
-            suggest_plugin_length_simplification("@len(.items) > 0").unwrap();
-        assert_eq!(rule_id, "OPT_P001");
-        assert_eq!(rewritten, "@not_empty(.items)");
+        // @len(.x) > 0 → no simplification
+        let result = suggest_plugin_length_simplification("@len(.items) > 0");
+        assert!(result.is_none());
 
         // 0 == @len(.x) → @empty(.x)
         let (rule_id, rewritten) =
@@ -1363,5 +1472,57 @@ not (.status == 200)
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, "OPT_N002");
         assert_eq!(hints[0].after, ".status != 200");
+    }
+
+    #[test]
+    fn test_boolean_plugins_contains_uuid() {
+        let bp = boolean_plugins();
+        assert!(bp.contains("uuid"));
+        assert!(bp.contains("email"));
+        assert!(bp.contains("empty"));
+    }
+
+    #[test]
+    fn test_plugin_signatures_returns_map() {
+        let sigs = plugin_signatures();
+        assert!(!sigs.is_empty());
+        assert!(sigs.contains_key("uuid"));
+    }
+
+    #[test]
+    fn test_section_content_line_calculation() {
+        assert_eq!(section_content_line(5, 0), 7);
+        assert_eq!(section_content_line(10, 3), 15);
+    }
+
+    #[test]
+    fn test_is_boolean_plugin_expr() {
+        let bp = boolean_plugins();
+        assert!(is_boolean_plugin_expr("@uuid(.x)", bp));
+        assert!(is_boolean_plugin_expr("@empty(.items)", bp));
+        assert!(!is_boolean_plugin_expr("@len(.x)", bp));
+    }
+
+    #[test]
+    fn test_suggest_constant_folding_string_equality() {
+        let result = suggest_constant_folding("\"foo\" == \"foo\"");
+        assert!(result.is_some());
+        let (rule_id, after) = result.unwrap();
+        assert_eq!(rule_id, "OPT_B006");
+        assert_eq!(after, "true");
+    }
+
+    #[test]
+    fn test_suggest_constant_folding_mixed_types() {
+        let result = suggest_constant_folding("\"foo\" == 123");
+        assert!(result.is_some());
+        let (_rule_id, after) = result.unwrap();
+        assert_eq!(after, "false");
+    }
+
+    #[test]
+    fn test_suggest_constant_folding_invalid_json() {
+        let result = suggest_constant_folding("@len(.x) == 5");
+        assert!(result.is_none());
     }
 }

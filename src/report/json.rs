@@ -1,7 +1,7 @@
 // JSON reporter - outputs test results to a JSON file
 
 use super::Reporter;
-use crate::state::{TestResult, TestResults};
+use crate::state::TestResults;
 use anyhow::{Context, Result};
 use std::fs::File;
 use std::path::PathBuf;
@@ -22,14 +22,6 @@ impl JsonReporter {
 }
 
 impl Reporter for JsonReporter {
-    fn on_test_start(&self, _test_name: &str) {
-        // No-op for JSON file reporter
-    }
-
-    fn on_test_end(&self, _test_name: &str, _result: &TestResult) {
-        // No-op for standard JSON report (unless streaming)
-    }
-
     fn on_suite_end(&self, results: &TestResults) -> Result<()> {
         let file = File::create(&self.output_path).with_context(|| {
             format!(

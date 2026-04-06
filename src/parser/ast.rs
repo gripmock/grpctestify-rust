@@ -189,27 +189,34 @@ pub struct InlineOptions {
 impl InlineOptions {
     pub fn to_header_tokens(&self) -> Vec<String> {
         let mut parts = Vec::new();
-        if self.with_asserts {
-            parts.push("with_asserts=true".to_string());
-        }
+
         if self.partial {
-            parts.push("partial=true".to_string());
+            parts.push("partial".to_string());
         }
+
         if let Some(tolerance) = self.tolerance {
             parts.push(format!("tolerance={}", tolerance));
         }
+
         if !self.redact.is_empty() {
-            let quoted = self
-                .redact
+            let mut sorted_redact = self.redact.clone();
+            sorted_redact.sort();
+            let quoted = sorted_redact
                 .iter()
                 .map(|field| format!("\"{}\"", field))
                 .collect::<Vec<_>>()
                 .join(",");
             parts.push(format!("redact=[{}]", quoted));
         }
+
         if self.unordered_arrays {
-            parts.push("unordered_arrays=true".to_string());
+            parts.push("unordered_arrays".to_string());
         }
+
+        if self.with_asserts {
+            parts.push("with_asserts".to_string());
+        }
+
         parts
     }
 
@@ -235,6 +242,12 @@ impl Section {
         } else {
             format!("--- {} ---", section)
         }
+    }
+
+    pub fn header_keyword_from_source<'a>(&self, source: &'a str) -> Option<&'a str> {
+        let header_line = source.lines().nth(self.start_line)?.trim();
+        let inner = header_line.strip_prefix("---")?.strip_suffix("---")?.trim();
+        inner.split_whitespace().next()
     }
 }
 
@@ -414,6 +427,18 @@ impl GctfDocument {
     pub fn has_response_error_conflict(&self) -> bool {
         self.first_section(SectionType::Response).is_some()
             && self.first_section(SectionType::Error).is_some()
+    }
+
+    pub fn section_uses_deprecated_headers_alias(&self, section: &Section) -> bool {
+        if section.section_type != SectionType::RequestHeaders {
+            return false;
+        }
+
+        self.metadata
+            .source
+            .as_deref()
+            .and_then(|source| section.header_keyword_from_source(source))
+            .is_some_and(|keyword| keyword.eq_ignore_ascii_case("HEADERS"))
     }
 }
 
@@ -868,7 +893,7 @@ mod tests {
         let header = section.format_header();
         assert_eq!(
             header,
-            "--- RESPONSE with_asserts=true partial=true tolerance=0.1 redact=[\"token\"] unordered_arrays=true ---"
+            "--- RESPONSE partial tolerance=0.1 redact=[\"token\"] unordered_arrays with_asserts ---"
         );
     }
 
@@ -877,6 +902,40 @@ mod tests {
         let content = SectionContent::Single("test".to_string());
         let debug_str = format!("{:?}", content);
         assert!(debug_str.contains("Single"));
+    }
+
+    #[test]
+    fn test_section_header_keyword_from_source() {
+        let section = Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"ok": true})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"ok\":true}".to_string(),
+            start_line: 0,
+            end_line: 2,
+        };
+
+        let source = "--- RESPONSE with_asserts=true ---\n{\"ok\":true}\n";
+        assert_eq!(section.header_keyword_from_source(source), Some("RESPONSE"));
+    }
+
+    #[test]
+    fn test_document_detects_deprecated_headers_alias() {
+        let mut doc = GctfDocument::new("test.gctf".to_string());
+        doc.metadata.source = Some("--- HEADERS ---\nAuthorization: Bearer t\n".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::RequestHeaders,
+            content: SectionContent::KeyValues(HashMap::from([(
+                "Authorization".to_string(),
+                "Bearer t".to_string(),
+            )])),
+            inline_options: InlineOptions::default(),
+            raw_content: "Authorization: Bearer t".to_string(),
+            start_line: 0,
+            end_line: 2,
+        });
+
+        assert!(doc.section_uses_deprecated_headers_alias(&doc.sections[0]));
     }
 
     #[test]

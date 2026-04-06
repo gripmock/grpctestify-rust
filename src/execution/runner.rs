@@ -895,6 +895,11 @@ impl TestRunner {
         // We iterate by index to allow lookahead
         let sections = &document.sections;
 
+        // Pre-compute last request index to avoid O(n²) lookups in loop
+        let last_request_idx = sections
+            .iter()
+            .rposition(|s| s.section_type == SectionType::Request);
+
         let has_request_sections = sections
             .iter()
             .any(|s| s.section_type == SectionType::Request);
@@ -967,10 +972,7 @@ impl TestRunner {
                     let mut scope_end_ms = scope_start_ms;
                     let mut scope_message_count = 0usize;
 
-                    if sections[i + 1..]
-                        .iter()
-                        .all(|s| s.section_type != SectionType::Request)
-                    {
+                    if i >= last_request_idx.unwrap_or(usize::MAX) {
                         drop(tx.take());
                     }
 
@@ -1195,10 +1197,7 @@ impl TestRunner {
                     }
                 }
                 SectionType::Asserts => {
-                    if sections[i + 1..]
-                        .iter()
-                        .all(|s| s.section_type != SectionType::Request)
-                    {
+                    if i >= last_request_idx.unwrap_or(usize::MAX) {
                         drop(tx.take());
                     }
 
@@ -1377,10 +1376,7 @@ impl TestRunner {
                     }
                 }
                 SectionType::Error => {
-                    if sections[i + 1..]
-                        .iter()
-                        .all(|s| s.section_type != SectionType::Request)
-                    {
+                    if i >= last_request_idx.unwrap_or(usize::MAX) {
                         drop(tx.take());
                     }
 

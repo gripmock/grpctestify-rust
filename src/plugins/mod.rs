@@ -4,6 +4,7 @@ pub mod env;
 pub mod header_extract;
 pub mod ip;
 pub mod len;
+pub mod macros;
 pub mod regex;
 pub mod timestamp;
 pub mod timing;

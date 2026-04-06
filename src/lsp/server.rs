@@ -2096,4 +2096,54 @@ mod tests {
         let active = infer_active_parameter(line, open, cursor);
         assert_eq!(active, 1);
     }
+
+    #[test]
+    fn test_infer_active_parameter_single_arg() {
+        let line = "@len(.items)";
+        let open = line.find('(').unwrap();
+        let cursor = line.len();
+        let active = infer_active_parameter(line, open, cursor);
+        assert_eq!(active, 0);
+    }
+
+    #[test]
+    fn test_infer_active_parameter_multiple_args() {
+        let line = "@regex(.name, \"pattern\", \"flags\")";
+        let open = line.find('(').unwrap();
+        let cursor = line.len();
+        let active = infer_active_parameter(line, open, cursor);
+        assert_eq!(active, 2);
+    }
+
+    #[test]
+    fn test_build_folding_ranges_empty() {
+        let ranges = build_folding_ranges("");
+        assert!(ranges.is_empty());
+    }
+
+    #[test]
+    fn test_build_folding_ranges_sections() {
+        let content = "--- ADDRESS ---\nlocalhost\n\n--- ENDPOINT ---\nsvc/Method\n";
+        let ranges = build_folding_ranges(content);
+        assert!(!ranges.is_empty());
+    }
+
+    #[test]
+    fn test_build_inlay_hints_with_section() {
+        let range = tower_lsp::lsp_types::Range::new(
+            tower_lsp::lsp_types::Position::new(0, 0),
+            tower_lsp::lsp_types::Position::new(10, 0),
+        );
+        let content = "--- ENDPOINT ---\nsvc/Method\n\n--- REQUEST ---\n{}\n";
+        let hints = build_inlay_hints(content, range);
+        assert!(!hints.is_empty());
+    }
+
+    #[test]
+    fn test_get_plugin_signatures_returns_map() {
+        let signatures = get_plugin_signatures();
+        assert!(!signatures.is_empty());
+        assert!(signatures.contains_key("uuid"));
+        assert!(signatures.contains_key("email"));
+    }
 }
