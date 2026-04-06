@@ -851,8 +851,8 @@ mod tests {
 
     #[test]
     fn test_json_to_jaq_number_float() {
-        let result = json_to_jaq(&json!(3.14));
-        assert!(matches!(result, JaqVal::Num(JaqNum::Float(f)) if (f - 3.14).abs() < 0.001));
+        let result = json_to_jaq(&json!(4.14));
+        assert!(matches!(result, JaqVal::Num(JaqNum::Float(f)) if (f - 4.14).abs() < 0.001));
     }
 
     #[test]
