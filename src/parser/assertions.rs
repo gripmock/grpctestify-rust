@@ -62,13 +62,13 @@ mod tests {
     use super::strip_assertion_comments;
 
     #[test]
-    fn strips_full_line_double_slash_comments() {
+    fn test_strips_full_line_double_slash_comments() {
         assert_eq!(strip_assertion_comments("// comment"), None);
         assert_eq!(strip_assertion_comments("   // comment"), None);
     }
 
     #[test]
-    fn strips_inline_comments() {
+    fn test_strips_inline_comments() {
         assert_eq!(
             strip_assertion_comments("@elapsed_ms() >= 10 // startup delay"),
             Some("@elapsed_ms() >= 10".to_string())
@@ -80,7 +80,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_double_slash_inside_string() {
+    fn test_keeps_double_slash_inside_string() {
         assert_eq!(
             strip_assertion_comments("@regex(.url, \"^https://example.com\")"),
             Some("@regex(.url, \"^https://example.com\")".to_string())

@@ -131,6 +131,14 @@ fn parse_section_header(
         "EXTRACT" => SectionType::Extract,
         "ASSERTS" => SectionType::Asserts,
         "REQUEST_HEADERS" => SectionType::RequestHeaders,
+        "HEADERS" => {
+            diagnostics.warning(
+                DiagnosticCode::DeprecatedSymbol,
+                "HEADERS is deprecated, use REQUEST_HEADERS".to_string(),
+                Range::at_line(line_num),
+            );
+            SectionType::RequestHeaders
+        }
         "TLS" => SectionType::Tls,
         "PROTO" => SectionType::Proto,
         "OPTIONS" => SectionType::Options,

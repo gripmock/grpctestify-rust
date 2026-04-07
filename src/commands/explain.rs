@@ -5,17 +5,23 @@ use serde::Serialize;
 use std::path::Path;
 
 use crate::cli::args::ExplainArgs;
-use crate::execution;
+use crate::execution::{ExecutionPlan, Workflow};
 use crate::optimizer;
 use crate::parser;
 use crate::parser::ast::{SectionContent, SectionType};
 
+fn sorted_key_values(map: &std::collections::HashMap<String, String>) -> Vec<(&str, &str)> {
+    let mut pairs: Vec<(&str, &str)> = map.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    pairs.sort_by(|(ka, _), (kb, _)| ka.cmp(kb));
+    pairs
+}
+
 #[derive(Serialize)]
 struct ExplainJsonOutput {
-    semantic_plan: execution::ExecutionPlan,
+    semantic_plan: ExecutionPlan,
     optimization_trace: Vec<optimizer::OptimizationHint>,
-    optimized_plan: execution::ExecutionPlan,
-    execution_plan: execution::ExecutionPlan,
+    optimized_plan: ExecutionPlan,
+    execution_plan: ExecutionPlan,
 }
 
 pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
@@ -48,20 +54,24 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
         eprintln!();
 
         for diagnostic in &diagnostics.diagnostics {
-            print_diagnostic(diagnostic);
+            crate::commands::print_diagnostic(diagnostic);
             eprintln!();
         }
     }
 
     let validation_start = std::time::Instant::now();
+
+    // Build workflow with full semantic analysis - single source of truth
+    let workflow = Workflow::from_document_with_analysis(&doc);
     let validation_result = parser::validate_document(&doc);
     let validation_ms = validation_start.elapsed().as_secs_f64() * 1000.0;
-    let semantic_type_mismatches = crate::semantics::collect_assertion_type_mismatches(&doc);
-    let semantic_unknown_plugins = crate::semantics::collect_unknown_plugin_calls(&doc);
 
     if args.is_json() {
-        let semantic_plan = execution::ExecutionPlan::from_document(&doc);
+        let semantic_plan = ExecutionPlan::from_document(&doc);
+
+        // Extract optimization hints from workflow events
         let optimization_trace = optimizer::collect_assertion_optimizations(&doc);
+
         let optimized_plan = semantic_plan.clone();
         let execution_plan = optimized_plan.clone();
         let output = ExplainJsonOutput {
@@ -76,7 +86,9 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
         print_detailed_workflow(&doc, file_path, &parse_diagnostics);
         println!();
 
+        // Use optimizer directly for optimization trace
         let optimization_trace = optimizer::collect_assertion_optimizations(&doc);
+
         println!("OPTIMIZATION TRACE:");
         if optimization_trace.is_empty() {
             println!("  (no safe rewrites found)");
@@ -89,6 +101,21 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
             }
         }
         println!();
+
+        // Extract semantic errors from workflow
+        let mut semantic_type_mismatches = Vec::new();
+        let mut semantic_unknown_plugins = Vec::new();
+
+        for event in &workflow.events {
+            if let crate::execution::WorkflowEvent::SemanticAnalysis {
+                type_mismatches,
+                unknown_plugins,
+            } = event
+            {
+                semantic_type_mismatches = type_mismatches.clone();
+                semantic_unknown_plugins = unknown_plugins.clone();
+            }
+        }
 
         // Show validation result
         println!("VALIDATION:");
@@ -124,36 +151,6 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn print_diagnostic(diagnostic: &crate::diagnostics::Diagnostic) {
-    use crate::diagnostics::DiagnosticSeverity;
-
-    let severity_str = match diagnostic.severity {
-        DiagnosticSeverity::Error => "ERROR",
-        DiagnosticSeverity::Warning => "WARNING",
-        DiagnosticSeverity::Information => "INFO",
-        DiagnosticSeverity::Hint => "HINT",
-    };
-
-    eprintln!(
-        "[{}] {}: {}",
-        severity_str,
-        diagnostic.code.as_str(),
-        diagnostic.message
-    );
-
-    if let Some(context) = &diagnostic.context {
-        eprintln!("  {}", context);
-    }
-
-    if !diagnostic.suggestions.is_empty() {
-        eprintln!();
-        eprintln!("Suggestions:");
-        for suggestion in &diagnostic.suggestions {
-            eprintln!("  - {}", suggestion);
-        }
-    }
 }
 
 fn print_detailed_workflow(
@@ -192,7 +189,7 @@ fn print_detailed_workflow(
     println!();
 
     // Build execution plan for summary
-    let plan = execution::ExecutionPlan::from_document(doc);
+    let plan = ExecutionPlan::from_document(doc);
 
     // Connection info
     println!("CONNECTION");
@@ -221,7 +218,7 @@ fn print_detailed_workflow(
     if let Some(headers) = &plan.headers {
         println!("REQUEST HEADERS ({})", headers.count);
         println!("-----------------");
-        for (key, value) in &headers.headers {
+        for (key, value) in sorted_key_values(&headers.headers) {
             println!("  {}: {}", key, value);
         }
         println!();
@@ -269,7 +266,7 @@ fn print_detailed_workflow(
                     section.end_line + 1
                 );
                 if let SectionContent::KeyValues(headers) = &section.content {
-                    for (key, value) in headers {
+                    for (key, value) in sorted_key_values(headers) {
                         println!("  {}: {}", key, value);
                     }
                 }
@@ -400,7 +397,7 @@ fn print_detailed_workflow(
                     section.end_line + 1
                 );
                 if let SectionContent::Extract(extractions) = &section.content {
-                    for (var_name, jq_path) in extractions {
+                    for (var_name, jq_path) in sorted_key_values(extractions) {
                         println!("  ${{ {} }} = {}", var_name, jq_path);
                     }
                 }
@@ -442,8 +439,8 @@ fn print_detailed_workflow(
                         println!("  (no runtime overrides)");
                     } else {
                         println!("  Runtime overrides:");
-                        for (key, value) in options {
-                            let behavior = match key.as_str() {
+                        for (key, value) in sorted_key_values(options) {
+                            let behavior = match key {
                                 "timeout" => "per-test timeout (seconds)",
                                 "retry" => "number of retries for network failures",
                                 "retry-delay" | "retry_delay" => "delay between retries (seconds)",

@@ -117,7 +117,7 @@ impl CoverageCollector {
         let mut total_fields_covered = 0;
         let mut total_fields = 0;
 
-        // Method coverage
+        // Method coverage - deduplicated iteration pattern
         let mut services: Vec<_> = pool.services().collect();
         services.sort_by(|a, b| a.name().cmp(b.name()));
 

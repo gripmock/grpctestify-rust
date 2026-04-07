@@ -830,4 +830,46 @@ mod tests {
         let dec = JaqVal::Num(JaqNum::Dec(JaqRc::new("not-a-number".to_string())));
         assert_eq!(jaq_to_json(&dec), Value::Null);
     }
+
+    #[test]
+    fn test_json_to_jaq_null() {
+        let result = json_to_jaq(&json!(null));
+        assert!(matches!(result, JaqVal::Null));
+    }
+
+    #[test]
+    fn test_json_to_jaq_bool() {
+        let result = json_to_jaq(&json!(true));
+        assert!(matches!(result, JaqVal::Bool(true)));
+    }
+
+    #[test]
+    fn test_json_to_jaq_number_int() {
+        let result = json_to_jaq(&json!(42));
+        assert!(matches!(result, JaqVal::Num(JaqNum::Int(42))));
+    }
+
+    #[test]
+    fn test_json_to_jaq_number_float() {
+        let result = json_to_jaq(&json!(4.14));
+        assert!(matches!(result, JaqVal::Num(JaqNum::Float(f)) if (f - 4.14).abs() < 0.001));
+    }
+
+    #[test]
+    fn test_json_to_jaq_string() {
+        let result = json_to_jaq(&json!("hello"));
+        assert!(matches!(result, JaqVal::TStr(_)));
+    }
+
+    #[test]
+    fn test_json_to_jaq_array() {
+        let result = json_to_jaq(&json!([1, 2, 3]));
+        assert!(matches!(result, JaqVal::Arr(_)));
+    }
+
+    #[test]
+    fn test_json_to_jaq_object() {
+        let result = json_to_jaq(&json!({"key": "value"}));
+        assert!(matches!(result, JaqVal::Obj(_)));
+    }
 }

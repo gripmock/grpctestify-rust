@@ -24,10 +24,10 @@ pub use streaming::StreamingJsonReporter;
 /// Reporter trait
 pub trait Reporter: Send + Sync {
     /// Called when a test starts
-    fn on_test_start(&self, test_name: &str);
+    fn on_test_start(&self, _test_name: &str) {}
 
     /// Called when a test finishes
-    fn on_test_end(&self, test_name: &str, result: &TestResult);
+    fn on_test_end(&self, _test_name: &str, _result: &TestResult) {}
 
     /// Called when the entire suite finishes
     fn on_suite_end(&self, results: &TestResults) -> Result<()>;

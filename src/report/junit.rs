@@ -1,7 +1,7 @@
 // JUnit reporter - outputs test results in JUnit XML format
 
 use super::Reporter;
-use crate::state::{TestResult, TestResults, TestStatus};
+use crate::state::{TestResults, TestStatus};
 use anyhow::{Context, Result};
 use std::fs::File;
 use std::io::Write;
@@ -20,14 +20,6 @@ impl JunitReporter {
 }
 
 impl Reporter for JunitReporter {
-    fn on_test_start(&self, _test_name: &str) {
-        // No-op for JUnit file reporter
-    }
-
-    fn on_test_end(&self, _test_name: &str, _result: &TestResult) {
-        // No-op for standard JUnit report
-    }
-
     fn on_suite_end(&self, results: &TestResults) -> Result<()> {
         let metrics = results.metrics();
 

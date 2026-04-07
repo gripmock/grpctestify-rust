@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Workflow event - represents a semantic step in test execution
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WorkflowEvent {
     /// Test file loaded
     TestLoaded { file_path: String },
@@ -85,6 +85,37 @@ pub enum WorkflowEvent {
         total_assertions: usize,
         backends_used: Vec<String>,
     },
+
+    /// Semantic analysis results (type mismatches, unknown plugins)
+    SemanticAnalysis {
+        type_mismatches: Vec<SemanticError>,
+        unknown_plugins: Vec<SemanticError>,
+    },
+
+    /// Optimization hints found during analysis
+    OptimizationFound { hints: Vec<OptimizationHint> },
+
+    /// Validation result
+    ValidationResult { passed: bool, errors: Vec<String> },
+}
+
+/// Semantic error from type mismatches or unknown plugins
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SemanticError {
+    pub line: usize,
+    pub rule_id: String,
+    pub message: String,
+    pub expression: Option<String>,
+    pub plugin_name: Option<String>,
+}
+
+/// Optimization hint from optimizer
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OptimizationHint {
+    pub line: usize,
+    pub rule_id: String,
+    pub before: String,
+    pub after: String,
 }
 
 /// Response options from inline options
@@ -285,6 +316,9 @@ impl Workflow {
                         | (WorkflowEvent::Asserted { .. }, "Asserted")
                         | (WorkflowEvent::Error { .. }, "Error")
                         | (WorkflowEvent::Complete { .. }, "Complete")
+                        | (WorkflowEvent::SemanticAnalysis { .. }, "SemanticAnalysis")
+                        | (WorkflowEvent::OptimizationFound { .. }, "OptimizationFound")
+                        | (WorkflowEvent::ValidationResult { .. }, "ValidationResult")
                 )
             })
             .collect()
@@ -308,6 +342,21 @@ impl Workflow {
     /// Get assertion events
     pub fn assertions(&self) -> Vec<&WorkflowEvent> {
         self.events_by_type("Assert")
+    }
+
+    /// Get semantic analysis events
+    pub fn semantic_analysis(&self) -> Vec<&WorkflowEvent> {
+        self.events_by_type("SemanticAnalysis")
+    }
+
+    /// Get optimization hint events
+    pub fn optimization_hints(&self) -> Vec<&WorkflowEvent> {
+        self.events_by_type("OptimizationFound")
+    }
+
+    /// Get validation result events
+    pub fn validation_results(&self) -> Vec<&WorkflowEvent> {
+        self.events_by_type("ValidationResult")
     }
 
     /// Validate workflow structure
@@ -424,6 +473,199 @@ impl Workflow {
         }
 
         pattern
+    }
+
+    /// Build workflow from GctfDocument with full semantic analysis
+    pub fn from_document_with_analysis(doc: &crate::parser::GctfDocument) -> Workflow {
+        let mut events = Vec::new();
+
+        // Test loaded
+        events.push(WorkflowEvent::TestLoaded {
+            file_path: doc.file_path.clone(),
+        });
+
+        // Run semantic analysis
+        let type_mismatches: Vec<SemanticError> =
+            crate::semantics::collect_assertion_type_mismatches(doc)
+                .into_iter()
+                .map(|m| SemanticError {
+                    line: m.line,
+                    rule_id: m.rule_id,
+                    message: m.message,
+                    expression: Some(m.expression),
+                    plugin_name: None,
+                })
+                .collect();
+
+        let unknown_plugins: Vec<SemanticError> =
+            crate::semantics::collect_unknown_plugin_calls(doc)
+                .into_iter()
+                .map(|u| SemanticError {
+                    line: u.line,
+                    rule_id: u.rule_id,
+                    message: u.message,
+                    expression: Some(u.expression),
+                    plugin_name: Some(u.plugin_name),
+                })
+                .collect();
+
+        events.push(WorkflowEvent::SemanticAnalysis {
+            type_mismatches,
+            unknown_plugins,
+        });
+
+        // Run optimizer analysis
+        let hints: Vec<OptimizationHint> = crate::optimizer::collect_assertion_optimizations(doc)
+            .into_iter()
+            .map(|h| OptimizationHint {
+                line: h.line,
+                rule_id: h.rule_id,
+                before: h.before,
+                after: h.after,
+            })
+            .collect();
+
+        if !hints.is_empty() {
+            events.push(WorkflowEvent::OptimizationFound { hints });
+        }
+
+        // Run validation
+        let validation_result = crate::parser::validate_document(doc);
+        let passed = validation_result.is_ok();
+        let errors = match validation_result {
+            Err(e) => vec![e.to_string()],
+            Ok(_) => vec![],
+        };
+
+        events.push(WorkflowEvent::ValidationResult { passed, errors });
+
+        // Build execution plan events from document
+        let plan = crate::execution::ExecutionPlan::from_document(doc);
+        Self::add_execution_events_from_plan(&mut events, &plan);
+
+        // Detect streaming mode
+        let has_streaming = plan.requests.len() > 1 || plan.expectations.len() > 1;
+        let has_bidi_streaming = plan.requests.len() > 1 && plan.expectations.len() > 1;
+
+        Workflow {
+            file_path: doc.file_path.clone(),
+            events,
+            summary: WorkflowSummary {
+                total_requests: plan.summary.total_requests,
+                total_responses: plan.summary.total_responses,
+                total_extractions: plan.extractions.len(),
+                total_assertions: plan.assertions.iter().map(|a| a.assertions.len()).sum(),
+                backends: vec!["default".to_string()],
+                rpc_mode: plan.summary.rpc_mode_name.clone(),
+                has_streaming,
+                has_bidi_streaming,
+            },
+        }
+    }
+
+    /// Add execution events from ExecutionPlan
+    fn add_execution_events_from_plan(
+        events: &mut Vec<WorkflowEvent>,
+        plan: &crate::execution::ExecutionPlan,
+    ) {
+        let backend = "default".to_string();
+
+        // Connect to backend
+        events.push(WorkflowEvent::Connect {
+            backend: backend.clone(),
+            address: plan.connection.address.clone(),
+        });
+        events.push(WorkflowEvent::Connected {
+            backend: backend.clone(),
+            address: plan.connection.address.clone(),
+        });
+
+        // Load descriptors
+        events.push(WorkflowEvent::LoadDescriptors {
+            backend: backend.clone(),
+            service: plan.target.endpoint.clone(),
+        });
+        events.push(WorkflowEvent::DescriptorsLoaded {
+            backend: backend.clone(),
+            service: plan.target.endpoint.clone(),
+            method_count: 1,
+        });
+
+        // Requests
+        for request in &plan.requests {
+            events.push(WorkflowEvent::SendRequest {
+                backend: backend.clone(),
+                request_index: request.index,
+                content_type: request.content_type.clone(),
+                line_range: (request.line_start, request.line_end),
+            });
+            events.push(WorkflowEvent::RequestSent {
+                backend: backend.clone(),
+                request_index: request.index,
+            });
+        }
+
+        // Expectations (responses or error)
+        for expectation in &plan.expectations {
+            events.push(WorkflowEvent::ReceiveResponse {
+                backend: backend.clone(),
+                response_index: expectation.index,
+                expectation_type: expectation.expectation_type.clone(),
+            });
+
+            if expectation.expectation_type == "error"
+                && let Some(content) = &expectation.content
+            {
+                let code = content.get("code").and_then(|c| c.as_i64()).unwrap_or(0) as i32;
+                let message = content
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("Unknown error")
+                    .to_string();
+                events.push(WorkflowEvent::Error { code, message });
+            }
+
+            events.push(WorkflowEvent::ResponseReceived {
+                backend: backend.clone(),
+                response_index: expectation.index,
+                has_content: expectation.content.is_some(),
+                options: ResponseOptions::from(&expectation.comparison_options),
+            });
+        }
+
+        // Extractions
+        for extraction in &plan.extractions {
+            events.push(WorkflowEvent::Extract {
+                variables: extraction.variables.keys().cloned().collect(),
+                source_response_index: None,
+                line_range: (extraction.line_start, extraction.line_end),
+            });
+            events.push(WorkflowEvent::Extracted {
+                variables: extraction.variables.keys().cloned().collect(),
+            });
+        }
+
+        // Assertions
+        for assertion in &plan.assertions {
+            events.push(WorkflowEvent::Assert {
+                count: assertion.assertions.len(),
+                target_response_index: None,
+                line_range: (assertion.line_start, assertion.line_end),
+            });
+            events.push(WorkflowEvent::Asserted {
+                passed: assertion.assertions.len(),
+                failed: 0,
+            });
+        }
+
+        // Complete
+        events.push(WorkflowEvent::Complete {
+            total_requests: plan.requests.len(),
+            total_responses: plan.expectations.len(),
+            total_extractions: plan.extractions.len(),
+            total_assertions: plan.assertions.iter().map(|a| a.assertions.len()).sum(),
+            backends_used: vec![backend],
+        });
     }
 }
 

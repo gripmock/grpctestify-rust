@@ -553,7 +553,7 @@ Service/Method
         assert!(result.is_ok());
 
         let updated_content = std::fs::read_to_string(temp_file.path()).unwrap();
-        assert!(updated_content.contains("--- RESPONSE partial=true tolerance=0.1 ---"));
+        assert!(updated_content.contains("--- RESPONSE partial tolerance=0.1 ---"));
         assert!(updated_content.contains("\"result\": \"new\""));
     }
 
@@ -564,7 +564,7 @@ Service/Method
         }
 
         let temp_file = NamedTempFile::new().unwrap();
-        let content = "--- ENDPOINT ---\nsvc.Greeter/SayHello\n\n--- REQUEST ---\n{}\n\n--- RESPONSE partial=true ---\n{\"result\":\"old\"}\n";
+        let content = "--- ENDPOINT ---\nsvc.Greeter/SayHello\n\n--- REQUEST ---\n{}\n\n--- RESPONSE partial ---\n{\"result\":\"old\"}\n";
         std::fs::write(temp_file.path(), content).unwrap();
 
         let doc = crate::parser::parse_gctf(temp_file.path()).unwrap();

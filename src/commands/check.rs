@@ -1,6 +1,7 @@
 // Check command - validate GCTF files
 
 use anyhow::Result;
+use std::path::PathBuf;
 use tracing::info;
 
 use crate::cli::args::CheckArgs;
@@ -8,6 +9,61 @@ use crate::parser;
 use crate::report::{CheckReport, CheckSummary, Diagnostic, DiagnosticSeverity};
 use crate::semantics;
 use crate::utils::FileUtils;
+
+fn sort_and_dedup_files(files: &mut Vec<PathBuf>) {
+    files.sort();
+    files.dedup();
+}
+
+fn sort_diagnostics(diagnostics: &mut [Diagnostic]) {
+    diagnostics.sort_by(|a, b| {
+        (
+            a.file.as_str(),
+            a.range.start.line,
+            a.code.as_str(),
+            a.message.as_str(),
+        )
+            .cmp(&(
+                b.file.as_str(),
+                b.range.start.line,
+                b.code.as_str(),
+                b.message.as_str(),
+            ))
+    });
+}
+
+fn build_summary(
+    diagnostics: &[Diagnostic],
+    total_files: usize,
+    files_with_errors: usize,
+) -> CheckSummary {
+    let total_errors = diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, DiagnosticSeverity::Error))
+        .count();
+    let total_warnings = diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, DiagnosticSeverity::Warning))
+        .count();
+    CheckSummary {
+        total_files,
+        files_with_errors,
+        total_errors,
+        total_warnings,
+    }
+}
+
+fn print_text_diagnostics(diagnostics: &[Diagnostic]) {
+    for d in diagnostics {
+        println!(
+            "{}:{}: [{}] {}",
+            d.file, d.range.start.line, d.code, d.message
+        );
+        if let Some(hint) = &d.hint {
+            println!("  hint: {}", hint);
+        }
+    }
+}
 
 pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     let mut files = Vec::new();
@@ -30,33 +86,19 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
         }
     }
 
+    sort_and_dedup_files(&mut files);
+    sort_diagnostics(&mut diagnostics);
+
     if files.is_empty() {
         if args.is_json() {
-            let total_errors = diagnostics
-                .iter()
-                .filter(|d| matches!(d.severity, DiagnosticSeverity::Error))
-                .count();
-            let total_warnings = diagnostics
-                .iter()
-                .filter(|d| matches!(d.severity, DiagnosticSeverity::Warning))
-                .count();
+            let summary = build_summary(&diagnostics, files.len(), files_with_errors);
             let report = CheckReport {
                 diagnostics,
-                summary: CheckSummary {
-                    total_files: files.len(),
-                    files_with_errors,
-                    total_errors,
-                    total_warnings,
-                },
+                summary,
             };
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
-            for d in &diagnostics {
-                println!(
-                    "{}:{}: [{}] {}",
-                    d.file, d.range.start.line, d.code, d.message
-                );
-            }
+            print_text_diagnostics(&diagnostics);
         }
 
         if files_with_errors > 0 {
@@ -74,20 +116,16 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
             Ok(doc) => {
                 // Check for deprecated HEADERS using AST section types
                 for section in &doc.sections {
-                    // Parser normalizes HEADERS to REQUEST_HEADERS, but we can check raw content
-                    if let Some(source) = &doc.metadata.source {
-                        let lines: Vec<&str> = source.lines().collect();
-                        if section.start_line < lines.len() {
-                            let line = lines[section.start_line].trim();
-                            if line.to_uppercase() == "--- HEADERS ---" {
-                                diagnostics.push(Diagnostic::warning(
-                                    &file_str,
-                                    "DEPRECATED_SECTION",
-                                    "HEADERS section is deprecated, use REQUEST_HEADERS instead",
-                                    section.start_line + 1,
-                                ).with_hint("Replace --- HEADERS --- with --- REQUEST_HEADERS ---"));
-                            }
-                        }
+                    if doc.section_uses_deprecated_headers_alias(section) {
+                        diagnostics.push(
+                            Diagnostic::warning(
+                                &file_str,
+                                "DEPRECATED_SECTION",
+                                "HEADERS section is deprecated, use REQUEST_HEADERS instead",
+                                section.start_line + 1,
+                            )
+                            .with_hint("Replace --- HEADERS --- with --- REQUEST_HEADERS ---"),
+                        );
                     }
                 }
 
@@ -153,34 +191,16 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     }
 
     if !args.is_json() {
-        for d in &diagnostics {
-            println!(
-                "{}:{}: [{}] {}",
-                d.file, d.range.start.line, d.code, d.message
-            );
-            if let Some(hint) = &d.hint {
-                println!("  hint: {}", hint);
-            }
-        }
+        sort_diagnostics(&mut diagnostics);
+        print_text_diagnostics(&diagnostics);
     }
 
     if args.is_json() {
-        let total_errors = diagnostics
-            .iter()
-            .filter(|d| matches!(d.severity, DiagnosticSeverity::Error))
-            .count();
-        let total_warnings = diagnostics
-            .iter()
-            .filter(|d| matches!(d.severity, DiagnosticSeverity::Warning))
-            .count();
+        sort_diagnostics(&mut diagnostics);
+        let summary = build_summary(&diagnostics, files.len(), files_with_errors);
         let report = CheckReport {
             diagnostics,
-            summary: CheckSummary {
-                total_files: files.len(),
-                files_with_errors,
-                total_errors,
-                total_warnings,
-            },
+            summary,
         };
         println!("{}", serde_json::to_string_pretty(&report)?);
     }

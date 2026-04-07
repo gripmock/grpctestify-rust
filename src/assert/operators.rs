@@ -580,4 +580,77 @@ mod tests {
         assert_eq!(parse_value("true"), json!(true));
         assert_eq!(parse_value("false"), json!(false));
     }
+
+    #[test]
+    fn test_cached_regex_valid() {
+        let result = cached_regex(r"\d+");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_cached_regex_invalid() {
+        let result = cached_regex(r"[");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_compare_numeric_greater() {
+        let lhs = json!(5);
+        let rhs = json!(3);
+        assert_eq!(compare_numeric_values(&lhs, &rhs, ">"), Some(true));
+    }
+
+    #[test]
+    fn test_compare_numeric_less() {
+        let lhs = json!(3);
+        let rhs = json!(5);
+        assert_eq!(compare_numeric_values(&lhs, &rhs, "<"), Some(true));
+    }
+
+    #[test]
+    fn test_compare_numeric_equality() {
+        let lhs = json!(5);
+        let rhs = json!(5);
+        assert_eq!(compare_numeric_values(&lhs, &rhs, ">="), Some(true));
+        assert_eq!(compare_numeric_values(&lhs, &rhs, "<="), Some(true));
+    }
+
+    #[test]
+    fn test_compare_numeric_mixed_types() {
+        let lhs = json!(5);
+        let rhs = json!("5");
+        assert_eq!(compare_numeric_values(&lhs, &rhs, ">"), None);
+    }
+
+    #[test]
+    fn test_resolve_path_array_index() {
+        let root = json!({"items": ["first", "second"]});
+        let result = resolve_path(".items[0]", &root);
+        assert_eq!(result, json!("first"));
+    }
+
+    #[test]
+    fn test_resolve_path_missing_key() {
+        let root = json!({"a": 1});
+        let result = resolve_path(".missing", &root);
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn test_split_arguments_simple() {
+        let args = split_arguments("arg1, arg2, arg3");
+        assert_eq!(args.len(), 3);
+    }
+
+    #[test]
+    fn test_split_arguments_empty() {
+        let args = split_arguments("");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn test_split_arguments_with_parens() {
+        let args = split_arguments("@len(.x), @empty(.y)");
+        assert_eq!(args.len(), 2);
+    }
 }
