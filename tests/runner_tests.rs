@@ -14,6 +14,7 @@ fn create_empty_doc() -> GctfDocument {
             mtime: None,
             parsed_at: 0,
         },
+        next_document: None,
     }
 }
 

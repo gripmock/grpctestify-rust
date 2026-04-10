@@ -25,14 +25,121 @@ pub fn parse_gctf(file_path: &Path) -> Result<GctfDocument> {
     Ok(document)
 }
 
-/// Parse .gctf content from string (for LSP/editor use)
+/// Parse .gctf content from string (for LSP/editor use).
+/// Documents are determined implicitly: REQUEST after RESPONSE/ERROR/ASSERTS,
+/// or ENDPOINT/ADDRESS starts a new document.
 pub fn parse_gctf_from_str(content: &str, file_path: &str) -> Result<GctfDocument> {
     let source_lines: Vec<&str> = content.lines().collect();
-    let mut document = GctfDocument::new(file_path.to_string());
-    document.metadata.source = Some(content.to_string());
-    let (sections, _) = parse_sections(&source_lines)?;
-    document.sections = sections;
-    Ok(document)
+    let (all_sections, _) = parse_sections(&source_lines)?;
+
+    // Split sections into documents based on implicit boundaries
+    let documents = split_into_documents(&all_sections);
+
+    if documents.is_empty() {
+        // Return empty single document for backward compatibility
+        let mut document = GctfDocument::new(file_path.to_string());
+        document.metadata.source = Some(content.to_string());
+        return Ok(document);
+    }
+
+    // Build chain in reverse order
+    let mut head: Option<GctfDocument> = None;
+
+    for doc_sections in documents.into_iter().rev() {
+        let mut document = GctfDocument::new(file_path.to_string());
+        document.metadata.source = Some(extract_doc_source(&doc_sections, content));
+        document.sections = doc_sections;
+        document.next_document = head.map(Box::new);
+        head = Some(document);
+    }
+
+    head.ok_or_else(|| anyhow::anyhow!("No documents parsed"))
+}
+
+/// Split sections into documents based on implicit boundaries.
+///
+/// Boundary = ENDPOINT with meaningful content before it.
+///
+/// "Preamble" sections (ADDRESS, TLS, PROTO, OPTIONS, REQUEST_HEADERS)
+/// that appear immediately before ENDPOINT are moved to the new document.
+/// They configure the next request, not the previous one.
+///
+/// The only thing propagated between documents is EXTRACT variables —
+/// they become part of the execution context, not the AST.
+fn split_into_documents(sections: &[Section]) -> Vec<Vec<Section>> {
+    if sections.is_empty() {
+        return Vec::new();
+    }
+
+    let mut docs: Vec<Vec<Section>> = Vec::new();
+    let mut current: Vec<Section> = Vec::new();
+
+    // Sections that are "preambles" — they belong to the next document
+    let is_preamble = |t: &SectionType| {
+        matches!(
+            t,
+            SectionType::Address
+                | SectionType::Tls
+                | SectionType::Proto
+                | SectionType::Options
+                | SectionType::RequestHeaders
+        )
+    };
+
+    for section in sections {
+        if section.section_type == SectionType::Endpoint {
+            // Check if current has meaningful content (request/response cycle completed)
+            let has_content = current.iter().any(|s| {
+                matches!(
+                    s.section_type,
+                    SectionType::Request
+                        | SectionType::Response
+                        | SectionType::Error
+                        | SectionType::Asserts
+                        | SectionType::Extract
+                )
+            });
+
+            if has_content {
+                // Before splitting: move trailing preamble sections to new document
+                let mut preamble: Vec<Section> = Vec::new();
+                while let Some(last) = current.last() {
+                    if is_preamble(&last.section_type) {
+                        preamble.insert(0, current.pop().unwrap());
+                    } else {
+                        break;
+                    }
+                }
+
+                docs.push(std::mem::take(&mut current));
+                current = preamble;
+            }
+            // If no content yet (only preamble), preamble stays with ENDPOINT — no split
+        }
+
+        current.push(section.clone());
+    }
+
+    if !current.is_empty() {
+        docs.push(current);
+    }
+
+    docs
+}
+
+/// Extract source lines for a document from the original content.
+fn extract_doc_source(sections: &[Section], original: &str) -> String {
+    if sections.is_empty() {
+        return String::new();
+    }
+    let start = sections.first().unwrap().start_line;
+    let end = sections.last().unwrap().end_line;
+    original
+        .lines()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -53,7 +160,8 @@ pub struct ParseDiagnostics {
     pub timings: ParseTimings,
 }
 
-/// Parse .gctf and return AST + diagnostics useful for inspect/debug
+/// Parse .gctf and return AST + diagnostics useful for inspect/debug.
+/// Supports multiple documents separated by `--- NEW ---`.
 pub fn parse_gctf_with_diagnostics(file_path: &Path) -> Result<(GctfDocument, ParseDiagnostics)> {
     let total_start = Instant::now();
 
@@ -105,6 +213,8 @@ pub fn parse_gctf_with_diagnostics(file_path: &Path) -> Result<(GctfDocument, Pa
         },
     };
 
+    // For file-level diagnostics, we return the first document.
+    // Multi-document chaining is handled by parse_gctf_from_str.
     Ok((document, diagnostics))
 }
 
@@ -901,9 +1011,13 @@ Service/StreamMethod
     #[test]
     fn test_parse_gctf_from_str_empty() {
         let content = "";
-        let document = parse_gctf_from_str(content, "test.gctf").unwrap();
+        let result = parse_gctf_from_str(content, "test.gctf");
+        // Empty content returns a single empty document
+        assert!(result.is_ok());
+        let document = result.unwrap();
         assert_eq!(document.file_path, "test.gctf");
         assert!(document.sections.is_empty());
+        assert!(document.is_single_document());
     }
 
     #[test]
@@ -1053,5 +1167,396 @@ Service/Method
         let input = r#"@regex(.field, "test \"quoted\"")"#;
         let output = normalize_regex_literals(input);
         assert_eq!(output, r#"@regex(.field, "test \"quoted\"")"#);
+    }
+
+    // ─── Multi-document (implicit boundary) tests ───
+
+    #[test]
+    fn test_parse_single_document() {
+        let source = r#"--- ENDPOINT ---
+svc.Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{"ok": true}
+"#;
+        let doc = parse_gctf_from_str(source, "test.gctf").unwrap();
+        assert!(doc.is_single_document());
+        assert_eq!(doc.document_count(), 1);
+        assert_eq!(doc.get_endpoint(), Some("svc.Method".to_string()));
+    }
+
+    #[test]
+    fn test_parse_two_documents_via_endpoint_boundary() {
+        let source = r#"--- ENDPOINT ---
+svc.Method1
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+
+--- ENDPOINT ---
+svc.Method2
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let head = parse_gctf_from_str(source, "test.gctf").unwrap();
+        assert!(!head.is_single_document());
+        assert_eq!(head.document_count(), 2);
+
+        assert_eq!(head.get_endpoint(), Some("svc.Method1".to_string()));
+        let doc2 = head.next_document.as_ref().unwrap();
+        assert_eq!(doc2.get_endpoint(), Some("svc.Method2".to_string()));
+        assert!(doc2.next_document.is_none());
+    }
+
+    #[test]
+    fn test_parse_three_documents() {
+        let source = r#"--- ENDPOINT ---
+svc.M1
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+
+--- ENDPOINT ---
+svc.M2
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+
+--- ENDPOINT ---
+svc.M3
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let head = parse_gctf_from_str(source, "test.gctf").unwrap();
+        assert_eq!(head.document_count(), 3);
+        let docs: Vec<_> = head.iter_chain().collect();
+        assert_eq!(docs.len(), 3);
+        assert_eq!(docs[0].get_endpoint(), Some("svc.M1".to_string()));
+        assert_eq!(docs[1].get_endpoint(), Some("svc.M2".to_string()));
+        assert_eq!(docs[2].get_endpoint(), Some("svc.M3".to_string()));
+    }
+
+    #[test]
+    fn test_parse_multi_with_comments() {
+        let source = r#"// Document 1: auth
+--- ENDPOINT ---
+auth.Login/Auth
+
+--- REQUEST ---
+{"user": "admin"}
+
+--- RESPONSE ---
+{"token": "abc"}
+
+--- EXTRACT ---
+token = .token
+
+// Document 2: use token
+--- ENDPOINT ---
+users.Get
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{"name": "Alice"}
+"#;
+        let head = parse_gctf_from_str(source, "test.gctf").unwrap();
+        assert_eq!(head.document_count(), 2);
+    }
+
+    #[test]
+    fn test_parse_multi_preamble_moves_to_new_doc() {
+        // ADDRESS/TLS/PROTO/OPTIONS/REQUEST_HEADERS before ENDPOINT
+        // must move to the new document, not stay in the previous one.
+        let source = r#"--- ENDPOINT ---
+svc.M1
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+
+--- ADDRESS ---
+server-b:60060
+
+--- TLS ---
+insecure: false
+
+--- ENDPOINT ---
+svc.M2
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let head = parse_gctf_from_str(source, "test.gctf").unwrap();
+        assert_eq!(head.document_count(), 2);
+
+        // Doc 1 should NOT have ADDRESS or TLS
+        let doc1 = head.get_document(0).unwrap();
+        assert_eq!(doc1.sections_by_type(SectionType::Address).len(), 0);
+        assert_eq!(doc1.sections_by_type(SectionType::Tls).len(), 0);
+
+        // Doc 2 should have ADDRESS and TLS (preamble moved)
+        let doc2 = head.get_document(1).unwrap();
+        assert_eq!(doc2.sections_by_type(SectionType::Address).len(), 1);
+        assert_eq!(doc2.sections_by_type(SectionType::Tls).len(), 1);
+        assert_eq!(doc2.get_address(None), Some("server-b:60060".to_string()));
+    }
+
+    #[test]
+    fn test_parse_multi_address_not_inherited() {
+        // ADDRESS in Doc 1 does NOT propagate to Doc 2 or Doc 3.
+        // Each document that needs an address must declare it.
+        let source = r#"--- ADDRESS ---
+server-a:50051
+
+--- ENDPOINT ---
+svc.M1
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+
+--- ADDRESS ---
+server-b:60060
+
+--- ENDPOINT ---
+svc.M2
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+
+--- ENDPOINT ---
+svc.M3
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let head = parse_gctf_from_str(source, "test.gctf").unwrap();
+        assert_eq!(head.document_count(), 3);
+
+        let doc1 = head.get_document(0).unwrap();
+        assert_eq!(doc1.get_address(None), Some("server-a:50051".to_string()));
+
+        let doc2 = head.get_document(1).unwrap();
+        assert_eq!(doc2.get_address(None), Some("server-b:60060".to_string()));
+
+        let doc3 = head.get_document(2).unwrap();
+        // Doc 3 has NO ADDRESS — uses default/env
+        assert!(doc3.get_address(None).is_none());
+    }
+
+    #[test]
+    fn test_parse_multi_address_before_endpoint_same_doc() {
+        // ADDRESS immediately before ENDPOINT = same document.
+        // ADDRESS is a "preamble" section that belongs to the ENDPOINT.
+        let source = r#"--- ADDRESS ---
+server-a:50051
+
+--- ENDPOINT ---
+svc.M1
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+
+--- ENDPOINT ---
+svc.M2
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let head = parse_gctf_from_str(source, "test.gctf").unwrap();
+        assert_eq!(head.document_count(), 2);
+
+        let doc1 = head.get_document(0).unwrap();
+        assert_eq!(doc1.sections_by_type(SectionType::Address).len(), 1);
+        assert_eq!(doc1.get_address(None), Some("server-a:50051".to_string()));
+
+        let doc2 = head.get_document(1).unwrap();
+        // Doc 2 has no ADDRESS — uses default/env
+        assert_eq!(doc2.sections_by_type(SectionType::Address).len(), 0);
+        assert!(doc2.get_address(None).is_none());
+    }
+
+    #[test]
+    fn test_parse_multi_preserves_extract() {
+        let source = r#"--- ENDPOINT ---
+svc.Create
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{"id": "123"}
+
+--- EXTRACT ---
+id = .id
+
+--- ENDPOINT ---
+svc.Read
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{"id": "123"}
+"#;
+        let head = parse_gctf_from_str(source, "test.gctf").unwrap();
+        assert_eq!(head.document_count(), 2);
+
+        let extract_sections = head.sections_by_type(SectionType::Extract);
+        assert_eq!(extract_sections.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_single_document_backward_compatible() {
+        let source = r#"--- ADDRESS ---
+localhost:50051
+
+--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{"x": 1}
+
+--- RESPONSE ---
+{"ok": true}
+"#;
+        let doc = parse_gctf_from_str(source, "test.gctf").unwrap();
+        assert!(doc.is_single_document());
+        assert_eq!(doc.get_address(None), Some("localhost:50051".to_string()));
+        assert_eq!(doc.get_endpoint(), Some("test.Service/Method".to_string()));
+        assert_eq!(doc.get_requests().len(), 1);
+    }
+
+    #[test]
+    fn test_parse_multi_from_file() {
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(file, "--- ENDPOINT ---").unwrap();
+        writeln!(file, "svc.Test").unwrap();
+        writeln!(file).unwrap();
+        writeln!(file, "--- REQUEST ---").unwrap();
+        writeln!(file, "{{}}").unwrap();
+        writeln!(file).unwrap();
+        writeln!(file, "--- RESPONSE ---").unwrap();
+        writeln!(file, "{{\"ok\": true}}").unwrap();
+
+        let doc = parse_gctf(file.path()).unwrap();
+        assert!(doc.is_single_document());
+        assert_eq!(doc.get_endpoint(), Some("svc.Test".to_string()));
+    }
+
+    #[test]
+    fn test_parse_multi_get_document() {
+        let source = r#"--- ENDPOINT ---
+svc.M1
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+
+--- ENDPOINT ---
+svc.M2
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let head = parse_gctf_from_str(source, "test.gctf").unwrap();
+        assert_eq!(head.get_document(0).unwrap().get_endpoint(), Some("svc.M1".to_string()));
+        assert_eq!(head.get_document(1).unwrap().get_endpoint(), Some("svc.M2".to_string()));
+        assert!(head.get_document(2).is_none());
+    }
+
+    #[test]
+    fn test_parse_multi_client_streaming() {
+        // Multiple REQUEST without ENDPOINT between them = single document
+        let source = r#"--- ENDPOINT ---
+svc.Stream
+
+--- REQUEST ---
+{"data": "a"}
+
+--- REQUEST ---
+{"data": "b"}
+
+--- REQUEST ---
+{"data": "c"}
+
+--- RESPONSE ---
+{"total": 3}
+"#;
+        let doc = parse_gctf_from_str(source, "test.gctf").unwrap();
+        assert!(doc.is_single_document());
+        assert_eq!(doc.document_count(), 1);
+        assert_eq!(doc.get_requests().len(), 3);
+    }
+
+    #[test]
+    fn test_parse_multi_server_streaming() {
+        // Multiple RESPONSE without ENDPOINT between them = single document
+        let source = r#"--- ENDPOINT ---
+svc.Stream
+
+--- REQUEST ---
+{"count": 3}
+
+--- RESPONSE ---
+{"item": 1}
+
+--- RESPONSE ---
+{"item": 2}
+
+--- RESPONSE ---
+{"item": 3}
+"#;
+        let doc = parse_gctf_from_str(source, "test.gctf").unwrap();
+        assert!(doc.is_single_document());
+        assert_eq!(doc.document_count(), 1);
+        assert_eq!(doc.get_requests().len(), 1);
     }
 }

@@ -162,6 +162,20 @@ pub struct WorkflowSummary {
 }
 
 impl Workflow {
+    pub fn has_streaming(&self) -> bool {
+        let request_count = self.events.iter().filter(|e| matches!(e, WorkflowEvent::RequestSent { .. })).count();
+        let response_count = self.events.iter().filter(|e| matches!(e, WorkflowEvent::ResponseReceived { .. })).count();
+        request_count > 1 || response_count > 1
+    }
+
+    pub fn rpc_mode_name(&self) -> &str {
+        let request_count = self.events.iter().filter(|e| matches!(e, WorkflowEvent::RequestSent { .. })).count();
+        let response_count = self.events.iter().filter(|e| matches!(e, WorkflowEvent::ResponseReceived { .. })).count();
+        if request_count > 1 && response_count == 1 { return "Client Streaming"; }
+        if request_count == 1 && response_count > 1 { return "Server Streaming"; }
+        if request_count > 1 && response_count > 1 { return "Bidi Streaming"; }
+        "Unary"
+    }
     /// Build workflow from ExecutionPlan
     pub fn from_plan(plan: &crate::execution::ExecutionPlan) -> Self {
         let mut events = Vec::new();

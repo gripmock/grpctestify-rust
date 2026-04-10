@@ -1,0 +1,68 @@
+// Document 1: authenticate on auth-server
+--- ADDRESS ---
+auth-server:50051
+
+--- ENDPOINT ---
+auth.AuthService/Login
+
+--- REQUEST ---
+{
+  "user": "alice",
+  "pass": "secret123"
+}
+
+--- RESPONSE ---
+{
+  "session_id": "sess-abc-123",
+  "expires_at": 1700000000
+}
+
+--- EXTRACT ---
+session = .session_id
+
+// Document 2: query data-server with session
+--- ADDRESS ---
+data-server:60060
+
+--- ENDPOINT ---
+data.DataService/Fetch
+
+--- REQUEST_HEADERS ---
+X-Session: {{session}}
+
+--- REQUEST ---
+{
+  "query": "users",
+  "filter": {
+    "active": true
+  }
+}
+
+--- RESPONSE ---
+{
+  "users": [
+    { "id": 1, "name": "Alice" },
+    { "id": 2, "name": "Bob" }
+  ]
+}
+
+--- EXTRACT ---
+user_ids = [.users[].id]
+
+// Document 3: fetch metrics from metrics-server (no ADDRESS, uses default)
+--- ENDPOINT ---
+metrics.MetricsService/GetCounters
+
+--- REQUEST ---
+{}
+
+--- RESPONSE with_asserts ---
+{
+  "counters": {
+    "requests": 1542,
+    "errors": 3
+  }
+}
+
+--- ASSERTS ---
+.counters.requests > 0

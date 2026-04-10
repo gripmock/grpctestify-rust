@@ -616,6 +616,11 @@ impl GrpctestifyLsp {
                 lsp_diags.extend(handlers::collect_semantic_diagnostics(&document, content));
                 lsp_diags.extend(handlers::collect_optimizer_diagnostics(&document, content));
 
+                // Unused variable diagnostics (EXTRACT vars not used in subsequent docs)
+                for unused_var in handlers::collect_unused_variables(&document) {
+                    lsp_diags.push(handlers::unused_variable_to_diagnostic(&unused_var));
+                }
+
                 self.client
                     .publish_diagnostics(uri.clone(), lsp_diags, None)
                     .await;
@@ -1865,6 +1870,30 @@ fn build_inlay_hints(content: &str, range: tower_lsp::lsp_types::Range) -> Vec<I
                     .proof_note
                     .as_ref()
                     .map(|s| InlayHintTooltip::String(s.clone())),
+                padding_left: Some(true),
+                padding_right: None,
+                data: None,
+            });
+        }
+
+        // Unused variable inlay hints
+        for unused_var in crate::lsp::handlers::collect_unused_variables(&doc) {
+            let line_num = (unused_var.line as i32 - 1).max(0) as u32;
+            if line_num < range.start.line || line_num > range.end.line {
+                continue;
+            }
+            hints.push(InlayHint {
+                position: tower_lsp::lsp_types::Position {
+                    line: line_num,
+                    character: (unused_var.character + unused_var.name.len()) as u32,
+                },
+                label: InlayHintLabel::String("unused".to_string()),
+                kind: Some(InlayHintKind::TYPE),
+                text_edits: None,
+                tooltip: Some(InlayHintTooltip::String(format!(
+                    "'{}' is extracted but never used in subsequent documents",
+                    unused_var.name
+                ))),
                 padding_left: Some(true),
                 padding_right: None,
                 data: None,
