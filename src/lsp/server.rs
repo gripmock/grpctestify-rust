@@ -1958,7 +1958,7 @@ fn build_section_children_for_doc(doc: &crate::parser::GctfDocument) -> Vec<Docu
                     detail: Some("assertion".to_string()),
                     kind: SymbolKind::STRING,
                     tags: None,
-                        deprecated: None,
+                    deprecated: None,
                     range: Range::new(
                         Position::new(line_num, 0),
                         Position::new(line_num, trimmed.len() as u32),
@@ -1986,7 +1986,7 @@ fn build_section_children_for_doc(doc: &crate::parser::GctfDocument) -> Vec<Docu
                             detail: Some("variable reference".to_string()),
                             kind: SymbolKind::VARIABLE,
                             tags: None,
-                        deprecated: None,
+                            deprecated: None,
                             range: Range::new(
                                 Position::new(line_num, abs_open as u32),
                                 Position::new(line_num, abs_close as u32),
@@ -2029,7 +2029,7 @@ fn build_section_children_for_doc(doc: &crate::parser::GctfDocument) -> Vec<Docu
                     detail: Some(format!("extract: {}", expr_trimmed)),
                     kind: SymbolKind::VARIABLE,
                     tags: None,
-                        deprecated: None,
+                    deprecated: None,
                     range: Range::new(
                         Position::new(line_num, 0),
                         Position::new(line_num, trimmed.len() as u32),
