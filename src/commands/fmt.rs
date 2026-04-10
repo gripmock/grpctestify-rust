@@ -483,14 +483,20 @@ pub async fn handle_fmt(args: &FmtArgs) -> Result<()> {
             for mismatch in semantics::collect_assertion_type_mismatches(d) {
                 error!(
                     "{}:{}: [{}] {}",
-                    file.display(), mismatch.line, mismatch.rule_id, mismatch.message
+                    file.display(),
+                    mismatch.line,
+                    mismatch.rule_id,
+                    mismatch.message
                 );
                 chain_has_error = true;
             }
             for unknown in semantics::collect_unknown_plugin_calls(d) {
                 error!(
                     "{}:{}: [{}] {}",
-                    file.display(), unknown.line, unknown.rule_id, unknown.message
+                    file.display(),
+                    unknown.line,
+                    unknown.rule_id,
+                    unknown.message
                 );
                 chain_has_error = true;
             }

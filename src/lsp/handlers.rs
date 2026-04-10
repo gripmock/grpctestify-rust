@@ -310,6 +310,142 @@ pub fn get_address_from_document(content: &str) -> Option<String> {
     std::env::var(config::ENV_GRPCTESTIFY_ADDRESS).ok()
 }
 
+/// Get variable completions from EXTRACT sections in all preceding documents.
+/// Returns completions for `{{var}}` syntax in REQUEST, REQUEST_HEADERS, etc.
+pub fn get_variable_completions(
+    doc: &crate::parser::GctfDocument,
+    current_line_0based: usize,
+) -> Vec<CompletionItem> {
+    use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, InsertTextFormat};
+
+    let mut items = Vec::new();
+    let current_doc_idx = find_document_index_at_line(doc, current_line_0based);
+
+    // Collect variables from all documents before the current one
+    for (doc_idx, d) in doc.iter_chain().enumerate() {
+        // Only variables from documents BEFORE the current document
+        if doc_idx >= current_doc_idx {
+            continue;
+        }
+
+        for section in &d.sections {
+            if section.section_type != SectionType::Extract {
+                continue;
+            }
+            if let parser::ast::SectionContent::Extract(extractions) = &section.content {
+                for (name, expr) in extractions {
+                    let detail = format!("from Document {}, EXTRACT: {}", doc_idx + 1, expr);
+                    items.push(CompletionItem {
+                        label: name.clone(),
+                        kind: Some(CompletionItemKind::VARIABLE),
+                        detail: Some(detail),
+                        insert_text: Some(format!("{{{{ {} }}}}", name)),
+                        insert_text_format: Some(InsertTextFormat::SNIPPET),
+                        documentation: Some(tower_lsp::lsp_types::Documentation::MarkupContent(
+                            tower_lsp::lsp_types::MarkupContent {
+                                kind: tower_lsp::lsp_types::MarkupKind::Markdown,
+                                value: format!(
+                                    "**{}**\n\nExtracted: `{}`\nSource: Document {}, line {}",
+                                    name,
+                                    expr,
+                                    doc_idx + 1,
+                                    section.start_line + 1
+                                ),
+                            },
+                        )),
+                        ..CompletionItem::default()
+                    });
+                }
+            }
+        }
+    }
+
+    items
+}
+
+/// Find which document (0-based index) contains the given line.
+fn find_document_index_at_line(doc: &crate::parser::GctfDocument, line_0based: usize) -> usize {
+    let line_1based = line_0based + 1;
+    for (idx, d) in doc.iter_chain().enumerate() {
+        if let (Some(first), Some(last)) = (d.sections.first(), d.sections.last())
+            && line_1based >= first.start_line
+            && line_1based <= last.end_line
+        {
+            return idx;
+        }
+    }
+    // If line is before first section, it's in the first document
+    0
+}
+
+/// Generate hover content for {{var_name}} references.
+/// Shows where the variable was extracted from.
+pub fn get_var_hover(
+    doc: &crate::parser::GctfDocument,
+    line_0based: usize,
+    character: u32,
+) -> Option<tower_lsp::lsp_types::Hover> {
+    use tower_lsp::lsp_types::{Hover, HoverContents, MarkedString};
+
+    let line_str = doc.metadata.source.as_deref()?.lines().nth(line_0based)?;
+
+    let char_pos = character as usize;
+    if char_pos >= line_str.len() {
+        return None;
+    }
+
+    // Check if cursor is inside {{ ... }}
+    let before = &line_str[..char_pos];
+    let open_brace = before.rfind("{{")?;
+
+    let after = &line_str[char_pos..];
+    let close_brace = after.find("}}")?;
+
+    let var_content = line_str[open_brace + 2..char_pos + close_brace].trim();
+    let var_name = var_content.split_whitespace().next()?;
+
+    // Find which document this line belongs to
+    let current_doc_idx = find_document_index_at_line(doc, line_0based);
+
+    // Find the variable definition in preceding documents
+    for (doc_idx, d) in doc.iter_chain().enumerate() {
+        if doc_idx >= current_doc_idx {
+            break; // Only search documents before current
+        }
+
+        for section in &d.sections {
+            if section.section_type != SectionType::Extract {
+                continue;
+            }
+            if let parser::ast::SectionContent::Extract(extractions) = &section.content
+                && let Some(expr) = extractions.get(var_name)
+            {
+                let hover_text = format!(
+                    "**Variable: `{}`**\n\nExtracted: `{}`\nSource: Document {}, line {}",
+                    var_name,
+                    expr,
+                    doc_idx + 1,
+                    section.start_line + 1
+                );
+                return Some(Hover {
+                    contents: HoverContents::Scalar(MarkedString::String(hover_text)),
+                    range: None,
+                });
+            }
+        }
+    }
+
+    // Variable not found in preceding documents
+    let hover_text = format!(
+        "**Unknown variable: `{}`**\n\nNo EXTRACT definition found in preceding documents.",
+        var_name
+    );
+    Some(tower_lsp::lsp_types::Hover {
+        contents: HoverContents::Scalar(MarkedString::String(hover_text)),
+        range: None,
+    })
+}
+
 /// Convert validation error to LSP diagnostic
 pub fn validation_error_to_diagnostic(
     error: &crate::parser::validator::ValidationError,
@@ -542,9 +678,7 @@ fn doc_contains_var_reference(doc: &crate::parser::GctfDocument, var_name: &str)
 fn section_contains_var_reference(section: &crate::parser::ast::Section, var_name: &str) -> bool {
     match &section.content {
         // JSON sections may contain {{ var }} in string values
-        parser::ast::SectionContent::Json(value) => {
-            json_contains_var(value, var_name)
-        }
+        parser::ast::SectionContent::Json(value) => json_contains_var(value, var_name),
         // Multiple JSON values
         parser::ast::SectionContent::JsonLines(values) => {
             values.iter().any(|v| json_contains_var(v, var_name))
@@ -561,9 +695,7 @@ fn section_contains_var_reference(section: &crate::parser::ast::Section, var_nam
             asserts.iter().any(|a| contains_assert_var_ref(a, var_name))
         }
         // Single value sections (ADDRESS, ENDPOINT)
-        parser::ast::SectionContent::Single(s) => {
-            contains_var_pattern(s, var_name)
-        }
+        parser::ast::SectionContent::Single(s) => contains_var_pattern(s, var_name),
         parser::ast::SectionContent::Empty => false,
     }
 }
@@ -572,12 +704,8 @@ fn section_contains_var_reference(section: &crate::parser::ast::Section, var_nam
 fn json_contains_var(value: &serde_json::Value, var_name: &str) -> bool {
     match value {
         serde_json::Value::String(s) => contains_var_pattern(s, var_name),
-        serde_json::Value::Object(map) => {
-            map.values().any(|v| json_contains_var(v, var_name))
-        }
-        serde_json::Value::Array(arr) => {
-            arr.iter().any(|v| json_contains_var(v, var_name))
-        }
+        serde_json::Value::Object(map) => map.values().any(|v| json_contains_var(v, var_name)),
+        serde_json::Value::Array(arr) => arr.iter().any(|v| json_contains_var(v, var_name)),
         _ => false,
     }
 }
@@ -1200,5 +1328,38 @@ test.Service/Method
     fn test_get_section_header_option_completions_others() {
         assert!(get_section_header_option_completions(&SectionType::Address).is_empty());
         assert!(get_section_header_option_completions(&SectionType::Request).is_empty());
+    }
+
+    #[test]
+    fn test_get_variable_completions() {
+        let source = r#"--- ENDPOINT ---
+svc.Create
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{"id": "123"}
+
+--- EXTRACT ---
+user_id = .id
+token = .token
+
+--- ENDPOINT ---
+svc.Read
+
+--- REQUEST ---
+{"id": "{{}}"}
+
+--- RESPONSE ---
+{}
+"#;
+        let doc = crate::parser::parse_gctf_from_str(source, "test.gctf").unwrap();
+        // Completions should be available in the second document
+        let completions = get_variable_completions(&doc, 17);
+        assert!(!completions.is_empty());
+        let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"user_id"));
+        assert!(labels.contains(&"token"));
     }
 }

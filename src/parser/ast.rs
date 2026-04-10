@@ -286,9 +286,8 @@ impl<'a> Iterator for DocumentChainIter<'a> {
     type Item = &'a GctfDocument;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.current.take().map(|doc| {
+        self.current.take().inspect(|doc| {
             self.current = doc.next_document.as_deref();
-            doc
         })
     }
 }
@@ -310,7 +309,9 @@ impl GctfDocument {
 
     /// Iterate over the document chain (single or `--- NEW ---` linked)
     pub fn iter_chain(&self) -> DocumentChainIter<'_> {
-        DocumentChainIter { current: Some(self) }
+        DocumentChainIter {
+            current: Some(self),
+        }
     }
 
     /// Count documents in the chain

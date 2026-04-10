@@ -1507,8 +1507,14 @@ svc.M2
 {}
 "#;
         let head = parse_gctf_from_str(source, "test.gctf").unwrap();
-        assert_eq!(head.get_document(0).unwrap().get_endpoint(), Some("svc.M1".to_string()));
-        assert_eq!(head.get_document(1).unwrap().get_endpoint(), Some("svc.M2".to_string()));
+        assert_eq!(
+            head.get_document(0).unwrap().get_endpoint(),
+            Some("svc.M1".to_string())
+        );
+        assert_eq!(
+            head.get_document(1).unwrap().get_endpoint(),
+            Some("svc.M2".to_string())
+        );
         assert!(head.get_document(2).is_none());
     }
 

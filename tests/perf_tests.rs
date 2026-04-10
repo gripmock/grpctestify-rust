@@ -46,7 +46,11 @@ svc.Method
         iterations, elapsed, per_call
     );
     // Should be well under 1ms per call
-    assert!(per_call.as_micros() < 1000, "parse took too long: {:?}", per_call);
+    assert!(
+        per_call.as_micros() < 1000,
+        "parse took too long: {:?}",
+        per_call
+    );
 }
 
 #[test]

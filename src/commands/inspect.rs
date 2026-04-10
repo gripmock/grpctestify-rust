@@ -91,7 +91,10 @@ fn print_json_report(
                 format!("Document {}: {}", doc_idx + 1, e)
             };
             inspect_diagnostics.push(crate::report::Diagnostic::error(
-                &file_str, "VALIDATION_ERROR", &msg, 1,
+                &file_str,
+                "VALIDATION_ERROR",
+                &msg,
+                1,
             ));
         }
         for section in &d.sections {
@@ -117,25 +120,47 @@ fn print_json_report(
                 for mismatch in type_mismatches {
                     semantic_diagnostics.push(
                         crate::report::Diagnostic::error(
-                            &file_str, &mismatch.rule_id, &mismatch.message, mismatch.line,
+                            &file_str,
+                            &mismatch.rule_id,
+                            &mismatch.message,
+                            mismatch.line,
                         )
-                        .with_hint(&mismatch.expression.as_ref().map(|e| format!("Expression: {}", e)).unwrap_or_default()),
+                        .with_hint(
+                            &mismatch
+                                .expression
+                                .as_ref()
+                                .map(|e| format!("Expression: {}", e))
+                                .unwrap_or_default(),
+                        ),
                     );
                 }
                 for unknown in unknown_plugins {
                     semantic_diagnostics.push(
                         crate::report::Diagnostic::error(
-                            &file_str, &unknown.rule_id, &unknown.message, unknown.line,
+                            &file_str,
+                            &unknown.rule_id,
+                            &unknown.message,
+                            unknown.line,
                         )
-                        .with_hint(&unknown.expression.as_ref().map(|e| format!("Assertion: {}", e)).unwrap_or_default()),
+                        .with_hint(
+                            &unknown
+                                .expression
+                                .as_ref()
+                                .map(|e| format!("Assertion: {}", e))
+                                .unwrap_or_default(),
+                        ),
                     );
                 }
             }
         }
         for hint in crate::optimizer::collect_assertion_optimizations(d) {
             optimization_hints.push(
-                crate::report::Diagnostic::hint(&file_str, &hint.rule_id,
-                    &format!("Safe rewrite available: {} -> {}", hint.before, hint.after), hint.line)
+                crate::report::Diagnostic::hint(
+                    &file_str,
+                    &hint.rule_id,
+                    &format!("Safe rewrite available: {} -> {}", hint.before, hint.after),
+                    hint.line,
+                )
                 .with_hint("Boolean expression compared with true/false can be simplified"),
             );
         }
@@ -157,7 +182,9 @@ fn print_json_report(
         file: file_str,
         parse_time_ms: parse_ms,
         validation_time_ms: validation_ms,
-        ast: AstOverview { sections: sections_info },
+        ast: AstOverview {
+            sections: sections_info,
+        },
         diagnostics: inspect_diagnostics,
         semantic_diagnostics,
         optimization_hints,
@@ -226,7 +253,11 @@ fn print_detailed_analysis(
     println!("  Validation:        {:.3}ms", validation_ms);
     println!(
         "  Validation result: {}",
-        if validation_error.is_none() { "OK" } else { "FAILED" }
+        if validation_error.is_none() {
+            "OK"
+        } else {
+            "FAILED"
+        }
     );
     println!();
 
@@ -237,9 +268,12 @@ fn print_detailed_analysis(
         println!();
 
         for (doc_idx, d) in doc.iter_chain().enumerate() {
-            println!("DOCUMENT {} [lines {}-{}]", doc_idx + 1,
+            println!(
+                "DOCUMENT {} [lines {}-{}]",
+                doc_idx + 1,
                 d.sections.first().map(|s| s.start_line + 1).unwrap_or(0),
-                d.sections.last().map(|s| s.end_line + 1).unwrap_or(0));
+                d.sections.last().map(|s| s.end_line + 1).unwrap_or(0)
+            );
             println!("{}", "=".repeat(56));
             print_ast_overview(d);
             println!();
@@ -327,28 +361,69 @@ fn print_ast_overview(doc: &parser::GctfDocument) {
 }
 
 fn print_structure(doc: &parser::GctfDocument) {
-    let has_endpoint = doc.sections.iter().any(|s| s.section_type == SectionType::Endpoint);
-    let has_request = doc.sections.iter().any(|s| s.section_type == SectionType::Request);
-    let has_response = doc.sections.iter().any(|s| s.section_type == SectionType::Response);
-    let has_error = doc.sections.iter().any(|s| s.section_type == SectionType::Error);
-    let has_extract = doc.sections.iter().any(|s| s.section_type == SectionType::Extract);
-    let has_asserts = doc.sections.iter().any(|s| s.section_type == SectionType::Asserts);
-    let has_request_headers = doc.sections.iter().any(|s| s.section_type == SectionType::RequestHeaders);
+    let has_endpoint = doc
+        .sections
+        .iter()
+        .any(|s| s.section_type == SectionType::Endpoint);
+    let has_request = doc
+        .sections
+        .iter()
+        .any(|s| s.section_type == SectionType::Request);
+    let has_response = doc
+        .sections
+        .iter()
+        .any(|s| s.section_type == SectionType::Response);
+    let has_error = doc
+        .sections
+        .iter()
+        .any(|s| s.section_type == SectionType::Error);
+    let has_extract = doc
+        .sections
+        .iter()
+        .any(|s| s.section_type == SectionType::Extract);
+    let has_asserts = doc
+        .sections
+        .iter()
+        .any(|s| s.section_type == SectionType::Asserts);
+    let has_request_headers = doc
+        .sections
+        .iter()
+        .any(|s| s.section_type == SectionType::RequestHeaders);
 
-    if has_endpoint { println!("  [OK] ENDPOINT section present"); }
-    if has_request { println!("  [OK] REQUEST section present"); }
-    if has_response { println!("  [OK] RESPONSE section present"); }
-    if has_error { println!("  [OK] ERROR section present (testing error handling)"); }
-    if has_extract { println!("  [OK] EXTRACT section present (variable extraction)"); }
-    if has_asserts { println!("  [OK] ASSERTS section present (custom assertions)"); }
-    if has_request_headers { println!("  [OK] REQUEST_HEADERS section present"); }
+    if has_endpoint {
+        println!("  [OK] ENDPOINT section present");
+    }
+    if has_request {
+        println!("  [OK] REQUEST section present");
+    }
+    if has_response {
+        println!("  [OK] RESPONSE section present");
+    }
+    if has_error {
+        println!("  [OK] ERROR section present (testing error handling)");
+    }
+    if has_extract {
+        println!("  [OK] EXTRACT section present (variable extraction)");
+    }
+    if has_asserts {
+        println!("  [OK] ASSERTS section present (custom assertions)");
+    }
+    if has_request_headers {
+        println!("  [OK] REQUEST_HEADERS section present");
+    }
 
-    if !has_endpoint { println!("  [ERROR] Missing ENDPOINT section"); }
-    if !has_request && !has_error { println!("  [WARN] No REQUEST or ERROR section"); }
+    if !has_endpoint {
+        println!("  [ERROR] Missing ENDPOINT section");
+    }
+    if !has_request && !has_error {
+        println!("  [WARN] No REQUEST or ERROR section");
+    }
 }
 
 fn print_variables(doc: &parser::GctfDocument) {
-    let extract_sections: Vec<_> = doc.sections.iter()
+    let extract_sections: Vec<_> = doc
+        .sections
+        .iter()
         .filter(|s| s.section_type == SectionType::Extract)
         .collect();
 
@@ -361,7 +436,8 @@ fn print_variables(doc: &parser::GctfDocument) {
         if let SectionContent::Extract(extractions) = &section.content {
             println!(
                 "  Extract block at lines {}-{}:",
-                section.start_line + 1, section.end_line + 1
+                section.start_line + 1,
+                section.end_line + 1
             );
             for (name, query) in sorted_kv(extractions) {
                 println!("    ${{ {:<15} }} = {}", name, query);
@@ -406,19 +482,35 @@ fn print_logic_flow(doc: &parser::GctfDocument) {
     } else if summary.total_requests == 1 && summary.total_responses == 1 {
         println!("  Pattern: Single request -> Single response");
     } else if summary.total_requests == 1 && summary.total_responses > 1 {
-        println!("  Pattern: Single request -> {} responses", summary.total_responses);
+        println!(
+            "  Pattern: Single request -> {} responses",
+            summary.total_responses
+        );
     } else if summary.total_requests > 1 && summary.total_responses == 1 {
-        println!("  Pattern: {} requests -> Single response", summary.total_requests);
+        println!(
+            "  Pattern: {} requests -> Single response",
+            summary.total_requests
+        );
     } else if summary.total_requests > 1 && summary.total_responses > 1 {
-        println!("  Pattern: {} requests, {} responses (full duplex)", summary.total_requests, summary.total_responses);
+        println!(
+            "  Pattern: {} requests, {} responses (full duplex)",
+            summary.total_requests, summary.total_responses
+        );
     } else if summary.total_requests > 1 && summary.total_errors > 0 {
-        println!("  Pattern: {} requests with {} error(s)", summary.total_requests, summary.total_errors);
+        println!(
+            "  Pattern: {} requests with {} error(s)",
+            summary.total_requests, summary.total_errors
+        );
     }
 
     println!(
         "  Steps: {}",
-        summary.total_requests + summary.total_responses + summary.total_errors
-            + summary.total_extractions + summary.total_assertions + 1
+        summary.total_requests
+            + summary.total_responses
+            + summary.total_errors
+            + summary.total_extractions
+            + summary.total_assertions
+            + 1
     );
 
     if summary.total_extractions > 0 {
@@ -431,24 +523,41 @@ fn print_logic_flow(doc: &parser::GctfDocument) {
         println!("  Streaming: enabled");
     }
 
-    let with_asserts_count = doc.sections.iter().filter(|s|
-        s.section_type == SectionType::Response && s.inline_options.with_asserts).count();
-    if with_asserts_count > 0 { println!("  With Asserts: {} response(s)", with_asserts_count); }
+    let with_asserts_count = doc
+        .sections
+        .iter()
+        .filter(|s| s.section_type == SectionType::Response && s.inline_options.with_asserts)
+        .count();
+    if with_asserts_count > 0 {
+        println!("  With Asserts: {} response(s)", with_asserts_count);
+    }
 
-    let unordered_count = doc.sections.iter().filter(|s| s.inline_options.unordered_arrays).count();
-    if unordered_count > 0 { println!("  Unordered Arrays: {} section(s)", unordered_count); }
+    let unordered_count = doc
+        .sections
+        .iter()
+        .filter(|s| s.inline_options.unordered_arrays)
+        .count();
+    if unordered_count > 0 {
+        println!("  Unordered Arrays: {} section(s)", unordered_count);
+    }
 
-    let partial_count = doc.sections.iter().filter(|s| s.inline_options.partial).count();
-    if partial_count > 0 { println!("  Partial Matching: {} section(s)", partial_count); }
+    let partial_count = doc
+        .sections
+        .iter()
+        .filter(|s| s.inline_options.partial)
+        .count();
+    if partial_count > 0 {
+        println!("  Partial Matching: {} section(s)", partial_count);
+    }
 
-    if let Some(options) = doc.get_options() {
-        if !options.is_empty() {
-            let mut sorted: Vec<_> = options.into_iter().collect();
-            sorted.sort_by(|a, b| a.0.cmp(&b.0));
-            println!("  OPTIONS Overrides:");
-            for (key, value) in sorted {
-                println!("    - {}: {}", key, value);
-            }
+    if let Some(options) = doc.get_options()
+        && !options.is_empty()
+    {
+        let mut sorted: Vec<_> = options.into_iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        println!("  OPTIONS Overrides:");
+        for (key, value) in sorted {
+            println!("    - {}: {}", key, value);
         }
     }
 }
@@ -461,20 +570,28 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
     let sections = &doc.sections;
     let mut has_warnings = false;
 
-    let has_endpoint = sections.iter().any(|s| s.section_type == SectionType::Endpoint);
+    let has_endpoint = sections
+        .iter()
+        .any(|s| s.section_type == SectionType::Endpoint);
     if !has_endpoint {
         println!("  [ERROR] No ENDPOINT section found");
         has_warnings = true;
     }
 
-    let has_request = sections.iter().any(|s| s.section_type == SectionType::Request);
-    let has_error = sections.iter().any(|s| s.section_type == SectionType::Error);
+    let has_request = sections
+        .iter()
+        .any(|s| s.section_type == SectionType::Request);
+    let has_error = sections
+        .iter()
+        .any(|s| s.section_type == SectionType::Error);
     if !has_request && !has_error {
         println!("  [WARN] No REQUEST or ERROR section found");
         has_warnings = true;
     }
 
-    let has_response = sections.iter().any(|s| s.section_type == SectionType::Response);
+    let has_response = sections
+        .iter()
+        .any(|s| s.section_type == SectionType::Response);
     if has_request && !has_response && !has_error {
         println!("  [WARN] REQUEST section present but no RESPONSE or ERROR section");
         has_warnings = true;
@@ -484,23 +601,34 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
     let workflow = Workflow::from_document_with_analysis(doc);
     for event in workflow.semantic_analysis() {
         if let crate::execution::WorkflowEvent::SemanticAnalysis {
-            type_mismatches, unknown_plugins,
-        } = event {
+            type_mismatches,
+            unknown_plugins,
+        } = event
+        {
             for mismatch in type_mismatches {
                 println!("  [ERROR] Line {}: {}", mismatch.line, mismatch.message);
-                println!("         Expression: {}", mismatch.expression.as_ref().unwrap_or(&"".to_string()));
+                println!(
+                    "         Expression: {}",
+                    mismatch.expression.as_ref().unwrap_or(&"".to_string())
+                );
                 has_warnings = true;
             }
             for unknown in unknown_plugins {
                 println!("  [ERROR] Line {}: {}", unknown.line, unknown.message);
-                println!("         Assertion: {}", unknown.expression.as_ref().unwrap_or(&"".to_string()));
+                println!(
+                    "         Assertion: {}",
+                    unknown.expression.as_ref().unwrap_or(&"".to_string())
+                );
                 has_warnings = true;
             }
         }
     }
 
     for hint in crate::optimizer::collect_assertion_optimizations(doc) {
-        println!("  [HINT] Line {}: [{}] {} -> {}", hint.line, hint.rule_id, hint.before, hint.after);
+        println!(
+            "  [HINT] Line {}: [{}] {} -> {}",
+            hint.line, hint.rule_id, hint.before, hint.after
+        );
         println!("         Boolean expression compared with true/false can be simplified");
         has_warnings = true;
     }
@@ -512,7 +640,10 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
                 .take_while(|s| s.section_type != SectionType::Request)
                 .any(|s| s.section_type == SectionType::Asserts);
             if !has_following_asserts {
-                println!("  [WARN] Line {}: with_asserts option set but no", section.start_line + 1);
+                println!(
+                    "  [WARN] Line {}: with_asserts option set but no",
+                    section.start_line + 1
+                );
                 println!("         ASSERTS section follows");
                 has_warnings = true;
             }
@@ -521,7 +652,10 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
         if section.section_type == SectionType::Request
             && matches!(section.content, SectionContent::Empty)
         {
-            println!("  [INFO] Line {}: Empty REQUEST section will send", section.start_line + 1);
+            println!(
+                "  [INFO] Line {}: Empty REQUEST section will send",
+                section.start_line + 1
+            );
             println!("         empty JSON object {{}}");
             has_warnings = true;
         }
@@ -530,7 +664,10 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
             && let SectionContent::Extract(extractions) = &section.content
             && extractions.is_empty()
         {
-            println!("  [WARN] Line {}: EXTRACT section has no variables", section.start_line + 1);
+            println!(
+                "  [WARN] Line {}: EXTRACT section has no variables",
+                section.start_line + 1
+            );
             has_warnings = true;
         }
 
@@ -538,7 +675,10 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
             && let SectionContent::Assertions(assertions) = &section.content
             && assertions.is_empty()
         {
-            println!("  [WARN] Line {}: ASSERTS section has no assertions", section.start_line + 1);
+            println!(
+                "  [WARN] Line {}: ASSERTS section has no assertions",
+                section.start_line + 1
+            );
             has_warnings = true;
         }
     }

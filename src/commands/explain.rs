@@ -93,11 +93,11 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
 
                 let mut extractions: Vec<(String, String)> = Vec::new();
                 for section in &d.sections {
-                    if section.section_type == SectionType::Extract {
-                        if let SectionContent::Extract(map) = &section.content {
-                            for (name, expr) in map {
-                                extractions.push((name.clone(), expr.clone()));
-                            }
+                    if section.section_type == SectionType::Extract
+                        && let SectionContent::Extract(map) = &section.content
+                    {
+                        for (name, expr) in map {
+                            extractions.push((name.clone(), expr.clone()));
                         }
                     }
                 }
@@ -208,32 +208,32 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
     }
 
     // Options
-    if let Some(options) = doc.get_options() {
-        if !options.is_empty() {
-            println!("  → Options:");
-            for (key, value) in sorted_key_values(&options) {
-                println!("    {}: {}", key, value);
-            }
+    if let Some(options) = doc.get_options()
+        && !options.is_empty()
+    {
+        println!("  → Options:");
+        for (key, value) in sorted_key_values(&options) {
+            println!("    {}: {}", key, value);
         }
     }
 
     // TLS
-    if let Some(tls) = doc.get_tls_config() {
-        if !tls.is_empty() {
-            println!("  → TLS config:");
-            for (key, value) in sorted_key_values(&tls) {
-                println!("    {}: {}", key, value);
-            }
+    if let Some(tls) = doc.get_tls_config()
+        && !tls.is_empty()
+    {
+        println!("  → TLS config:");
+        for (key, value) in sorted_key_values(&tls) {
+            println!("    {}: {}", key, value);
         }
     }
 
     // Proto
-    if let Some(proto) = doc.get_proto_config() {
-        if !proto.is_empty() {
-            println!("  → Proto config:");
-            for (key, value) in sorted_key_values(&proto) {
-                println!("    {}: {}", key, value);
-            }
+    if let Some(proto) = doc.get_proto_config()
+        && !proto.is_empty()
+    {
+        println!("  → Proto config:");
+        for (key, value) in sorted_key_values(&proto) {
+            println!("    {}: {}", key, value);
         }
     }
 
@@ -250,8 +250,8 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
         } else {
             println!("  → Send {} request(s) (client streaming):", requests.len());
             for (i, req) in requests.iter().enumerate() {
-                let json_str = serde_json::to_string_pretty(req)
-                    .unwrap_or_else(|_| req.to_string());
+                let json_str =
+                    serde_json::to_string_pretty(req).unwrap_or_else(|_| req.to_string());
                 println!("    Request #{}:", i + 1);
                 for line in json_str.lines() {
                     println!("      {}", line);
@@ -274,10 +274,13 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
                         }
                     }
                     SectionContent::JsonLines(values) => {
-                        println!("  ← Expect {} response(s) (server streaming):", values.len());
+                        println!(
+                            "  ← Expect {} response(s) (server streaming):",
+                            values.len()
+                        );
                         for (i, v) in values.iter().enumerate() {
-                            let json_str = serde_json::to_string_pretty(v)
-                                .unwrap_or_else(|_| v.to_string());
+                            let json_str =
+                                serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
                             println!("    Response #{}:", i + 1);
                             for line in json_str.lines() {
                                 println!("      {}", line);
@@ -295,8 +298,8 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
             }
             SectionType::Error => {
                 if let SectionContent::Json(value) = &section.content {
-                    let json_str = serde_json::to_string_pretty(value)
-                        .unwrap_or_else(|_| value.to_string());
+                    let json_str =
+                        serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
                     println!("  ← Expect error:");
                     for line in json_str.lines() {
                         println!("    {}", line);
@@ -308,10 +311,15 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
     }
 
     // Extract
-    let extractions: Vec<_> = doc.sections.iter()
+    let extractions: Vec<_> = doc
+        .sections
+        .iter()
         .filter(|s| s.section_type == SectionType::Extract)
         .flat_map(|s| match &s.content {
-            SectionContent::Extract(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>(),
+            SectionContent::Extract(map) => map
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<Vec<_>>(),
             _ => Vec::new(),
         })
         .collect();
@@ -333,15 +341,14 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
             type_mismatches,
             unknown_plugins,
         } = event
+            && (!type_mismatches.is_empty() || !unknown_plugins.is_empty())
         {
-            if !type_mismatches.is_empty() || !unknown_plugins.is_empty() {
-                println!("  ⚠ Semantic issues:");
-                for m in type_mismatches {
-                    println!("    - {}", m.message);
-                }
-                for u in unknown_plugins {
-                    println!("    - {}", u.message);
-                }
+            println!("  ⚠ Semantic issues:");
+            for m in type_mismatches {
+                println!("    - {}", m.message);
+            }
+            for u in unknown_plugins {
+                println!("    - {}", u.message);
             }
         }
     }
@@ -399,7 +406,12 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
             SectionType::Address => {
                 if let SectionContent::Single(addr) = &section.content {
                     println!();
-                    println!("Step {}: ADDRESS [lines {}-{}]", step, section.start_line + 1, section.end_line + 1);
+                    println!(
+                        "Step {}: ADDRESS [lines {}-{}]",
+                        step,
+                        section.start_line + 1,
+                        section.end_line + 1
+                    );
                     println!("  {}", addr);
                     step += 1;
                 }
@@ -407,14 +419,24 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
             SectionType::Endpoint => {
                 if let SectionContent::Single(endpoint) = &section.content {
                     println!();
-                    println!("Step {}: ENDPOINT [lines {}-{}]", step, section.start_line + 1, section.end_line + 1);
+                    println!(
+                        "Step {}: ENDPOINT [lines {}-{}]",
+                        step,
+                        section.start_line + 1,
+                        section.end_line + 1
+                    );
                     println!("  {}", endpoint);
                     step += 1;
                 }
             }
             SectionType::RequestHeaders => {
                 println!();
-                println!("Step {}: REQUEST HEADERS [lines {}-{}]", step, section.start_line + 1, section.end_line + 1);
+                println!(
+                    "Step {}: REQUEST HEADERS [lines {}-{}]",
+                    step,
+                    section.start_line + 1,
+                    section.end_line + 1
+                );
                 if let SectionContent::KeyValues(headers) = &section.content {
                     for (key, value) in sorted_key_values(headers) {
                         println!("  {}: {}", key, value);
@@ -424,7 +446,12 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
             }
             SectionType::Request => {
                 println!();
-                println!("Step {}: REQUEST [lines {}-{}]", step, section.start_line + 1, section.end_line + 1);
+                println!(
+                    "Step {}: REQUEST [lines {}-{}]",
+                    step,
+                    section.start_line + 1,
+                    section.end_line + 1
+                );
                 match &section.content {
                     SectionContent::Json(value) => {
                         let json_str = serde_json::to_string_pretty(value)
@@ -442,7 +469,12 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
             }
             SectionType::Response => {
                 println!();
-                println!("Step {}: RESPONSE [lines {}-{}]", step, section.start_line + 1, section.end_line + 1);
+                println!(
+                    "Step {}: RESPONSE [lines {}-{}]",
+                    step,
+                    section.start_line + 1,
+                    section.end_line + 1
+                );
                 match &section.content {
                     SectionContent::Json(value) => {
                         let json_str = serde_json::to_string_pretty(value)
@@ -455,16 +487,20 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
                     SectionContent::JsonLines(values) => {
                         println!("  Expected {} response(s):", values.len());
                         for (i, v) in values.iter().enumerate() {
-                            let json_str = serde_json::to_string_pretty(v)
-                                .unwrap_or_else(|_| v.to_string());
+                            let json_str =
+                                serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
                             println!("    {}. {}", i + 1, json_str);
                         }
                     }
                     _ => {}
                 }
                 let mut opts = Vec::new();
-                if section.inline_options.with_asserts { opts.push("with_asserts"); }
-                if section.inline_options.partial { opts.push("partial"); }
+                if section.inline_options.with_asserts {
+                    opts.push("with_asserts");
+                }
+                if section.inline_options.partial {
+                    opts.push("partial");
+                }
                 if !opts.is_empty() {
                     println!("  Options: {}", opts.join(", "));
                 }
@@ -472,10 +508,15 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
             }
             SectionType::Error => {
                 println!();
-                println!("Step {}: EXPECTED ERROR [lines {}-{}]", step, section.start_line + 1, section.end_line + 1);
+                println!(
+                    "Step {}: EXPECTED ERROR [lines {}-{}]",
+                    step,
+                    section.start_line + 1,
+                    section.end_line + 1
+                );
                 if let SectionContent::Json(value) = &section.content {
-                    let json_str = serde_json::to_string_pretty(value)
-                        .unwrap_or_else(|_| value.to_string());
+                    let json_str =
+                        serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
                     println!("  Expected error:");
                     for line in json_str.lines() {
                         println!("    {}", line);
@@ -485,7 +526,12 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
             }
             SectionType::Extract => {
                 println!();
-                println!("Step {}: EXTRACT [lines {}-{}]", step, section.start_line + 1, section.end_line + 1);
+                println!(
+                    "Step {}: EXTRACT [lines {}-{}]",
+                    step,
+                    section.start_line + 1,
+                    section.end_line + 1
+                );
                 if let SectionContent::Extract(extractions) = &section.content {
                     for (name, expr) in sorted_key_values(extractions) {
                         println!("  ${{ {} }} = {}", name, expr);
@@ -495,7 +541,12 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
             }
             SectionType::Asserts => {
                 println!();
-                println!("Step {}: ASSERTS [lines {}-{}]", step, section.start_line + 1, section.end_line + 1);
+                println!(
+                    "Step {}: ASSERTS [lines {}-{}]",
+                    step,
+                    section.start_line + 1,
+                    section.end_line + 1
+                );
                 if let SectionContent::Assertions(assertions) = &section.content {
                     for (i, a) in assertions.iter().enumerate() {
                         let rewritten = optimizer::rewrite_assertion_expression_fixed_point(a);
@@ -506,7 +557,12 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
             }
             SectionType::Options => {
                 println!();
-                println!("Step {}: OPTIONS [lines {}-{}]", step, section.start_line + 1, section.end_line + 1);
+                println!(
+                    "Step {}: OPTIONS [lines {}-{}]",
+                    step,
+                    section.start_line + 1,
+                    section.end_line + 1
+                );
                 if let SectionContent::KeyValues(options) = &section.content {
                     if options.is_empty() {
                         println!("  (no runtime overrides)");
@@ -521,7 +577,13 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
             }
             SectionType::Tls | SectionType::Proto => {
                 println!();
-                println!("Step {}: {} [lines {}-{}]", step, section.section_type.as_str(), section.start_line + 1, section.end_line + 1);
+                println!(
+                    "Step {}: {} [lines {}-{}]",
+                    step,
+                    section.section_type.as_str(),
+                    section.start_line + 1,
+                    section.end_line + 1
+                );
                 println!("  (configuration section)");
                 step += 1;
             }
