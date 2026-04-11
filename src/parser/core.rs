@@ -1469,19 +1469,17 @@ test.Service/Method
     }
 
     #[test]
-    fn test_parse_multi_from_file() {
-        use std::io::Write;
-        let mut file = tempfile::NamedTempFile::new().unwrap();
-        writeln!(file, "--- ENDPOINT ---").unwrap();
-        writeln!(file, "svc.Test").unwrap();
-        writeln!(file).unwrap();
-        writeln!(file, "--- REQUEST ---").unwrap();
-        writeln!(file, "{{}}").unwrap();
-        writeln!(file).unwrap();
-        writeln!(file, "--- RESPONSE ---").unwrap();
-        writeln!(file, "{{\"ok\": true}}").unwrap();
+    fn test_parse_multi_from_str() {
+        let source = r#"--- ENDPOINT ---
+svc.Test
 
-        let doc = parse_gctf(file.path()).unwrap();
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{"ok": true}
+"#;
+        let doc = parse_gctf_from_str(source, "test.gctf").unwrap();
         assert!(doc.is_single_document());
         assert_eq!(doc.get_endpoint(), Some("svc.Test".to_string()));
     }
