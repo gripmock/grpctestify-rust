@@ -367,4 +367,46 @@ mod tests {
         let plugin = HasHeaderPlugin;
         assert_eq!(plugin.name(), "has_header");
     }
+
+    #[test]
+    fn test_has_header_plugin_description() {
+        let plugin = HasHeaderPlugin;
+        assert!(plugin.description().contains("header"));
+    }
+
+    #[test]
+    fn test_has_header_plugin_too_many_args() {
+        let plugin = HasHeaderPlugin;
+        let context = create_context_with_headers();
+
+        let result = plugin
+            .execute(
+                &[
+                    Value::String("authorization".to_string()),
+                    Value::String("extra".to_string()),
+                ],
+                &context,
+            )
+            .unwrap();
+
+        assert!(matches!(
+            result,
+            PluginResult::Assertion(AssertionResult::Fail { .. })
+        ));
+    }
+
+    #[test]
+    fn test_has_header_plugin_wrong_type() {
+        let plugin = HasHeaderPlugin;
+        let context = create_context_with_headers();
+
+        let result = plugin
+            .execute(&[Value::Number(123.into())], &context)
+            .unwrap();
+
+        assert!(matches!(
+            result,
+            PluginResult::Assertion(AssertionResult::Fail { .. })
+        ));
+    }
 }

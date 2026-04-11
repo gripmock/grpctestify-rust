@@ -327,8 +327,79 @@ mod tests {
     }
 
     #[test]
+    fn test_has_trailer_plugin_no_trailers() {
+        let plugin = HasTrailerPlugin;
+        let context = create_context_no_trailers();
+
+        let result = plugin
+            .execute(&[Value::String("x-status".to_string())], &context)
+            .unwrap();
+
+        assert!(matches!(result, PluginResult::Value(Value::Bool(false))));
+    }
+
+    #[test]
+    fn test_has_trailer_plugin_case_insensitive() {
+        let plugin = HasTrailerPlugin;
+        let context = create_context_with_trailers();
+
+        let result1 = plugin
+            .execute(&[Value::String("X-Status".to_string())], &context)
+            .unwrap();
+
+        let result2 = plugin
+            .execute(&[Value::String("x-status".to_string())], &context)
+            .unwrap();
+
+        assert!(matches!(result1, PluginResult::Value(Value::Bool(true))));
+        assert!(matches!(result2, PluginResult::Value(Value::Bool(true))));
+    }
+
+    #[test]
+    fn test_has_trailer_plugin_too_many_args() {
+        let plugin = HasTrailerPlugin;
+        let context = create_context_with_trailers();
+
+        let result = plugin
+            .execute(
+                &[
+                    Value::String("x-status".to_string()),
+                    Value::String("extra".to_string()),
+                ],
+                &context,
+            )
+            .unwrap();
+
+        assert!(matches!(
+            result,
+            PluginResult::Assertion(AssertionResult::Fail { .. })
+        ));
+    }
+
+    #[test]
+    fn test_has_trailer_plugin_wrong_type() {
+        let plugin = HasTrailerPlugin;
+        let context = create_context_with_trailers();
+
+        let result = plugin
+            .execute(&[Value::Number(123.into())], &context)
+            .unwrap();
+
+        assert!(matches!(
+            result,
+            PluginResult::Assertion(AssertionResult::Fail { .. })
+        ));
+    }
+
+    #[test]
     fn test_has_trailer_plugin_name() {
         let plugin = HasTrailerPlugin;
         assert_eq!(plugin.name(), "has_trailer");
+    }
+
+    #[test]
+    fn test_has_trailer_plugin_description() {
+        let plugin = HasTrailerPlugin;
+        assert!(plugin.description().contains("trailer"));
     }
 }

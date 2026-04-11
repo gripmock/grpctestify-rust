@@ -96,4 +96,95 @@ mod tests {
         let result = plugin.execute(&[Value::Null], &context).unwrap();
         assert!(matches!(result, PluginResult::Value(Value::Bool(true))));
     }
+
+    #[test]
+    fn test_empty_plugin_empty_object() {
+        let plugin = EmptyPlugin;
+        let context = create_context();
+        let result = plugin
+            .execute(&[Value::Object(serde_json::Map::new())], &context)
+            .unwrap();
+        assert!(matches!(result, PluginResult::Value(Value::Bool(true))));
+    }
+
+    #[test]
+    fn test_empty_plugin_non_empty_object() {
+        let plugin = EmptyPlugin;
+        let context = create_context();
+        let obj = serde_json::json!({"key": "value"});
+        let result = plugin.execute(&[obj], &context).unwrap();
+        assert!(matches!(result, PluginResult::Value(Value::Bool(false))));
+    }
+
+    #[test]
+    fn test_empty_plugin_non_empty_array() {
+        let plugin = EmptyPlugin;
+        let context = create_context();
+        let arr = Value::Array(vec![Value::Number(serde_json::Number::from(1))]);
+        let result = plugin.execute(&[arr], &context).unwrap();
+        assert!(matches!(result, PluginResult::Value(Value::Bool(false))));
+    }
+
+    #[test]
+    fn test_empty_plugin_number_type() {
+        let plugin = EmptyPlugin;
+        let context = create_context();
+        let result = plugin
+            .execute(&[Value::Number(serde_json::Number::from(42))], &context)
+            .unwrap();
+        assert!(matches!(result, PluginResult::Value(Value::Bool(false))));
+    }
+
+    #[test]
+    fn test_empty_plugin_bool_type() {
+        let plugin = EmptyPlugin;
+        let context = create_context();
+        let result = plugin.execute(&[Value::Bool(true)], &context).unwrap();
+        assert!(matches!(result, PluginResult::Value(Value::Bool(false))));
+    }
+
+    #[test]
+    fn test_empty_plugin_no_args() {
+        let plugin = EmptyPlugin;
+        let context = create_context();
+        let result = plugin.execute(&[], &context).unwrap();
+        if let PluginResult::Assertion(AssertionResult::Error(msg)) = result {
+            assert!(msg.contains("1 argument"));
+        } else {
+            panic!("Expected Error assertion result");
+        }
+    }
+
+    #[test]
+    fn test_empty_plugin_too_many_args() {
+        let plugin = EmptyPlugin;
+        let context = create_context();
+        let result = plugin
+            .execute(
+                &[Value::String("a".to_string()), Value::String("b".to_string())],
+                &context,
+            )
+            .unwrap();
+        if let PluginResult::Assertion(AssertionResult::Error(msg)) = result {
+            assert!(msg.contains("1 argument"));
+        } else {
+            panic!("Expected Error assertion result");
+        }
+    }
+
+    #[test]
+    fn test_empty_plugin_description() {
+        let plugin = EmptyPlugin;
+        assert!(plugin.description().contains("empty"));
+    }
+
+    #[test]
+    fn test_empty_plugin_signature() {
+        let plugin = EmptyPlugin;
+        let sig = plugin.signature();
+        assert_eq!(sig.arg_names, &["value"]);
+        assert!(sig.safe_for_rewrite);
+        assert!(sig.idempotent);
+        assert!(sig.deterministic);
+    }
 }

@@ -583,4 +583,276 @@ grpc.health.v1.Health/Watch
             panic!("expected assertions content");
         }
     }
+
+    #[test]
+    fn test_parse_with_recovery_headers_deprecated() {
+        let content = r#"--- ENDPOINT ---
+svc/Method
+
+--- HEADERS ---
+content-type: application/grpc
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert!(result.diagnostics.has_warnings());
+        // Should still parse REQUEST and RESPONSE
+        assert_eq!(result.recovered_sections, 4);
+    }
+
+    #[test]
+    fn test_parse_with_recovery_tls_section_key_values() {
+        let content = r#"--- TLS ---
+enabled: true
+cert_path: /path/to/cert
+
+--- ENDPOINT ---
+svc/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert_eq!(result.recovered_sections, 4);
+        let tls = result
+            .document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Tls)
+            .expect("TLS section should be parsed");
+        if let SectionContent::KeyValues(kvs) = &tls.content {
+            assert_eq!(kvs.get("enabled"), Some(&"true".to_string()));
+            assert_eq!(kvs.get("cert_path"), Some(&"/path/to/cert".to_string()));
+        } else {
+            panic!("expected key-values content");
+        }
+    }
+
+    #[test]
+    fn test_parse_with_recovery_options_section() {
+        let content = r#"--- OPTIONS ---
+timeout: 5000
+retries: 3
+
+--- ENDPOINT ---
+svc/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert_eq!(result.recovered_sections, 4);
+        let opts = result
+            .document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Options)
+            .expect("OPTIONS section should be parsed");
+        if let SectionContent::KeyValues(kvs) = &opts.content {
+            assert_eq!(kvs.get("timeout"), Some(&"5000".to_string()));
+            assert_eq!(kvs.get("retries"), Some(&"3".to_string()));
+        } else {
+            panic!("expected key-values content");
+        }
+    }
+
+    #[test]
+    fn test_parse_with_recovery_proto_section() {
+        let content = r#"--- PROTO ---
+protos: ["service.proto"]
+import_dirs: ["/protos"]
+
+--- ENDPOINT ---
+svc/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert_eq!(result.recovered_sections, 4);
+    }
+
+    #[test]
+    fn test_parse_with_recovery_empty_response() {
+        let content = r#"--- ENDPOINT ---
+svc/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+
+"#;
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert_eq!(result.recovered_sections, 3);
+        let response = result
+            .document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Response)
+            .expect("RESPONSE section should exist");
+        assert!(matches!(response.content, SectionContent::Empty));
+    }
+
+    #[test]
+    fn test_parse_with_recovery_non_section_header_lines() {
+        let content = r#"some random line
+more text
+--- ENDPOINT ---
+svc/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let result = parse_content_with_recovery(content, "test.gctf");
+        // Non-section-header lines should be skipped
+        assert_eq!(result.recovered_sections, 3);
+    }
+
+    #[test]
+    fn test_parse_with_recovery_comment_lines() {
+        let content = r#"# This is a comment
+// Another comment
+
+--- ENDPOINT ---
+svc/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert_eq!(result.recovered_sections, 3);
+    }
+
+    #[test]
+    fn test_parse_with_recovery_inline_options_invalid_boolean() {
+        let content = r#"--- ENDPOINT with_asserts=maybe ---
+svc/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert!(result.diagnostics.has_warnings());
+        assert_eq!(result.recovered_sections, 3);
+    }
+
+    #[test]
+    fn test_parse_with_recovery_inline_options_invalid_numeric() {
+        let content = r#"--- ENDPOINT tolerance=abc ---
+svc/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert!(result.diagnostics.has_warnings());
+    }
+
+    #[test]
+    fn test_parse_with_recovery_inline_options_unknown() {
+        let content = r#"--- ENDPOINT unknown_option=value ---
+svc/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let result = parse_content_with_recovery(content, "test.gctf");
+        // Unknown options produce hints, not warnings
+        assert_eq!(result.recovered_sections, 3);
+    }
+
+    #[test]
+    fn test_parse_with_recovery_inline_options_valid() {
+        let content = r#"--- ENDPOINT with_asserts=true unordered_arrays=true partial=false tolerance=0.05 ---
+svc/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert_eq!(result.recovered_sections, 3);
+    }
+
+    #[test]
+    fn test_parse_with_recovery_request_headers_section() {
+        let content = r#"--- ENDPOINT ---
+svc/Method
+
+--- REQUEST_HEADERS ---
+authorization: Bearer token
+x-custom: value
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert_eq!(result.recovered_sections, 4);
+        let headers = result
+            .document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::RequestHeaders)
+            .expect("REQUEST_HEADERS section should be parsed");
+        if let SectionContent::KeyValues(kvs) = &headers.content {
+            assert_eq!(kvs.get("authorization"), Some(&"Bearer token".to_string()));
+            assert_eq!(kvs.get("x-custom"), Some(&"value".to_string()));
+        } else {
+            panic!("expected key-values content");
+        }
+    }
+
+    #[test]
+    fn test_parse_with_recovery_invalid_key_value_syntax() {
+        let content = r#"--- TLS ---
+enabled: true
+invalid line without colon
+
+--- ENDPOINT ---
+svc/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert!(result.diagnostics.has_warnings());
+        assert_eq!(result.recovered_sections, 4);
+    }
 }
