@@ -1,46 +1,91 @@
 use serde_json::Value;
 
 /// Parse JSON5 string into serde_json::Value
-/// This supports comments, trailing commas, and unquoted keys
+/// Supports: comments (`//`, `#`, `/* */`), trailing commas, unquoted keys
 pub fn from_str(json_str: &str) -> Result<Value, anyhow::Error> {
-    let normalized = strip_hash_comments(json_str);
-    json5::from_str(&normalized).map_err(|e| anyhow::anyhow!("Failed to parse JSON5: {}", e))
+    let cleaned = tokenize_strip_comments(json_str);
+    json5::from_str(&cleaned).map_err(|e| anyhow::anyhow!("Failed to parse JSON5: {}", e))
 }
 
-fn strip_hash_comments(input: &str) -> String {
+/// Tokenize JSON5 content, stripping all comments.
+/// This is a single-pass state machine — no regex, no string hacks.
+///
+/// States:
+///   Normal → String → Escaped
+///   Normal → LineComment (`//`, `#`) → end of line
+///   Normal → BlockComment (`/*`) → `*/`
+fn tokenize_strip_comments(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
 
-    for line in input.lines() {
-        let mut in_string = false;
-        let mut escaped = false;
-
-        for ch in line.chars() {
-            if escaped {
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
                 out.push(ch);
-                escaped = false;
-                continue;
+                while let Some(c) = chars.next() {
+                    out.push(c);
+                    if c == '\\' {
+                        if let Some(escaped) = chars.next() {
+                            out.push(escaped);
+                        }
+                    } else if c == '"' {
+                        break;
+                    }
+                }
             }
-
-            if ch == '\\' {
-                out.push(ch);
-                escaped = true;
-                continue;
+            '/' => {
+                if let Some(&next) = chars.peek() {
+                    match next {
+                        '/' => {
+                            // Line comment — skip to end of line
+                            chars.next();
+                            for c in chars.by_ref() {
+                                if c == '\n' {
+                                    out.push(c);
+                                    break;
+                                }
+                            }
+                        }
+                        '*' => {
+                            // Block comment — skip until */
+                            chars.next();
+                            loop {
+                                match chars.next() {
+                                    Some('*') => {
+                                        if let Some(&'/') = chars.peek() {
+                                            chars.next();
+                                            break;
+                                        }
+                                    }
+                                    Some(c) if c == '\n' => {
+                                        out.push(c);
+                                    }
+                                    Some(_) => {}
+                                    None => break,
+                                }
+                            }
+                        }
+                        _ => {
+                            out.push(ch);
+                        }
+                    }
+                } else {
+                    out.push(ch);
+                }
             }
-
-            if ch == '"' {
-                in_string = !in_string;
-                out.push(ch);
-                continue;
+            '#' => {
+                // Line comment (GCTF-style) — skip to end of line
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        out.push(c);
+                        break;
+                    }
+                }
             }
-
-            if ch == '#' && !in_string {
-                break;
+            c => {
+                out.push(c);
             }
-
-            out.push(ch);
         }
-
-        out.push('\n');
     }
 
     out
@@ -107,5 +152,67 @@ mod tests {
         }"#;
         let expected = json!({"url": "https://example.com/path#anchor"});
         assert_eq!(from_str(input).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_tokenize_inline_slash_comment() {
+        let input = r#"{
+  "ipsToDecorations": {
+    "10.0.0.1": {
+      "decoration": "web-frontend",
+      // "environment": "production"
+    }
+  }
+}"#;
+        let result = from_str(input).unwrap();
+        assert_eq!(
+            result["ipsToDecorations"]["10.0.0.1"]["decoration"],
+            "web-frontend"
+        );
+    }
+
+    #[test]
+    fn test_tokenize_trailing_comment_after_json() {
+        let input = r#"{
+  "key": "value"
+}
+// trailing comment
+"#;
+        let result = from_str(input).unwrap();
+        assert_eq!(result["key"], "value");
+    }
+
+    #[test]
+    fn test_tokenize_block_comment_multiline() {
+        let input = r#"{
+  /* this is
+     a multiline
+     block comment */
+  "key": "value"
+}"#;
+        let result = from_str(input).unwrap();
+        assert_eq!(result["key"], "value");
+    }
+
+    #[test]
+    fn test_tokenize_slash_in_string_preserved() {
+        let input = r#"{"url": "http://example.com", "path": "a/b/c"}"#;
+        let result = from_str(input).unwrap();
+        assert_eq!(result["url"], "http://example.com");
+        assert_eq!(result["path"], "a/b/c");
+    }
+
+    #[test]
+    fn test_tokenize_escaped_quotes_in_string() {
+        let input = r#"{"text": "say \"hello\" // not a comment"}"#;
+        let result = from_str(input).unwrap();
+        assert_eq!(result["text"], "say \"hello\" // not a comment");
+    }
+
+    #[test]
+    fn test_tokenize_hash_preserves_newlines() {
+        let input = "{\n  # comment line 1\n  # comment line 2\n  \"key\": \"value\"\n}";
+        let result = from_str(input).unwrap();
+        assert_eq!(result["key"], "value");
     }
 }

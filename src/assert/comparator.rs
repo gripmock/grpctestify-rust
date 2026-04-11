@@ -326,7 +326,7 @@ impl JsonComparator {
     }
 }
 
-fn snake_to_camel(input: &str) -> String {
+pub fn snake_to_camel(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut upper = false;
     for ch in input.chars() {
@@ -345,7 +345,7 @@ fn snake_to_camel(input: &str) -> String {
     out
 }
 
-fn camel_to_snake(input: &str) -> String {
+pub fn camel_to_snake(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for (i, ch) in input.chars().enumerate() {
         if ch.is_ascii_uppercase() {

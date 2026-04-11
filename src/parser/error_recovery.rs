@@ -298,8 +298,8 @@ fn parse_section_content(
             if content_str.trim().is_empty() {
                 SectionContent::Empty
             } else {
-                // Try to parse as JSON, but don't fail - just add diagnostic
-                match serde_json::from_str::<serde_json::Value>(&content_str) {
+                // Try to parse as JSON5 (with comments), but don't fail - just add diagnostic
+                match super::json_mod::from_str(&content_str) {
                     Ok(value) => SectionContent::Json(value),
                     Err(e) => {
                         // Add error but continue parsing

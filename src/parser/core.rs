@@ -161,11 +161,10 @@ pub struct ParseDiagnostics {
 }
 
 /// Parse .gctf and return AST + diagnostics useful for inspect/debug.
-/// Supports multiple documents separated by `--- NEW ---`.
+/// Supports multiple documents with implicit boundaries (ENDPOINT after terminal section).
 pub fn parse_gctf_with_diagnostics(file_path: &Path) -> Result<(GctfDocument, ParseDiagnostics)> {
     let total_start = Instant::now();
 
-    // Read file content
     let read_start = Instant::now();
     let source = fs::read_to_string(file_path)
         .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
@@ -173,30 +172,39 @@ pub fn parse_gctf_with_diagnostics(file_path: &Path) -> Result<(GctfDocument, Pa
 
     let source_lines: Vec<&str> = source.lines().collect();
 
-    // Initialize document
-    let init_start = Instant::now();
-    let mut document = GctfDocument::new(file_path.display().to_string());
-    document.metadata.source = Some(source.clone());
-    let init_ms = init_start.elapsed().as_secs_f64() * 1000.0;
-
-    // Parse sections
     let parse_sections_start = Instant::now();
     let (sections, section_headers) = parse_sections(&source_lines)?;
     let parse_sections_ms = parse_sections_start.elapsed().as_secs_f64() * 1000.0;
 
-    let attach_start = Instant::now();
-    document.sections = sections;
-    let attach_ms = attach_start.elapsed().as_secs_f64() * 1000.0;
+    // Split into documents using implicit boundaries
+    let documents = split_into_documents(&sections);
 
-    // Non-overlapping "document build" time (without section parsing itself)
-    let build_document_ms = init_ms + attach_ms;
+    let build_start = Instant::now();
+    // Build chain — return head document
+    let mut head: Option<GctfDocument> = None;
+    for doc_sections in documents.into_iter().rev() {
+        let mut document = GctfDocument::new(file_path.display().to_string());
+        document.metadata.source = Some(source.clone());
+        document.sections = doc_sections;
+        document.next_document = head.map(Box::new);
+        head = Some(document);
+    }
+
+    let document = head.unwrap_or_else(|| {
+        let mut doc = GctfDocument::new(file_path.display().to_string());
+        doc.metadata.source = Some(source.clone());
+        doc
+    });
+    let build_ms = build_start.elapsed().as_secs_f64() * 1000.0;
     let total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
 
     let mut section_counts: HashMap<String, usize> = HashMap::new();
-    for section in &document.sections {
-        *section_counts
-            .entry(section.section_type.as_str().to_string())
-            .or_insert(0) += 1;
+    for d in document.iter_chain() {
+        for section in &d.sections {
+            *section_counts
+                .entry(section.section_type.as_str().to_string())
+                .or_insert(0) += 1;
+        }
     }
 
     let diagnostics = ParseDiagnostics {
@@ -208,13 +216,11 @@ pub fn parse_gctf_with_diagnostics(file_path: &Path) -> Result<(GctfDocument, Pa
         timings: ParseTimings {
             read_ms,
             parse_sections_ms,
-            build_document_ms,
+            build_document_ms: build_ms,
             total_ms,
         },
     };
 
-    // For file-level diagnostics, we return the first document.
-    // Multi-document chaining is handled by parse_gctf_from_str.
     Ok((document, diagnostics))
 }
 
@@ -287,27 +293,12 @@ fn build_section(
     content: &[String],
     inline_options: InlineOptions,
 ) -> Result<Section> {
-    // For raw content, we want to preserve indentation but trim empty lines at start/end
-    // and maybe trim common indentation if possible?
-    // For now, let's just join the lines. The user likely indented them relative to the file.
-    // However, build_section receives lines that might have file-level indentation.
-    // But .gctf files usually have sections at top level.
+    // Preserve raw content — all parsing happens through AST in parse_section_content
     let raw_content = content.join("\n");
 
-    // Remove comments and whitespace for parsing logic (if needed by specific parsers)
-    // Actually parse_section_content uses cleaned_content.
-    let cleaned_content: String = content
-        .iter()
-        .map(|line| line.trim())
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<&str>>()
-        .join("\n");
-
-    // Get section content type and parse
-    let section_content = parse_section_content(section_type, &cleaned_content)?;
-
-    // Use the passed inline_options instead of trying to parse again
-    // Previously we tried to parse from content.first(), which was wrong.
+    // Pass raw content to AST parser — JSON5, key-value, assertions all
+    // handle comments natively without pre-stripping
+    let section_content = parse_section_content(section_type, &raw_content)?;
 
     Ok(Section {
         section_type,

@@ -156,6 +156,7 @@ dissimilar = "1.0.10"
 futures = "0.3.32"
 lazy_static = "1.5.0"
 tower-lsp = "0.20"
+bytes = "1.11.1"
 
 [[test]]
 name = "explain"
