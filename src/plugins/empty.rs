@@ -161,7 +161,10 @@ mod tests {
         let context = create_context();
         let result = plugin
             .execute(
-                &[Value::String("a".to_string()), Value::String("b".to_string())],
+                &[
+                    Value::String("a".to_string()),
+                    Value::String("b".to_string()),
+                ],
                 &context,
             )
             .unwrap();

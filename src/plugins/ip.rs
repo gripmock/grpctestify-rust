@@ -145,10 +145,7 @@ mod tests {
     fn test_ip_plugin_wrong_type() {
         let plugin = IpPlugin;
         let context = create_context();
-        let result = plugin.execute(
-            &[Value::Number(serde_json::Number::from(123))],
-            &context,
-        );
+        let result = plugin.execute(&[Value::Number(serde_json::Number::from(123))], &context);
         assert!(result.is_ok());
         if let PluginResult::Assertion(AssertionResult::Fail { .. }) = result.unwrap() {
             // Pass

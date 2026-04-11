@@ -390,34 +390,40 @@ mod tests {
 
     #[test]
     fn test_diagnostic_builder_hint() {
-        let diag =
-            DiagnosticBuilder::hint(DiagnosticCode::UnusedVariable, "test hint", Range::at_line(2))
-                .build();
+        let diag = DiagnosticBuilder::hint(
+            DiagnosticCode::UnusedVariable,
+            "test hint",
+            Range::at_line(2),
+        )
+        .build();
         assert_eq!(diag.severity, DiagnosticSeverity::Hint);
     }
 
     #[test]
     fn test_diagnostic_builder_with_file() {
-        let diag = DiagnosticBuilder::error(DiagnosticCode::JsonParseError, "err", Range::at_line(0))
-            .with_file("test.gctf")
-            .build();
+        let diag =
+            DiagnosticBuilder::error(DiagnosticCode::JsonParseError, "err", Range::at_line(0))
+                .with_file("test.gctf")
+                .build();
         assert_eq!(diag.file, Some("test.gctf".to_string()));
     }
 
     #[test]
     fn test_diagnostic_builder_with_suggestion() {
-        let diag = DiagnosticBuilder::error(DiagnosticCode::JsonParseError, "err", Range::at_line(0))
-            .with_suggestion("fix it")
-            .build();
+        let diag =
+            DiagnosticBuilder::error(DiagnosticCode::JsonParseError, "err", Range::at_line(0))
+                .with_suggestion("fix it")
+                .build();
         assert_eq!(diag.suggestions, vec!["fix it"]);
     }
 
     #[test]
     fn test_diagnostic_builder_with_multiple_suggestions() {
-        let diag = DiagnosticBuilder::error(DiagnosticCode::JsonParseError, "err", Range::at_line(0))
-            .with_suggestion("first")
-            .with_suggestion("second")
-            .build();
+        let diag =
+            DiagnosticBuilder::error(DiagnosticCode::JsonParseError, "err", Range::at_line(0))
+                .with_suggestion("first")
+                .with_suggestion("second")
+                .build();
         assert_eq!(diag.suggestions.len(), 2);
         assert_eq!(diag.suggestions[0], "first");
         assert_eq!(diag.suggestions[1], "second");
@@ -425,34 +431,30 @@ mod tests {
 
     #[test]
     fn test_diagnostic_builder_with_suggestions_vec() {
-        let diag = DiagnosticBuilder::error(DiagnosticCode::JsonParseError, "err", Range::at_line(0))
-            .with_suggestions(vec!["a".to_string(), "b".to_string()])
-            .build();
+        let diag =
+            DiagnosticBuilder::error(DiagnosticCode::JsonParseError, "err", Range::at_line(0))
+                .with_suggestions(vec!["a".to_string(), "b".to_string()])
+                .build();
         assert_eq!(diag.suggestions.len(), 2);
     }
 
     #[test]
     fn test_diagnostic_builder_with_context() {
-        let diag = DiagnosticBuilder::error(DiagnosticCode::JsonParseError, "err", Range::at_line(0))
-            .with_context("some context")
-            .build();
+        let diag =
+            DiagnosticBuilder::error(DiagnosticCode::JsonParseError, "err", Range::at_line(0))
+                .with_context("some context")
+                .build();
         assert_eq!(diag.context, Some("some context".to_string()));
     }
 
     #[test]
     fn test_diagnostic_builder_with_related_info() {
-        let diag = DiagnosticBuilder::error(
-            DiagnosticCode::JsonParseError,
-            "err",
-            Range::at_line(0),
-        )
-        .with_related_info("other.gctf", Range::at_line(10), "related issue")
-        .build();
+        let diag =
+            DiagnosticBuilder::error(DiagnosticCode::JsonParseError, "err", Range::at_line(0))
+                .with_related_info("other.gctf", Range::at_line(10), "related issue")
+                .build();
         assert_eq!(diag.related_information.len(), 1);
-        assert_eq!(
-            diag.related_information[0].location.file,
-            "other.gctf"
-        );
+        assert_eq!(diag.related_information[0].location.file, "other.gctf");
         assert_eq!(diag.related_information[0].message, "related issue");
     }
 
