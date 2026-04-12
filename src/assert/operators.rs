@@ -419,7 +419,6 @@ fn resolve_path(path: &str, root: &Value) -> Value {
     eval_jaq_one(path, root).unwrap_or(Value::Null)
 }
 
-
 /// Evaluate a JQ expression and return the first result as serde_json::Value.
 fn eval_jaq_one(expr: &str, input: &Value) -> anyhow::Result<Value> {
     use jaq_core::defs as core_defs;
