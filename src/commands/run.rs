@@ -52,9 +52,10 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
 
     // Collect test files
     let mut test_files = Vec::new();
+    let exclude_patterns = &args.exclude;
     for path in &args.test_paths {
         if path.is_dir() {
-            test_files.extend(FileUtils::collect_test_files(path));
+            test_files.extend(FileUtils::collect_test_files(path, exclude_patterns));
         } else if path.is_file() {
             test_files.push(path.clone());
         }

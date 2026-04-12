@@ -437,7 +437,7 @@ pub async fn handle_fmt(args: &FmtArgs) -> Result<()> {
 
     for path in &args.files {
         if path.is_dir() {
-            files.extend(FileUtils::collect_test_files(path));
+            files.extend(FileUtils::collect_test_files(path, &[]));
         } else if path.is_file() {
             files.push(path.clone());
         } else {

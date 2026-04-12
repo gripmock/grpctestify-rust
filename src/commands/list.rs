@@ -16,7 +16,7 @@ pub fn handle_list(args: &ListArgs) -> Result<()> {
         std::process::exit(1);
     }
 
-    let files = FileUtils::collect_test_files(path);
+    let files = FileUtils::collect_test_files(path, &[]);
 
     if args.is_json() {
         let tests: Vec<serde_json::Value> = files
