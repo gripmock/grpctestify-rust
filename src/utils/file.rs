@@ -9,12 +9,14 @@ use crate::utils::gctf_style::trailing_blank_line_count;
 pub struct FileUtils;
 
 impl FileUtils {
-    /// Collect all .gctf files from a directory
-    pub fn collect_test_files(path: &Path) -> Vec<PathBuf> {
+    /// Collect all .gctf files from a directory, optionally excluding patterns
+    pub fn collect_test_files(path: &Path, exclude_patterns: &[String]) -> Vec<PathBuf> {
         let mut files = Vec::new();
 
         if path.is_file() {
-            if path.extension().is_some_and(|e| e == "gctf") {
+            if path.extension().is_some_and(|e| e == "gctf")
+                && !Self::is_excluded(path, exclude_patterns)
+            {
                 files.push(path.to_path_buf());
             }
         } else if path.is_dir() {
@@ -24,13 +26,18 @@ impl FileUtils {
                 if e.depth() == 0 {
                     return true;
                 }
-                !e.file_name().to_string_lossy().starts_with('.')
+                if e.file_name().to_string_lossy().starts_with('.') {
+                    return false;
+                }
+                // Check if this entry should be excluded
+                !Self::is_excluded(e.path(), exclude_patterns)
             });
 
             for entry in walker.flatten() {
                 if entry.file_type().is_file()
                     && let Some(ext) = entry.path().extension()
                     && ext == "gctf"
+                    && !Self::is_excluded(entry.path(), exclude_patterns)
                 {
                     files.push(entry.path().to_path_buf());
                 }
@@ -38,6 +45,38 @@ impl FileUtils {
         }
 
         files
+    }
+
+    /// Check if a path matches any of the exclude patterns
+    fn is_excluded(path: &Path, exclude_patterns: &[String]) -> bool {
+        if exclude_patterns.is_empty() {
+            return false;
+        }
+
+        let path_str = path.to_string_lossy();
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_default();
+
+        for pattern in exclude_patterns {
+            // Try glob matching
+            if let Ok(glob) = globset::Glob::new(pattern) {
+                let matcher = glob.compile_matcher();
+                if matcher.is_match(path)
+                    || matcher.is_match(&*path_str)
+                    || matcher.is_match(&*file_name)
+                {
+                    return true;
+                }
+            }
+            // Simple string contains check for basic patterns
+            if path_str.contains(pattern) || file_name.contains(pattern) {
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Sort files by given criteria
@@ -224,7 +263,7 @@ mod tests {
         let file = tempfile::Builder::new().suffix(".gctf").tempfile().unwrap();
         let path = file.path();
 
-        let files = FileUtils::collect_test_files(path);
+        let files = FileUtils::collect_test_files(path, &[]);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0], path);
     }
@@ -237,7 +276,7 @@ mod tests {
         let file = tempfile::Builder::new().suffix(".txt").tempfile().unwrap();
         let path = file.path();
 
-        let files = FileUtils::collect_test_files(path);
+        let files = FileUtils::collect_test_files(path, &[]);
         assert_eq!(files.len(), 0);
     }
 
@@ -250,7 +289,7 @@ mod tests {
         let test_file = dir.path().join("test.gctf");
         std::fs::write(&test_file, "test").unwrap();
 
-        let files = FileUtils::collect_test_files(dir.path());
+        let files = FileUtils::collect_test_files(dir.path(), &[]);
         assert_eq!(files.len(), 1);
         assert!(files.contains(&test_file));
     }
@@ -268,7 +307,7 @@ mod tests {
         std::fs::write(&file2, "test2").unwrap();
         std::fs::write(&file3, "other").unwrap();
 
-        let files = FileUtils::collect_test_files(dir.path());
+        let files = FileUtils::collect_test_files(dir.path(), &[]);
         assert_eq!(files.len(), 2);
         assert!(files.contains(&file1));
         assert!(files.contains(&file2));
@@ -286,38 +325,113 @@ mod tests {
         let nested_file = subdir.join("nested.gctf");
         std::fs::write(&nested_file, "nested").unwrap();
 
-        let files = FileUtils::collect_test_files(dir.path());
+        let files = FileUtils::collect_test_files(dir.path(), &[]);
         assert_eq!(files.len(), 1);
         assert!(files.contains(&nested_file));
     }
 
     #[test]
-    fn test_collect_test_files_hidden_dirs_skipped() {
+    fn test_collect_test_files_exclude_directory() {
         if !runtime::supports(runtime::Capability::IsolatedFsIo) {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
-        let hidden_dir = dir.path().join(".hidden");
-        std::fs::create_dir(&hidden_dir).unwrap();
-        let hidden_file = hidden_dir.join("hidden.gctf");
-        std::fs::write(&hidden_file, "hidden").unwrap();
-        let visible_file = dir.path().join("visible.gctf");
-        std::fs::write(&visible_file, "visible").unwrap();
+        let excluded_dir = dir.path().join("excluded");
+        let included_dir = dir.path().join("included");
+        std::fs::create_dir(&excluded_dir).unwrap();
+        std::fs::create_dir(&included_dir).unwrap();
 
-        let files = FileUtils::collect_test_files(dir.path());
+        let excluded_file = excluded_dir.join("excluded.gctf");
+        let included_file = included_dir.join("included.gctf");
+        std::fs::write(&excluded_file, "excluded").unwrap();
+        std::fs::write(&included_file, "included").unwrap();
+
+        // Exclude 'excluded' directory
+        let files = FileUtils::collect_test_files(dir.path(), &["excluded".to_string()]);
         assert_eq!(files.len(), 1);
-        assert!(files.contains(&visible_file));
-        assert!(!files.contains(&hidden_file));
+        assert!(files.contains(&included_file));
+        assert!(!files.contains(&excluded_file));
     }
 
     #[test]
-    fn test_collect_test_files_nonexistent() {
+    fn test_collect_test_files_exclude_file() {
         if !runtime::supports(runtime::Capability::IsolatedFsIo) {
             return;
         }
-        let path = PathBuf::from("/nonexistent/path");
-        let files = FileUtils::collect_test_files(&path);
-        assert_eq!(files.len(), 0);
+        let dir = tempfile::tempdir().unwrap();
+        let file1 = dir.path().join("test1.gctf");
+        let file2 = dir.path().join("test2.gctf");
+        std::fs::write(&file1, "test1").unwrap();
+        std::fs::write(&file2, "test2").unwrap();
+
+        // Exclude test1.gctf
+        let files = FileUtils::collect_test_files(dir.path(), &["test1.gctf".to_string()]);
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&file2));
+        assert!(!files.contains(&file1));
+    }
+
+    #[test]
+    fn test_collect_test_files_exclude_glob() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file1 = dir.path().join("test_001.gctf");
+        let file2 = dir.path().join("test_002.gctf");
+        let file3 = dir.path().join("prod.gctf");
+        std::fs::write(&file1, "test1").unwrap();
+        std::fs::write(&file2, "test2").unwrap();
+        std::fs::write(&file3, "prod").unwrap();
+
+        // Exclude files matching test_*.gctf
+        let files = FileUtils::collect_test_files(dir.path(), &["test_*.gctf".to_string()]);
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&file3));
+        assert!(!files.contains(&file1));
+        assert!(!files.contains(&file2));
+    }
+
+    #[test]
+    fn test_collect_test_files_exclude_multiple_patterns() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file1 = dir.path().join("test1.gctf");
+        let file2 = dir.path().join("test2.gctf");
+        let file3 = dir.path().join("prod.gctf");
+        std::fs::write(&file1, "test1").unwrap();
+        std::fs::write(&file2, "test2").unwrap();
+        std::fs::write(&file3, "prod").unwrap();
+
+        // Exclude with multiple patterns
+        let files = FileUtils::collect_test_files(
+            dir.path(),
+            &["test1.gctf".to_string(), "test2.gctf".to_string()],
+        );
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&file3));
+        assert!(!files.contains(&file1));
+        assert!(!files.contains(&file2));
+    }
+
+    #[test]
+    fn test_collect_test_files_no_exclude() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file1 = dir.path().join("test1.gctf");
+        let file2 = dir.path().join("test2.gctf");
+        std::fs::write(&file1, "test1").unwrap();
+        std::fs::write(&file2, "test2").unwrap();
+
+        // Empty exclude list should include all files
+        let files = FileUtils::collect_test_files(dir.path(), &[]);
+        assert_eq!(files.len(), 2);
+        assert!(files.contains(&file1));
+        assert!(files.contains(&file2));
     }
 
     #[test]

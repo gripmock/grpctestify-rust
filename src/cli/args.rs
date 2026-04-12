@@ -164,6 +164,10 @@ pub struct RunArgs {
     #[arg(required = false)]
     pub test_paths: Vec<PathBuf>,
 
+    /// Exclude files/directories matching the given glob pattern (can be used multiple times)
+    #[arg(long = "exclude", value_name = "PATTERN")]
+    pub exclude: Vec<String>,
+
     /// Run tests in parallel with N workers
     #[arg(short = 'p', long, default_value = "auto")]
     pub parallel: String,
