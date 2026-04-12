@@ -14,10 +14,10 @@ impl FileUtils {
         let mut files = Vec::new();
 
         if path.is_file() {
-            if path.extension().is_some_and(|e| e == "gctf") {
-                if !Self::is_excluded(path, exclude_patterns) {
-                    files.push(path.to_path_buf());
-                }
+            if path.extension().is_some_and(|e| e == "gctf")
+                && !Self::is_excluded(path, exclude_patterns)
+            {
+                files.push(path.to_path_buf());
             }
         } else if path.is_dir() {
             // Use walkdir for cross-platform traversal
@@ -63,7 +63,10 @@ impl FileUtils {
             // Try glob matching
             if let Ok(glob) = globset::Glob::new(pattern) {
                 let matcher = glob.compile_matcher();
-                if matcher.is_match(path) || matcher.is_match(&*path_str) || matcher.is_match(&*file_name) {
+                if matcher.is_match(path)
+                    || matcher.is_match(&*path_str)
+                    || matcher.is_match(&*file_name)
+                {
                     return true;
                 }
             }
