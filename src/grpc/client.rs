@@ -111,10 +111,10 @@ impl GrpcClient {
         let request_stream = requests.filter_map(move |json| {
             let input_desc = input_desc.clone();
             async move {
-                let mut normalized = json;
-                normalize_input_json_for_well_known(&mut normalized, &input_desc);
+                let mut transformed = json;
+                transform_input_json_for_well_known(&mut transformed, &input_desc);
 
-                let json_str = match serde_json::to_string(&normalized) {
+                let json_str = match serde_json::to_string(&transformed) {
                     Ok(s) => s,
                     Err(e) => {
                         tracing::error!("JSON serialization error: {}", e);
@@ -341,7 +341,9 @@ fn insert_request_metadata(
     }
 }
 
-fn normalize_input_json_for_well_known(value: &mut Value, desc: &MessageDescriptor) {
+/// Transform input JSON for well-known protobuf types.
+/// Handles special cases like FieldMask where JSON array needs to become a comma-separated string.
+fn transform_input_json_for_well_known(value: &mut Value, desc: &MessageDescriptor) {
     let Some(obj) = value.as_object_mut() else {
         return;
     };
@@ -377,11 +379,11 @@ fn normalize_input_json_for_well_known(value: &mut Value, desc: &MessageDescript
             if field.is_list() {
                 if let Some(arr) = field_value.as_array_mut() {
                     for item in arr {
-                        normalize_input_json_for_well_known(item, &message_desc);
+                        transform_input_json_for_well_known(item, &message_desc);
                     }
                 }
             } else {
-                normalize_input_json_for_well_known(field_value, &message_desc);
+                transform_input_json_for_well_known(field_value, &message_desc);
             }
         }
     }

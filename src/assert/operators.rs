@@ -416,29 +416,9 @@ fn resolve_path(path: &str, root: &Value) -> Value {
     if path == "." {
         return root.clone();
     }
-    // Normalize keys to camelCase so assertions like .ipsToDecorations
-    // work when server returns ips_to_decorations
-    let normalized = normalize_keys_to_camel(root);
-    eval_jaq_one(path, &normalized).unwrap_or(Value::Null)
+    eval_jaq_one(path, root).unwrap_or(Value::Null)
 }
 
-/// Normalize all object keys in a JSON value to camelCase.
-fn normalize_keys_to_camel(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => {
-            let entries: serde_json::Map<String, Value> = map
-                .iter()
-                .map(|(k, v)| {
-                    let camel = crate::assert::comparator::snake_to_camel(k);
-                    (camel, normalize_keys_to_camel(v))
-                })
-                .collect();
-            Value::Object(entries)
-        }
-        Value::Array(arr) => Value::Array(arr.iter().map(normalize_keys_to_camel).collect()),
-        other => other.clone(),
-    }
-}
 
 /// Evaluate a JQ expression and return the first result as serde_json::Value.
 fn eval_jaq_one(expr: &str, input: &Value) -> anyhow::Result<Value> {
@@ -719,33 +699,6 @@ mod tests {
         let root = json!({"a": 1});
         let result = resolve_path(".missing", &root);
         assert!(result.is_null());
-    }
-
-    #[test]
-    fn test_resolve_path_snake_to_camel() {
-        let root = json!({
-            "ips_to_decorations": {
-                "10.0.0.1": {
-                    "decoration": "web-frontend",
-                    "environment": "production"
-                }
-            }
-        });
-        let result = resolve_path(".ipsToDecorations[\"10.0.0.1\"].environment", &root);
-        assert_eq!(result, json!("production"));
-    }
-
-    #[test]
-    fn test_resolve_path_snake_to_camel_nested() {
-        let root = json!({
-            "some_key": {
-                "nested_value": {
-                    "deep_key": "found"
-                }
-            }
-        });
-        let result = resolve_path(".someKey.nestedValue.deepKey", &root);
-        assert_eq!(result, json!("found"));
     }
 
     #[test]
