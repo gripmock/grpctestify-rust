@@ -1,11 +1,13 @@
 // Inspect command - show detailed AST analysis and structure
 
 use anyhow::Result;
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::cli::args::InspectArgs;
 use crate::execution::{ExecutionPlan, Workflow};
 use crate::parser;
+use crate::parser::ast::{SectionContent, SectionType};
 use crate::report::{AstOverview, InspectReport, SectionInfo};
 
 fn sort_report_diagnostics(diags: &mut [crate::report::Diagnostic]) {
@@ -25,8 +27,6 @@ pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
     }
 
     let parse_start = std::time::Instant::now();
-
-    // Use error recovery parsing to show all errors
     let parse_result = parser::parse_with_recovery(file_path);
     let doc = parse_result.document;
     let diagnostics = parse_result.diagnostics;
@@ -34,10 +34,8 @@ pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
         .ok()
         .map(|(_, d)| d)
         .unwrap_or_default();
-
     let parse_ms = parse_start.elapsed().as_secs_f64() * 1000.0;
 
-    // Show any parse diagnostics
     if !diagnostics.is_empty() {
         eprintln!();
         eprintln!("PARSE DIAGNOSTICS");
@@ -46,7 +44,6 @@ pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
         eprintln!("Recovered sections: {}", parse_result.recovered_sections);
         eprintln!("Failed sections: {}", parse_result.failed_sections);
         eprintln!();
-
         for diagnostic in &diagnostics.diagnostics {
             crate::commands::print_diagnostic(diagnostic);
             eprintln!();
@@ -54,153 +51,13 @@ pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
     }
 
     let validation_start = std::time::Instant::now();
-
-    // Build workflow with full semantic analysis - single source of truth for inspect/explain
     let workflow = Workflow::from_document_with_analysis(&doc);
     let validation_result = parser::validate_document(&doc);
     let validation_ms = validation_start.elapsed().as_secs_f64() * 1000.0;
 
     if args.is_json() {
-        let mut inspect_diagnostics: Vec<crate::report::Diagnostic> = Vec::new();
-        let mut semantic_diagnostics: Vec<crate::report::Diagnostic> = Vec::new();
-        let mut optimization_hints: Vec<crate::report::Diagnostic> = Vec::new();
-        let file_str = file_path.to_string_lossy().to_string();
-
-        if let Err(e) = &validation_result {
-            inspect_diagnostics.push(crate::report::Diagnostic::error(
-                &file_str,
-                "VALIDATION_ERROR",
-                &e.to_string(),
-                1,
-            ));
-        }
-
-        // Check for deprecated HEADERS using AST
-        for section in &doc.sections {
-            if doc.section_uses_deprecated_headers_alias(section) {
-                inspect_diagnostics.push(
-                    crate::report::Diagnostic::warning(
-                        &file_str,
-                        "DEPRECATED_SECTION",
-                        "HEADERS section is deprecated, use REQUEST_HEADERS instead",
-                        section.start_line + 1,
-                    )
-                    .with_hint("Replace --- HEADERS --- with --- REQUEST_HEADERS ---"),
-                );
-            }
-        }
-
-        // Extract semantic diagnostics from workflow events
-        for event in workflow.semantic_analysis() {
-            if let crate::execution::WorkflowEvent::SemanticAnalysis {
-                type_mismatches,
-                unknown_plugins,
-            } = event
-            {
-                for mismatch in type_mismatches {
-                    let hint_str = mismatch
-                        .expression
-                        .as_ref()
-                        .map(|e| format!("Expression: {}", e))
-                        .unwrap_or_default();
-                    let diag = crate::report::Diagnostic::error(
-                        &file_str,
-                        &mismatch.rule_id,
-                        &mismatch.message,
-                        mismatch.line,
-                    )
-                    .with_hint(&hint_str);
-                    semantic_diagnostics.push(diag.clone());
-                    inspect_diagnostics.push(diag);
-                }
-                for unknown in unknown_plugins {
-                    let hint_str = unknown
-                        .expression
-                        .as_ref()
-                        .map(|e| format!("Assertion: {}", e))
-                        .unwrap_or_default();
-                    let diag = crate::report::Diagnostic::error(
-                        &file_str,
-                        &unknown.rule_id,
-                        &unknown.message,
-                        unknown.line,
-                    )
-                    .with_hint(&hint_str);
-                    semantic_diagnostics.push(diag.clone());
-                    inspect_diagnostics.push(diag);
-                }
-            }
-        }
-
-        // Extract optimization hints from workflow events
-        for event in workflow.optimization_hints() {
-            if let crate::execution::WorkflowEvent::OptimizationFound { hints } = event {
-                for hint in hints {
-                    let diag = crate::report::Diagnostic::hint(
-                        &file_str,
-                        &hint.rule_id,
-                        &format!("Safe rewrite available: {} -> {}", hint.before, hint.after),
-                        hint.line,
-                    )
-                    .with_hint("Boolean expression compared with true/false can be simplified");
-                    optimization_hints.push(diag.clone());
-                    inspect_diagnostics.push(diag);
-                }
-            }
-        }
-
-        sort_report_diagnostics(&mut inspect_diagnostics);
-        sort_report_diagnostics(&mut semantic_diagnostics);
-        sort_report_diagnostics(&mut optimization_hints);
-
-        // Build sections info
-        let sections_info: Vec<SectionInfo> = doc
-            .sections
-            .iter()
-            .map(|s| {
-                let content_kind = match &s.content {
-                    parser::ast::SectionContent::Single(_) => "single",
-                    parser::ast::SectionContent::Json(_) => "json",
-                    parser::ast::SectionContent::JsonLines(_) => "json-lines",
-                    parser::ast::SectionContent::KeyValues(_) => "key-values",
-                    parser::ast::SectionContent::Assertions(_) => "assertions",
-                    parser::ast::SectionContent::Extract(_) => "extract",
-                    parser::ast::SectionContent::Empty => "empty",
-                };
-                let message_count = match &s.content {
-                    parser::ast::SectionContent::JsonLines(lines) => Some(lines.len()),
-                    _ => None,
-                };
-                SectionInfo {
-                    section_type: s.section_type.as_str().to_string(),
-                    start_line: s.start_line,
-                    end_line: s.end_line,
-                    content_kind: content_kind.to_string(),
-                    message_count,
-                }
-            })
-            .collect();
-
-        // Infer RPC mode from execution plan
-        let execution_plan = ExecutionPlan::from_document(&doc);
-        let inferred_rpc_mode = Some(execution_plan.summary.rpc_mode_name.clone());
-
-        let report = InspectReport {
-            file: file_str,
-            parse_time_ms: parse_ms,
-            validation_time_ms: validation_ms,
-            ast: AstOverview {
-                sections: sections_info,
-            },
-            diagnostics: inspect_diagnostics,
-            semantic_diagnostics,
-            optimization_hints,
-            inferred_rpc_mode,
-        };
-
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        print_json_report(&doc, file_path, parse_ms, validation_ms);
     } else {
-        // Print detailed technical AST analysis
         print_detailed_analysis(
             &doc,
             &workflow,
@@ -215,9 +72,153 @@ pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
     Ok(())
 }
 
+fn print_json_report(
+    doc: &parser::GctfDocument,
+    file_path: &Path,
+    parse_ms: f64,
+    validation_ms: f64,
+) {
+    let mut inspect_diagnostics: Vec<crate::report::Diagnostic> = Vec::new();
+    let mut semantic_diagnostics: Vec<crate::report::Diagnostic> = Vec::new();
+    let mut optimization_hints: Vec<crate::report::Diagnostic> = Vec::new();
+    let file_str = file_path.to_string_lossy().to_string();
+
+    for (doc_idx, d) in doc.iter_chain().enumerate() {
+        if let Err(e) = parser::validate_document(d) {
+            let msg = if doc.is_single_document() {
+                e.to_string()
+            } else {
+                format!("Document {}: {}", doc_idx + 1, e)
+            };
+            inspect_diagnostics.push(crate::report::Diagnostic::error(
+                &file_str,
+                "VALIDATION_ERROR",
+                &msg,
+                1,
+            ));
+        }
+        for section in &d.sections {
+            if doc.section_uses_deprecated_headers_alias(section) {
+                inspect_diagnostics.push(
+                    crate::report::Diagnostic::warning(
+                        &file_str,
+                        "DEPRECATED_SECTION",
+                        "HEADERS section is deprecated, use REQUEST_HEADERS instead",
+                        section.start_line + 1,
+                    )
+                    .with_hint("Replace --- HEADERS --- with --- REQUEST_HEADERS ---"),
+                );
+            }
+        }
+        let w = Workflow::from_document_with_analysis(d);
+        for event in w.semantic_analysis() {
+            if let crate::execution::WorkflowEvent::SemanticAnalysis {
+                type_mismatches,
+                unknown_plugins,
+            } = event
+            {
+                for mismatch in type_mismatches {
+                    semantic_diagnostics.push(
+                        crate::report::Diagnostic::error(
+                            &file_str,
+                            &mismatch.rule_id,
+                            &mismatch.message,
+                            mismatch.line,
+                        )
+                        .with_hint(
+                            &mismatch
+                                .expression
+                                .as_ref()
+                                .map(|e| format!("Expression: {}", e))
+                                .unwrap_or_default(),
+                        ),
+                    );
+                }
+                for unknown in unknown_plugins {
+                    semantic_diagnostics.push(
+                        crate::report::Diagnostic::error(
+                            &file_str,
+                            &unknown.rule_id,
+                            &unknown.message,
+                            unknown.line,
+                        )
+                        .with_hint(
+                            &unknown
+                                .expression
+                                .as_ref()
+                                .map(|e| format!("Assertion: {}", e))
+                                .unwrap_or_default(),
+                        ),
+                    );
+                }
+            }
+        }
+        for hint in crate::optimizer::collect_assertion_optimizations(d) {
+            optimization_hints.push(
+                crate::report::Diagnostic::hint(
+                    &file_str,
+                    &hint.rule_id,
+                    &format!("Safe rewrite available: {} -> {}", hint.before, hint.after),
+                    hint.line,
+                )
+                .with_hint("Boolean expression compared with true/false can be simplified"),
+            );
+        }
+    }
+
+    sort_report_diagnostics(&mut inspect_diagnostics);
+    sort_report_diagnostics(&mut semantic_diagnostics);
+    sort_report_diagnostics(&mut optimization_hints);
+
+    let mut sections_info: Vec<SectionInfo> = Vec::new();
+    for d in doc.iter_chain() {
+        for s in &d.sections {
+            sections_info.push(section_to_info(s));
+        }
+    }
+
+    let plan = ExecutionPlan::from_document(doc);
+    let report = InspectReport {
+        file: file_str,
+        parse_time_ms: parse_ms,
+        validation_time_ms: validation_ms,
+        ast: AstOverview {
+            sections: sections_info,
+        },
+        diagnostics: inspect_diagnostics,
+        semantic_diagnostics,
+        optimization_hints,
+        inferred_rpc_mode: Some(plan.summary.rpc_mode_name.clone()),
+    };
+    println!("{}", serde_json::to_string_pretty(&report).unwrap());
+}
+
+fn section_to_info(section: &parser::ast::Section) -> SectionInfo {
+    let content_kind = match &section.content {
+        SectionContent::Single(_) => "single",
+        SectionContent::Json(_) => "json",
+        SectionContent::JsonLines(_) => "json-lines",
+        SectionContent::KeyValues(_) => "key-values",
+        SectionContent::Assertions(_) => "assertions",
+        SectionContent::Extract(_) => "extract",
+        SectionContent::Empty => "empty",
+    };
+    let message_count = match &section.content {
+        SectionContent::JsonLines(lines) => Some(lines.len()),
+        _ => None,
+    };
+    SectionInfo {
+        section_type: section.section_type.as_str().to_string(),
+        start_line: section.start_line,
+        end_line: section.end_line,
+        content_kind: content_kind.to_string(),
+        message_count,
+    }
+}
+
 fn print_detailed_analysis(
     doc: &parser::GctfDocument,
-    workflow: &Workflow,
+    _workflow: &Workflow,
     file_path: &Path,
     parse_diagnostics: &parser::ParseDiagnostics,
     parse_ms: f64,
@@ -231,7 +232,6 @@ fn print_detailed_analysis(
     println!("FILE: {}", file_path.display());
     println!();
 
-    // Parse Profiling
     println!("PARSE PROFILING");
     println!("---------------");
     println!("  File size:         {} bytes", parse_diagnostics.bytes);
@@ -261,20 +261,91 @@ fn print_detailed_analysis(
     );
     println!();
 
-    // AST Overview
+    // Multi-document: show each document
+    if !doc.is_single_document() {
+        let total_docs = doc.document_count();
+        println!("DOCUMENTS: {}", total_docs);
+        println!();
+
+        for (doc_idx, d) in doc.iter_chain().enumerate() {
+            println!(
+                "DOCUMENT {} [lines {}-{}]",
+                doc_idx + 1,
+                d.sections.first().map(|s| s.start_line + 1).unwrap_or(0),
+                d.sections.last().map(|s| s.end_line + 1).unwrap_or(0)
+            );
+            println!("{}", "=".repeat(56));
+            print_ast_overview(d);
+            println!();
+            print_structure(d);
+            println!();
+            print_variables(d);
+            println!();
+            print_logic_flow(d);
+            println!();
+        }
+
+        println!("WARNINGS & HINTS");
+        println!("----------------");
+        for (doc_idx, d) in doc.iter_chain().enumerate() {
+            print_warnings_for_doc(d, doc_idx + 1);
+        }
+        println!();
+        println!("SUMMARY");
+        println!("-------");
+        match validation_error {
+            Some(e) => println!("  FAILED: {}", e),
+            None => println!("  OK - No issues found. Test appears structurally valid."),
+        }
+        return;
+    }
+
+    // Single document: original format
     println!("AST OVERVIEW");
     println!("------------");
+    print_ast_overview(doc);
+    println!();
+
+    println!("STRUCTURE");
+    println!("---------");
+    print_structure(doc);
+    println!();
+
+    println!("VARIABLES");
+    println!("---------");
+    print_variables(doc);
+    println!();
+
+    println!("LOGIC FLOW");
+    println!("----------");
+    print_logic_flow(doc);
+    println!();
+
+    println!("WARNINGS & HINTS");
+    println!("----------------");
+    print_warnings(doc);
+    println!();
+
+    println!("SUMMARY");
+    println!("-------");
+    match validation_error {
+        Some(e) => println!("  FAILED: {}", e),
+        None => println!("  OK - No issues found. Test appears structurally valid."),
+    }
+}
+
+fn print_ast_overview(doc: &parser::GctfDocument) {
     println!("  #   Section          Lines         Type           Raw Size");
     println!("  ---------------------------------------------------------------");
     for (i, section) in doc.sections.iter().enumerate() {
         let content_kind = match &section.content {
-            parser::ast::SectionContent::Single(_) => "single",
-            parser::ast::SectionContent::Json(_) => "json",
-            parser::ast::SectionContent::JsonLines(_) => "json-lines",
-            parser::ast::SectionContent::KeyValues(_) => "key-values",
-            parser::ast::SectionContent::Assertions(_) => "assertions",
-            parser::ast::SectionContent::Extract(_) => "extract",
-            parser::ast::SectionContent::Empty => "empty",
+            SectionContent::Single(_) => "single",
+            SectionContent::Json(_) => "json",
+            SectionContent::JsonLines(_) => "json-lines",
+            SectionContent::KeyValues(_) => "key-values",
+            SectionContent::Assertions(_) => "assertions",
+            SectionContent::Extract(_) => "extract",
+            SectionContent::Empty => "empty",
         };
         let raw_bytes = section.raw_content.len();
         println!(
@@ -287,39 +358,37 @@ fn print_detailed_analysis(
             raw_bytes
         );
     }
-    println!();
+}
 
-    // Structure
-    println!("STRUCTURE");
-    println!("---------");
+fn print_structure(doc: &parser::GctfDocument) {
     let has_endpoint = doc
         .sections
         .iter()
-        .any(|s| s.section_type == parser::ast::SectionType::Endpoint);
+        .any(|s| s.section_type == SectionType::Endpoint);
     let has_request = doc
         .sections
         .iter()
-        .any(|s| s.section_type == parser::ast::SectionType::Request);
+        .any(|s| s.section_type == SectionType::Request);
     let has_response = doc
         .sections
         .iter()
-        .any(|s| s.section_type == parser::ast::SectionType::Response);
+        .any(|s| s.section_type == SectionType::Response);
     let has_error = doc
         .sections
         .iter()
-        .any(|s| s.section_type == parser::ast::SectionType::Error);
+        .any(|s| s.section_type == SectionType::Error);
     let has_extract = doc
         .sections
         .iter()
-        .any(|s| s.section_type == parser::ast::SectionType::Extract);
+        .any(|s| s.section_type == SectionType::Extract);
     let has_asserts = doc
         .sections
         .iter()
-        .any(|s| s.section_type == parser::ast::SectionType::Asserts);
+        .any(|s| s.section_type == SectionType::Asserts);
     let has_request_headers = doc
         .sections
         .iter()
-        .any(|s| s.section_type == parser::ast::SectionType::RequestHeaders);
+        .any(|s| s.section_type == SectionType::RequestHeaders);
 
     if has_endpoint {
         println!("  [OK] ENDPOINT section present");
@@ -349,221 +418,56 @@ fn print_detailed_analysis(
     if !has_request && !has_error {
         println!("  [WARN] No REQUEST or ERROR section");
     }
-    println!();
+}
 
-    // Variables
-    println!("VARIABLES");
-    println!("---------");
+fn print_variables(doc: &parser::GctfDocument) {
     let extract_sections: Vec<_> = doc
         .sections
         .iter()
-        .filter(|s| s.section_type == parser::ast::SectionType::Extract)
+        .filter(|s| s.section_type == SectionType::Extract)
         .collect();
 
     if extract_sections.is_empty() {
         println!("  No variables defined or used.");
-    } else {
-        for section in extract_sections {
-            if let parser::ast::SectionContent::Extract(extractions) = &section.content {
-                println!(
-                    "  Extract block at lines {}-{}:",
-                    section.start_line + 1,
-                    section.end_line + 1
-                );
-                for (name, query) in extractions {
-                    println!("    ${{ {:<15} }} = {}", name, query);
-                }
-            }
-        }
-
-        // Check for variable usage
-        let mut var_usages = Vec::new();
-        for section in &doc.sections {
-            if let parser::ast::SectionContent::Json(value) = &section.content {
-                let json_str = value.to_string();
-                if json_str.contains("{{ ") && json_str.contains(" }}") {
-                    var_usages.push((section.section_type.as_str(), section.start_line));
-                }
-            }
-        }
-
-        if !var_usages.is_empty() {
-            println!("  Variable usages:");
-            for (section_type, line) in var_usages {
-                println!("    - {} section at line {}", section_type, line + 1);
-            }
-        }
-    }
-    println!();
-
-    // Logic Flow
-    println!("LOGIC FLOW");
-    println!("----------");
-    print_logic_flow(doc);
-    println!();
-
-    // Warnings/Hints
-    println!("WARNINGS & HINTS");
-    println!("----------------");
-    let sections = &doc.sections;
-    let mut has_warnings = false;
-
-    // Check for missing required sections
-    let has_endpoint = sections
-        .iter()
-        .any(|s| s.section_type == parser::ast::SectionType::Endpoint);
-    if !has_endpoint {
-        println!("  [ERROR] No ENDPOINT section found");
-        has_warnings = true;
+        return;
     }
 
-    // Check for REQUEST/ERROR sections
-    let has_request = sections
-        .iter()
-        .any(|s| s.section_type == parser::ast::SectionType::Request);
-    let has_error = sections
-        .iter()
-        .any(|s| s.section_type == parser::ast::SectionType::Error);
-    if !has_request && !has_error {
-        println!("  [WARN] No REQUEST or ERROR section found");
-        has_warnings = true;
-    }
-
-    // Check for RESPONSE sections
-    let has_response = sections
-        .iter()
-        .any(|s| s.section_type == parser::ast::SectionType::Response);
-    if has_request && !has_response && !has_error {
-        println!("  [WARN] REQUEST section present but no RESPONSE or ERROR section");
-        has_warnings = true;
-    }
-
-    // Extract semantic analysis from workflow events
-    let mut type_mismatches = Vec::new();
-    let mut unknown_plugins = Vec::new();
-    let mut optimization_hints = Vec::new();
-
-    for event in workflow.semantic_analysis() {
-        if let crate::execution::WorkflowEvent::SemanticAnalysis {
-            type_mismatches: tm,
-            unknown_plugins: up,
-        } = event
-        {
-            type_mismatches = tm.clone();
-            unknown_plugins = up.clone();
-        }
-    }
-
-    for event in workflow.optimization_hints() {
-        if let crate::execution::WorkflowEvent::OptimizationFound { hints } = event {
-            optimization_hints = hints.clone();
-        }
-    }
-
-    // Check each section for issues
-    for (i, section) in sections.iter().enumerate() {
-        // Check for `with_asserts` without following ASSERTS
-        if section.inline_options.with_asserts {
-            let has_following_asserts = sections[i + 1..]
-                .iter()
-                .take_while(|s| s.section_type != parser::ast::SectionType::Request)
-                .any(|s| s.section_type == parser::ast::SectionType::Asserts);
-            if !has_following_asserts {
-                println!(
-                    "  [WARN] Line {}: with_asserts option set but no",
-                    section.start_line + 1
-                );
-                println!("         ASSERTS section follows");
-                has_warnings = true;
-            }
-        }
-
-        // Check for empty REQUEST sections
-        if section.section_type == parser::ast::SectionType::Request
-            && matches!(section.content, parser::ast::SectionContent::Empty)
-        {
+    for section in extract_sections {
+        if let SectionContent::Extract(extractions) = &section.content {
             println!(
-                "  [INFO] Line {}: Empty REQUEST section will send",
-                section.start_line + 1
+                "  Extract block at lines {}-{}:",
+                section.start_line + 1,
+                section.end_line + 1
             );
-            println!("         empty JSON object {{}}");
-            has_warnings = true;
-        }
-
-        // Check for unused EXTRACT variables
-        if section.section_type == parser::ast::SectionType::Extract
-            && let parser::ast::SectionContent::Extract(extractions) = &section.content
-            && extractions.is_empty()
-        {
-            println!(
-                "  [WARN] Line {}: EXTRACT section has no variables",
-                section.start_line + 1
-            );
-            has_warnings = true;
-        }
-
-        // Check for empty ASSERTS sections
-        if section.section_type == parser::ast::SectionType::Asserts
-            && let parser::ast::SectionContent::Assertions(assertions) = &section.content
-            && assertions.is_empty()
-        {
-            println!(
-                "  [WARN] Line {}: ASSERTS section has no assertions",
-                section.start_line + 1
-            );
-            has_warnings = true;
-        }
-    }
-
-    for mismatch in &type_mismatches {
-        println!("  [ERROR] Line {}: {}", mismatch.line, mismatch.message);
-        println!(
-            "         Expression: {}",
-            mismatch.expression.as_ref().unwrap_or(&"".to_string())
-        );
-        has_warnings = true;
-    }
-
-    for unknown in &unknown_plugins {
-        println!("  [ERROR] Line {}: {}", unknown.line, unknown.message);
-        println!(
-            "         Assertion: {}",
-            unknown.expression.as_ref().unwrap_or(&"".to_string())
-        );
-        has_warnings = true;
-    }
-
-    for hint in &optimization_hints {
-        println!(
-            "  [HINT] Line {}: [{}] {} -> {}",
-            hint.line, hint.rule_id, hint.before, hint.after
-        );
-        println!("         Boolean expression compared with true/false can be simplified");
-        has_warnings = true;
-    }
-
-    if !has_warnings {
-        println!("  [OK] No structural warnings or hints.");
-    }
-    println!();
-
-    // Summary
-    println!("SUMMARY");
-    println!("-------");
-    match validation_error {
-        Some(e) => println!("  FAILED: {}", e),
-        None => {
-            if unknown_plugins.is_empty() && type_mismatches.is_empty() {
-                println!("  OK - No issues found. Test appears structurally valid.");
-            } else {
-                println!(
-                    "  FAILED: semantic validation failed ({} unknown plugin call(s), {} type mismatch(es))",
-                    unknown_plugins.len(),
-                    type_mismatches.len()
-                );
+            for (name, query) in sorted_kv(extractions) {
+                println!("    ${{ {:<15} }} = {}", name, query);
             }
         }
     }
+
+    // Check for variable usage
+    let mut var_usages = Vec::new();
+    for section in &doc.sections {
+        if let SectionContent::Json(value) = &section.content {
+            let json_str = value.to_string();
+            if json_str.contains("{{ ") && json_str.contains(" }}") {
+                var_usages.push((section.section_type.as_str(), section.start_line));
+            }
+        }
+    }
+
+    if !var_usages.is_empty() {
+        println!("  Variable usages:");
+        for (section_type, line) in var_usages {
+            println!("    - {} section at line {}", section_type, line + 1);
+        }
+    }
+}
+
+fn sorted_kv(map: &HashMap<String, String>) -> Vec<(&str, &str)> {
+    let mut pairs: Vec<(&str, &str)> = map.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    pairs.sort_by(|(ka, _), (kb, _)| ka.cmp(kb));
+    pairs
 }
 
 fn print_logic_flow(doc: &parser::GctfDocument) {
@@ -571,10 +475,8 @@ fn print_logic_flow(doc: &parser::GctfDocument) {
 
     let summary = get_workflow_summary(&doc.sections);
     let call_type = get_call_type(&summary);
-
     println!("  {}", call_type);
 
-    // Build pattern description
     if summary.total_errors > 0 && summary.total_requests == 1 {
         println!("  Pattern: Single request -> gRPC error response");
     } else if summary.total_requests == 1 && summary.total_responses == 1 {
@@ -601,7 +503,6 @@ fn print_logic_flow(doc: &parser::GctfDocument) {
         );
     }
 
-    // Show workflow summary
     println!(
         "  Steps: {}",
         summary.total_requests
@@ -612,7 +513,6 @@ fn print_logic_flow(doc: &parser::GctfDocument) {
             + 1
     );
 
-    // Show additional info
     if summary.total_extractions > 0 {
         println!("  Variables: {} extraction(s)", summary.total_extractions);
     }
@@ -623,13 +523,10 @@ fn print_logic_flow(doc: &parser::GctfDocument) {
         println!("  Streaming: enabled");
     }
 
-    // Show inline options summary
     let with_asserts_count = doc
         .sections
         .iter()
-        .filter(|s| {
-            s.section_type == parser::ast::SectionType::Response && s.inline_options.with_asserts
-        })
+        .filter(|s| s.section_type == SectionType::Response && s.inline_options.with_asserts)
         .count();
     if with_asserts_count > 0 {
         println!("  With Asserts: {} response(s)", with_asserts_count);
@@ -663,34 +560,130 @@ fn print_logic_flow(doc: &parser::GctfDocument) {
             println!("    - {}: {}", key, value);
         }
     }
+}
 
-    let strict_error_details_count = doc
-        .sections
+fn print_warnings(doc: &parser::GctfDocument) {
+    print_warnings_for_doc(doc, 0);
+}
+
+fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
+    let sections = &doc.sections;
+    let mut has_warnings = false;
+
+    let has_endpoint = sections
         .iter()
-        .filter(|s| {
-            s.section_type == parser::ast::SectionType::Error
-                && matches!(s.content, parser::ast::SectionContent::Json(ref v) if v.get("details").is_none())
-        })
-        .count();
-    if strict_error_details_count > 0 {
-        println!(
-            "  Error Details Policy: strict absence for {} ERROR section(s)",
-            strict_error_details_count
-        );
+        .any(|s| s.section_type == SectionType::Endpoint);
+    if !has_endpoint {
+        println!("  [ERROR] No ENDPOINT section found");
+        has_warnings = true;
     }
 
-    let required_error_details_count = doc
-        .sections
+    let has_request = sections
         .iter()
-        .filter(|s| {
-            s.section_type == parser::ast::SectionType::Error
-                && matches!(s.content, parser::ast::SectionContent::Json(ref v) if v.get("details").is_some())
-        })
-        .count();
-    if required_error_details_count > 0 {
+        .any(|s| s.section_type == SectionType::Request);
+    let has_error = sections
+        .iter()
+        .any(|s| s.section_type == SectionType::Error);
+    if !has_request && !has_error {
+        println!("  [WARN] No REQUEST or ERROR section found");
+        has_warnings = true;
+    }
+
+    let has_response = sections
+        .iter()
+        .any(|s| s.section_type == SectionType::Response);
+    if has_request && !has_response && !has_error {
+        println!("  [WARN] REQUEST section present but no RESPONSE or ERROR section");
+        has_warnings = true;
+    }
+
+    // Semantic analysis
+    let workflow = Workflow::from_document_with_analysis(doc);
+    for event in workflow.semantic_analysis() {
+        if let crate::execution::WorkflowEvent::SemanticAnalysis {
+            type_mismatches,
+            unknown_plugins,
+        } = event
+        {
+            for mismatch in type_mismatches {
+                println!("  [ERROR] Line {}: {}", mismatch.line, mismatch.message);
+                println!(
+                    "         Expression: {}",
+                    mismatch.expression.as_ref().unwrap_or(&"".to_string())
+                );
+                has_warnings = true;
+            }
+            for unknown in unknown_plugins {
+                println!("  [ERROR] Line {}: {}", unknown.line, unknown.message);
+                println!(
+                    "         Assertion: {}",
+                    unknown.expression.as_ref().unwrap_or(&"".to_string())
+                );
+                has_warnings = true;
+            }
+        }
+    }
+
+    for hint in crate::optimizer::collect_assertion_optimizations(doc) {
         println!(
-            "  Error Details Policy: required for {} ERROR section(s)",
-            required_error_details_count
+            "  [HINT] Line {}: [{}] {} -> {}",
+            hint.line, hint.rule_id, hint.before, hint.after
         );
+        println!("         Boolean expression compared with true/false can be simplified");
+        has_warnings = true;
+    }
+
+    for (i, section) in sections.iter().enumerate() {
+        if section.inline_options.with_asserts {
+            let has_following_asserts = sections[i + 1..]
+                .iter()
+                .take_while(|s| s.section_type != SectionType::Request)
+                .any(|s| s.section_type == SectionType::Asserts);
+            if !has_following_asserts {
+                println!(
+                    "  [WARN] Line {}: with_asserts option set but no",
+                    section.start_line + 1
+                );
+                println!("         ASSERTS section follows");
+                has_warnings = true;
+            }
+        }
+
+        if section.section_type == SectionType::Request
+            && matches!(section.content, SectionContent::Empty)
+        {
+            println!(
+                "  [INFO] Line {}: Empty REQUEST section will send",
+                section.start_line + 1
+            );
+            println!("         empty JSON object {{}}");
+            has_warnings = true;
+        }
+
+        if section.section_type == SectionType::Extract
+            && let SectionContent::Extract(extractions) = &section.content
+            && extractions.is_empty()
+        {
+            println!(
+                "  [WARN] Line {}: EXTRACT section has no variables",
+                section.start_line + 1
+            );
+            has_warnings = true;
+        }
+
+        if section.section_type == SectionType::Asserts
+            && let SectionContent::Assertions(assertions) = &section.content
+            && assertions.is_empty()
+        {
+            println!(
+                "  [WARN] Line {}: ASSERTS section has no assertions",
+                section.start_line + 1
+            );
+            has_warnings = true;
+        }
+    }
+
+    if !has_warnings {
+        println!("  [OK] No structural warnings or hints.");
     }
 }

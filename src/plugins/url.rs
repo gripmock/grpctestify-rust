@@ -111,4 +111,50 @@ mod tests {
             panic!("Expected Error assertion result");
         }
     }
+
+    #[test]
+    fn test_url_plugin_too_many_args() {
+        let plugin = UrlPlugin;
+        let context = create_context();
+        let result = plugin.execute(
+            &[
+                Value::String("https://example.com".to_string()),
+                Value::String("extra".to_string()),
+            ],
+            &context,
+        );
+        assert!(result.is_ok());
+        if let PluginResult::Assertion(AssertionResult::Error(msg)) = result.unwrap() {
+            assert!(msg.contains("1 argument"));
+        } else {
+            panic!("Expected Error assertion result");
+        }
+    }
+
+    #[test]
+    fn test_url_plugin_wrong_type() {
+        let plugin = UrlPlugin;
+        let context = create_context();
+        let result = plugin.execute(&[Value::Number(serde_json::Number::from(123))], &context);
+        assert!(result.is_ok());
+        if let PluginResult::Assertion(AssertionResult::Fail { .. }) = result.unwrap() {
+            // Pass
+        } else {
+            panic!("Expected Fail assertion result");
+        }
+    }
+
+    #[test]
+    fn test_url_plugin_description() {
+        let plugin = UrlPlugin;
+        assert!(plugin.description().contains("URL"));
+    }
+
+    #[test]
+    fn test_url_plugin_signature() {
+        let plugin = UrlPlugin;
+        let sig = plugin.signature();
+        assert_eq!(sig.arg_names, &["value"]);
+        assert!(sig.safe_for_rewrite);
+    }
 }

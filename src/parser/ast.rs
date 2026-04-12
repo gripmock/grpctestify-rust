@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Complete .gctf document
+/// Documents linked by `--- NEW ---` form a singly-linked list.
+/// When `next_document` is `None` this is either a single-document file
+/// or the last document in a chain.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GctfDocument {
     /// File path (absolute or relative)
@@ -15,6 +18,10 @@ pub struct GctfDocument {
 
     /// Document metadata
     pub metadata: DocumentMetadata,
+
+    /// Next document in chain (linked by `--- NEW ---`), `None` if single/last
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_document: Option<Box<GctfDocument>>,
 }
 
 /// Document metadata
@@ -115,6 +122,14 @@ pub enum SectionType {
 }
 
 impl SectionType {
+    /// Returns `true` if this section marks the end of a logical request-response cycle.
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            SectionType::Response | SectionType::Error | SectionType::Asserts
+        )
+    }
+
     /// Get section name as string
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -262,6 +277,21 @@ pub struct SectionHeader {
     pub options: HashMap<String, String>,
 }
 
+/// Iterator over a linked document chain
+pub struct DocumentChainIter<'a> {
+    current: Option<&'a GctfDocument>,
+}
+
+impl<'a> Iterator for DocumentChainIter<'a> {
+    type Item = &'a GctfDocument;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.current.take().inspect(|doc| {
+            self.current = doc.next_document.as_deref();
+        })
+    }
+}
+
 impl GctfDocument {
     /// Create a new empty document
     pub fn new(file_path: String) -> Self {
@@ -273,7 +303,30 @@ impl GctfDocument {
                 mtime: None,
                 parsed_at: crate::time::now_timestamp(),
             },
+            next_document: None,
         }
+    }
+
+    /// Iterate over the document chain (single or `--- NEW ---` linked)
+    pub fn iter_chain(&self) -> DocumentChainIter<'_> {
+        DocumentChainIter {
+            current: Some(self),
+        }
+    }
+
+    /// Count documents in the chain
+    pub fn document_count(&self) -> usize {
+        self.iter_chain().count()
+    }
+
+    /// Check if this is a single-document file
+    pub fn is_single_document(&self) -> bool {
+        self.next_document.is_none()
+    }
+
+    /// Get document by index (0-based) from the chain
+    pub fn get_document(&self, index: usize) -> Option<&GctfDocument> {
+        self.iter_chain().nth(index)
     }
 
     /// Get all sections of a specific type
@@ -512,6 +565,17 @@ mod tests {
             SectionType::from_keyword("  ADDRESS  "),
             Some(SectionType::Address)
         );
+    }
+
+    #[test]
+    fn test_section_type_is_terminal() {
+        assert!(SectionType::Response.is_terminal());
+        assert!(SectionType::Error.is_terminal());
+        assert!(SectionType::Asserts.is_terminal());
+        assert!(!SectionType::Request.is_terminal());
+        assert!(!SectionType::Endpoint.is_terminal());
+        assert!(!SectionType::Extract.is_terminal());
+        assert!(!SectionType::Address.is_terminal());
     }
 
     #[test]
@@ -943,5 +1007,68 @@ mod tests {
         let doc = GctfDocument::new("test.gctf".to_string());
         let debug_str = format!("{:?}", doc);
         assert!(debug_str.contains("test.gctf"));
+    }
+
+    // ─── Document chain (linked-list) tests ───
+
+    #[test]
+    fn test_document_chain_single() {
+        let doc = GctfDocument::new("test.gctf".to_string());
+        assert!(doc.is_single_document());
+        assert_eq!(doc.document_count(), 1);
+    }
+
+    #[test]
+    fn test_document_chain_two_docs() {
+        let mut doc1 = GctfDocument::new("test.gctf".to_string());
+        let doc2 = GctfDocument::new("test.gctf".to_string());
+        doc1.next_document = Some(Box::new(doc2));
+
+        assert!(!doc1.is_single_document());
+        assert_eq!(doc1.document_count(), 2);
+    }
+
+    #[test]
+    fn test_document_chain_three_docs() {
+        let mut doc3 = GctfDocument::new("test.gctf".to_string());
+        doc3.file_path = "doc3".to_string();
+
+        let mut doc2 = GctfDocument::new("test.gctf".to_string());
+        doc2.file_path = "doc2".to_string();
+        doc2.next_document = Some(Box::new(doc3));
+
+        let mut doc1 = GctfDocument::new("test.gctf".to_string());
+        doc1.file_path = "doc1".to_string();
+        doc1.next_document = Some(Box::new(doc2));
+
+        assert_eq!(doc1.document_count(), 3);
+
+        let docs: Vec<_> = doc1.iter_chain().collect();
+        assert_eq!(docs.len(), 3);
+        assert_eq!(docs[0].file_path, "doc1");
+        assert_eq!(docs[1].file_path, "doc2");
+        assert_eq!(docs[2].file_path, "doc3");
+    }
+
+    #[test]
+    fn test_document_chain_get_document() {
+        let mut doc2 = GctfDocument::new("test.gctf".to_string());
+        doc2.file_path = "doc2".to_string();
+
+        let mut doc1 = GctfDocument::new("test.gctf".to_string());
+        doc1.file_path = "doc1".to_string();
+        doc1.next_document = Some(Box::new(doc2));
+
+        assert_eq!(doc1.get_document(0).unwrap().file_path, "doc1");
+        assert_eq!(doc1.get_document(1).unwrap().file_path, "doc2");
+        assert!(doc1.get_document(2).is_none());
+    }
+
+    #[test]
+    fn test_document_chain_iter_on_last() {
+        let doc = GctfDocument::new("test.gctf".to_string());
+        let docs: Vec<_> = doc.iter_chain().collect();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].file_path, "test.gctf");
     }
 }

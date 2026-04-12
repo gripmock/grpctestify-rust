@@ -10,7 +10,7 @@ pub mod ternary;
 pub mod ternary_ast;
 pub mod validator;
 
-pub use ast::GctfDocument;
+pub use ast::{DocumentChainIter, GctfDocument};
 pub use core::{ParseDiagnostics, parse_gctf, parse_gctf_from_str, parse_gctf_with_diagnostics};
 pub use error_recovery::{ErrorRecoveryResult, parse_content_with_recovery, parse_with_recovery};
 pub use ternary::{process_extract_value, ternary_to_jq};

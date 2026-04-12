@@ -310,6 +310,142 @@ pub fn get_address_from_document(content: &str) -> Option<String> {
     std::env::var(config::ENV_GRPCTESTIFY_ADDRESS).ok()
 }
 
+/// Get variable completions from EXTRACT sections in all preceding documents.
+/// Returns completions for `{{var}}` syntax in REQUEST, REQUEST_HEADERS, etc.
+pub fn get_variable_completions(
+    doc: &crate::parser::GctfDocument,
+    current_line_0based: usize,
+) -> Vec<CompletionItem> {
+    use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, InsertTextFormat};
+
+    let mut items = Vec::new();
+    let current_doc_idx = find_document_index_at_line(doc, current_line_0based);
+
+    // Collect variables from all documents before the current one
+    for (doc_idx, d) in doc.iter_chain().enumerate() {
+        // Only variables from documents BEFORE the current document
+        if doc_idx >= current_doc_idx {
+            continue;
+        }
+
+        for section in &d.sections {
+            if section.section_type != SectionType::Extract {
+                continue;
+            }
+            if let parser::ast::SectionContent::Extract(extractions) = &section.content {
+                for (name, expr) in extractions {
+                    let detail = format!("from Document {}, EXTRACT: {}", doc_idx + 1, expr);
+                    items.push(CompletionItem {
+                        label: name.clone(),
+                        kind: Some(CompletionItemKind::VARIABLE),
+                        detail: Some(detail),
+                        insert_text: Some(format!("{{{{ {} }}}}", name)),
+                        insert_text_format: Some(InsertTextFormat::SNIPPET),
+                        documentation: Some(tower_lsp::lsp_types::Documentation::MarkupContent(
+                            tower_lsp::lsp_types::MarkupContent {
+                                kind: tower_lsp::lsp_types::MarkupKind::Markdown,
+                                value: format!(
+                                    "**{}**\n\nExtracted: `{}`\nSource: Document {}, line {}",
+                                    name,
+                                    expr,
+                                    doc_idx + 1,
+                                    section.start_line + 1
+                                ),
+                            },
+                        )),
+                        ..CompletionItem::default()
+                    });
+                }
+            }
+        }
+    }
+
+    items
+}
+
+/// Find which document (0-based index) contains the given line.
+fn find_document_index_at_line(doc: &crate::parser::GctfDocument, line_0based: usize) -> usize {
+    let line_1based = line_0based + 1;
+    for (idx, d) in doc.iter_chain().enumerate() {
+        if let (Some(first), Some(last)) = (d.sections.first(), d.sections.last())
+            && line_1based >= first.start_line
+            && line_1based <= last.end_line
+        {
+            return idx;
+        }
+    }
+    // If line is before first section, it's in the first document
+    0
+}
+
+/// Generate hover content for {{var_name}} references.
+/// Shows where the variable was extracted from.
+pub fn get_var_hover(
+    doc: &crate::parser::GctfDocument,
+    line_0based: usize,
+    character: u32,
+) -> Option<tower_lsp::lsp_types::Hover> {
+    use tower_lsp::lsp_types::{Hover, HoverContents, MarkedString};
+
+    let line_str = doc.metadata.source.as_deref()?.lines().nth(line_0based)?;
+
+    let char_pos = character as usize;
+    if char_pos >= line_str.len() {
+        return None;
+    }
+
+    // Check if cursor is inside {{ ... }}
+    let before = &line_str[..char_pos];
+    let open_brace = before.rfind("{{")?;
+
+    let after = &line_str[char_pos..];
+    let close_brace = after.find("}}")?;
+
+    let var_content = line_str[open_brace + 2..char_pos + close_brace].trim();
+    let var_name = var_content.split_whitespace().next()?;
+
+    // Find which document this line belongs to
+    let current_doc_idx = find_document_index_at_line(doc, line_0based);
+
+    // Find the variable definition in preceding documents
+    for (doc_idx, d) in doc.iter_chain().enumerate() {
+        if doc_idx >= current_doc_idx {
+            break; // Only search documents before current
+        }
+
+        for section in &d.sections {
+            if section.section_type != SectionType::Extract {
+                continue;
+            }
+            if let parser::ast::SectionContent::Extract(extractions) = &section.content
+                && let Some(expr) = extractions.get(var_name)
+            {
+                let hover_text = format!(
+                    "**Variable: `{}`**\n\nExtracted: `{}`\nSource: Document {}, line {}",
+                    var_name,
+                    expr,
+                    doc_idx + 1,
+                    section.start_line + 1
+                );
+                return Some(Hover {
+                    contents: HoverContents::Scalar(MarkedString::String(hover_text)),
+                    range: None,
+                });
+            }
+        }
+    }
+
+    // Variable not found in preceding documents
+    let hover_text = format!(
+        "**Unknown variable: `{}`**\n\nNo EXTRACT definition found in preceding documents.",
+        var_name
+    );
+    Some(tower_lsp::lsp_types::Hover {
+        contents: HoverContents::Scalar(MarkedString::String(hover_text)),
+        range: None,
+    })
+}
+
 /// Convert validation error to LSP diagnostic
 pub fn validation_error_to_diagnostic(
     error: &crate::parser::validator::ValidationError,
@@ -419,6 +555,217 @@ fn collect_optimizer_rewrites_with_ranges(
     }
 
     rewrites
+}
+
+// ─── Unused Variable Detection (AST-based) ───
+
+/// Result of unused variable detection
+#[derive(Debug, Clone)]
+pub struct UnusedVariable {
+    /// Variable name
+    pub name: String,
+    /// 1-based line number where the variable is defined (EXTRACT section)
+    pub line: usize,
+    /// 0-based character where the variable name starts on that line
+    pub character: usize,
+    /// Document index (0-based) where the variable was defined
+    pub doc_index: usize,
+}
+
+/// Collect unused EXTRACT variables across the document chain (pure AST traversal).
+///
+/// A variable is "unused" if it was defined in an EXTRACT section but never
+/// referenced via `{{ var_name }}` in any subsequent document.
+pub fn collect_unused_variables(doc: &crate::parser::GctfDocument) -> Vec<UnusedVariable> {
+    // Step 1: Extract all variables from EXTRACT sections via AST
+    let defined_vars = extract_all_vars(doc);
+
+    // Step 2: For each variable, check if it's used in any subsequent document
+    defined_vars
+        .into_iter()
+        .filter(|(def_doc_idx, var_name, _, _)| {
+            !is_var_used_in_subsequent_docs(doc, *def_doc_idx, var_name)
+        })
+        .map(|(doc_idx, name, line, character)| UnusedVariable {
+            name,
+            line,
+            character,
+            doc_index: doc_idx,
+        })
+        .collect()
+}
+
+/// Extract all EXTRACT variables from the document chain with their AST source locations.
+fn extract_all_vars(doc: &crate::parser::GctfDocument) -> Vec<(usize, String, usize, usize)> {
+    // (doc_index, var_name, 1-based line, 0-based char)
+    let mut vars = Vec::new();
+
+    for (doc_idx, curr_doc) in doc.iter_chain().enumerate() {
+        for section in &curr_doc.sections {
+            if section.section_type != SectionType::Extract {
+                continue;
+            }
+            if let parser::ast::SectionContent::Extract(extractions) = &section.content {
+                for (local_line, raw_line) in section.raw_content.lines().enumerate() {
+                    let trimmed = raw_line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+                        continue;
+                    }
+                    if let Some(extract_var) = parser::ExtractVar::parse(trimmed) {
+                        let global_line = section.start_line + local_line;
+                        let char_pos = raw_line.find(&extract_var.name).unwrap_or(0);
+                        vars.push((doc_idx, extract_var.name, global_line, char_pos));
+                    }
+                }
+
+                // Also check for vars defined only in the parsed Extract map
+                // (covers the case where raw_content parsing differs)
+                for var_name in extractions.keys() {
+                    // Check if already added from raw_content
+                    let already_present = vars.iter().any(|(_, n, _, _)| n == var_name);
+                    if !already_present {
+                        // Find in raw_content to get line info
+                        for (local_line, raw_line) in section.raw_content.lines().enumerate() {
+                            if raw_line.trim().starts_with(var_name) {
+                                let global_line = section.start_line + local_line;
+                                let char_pos = raw_line.find(var_name).unwrap_or(0);
+                                vars.push((doc_idx, var_name.clone(), global_line, char_pos));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    vars
+}
+
+/// Check if a variable is referenced via `{{ var_name }}` in any document after `def_doc_idx`.
+fn is_var_used_in_subsequent_docs(
+    doc: &crate::parser::GctfDocument,
+    def_doc_idx: usize,
+    var_name: &str,
+) -> bool {
+    // Check all documents AFTER the defining document
+    for (doc_idx, curr_doc) in doc.iter_chain().enumerate() {
+        if doc_idx > def_doc_idx && doc_contains_var_reference(curr_doc, var_name) {
+            return true;
+        }
+    }
+
+    // No subsequent docs (this is the last/only document) — check usage within
+    // the same document via non-EXTRACT sections (AST traversal)
+    if def_doc_idx == doc.document_count() - 1 {
+        return doc_contains_var_reference_excluding_extract(doc, var_name);
+    }
+
+    false
+}
+
+/// Check if a document contains `{{ var_name }}` via AST traversal.
+fn doc_contains_var_reference(doc: &crate::parser::GctfDocument, var_name: &str) -> bool {
+    for section in &doc.sections {
+        if section_contains_var_reference(section, var_name) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Check if an AST section contains a variable reference.
+fn section_contains_var_reference(section: &crate::parser::ast::Section, var_name: &str) -> bool {
+    match &section.content {
+        // JSON sections may contain {{ var }} in string values
+        parser::ast::SectionContent::Json(value) => json_contains_var(value, var_name),
+        // Multiple JSON values
+        parser::ast::SectionContent::JsonLines(values) => {
+            values.iter().any(|v| json_contains_var(v, var_name))
+        }
+        // Key-value sections (REQUEST_HEADERS, TLS, OPTIONS, PROTO)
+        parser::ast::SectionContent::KeyValues(kv) => {
+            kv.values().any(|v| contains_var_pattern(v, var_name))
+        }
+        // Extract sections: don't check — a var definition is not a usage
+        parser::ast::SectionContent::Extract(_) => false,
+        // Assertions: check for $var_name references (EXTRACT uses $var syntax)
+        parser::ast::SectionContent::Assertions(asserts) => {
+            // In ASSERTS, variables from EXTRACT are referenced as $var_name
+            asserts.iter().any(|a| contains_assert_var_ref(a, var_name))
+        }
+        // Single value sections (ADDRESS, ENDPOINT)
+        parser::ast::SectionContent::Single(s) => contains_var_pattern(s, var_name),
+        parser::ast::SectionContent::Empty => false,
+    }
+}
+
+/// Recursively check if a JSON value contains `{{ var_name }}` in any string.
+fn json_contains_var(value: &serde_json::Value, var_name: &str) -> bool {
+    match value {
+        serde_json::Value::String(s) => contains_var_pattern(s, var_name),
+        serde_json::Value::Object(map) => map.values().any(|v| json_contains_var(v, var_name)),
+        serde_json::Value::Array(arr) => arr.iter().any(|v| json_contains_var(v, var_name)),
+        _ => false,
+    }
+}
+
+/// Check if a string contains `{{ var_name }}` (with flexible whitespace around name).
+fn contains_var_pattern(s: &str, var_name: &str) -> bool {
+    // Patterns: {{ var_name }}, {{var_name }}, {{ var_name}}, {{var_name}}
+    let patterns = [
+        format!("{{{{ {} }}}}", var_name),
+        format!("{{{{{} }}}}", var_name),
+        format!("{{{{ {}}}}}", var_name),
+        format!("{{{{{}}}}}", var_name),
+    ];
+    patterns.iter().any(|p| s.contains(p))
+}
+
+/// Check if an assertion references a variable via `$var_name`.
+fn contains_assert_var_ref(assertion: &str, var_name: &str) -> bool {
+    // EXTRACT variables are referenced as $var_name in assertions
+    let pattern = format!("${}", var_name);
+    assertion.contains(&pattern)
+}
+
+/// Check if a document contains variable references outside EXTRACT sections (AST-based).
+fn doc_contains_var_reference_excluding_extract(
+    doc: &crate::parser::GctfDocument,
+    var_name: &str,
+) -> bool {
+    for section in &doc.sections {
+        if section.section_type == SectionType::Extract {
+            continue;
+        }
+        if section_contains_var_reference(section, var_name) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Convert unused variables to LSP diagnostics
+pub fn unused_variable_to_diagnostic(var: &UnusedVariable) -> Diagnostic {
+    let lsp_line = var.line.saturating_sub(1) as u32;
+    let char_start = var.character as u32;
+    let char_end = (var.character + var.name.len()) as u32;
+
+    Diagnostic {
+        range: Range::new(
+            Position::new(lsp_line, char_start),
+            Position::new(lsp_line, char_end),
+        ),
+        severity: Some(DiagnosticSeverity::WARNING),
+        code: Some(NumberOrString::String("UNUSED_VARIABLE".to_string())),
+        source: Some("grpctestify".to_string()),
+        message: format!(
+            "Variable '{}' is extracted but never used in subsequent documents",
+            var.name
+        ),
+        tags: Some(vec![DiagnosticTag::UNNECESSARY]),
+        ..Diagnostic::default()
+    }
 }
 
 pub fn collect_semantic_diagnostics(
@@ -981,5 +1328,38 @@ test.Service/Method
     fn test_get_section_header_option_completions_others() {
         assert!(get_section_header_option_completions(&SectionType::Address).is_empty());
         assert!(get_section_header_option_completions(&SectionType::Request).is_empty());
+    }
+
+    #[test]
+    fn test_get_variable_completions() {
+        let source = r#"--- ENDPOINT ---
+svc.Create
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{"id": "123"}
+
+--- EXTRACT ---
+user_id = .id
+token = .token
+
+--- ENDPOINT ---
+svc.Read
+
+--- REQUEST ---
+{"id": "{{}}"}
+
+--- RESPONSE ---
+{}
+"#;
+        let doc = crate::parser::parse_gctf_from_str(source, "test.gctf").unwrap();
+        // Completions should be available in the second document
+        let completions = get_variable_completions(&doc, 17);
+        assert!(!completions.is_empty());
+        let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"user_id"));
+        assert!(labels.contains(&"token"));
     }
 }

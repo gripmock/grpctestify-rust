@@ -9,7 +9,7 @@ use tower_lsp::{Client, LanguageServer, LspService, Server, lsp_types::*};
 
 use crate::config;
 use crate::grpc::client::{GrpcClient, GrpcClientConfig, ProtoConfig};
-use crate::lsp::handlers;
+use crate::lsp::handlers::{self, get_var_hover, get_variable_completions};
 use crate::lsp::variable_definition;
 use crate::optimizer;
 use crate::parser::ast::SectionType;
@@ -608,13 +608,44 @@ impl GrpctestifyLsp {
                     .await
                     .insert(uri.to_string(), version);
 
-                let errors = crate::parser::validator::validate_document_diagnostics(&document);
-                let mut lsp_diags: Vec<Diagnostic> = errors
-                    .iter()
-                    .map(|e| handlers::validation_error_to_diagnostic(e, content))
-                    .collect();
-                lsp_diags.extend(handlers::collect_semantic_diagnostics(&document, content));
-                lsp_diags.extend(handlers::collect_optimizer_diagnostics(&document, content));
+                // Validate all documents in the chain
+                let mut lsp_diags: Vec<Diagnostic> = Vec::new();
+                for (doc_idx, d) in document.iter_chain().enumerate() {
+                    let doc_label = if document.is_single_document() {
+                        None
+                    } else {
+                        Some(doc_idx + 1)
+                    };
+
+                    let errors = crate::parser::validator::validate_document_diagnostics(d);
+                    for e in &errors {
+                        let mut diag = handlers::validation_error_to_diagnostic(e, content);
+                        if let Some(n) = doc_label {
+                            diag.message = format!("Document {}: {}", n, diag.message);
+                        }
+                        lsp_diags.push(diag);
+                    }
+
+                    // Semantic diagnostics
+                    let semantic_diags = handlers::collect_semantic_diagnostics(d, content);
+                    for mut diag in semantic_diags {
+                        if let Some(n) = doc_label {
+                            diag.message = format!("Document {}: {}", n, diag.message);
+                        }
+                        lsp_diags.push(diag);
+                    }
+
+                    // Optimizer diagnostics
+                    let opt_diags = handlers::collect_optimizer_diagnostics(d, content);
+                    for diag in opt_diags {
+                        lsp_diags.push(diag);
+                    }
+                }
+
+                // Unused variable diagnostics (EXTRACT vars not used in subsequent docs)
+                for unused_var in handlers::collect_unused_variables(&document) {
+                    lsp_diags.push(handlers::unused_variable_to_diagnostic(&unused_var));
+                }
 
                 self.client
                     .publish_diagnostics(uri.clone(), lsp_diags, None)
@@ -835,6 +866,8 @@ impl LanguageServer for GrpctestifyLsp {
                             }
                         }
                         SectionType::Request if !on_section_header => {
+                            // Variable completions for {{var}} in JSON
+                            items.extend(get_variable_completions(&doc, position.line as usize));
                             items.extend(
                                 self.schema_message_field_completions(
                                     &doc,
@@ -859,6 +892,10 @@ impl LanguageServer for GrpctestifyLsp {
                                 )
                                 .await,
                             );
+                        }
+                        SectionType::RequestHeaders if !on_section_header => {
+                            // Variable completions for {{var}} in header values
+                            items.extend(get_variable_completions(&doc, position.line as usize));
                         }
                         SectionType::Asserts if !on_section_header => {
                             items.extend(handlers::get_assertion_completions());
@@ -906,6 +943,14 @@ impl LanguageServer for GrpctestifyLsp {
         };
         if let Some(doc) = self.get_or_parse_document(&uri, &content).await {
             let line = position.line as usize + 1;
+
+            // First check if cursor is on a {{var}} reference
+            if let Some(var_hover) = get_var_hover(&doc, position.line as usize, position.character)
+            {
+                return Ok(Some(var_hover));
+            }
+
+            // Fall back to section hover
             for section in &doc.sections {
                 if section.start_line <= line
                     && line <= section.end_line
@@ -950,6 +995,7 @@ impl LanguageServer for GrpctestifyLsp {
         Ok(None)
     }
 
+    #[allow(deprecated)]
     async fn document_symbol(
         &self,
         params: DocumentSymbolParams,
@@ -965,120 +1011,47 @@ impl LanguageServer for GrpctestifyLsp {
         if let Some(doc) = self.get_or_parse_document(&uri, &content).await {
             let section_children =
                 |s: &crate::parser::ast::Section| -> Option<Vec<DocumentSymbol>> {
-                    let mut children: Vec<DocumentSymbol> = Vec::new();
-
-                    if s.section_type == SectionType::Asserts {
-                        for (idx, line) in s.raw_content.lines().enumerate() {
-                            let trimmed = line.trim();
-                            if trimmed.is_empty()
-                                || trimmed.starts_with('#')
-                                || trimmed.starts_with("//")
-                            {
-                                continue;
-                            }
-
-                            let line_num = (s.start_line + idx + 1) as u32;
-                            #[allow(deprecated)]
-                            let mut assertion_symbol = DocumentSymbol {
-                                name: trimmed.to_string(),
-                                detail: Some("assertion".to_string()),
-                                kind: SymbolKind::STRING,
-                                tags: None,
-                                deprecated: None,
-                                range: Range::new(
-                                    Position::new(line_num, 0),
-                                    Position::new(line_num, trimmed.len() as u32),
-                                ),
-                                selection_range: Range::new(
-                                    Position::new(line_num, 0),
-                                    Position::new(line_num, trimmed.len() as u32),
-                                ),
-                                children: None,
-                            };
-
-                            let mut var_children = Vec::new();
-                            let mut offset = 0usize;
-                            while let Some(open) = trimmed[offset..].find("{{") {
-                                let abs_open = offset + open;
-                                let Some(close_rel) = trimmed[abs_open..].find("}}") else {
-                                    break;
-                                };
-                                let abs_close = abs_open + close_rel + 2;
-                                let inner = trimmed[abs_open + 2..abs_close - 2].trim();
-                                if !inner.is_empty() {
-                                    #[allow(deprecated)]
-                                    var_children.push(DocumentSymbol {
-                                        name: inner.to_string(),
-                                        detail: Some("variable reference".to_string()),
-                                        kind: SymbolKind::VARIABLE,
-                                        tags: None,
-                                        deprecated: None,
-                                        range: Range::new(
-                                            Position::new(line_num, abs_open as u32),
-                                            Position::new(line_num, abs_close as u32),
-                                        ),
-                                        selection_range: Range::new(
-                                            Position::new(line_num, (abs_open + 2) as u32),
-                                            Position::new(line_num, (abs_close - 2) as u32),
-                                        ),
-                                        children: None,
-                                    });
-                                }
-                                offset = abs_close;
-                            }
-
-                            if !var_children.is_empty() {
-                                assertion_symbol.children = Some(var_children);
-                            }
-
-                            children.push(assertion_symbol);
-                        }
-                    }
-
-                    if s.section_type == SectionType::Extract {
-                        for (idx, line) in s.raw_content.lines().enumerate() {
-                            let trimmed = line.trim();
-                            if trimmed.is_empty()
-                                || trimmed.starts_with('#')
-                                || trimmed.starts_with("//")
-                            {
-                                continue;
-                            }
-
-                            let Some((name, expr)) = trimmed.split_once('=') else {
-                                continue;
-                            };
-                            let var_name = name.trim();
-                            let line_num = (s.start_line + idx + 1) as u32;
-                            let expr_trimmed = expr.trim();
-
-                            #[allow(deprecated)]
-                            children.push(DocumentSymbol {
-                                name: var_name.to_string(),
-                                detail: Some(format!("extract: {}", expr_trimmed)),
-                                kind: SymbolKind::VARIABLE,
-                                tags: None,
-                                deprecated: None,
-                                range: Range::new(
-                                    Position::new(line_num, 0),
-                                    Position::new(line_num, trimmed.len() as u32),
-                                ),
-                                selection_range: Range::new(
-                                    Position::new(line_num, 0),
-                                    Position::new(line_num, var_name.len() as u32),
-                                ),
-                                children: None,
-                            });
-                        }
-                    }
-
-                    if children.is_empty() {
-                        None
-                    } else {
-                        Some(children)
-                    }
+                    build_section_children_for_doc(&doc)
+                        .into_iter()
+                        .find(|child| child.name == format!("{:?}", s.section_type))
+                        .and_then(|sym| sym.children)
                 };
 
+            // Multi-document: documents as top-level nodes
+            if !doc.is_single_document() {
+                let mut doc_symbols: Vec<DocumentSymbol> = Vec::new();
+                for (doc_idx, d) in doc.iter_chain().enumerate() {
+                    let endpoint = d.get_endpoint().unwrap_or_else(|| "unknown".to_string());
+                    let doc_name = format!("Document {}: {}", doc_idx + 1, endpoint);
+
+                    let section_children = build_section_children_for_doc(d);
+
+                    #[allow(deprecated)]
+                    let first_line = d.sections.first().map(|s| s.start_line).unwrap_or(0) as u32;
+                    #[allow(deprecated)]
+                    let last_line = d.sections.last().map(|s| s.end_line).unwrap_or(0) as u32;
+
+                    doc_symbols.push(DocumentSymbol {
+                        name: doc_name,
+                        detail: Some(format!("Lines {}-{}", first_line, last_line)),
+                        kind: SymbolKind::MODULE,
+                        tags: None,
+                        deprecated: None,
+                        range: Range::new(
+                            Position::new(first_line, 0),
+                            Position::new(last_line, 0),
+                        ),
+                        selection_range: Range::new(
+                            Position::new(first_line, 0),
+                            Position::new(first_line, 15),
+                        ),
+                        children: Some(section_children),
+                    });
+                }
+                return Ok(Some(DocumentSymbolResponse::Nested(doc_symbols)));
+            }
+
+            // Single document: flat sections
             let symbols = doc
                 .sections
                 .iter()
@@ -1728,20 +1701,48 @@ fn build_semantic_tokens(content: &str) -> SemanticTokens {
 fn build_folding_ranges(content: &str) -> Vec<FoldingRange> {
     let mut ranges: Vec<FoldingRange> = Vec::new();
 
-    // Parse content using AST for accurate section detection
-    if let Ok(doc) = parser::parse_gctf_from_str(content, "temp.gctf") {
-        // Create folding ranges for each section
-        for section in &doc.sections {
-            // Only create folding range if section has multiple lines
-            if section.end_line > section.start_line {
-                ranges.push(FoldingRange {
-                    start_line: ((section.start_line as i32) - 1).max(0) as u32,
-                    start_character: Some(0),
-                    end_line: ((section.end_line as i32) - 1).max(0) as u32,
-                    end_character: None,
-                    kind: Some(FoldingRangeKind::Region),
-                    collapsed_text: Some(format!("--- {} ---", section.section_type.as_str())),
-                });
+    // Parse content — may contain multiple documents
+    if let Ok(head) = parser::parse_gctf_from_str(content, "temp.gctf") {
+        // Document-level folding: fold entire document
+        for (doc_idx, d) in head.iter_chain().enumerate() {
+            if let (Some(first), Some(last)) = (d.sections.first(), d.sections.last()) {
+                let start = ((first.start_line as i32) - 1).max(0) as u32;
+                let end = ((last.end_line as i32) - 1).max(0) as u32;
+                if end > start {
+                    let label = if head.is_single_document() {
+                        d.get_endpoint().unwrap_or_else(|| "document".to_string())
+                    } else {
+                        format!(
+                            "Doc {}: {}",
+                            doc_idx + 1,
+                            d.get_endpoint().unwrap_or_else(|| "unknown".to_string())
+                        )
+                    };
+                    ranges.push(FoldingRange {
+                        start_line: start,
+                        start_character: Some(0),
+                        end_line: end,
+                        end_character: None,
+                        kind: Some(FoldingRangeKind::Region),
+                        collapsed_text: Some(label),
+                    });
+                }
+            }
+        }
+
+        // Section-level folding within each document
+        for d in head.iter_chain() {
+            for section in &d.sections {
+                if section.end_line > section.start_line {
+                    ranges.push(FoldingRange {
+                        start_line: ((section.start_line as i32) - 1).max(0) as u32,
+                        start_character: Some(0),
+                        end_line: ((section.end_line as i32) - 1).max(0) as u32,
+                        end_character: None,
+                        kind: Some(FoldingRangeKind::Region),
+                        collapsed_text: Some(format!("--- {} ---", section.section_type.as_str())),
+                    });
+                }
             }
         }
     }
@@ -1781,23 +1782,126 @@ fn build_inlay_hints(content: &str, range: tower_lsp::lsp_types::Range) -> Vec<I
         "value"
     };
 
-    // Parse content using AST for accurate section and variable detection
-    if let Ok(doc) = parser::parse_gctf_from_str(content, "temp.gctf") {
-        // Add section type hints
-        for section in &doc.sections {
-            // Check if section is within the requested range
-            let section_line = ((section.start_line as i32) - 1).max(0) as u32;
-            if section_line >= range.start.line && section_line <= range.end.line {
-                // Add section type hint at the end of the section header line
+    // Parse content — may contain multiple documents
+    if let Ok(head) = parser::parse_gctf_from_str(content, "temp.gctf") {
+        let total_docs = head.document_count();
+
+        // Add section type hints + document number on ENDPOINT
+        for (doc_idx, d) in head.iter_chain().enumerate() {
+            for section in &d.sections {
+                let section_line = ((section.start_line as i32) - 1).max(0) as u32;
+                if section_line < range.start.line || section_line > range.end.line {
+                    continue;
+                }
+
+                // Document number hint on ENDPOINT lines
+                if section.section_type == parser::ast::SectionType::Endpoint && total_docs > 1 {
+                    hints.push(InlayHint {
+                        position: tower_lsp::lsp_types::Position {
+                            line: section_line,
+                            character: 1000,
+                        },
+                        label: InlayHintLabel::String(format!(
+                            "document {} of {}",
+                            doc_idx + 1,
+                            total_docs
+                        )),
+                        kind: Some(InlayHintKind::TYPE),
+                        text_edits: None,
+                        tooltip: Some(InlayHintTooltip::String(format!(
+                            "Document {} of {} in this file",
+                            doc_idx + 1,
+                            total_docs
+                        ))),
+                        padding_left: Some(true),
+                        padding_right: None,
+                        data: None,
+                    });
+                } else {
+                    // Regular section type hint
+                    hints.push(InlayHint {
+                        position: tower_lsp::lsp_types::Position {
+                            line: section_line,
+                            character: 1000,
+                        },
+                        label: InlayHintLabel::String(format!(
+                            ": {}",
+                            section.section_type.as_str()
+                        )),
+                        kind: Some(InlayHintKind::TYPE),
+                        text_edits: None,
+                        tooltip: None,
+                        padding_left: Some(true),
+                        padding_right: None,
+                        data: None,
+                    });
+                }
+            }
+
+            // Variable type hints in EXTRACT sections
+            for section in &d.sections {
+                if section.section_type == parser::ast::SectionType::Extract
+                    && let parser::ast::SectionContent::Extract(extractions) = &section.content
+                {
+                    for (var_name, expr) in extractions {
+                        let mut hint_line: Option<u32> = None;
+                        let mut hint_char: u32 = 1000;
+                        for (idx, line) in section.raw_content.lines().enumerate() {
+                            let trimmed = line.trim();
+                            if let Some((name, _)) = trimmed.split_once('=')
+                                && name.trim() == var_name
+                            {
+                                hint_line = Some((section.start_line + idx + 1) as u32);
+                                hint_char = name.len() as u32;
+                                break;
+                            }
+                        }
+
+                        let line_num =
+                            hint_line.unwrap_or(((section.start_line as i32) - 1).max(0) as u32);
+                        if line_num >= range.start.line && line_num <= range.end.line {
+                            hints.push(InlayHint {
+                                position: tower_lsp::lsp_types::Position {
+                                    line: line_num,
+                                    character: hint_char,
+                                },
+                                label: InlayHintLabel::String(format!(
+                                    ": {}",
+                                    infer_type_label(expr)
+                                )),
+                                kind: Some(InlayHintKind::TYPE),
+                                text_edits: None,
+                                tooltip: Some(InlayHintTooltip::String(format!(
+                                    "Extracted from expression: {}",
+                                    expr
+                                ))),
+                                padding_left: Some(true),
+                                padding_right: None,
+                                data: None,
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Optimizer hints
+            for opt in optimizer::collect_assertion_optimizations(d) {
+                let line_num = opt.line.saturating_sub(1) as u32;
+                if line_num < range.start.line || line_num > range.end.line {
+                    continue;
+                }
                 hints.push(InlayHint {
                     position: tower_lsp::lsp_types::Position {
-                        line: section_line,
-                        character: 1000, // End of line
+                        line: line_num,
+                        character: 1000,
                     },
-                    label: InlayHintLabel::String(format!(": {}", section.section_type.as_str())),
+                    label: InlayHintLabel::String(format!("opt: {}", opt.rule_id)),
                     kind: Some(InlayHintKind::TYPE),
                     text_edits: None,
-                    tooltip: None,
+                    tooltip: opt
+                        .proof_note
+                        .as_ref()
+                        .map(|s| InlayHintTooltip::String(s.clone())),
                     padding_left: Some(true),
                     padding_right: None,
                     data: None,
@@ -1805,74 +1909,146 @@ fn build_inlay_hints(content: &str, range: tower_lsp::lsp_types::Range) -> Vec<I
             }
         }
 
-        // Add variable type hints in EXTRACT sections
-        for section in &doc.sections {
-            if section.section_type == parser::ast::SectionType::Extract
-                && let parser::ast::SectionContent::Extract(extractions) = &section.content
-            {
-                for (var_name, expr) in extractions {
-                    let mut hint_line: Option<u32> = None;
-                    let mut hint_char: u32 = 1000;
-                    for (idx, line) in section.raw_content.lines().enumerate() {
-                        let trimmed = line.trim();
-                        if let Some((name, _)) = trimmed.split_once('=')
-                            && name.trim() == var_name
-                        {
-                            hint_line = Some((section.start_line + idx + 1) as u32);
-                            hint_char = name.len() as u32;
-                            break;
-                        }
-                    }
-
-                    let line_num =
-                        hint_line.unwrap_or(((section.start_line as i32) - 1).max(0) as u32);
-                    if line_num >= range.start.line && line_num <= range.end.line {
-                        hints.push(InlayHint {
-                            position: tower_lsp::lsp_types::Position {
-                                line: line_num,
-                                character: hint_char,
-                            },
-                            label: InlayHintLabel::String(format!(": {}", infer_type_label(expr))),
-                            kind: Some(InlayHintKind::TYPE),
-                            text_edits: None,
-                            tooltip: Some(InlayHintTooltip::String(format!(
-                                "Extracted from expression: {}",
-                                expr
-                            ))),
-                            padding_left: Some(true),
-                            padding_right: None,
-                            data: None,
-                        });
-                    }
-                }
-            }
-        }
-
-        for opt in optimizer::collect_assertion_optimizations(&doc) {
-            let line_num = opt.line.saturating_sub(1) as u32;
+        // Unused variable inlay hints
+        for unused_var in crate::lsp::handlers::collect_unused_variables(&head) {
+            let line_num = (unused_var.line as i32 - 1).max(0) as u32;
             if line_num < range.start.line || line_num > range.end.line {
                 continue;
             }
             hints.push(InlayHint {
                 position: tower_lsp::lsp_types::Position {
                     line: line_num,
-                    character: 1000,
+                    character: (unused_var.character + unused_var.name.len()) as u32,
                 },
-                label: InlayHintLabel::String(format!("opt: {}", opt.rule_id)),
+                label: InlayHintLabel::String("unused".to_string()),
                 kind: Some(InlayHintKind::TYPE),
                 text_edits: None,
-                tooltip: opt
-                    .proof_note
-                    .as_ref()
-                    .map(|s| InlayHintTooltip::String(s.clone())),
+                tooltip: Some(InlayHintTooltip::String(format!(
+                    "'{}' is extracted but never used in subsequent documents",
+                    unused_var.name
+                ))),
                 padding_left: Some(true),
                 padding_right: None,
                 data: None,
             });
         }
-    }
+    } // end if let Ok(head)
 
     hints
+}
+
+#[allow(deprecated)]
+fn build_section_children_for_doc(doc: &crate::parser::GctfDocument) -> Vec<DocumentSymbol> {
+    let mut all_children: Vec<DocumentSymbol> = Vec::new();
+
+    for s in &doc.sections {
+        let mut children: Vec<DocumentSymbol> = Vec::new();
+
+        if s.section_type == SectionType::Asserts {
+            for (idx, line) in s.raw_content.lines().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+                    continue;
+                }
+
+                let line_num = (s.start_line + idx + 1) as u32;
+                #[allow(deprecated)]
+                let mut assertion_symbol = DocumentSymbol {
+                    name: trimmed.to_string(),
+                    detail: Some("assertion".to_string()),
+                    kind: SymbolKind::STRING,
+                    tags: None,
+                    deprecated: None,
+                    range: Range::new(
+                        Position::new(line_num, 0),
+                        Position::new(line_num, trimmed.len() as u32),
+                    ),
+                    selection_range: Range::new(
+                        Position::new(line_num, 0),
+                        Position::new(line_num, trimmed.len() as u32),
+                    ),
+                    children: None,
+                };
+
+                let mut var_children = Vec::new();
+                let mut offset = 0usize;
+                while let Some(open) = trimmed[offset..].find("{{") {
+                    let abs_open = offset + open;
+                    let Some(close_rel) = trimmed[abs_open..].find("}}") else {
+                        break;
+                    };
+                    let abs_close = abs_open + close_rel + 2;
+                    let inner = trimmed[abs_open + 2..abs_close - 2].trim();
+                    if !inner.is_empty() {
+                        #[allow(deprecated)]
+                        var_children.push(DocumentSymbol {
+                            name: inner.to_string(),
+                            detail: Some("variable reference".to_string()),
+                            kind: SymbolKind::VARIABLE,
+                            tags: None,
+                            deprecated: None,
+                            range: Range::new(
+                                Position::new(line_num, abs_open as u32),
+                                Position::new(line_num, abs_close as u32),
+                            ),
+                            selection_range: Range::new(
+                                Position::new(line_num, (abs_open + 2) as u32),
+                                Position::new(line_num, (abs_close - 2) as u32),
+                            ),
+                            children: None,
+                        });
+                    }
+                    offset = abs_close;
+                }
+
+                if !var_children.is_empty() {
+                    assertion_symbol.children = Some(var_children);
+                }
+
+                children.push(assertion_symbol);
+            }
+        }
+
+        if s.section_type == SectionType::Extract {
+            for (idx, line) in s.raw_content.lines().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+                    continue;
+                }
+
+                let Some((name, expr)) = trimmed.split_once('=') else {
+                    continue;
+                };
+                let var_name = name.trim();
+                let line_num = (s.start_line + idx + 1) as u32;
+                let expr_trimmed = expr.trim();
+
+                #[allow(deprecated)]
+                children.push(DocumentSymbol {
+                    name: var_name.to_string(),
+                    detail: Some(format!("extract: {}", expr_trimmed)),
+                    kind: SymbolKind::VARIABLE,
+                    tags: None,
+                    deprecated: None,
+                    range: Range::new(
+                        Position::new(line_num, 0),
+                        Position::new(line_num, trimmed.len() as u32),
+                    ),
+                    selection_range: Range::new(
+                        Position::new(line_num, 0),
+                        Position::new(line_num, var_name.len() as u32),
+                    ),
+                    children: None,
+                });
+            }
+        }
+
+        if !children.is_empty() {
+            all_children.extend(children);
+        }
+    }
+
+    all_children
 }
 
 pub async fn start_lsp_server() -> Result<()> {

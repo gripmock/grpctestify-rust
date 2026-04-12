@@ -1,0 +1,85 @@
+// Document 1: fetch first page and extract cursor
+--- ADDRESS ---
+localhost:50051
+
+--- ENDPOINT ---
+api.ItemService/ListItems
+
+--- REQUEST ---
+{
+  "category": "electronics",
+  "limit": 10
+}
+
+--- RESPONSE with_asserts ---
+{
+  "items": [
+    { "id": "item-1", "name": "Laptop" },
+    { "id": "item-2", "name": "Phone" }
+  ],
+  "cursor": "eyJvZmZzZXQiOjEwfQ==",
+  "has_more": true,
+  "total": 42
+}
+
+--- EXTRACT ---
+next_cursor = .cursor
+item_count = .items | length
+has_more = .has_more
+
+--- ASSERTS ---
+$item_count == 2
+$has_more == true
+
+// Document 2: fetch second page using cursor
+--- ENDPOINT ---
+api.ItemService/ListItems
+
+--- REQUEST ---
+{
+  "category": "electronics",
+  "limit": 10,
+  "cursor": "{{next_cursor}}"
+}
+
+--- RESPONSE with_asserts ---
+{
+  "items": [
+    { "id": "item-3", "name": "Tablet" },
+    { "id": "item-4", "name": "Monitor" }
+  ],
+  "cursor": "eyJvZmZzZXQiOjIwfQ==",
+  "has_more": true,
+  "total": 42
+}
+
+--- EXTRACT ---
+next_cursor = .cursor
+page2_count = .items | length
+
+--- ASSERTS ---
+$page2_count == 2
+$next_cursor != "{{next_cursor}}"
+
+// Document 3: fetch remaining items (last page)
+--- ENDPOINT ---
+api.ItemService/ListItems
+
+--- REQUEST ---
+{
+  "category": "electronics",
+  "limit": 10,
+  "cursor": "{{next_cursor}}"
+}
+
+--- RESPONSE with_asserts ---
+{
+  "items": [],
+  "cursor": "",
+  "has_more": false,
+  "total": 42
+}
+
+--- ASSERTS ---
+@len(.items) == 0
+.has_more == false

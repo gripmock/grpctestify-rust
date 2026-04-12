@@ -64,30 +64,11 @@ impl JsonComparator {
 
         match (actual, expected) {
             (Value::Object(act_map), Value::Object(exp_map)) => {
-                let resolve_actual_key = |expected_key: &str| -> Option<String> {
-                    if act_map.contains_key(expected_key) {
-                        return Some(expected_key.to_string());
-                    }
-
-                    let camel = snake_to_camel(expected_key);
-                    if act_map.contains_key(&camel) {
-                        return Some(camel);
-                    }
-
-                    let snake = camel_to_snake(expected_key);
-                    if act_map.contains_key(&snake) {
-                        return Some(snake);
-                    }
-
-                    None
-                };
-
                 // For objects, iterate over EXPECTED keys
                 for (k, exp_val) in exp_map {
                     let new_path = format!("{}.{}", path, k);
 
-                    if let Some(resolved_key) = resolve_actual_key(k) {
-                        let act_val = act_map.get(&resolved_key).expect("resolved key must exist");
+                    if let Some(act_val) = act_map.get(k) {
                         Self::compare_recursive(act_val, exp_val, &new_path, options, results);
                     } else {
                         // Proto JSON may omit fields with default values.
@@ -104,12 +85,7 @@ impl JsonComparator {
                 // If NOT partial, check that actual doesn't have extra keys
                 if !options.partial {
                     for k in act_map.keys() {
-                        let snake = camel_to_snake(k);
-                        let camel = snake_to_camel(k);
-                        if !exp_map.contains_key(k)
-                            && !exp_map.contains_key(&snake)
-                            && !exp_map.contains_key(&camel)
-                        {
+                        if !exp_map.contains_key(k) {
                             results.push(AssertionResult::fail(format!(
                                 "Unexpected key '{}.{}' in actual response",
                                 path, k
@@ -324,40 +300,6 @@ impl JsonComparator {
 
         hasher.finish()
     }
-}
-
-fn snake_to_camel(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut upper = false;
-    for ch in input.chars() {
-        if ch == '_' {
-            upper = true;
-            continue;
-        }
-
-        if upper {
-            out.push(ch.to_ascii_uppercase());
-            upper = false;
-        } else {
-            out.push(ch);
-        }
-    }
-    out
-}
-
-fn camel_to_snake(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for (i, ch) in input.chars().enumerate() {
-        if ch.is_ascii_uppercase() {
-            if i > 0 {
-                out.push('_');
-            }
-            out.push(ch.to_ascii_lowercase());
-        } else {
-            out.push(ch);
-        }
-    }
-    out
 }
 
 fn is_protojson_default_value(value: &Value) -> bool {
@@ -609,20 +551,6 @@ mod tests {
 
         let results = JsonComparator::compare(&actual, &expected, &options);
         assert!(results.is_empty());
-    }
-
-    #[test]
-    fn test_snake_to_camel() {
-        assert_eq!(snake_to_camel("user_name"), "userName");
-        assert_eq!(snake_to_camel("id"), "id");
-        assert_eq!(snake_to_camel("alreadyCamel"), "alreadyCamel");
-    }
-
-    #[test]
-    fn test_camel_to_snake() {
-        assert_eq!(camel_to_snake("userName"), "user_name");
-        assert_eq!(camel_to_snake("id"), "id");
-        assert_eq!(camel_to_snake("already_snake"), "already_snake");
     }
 
     #[test]

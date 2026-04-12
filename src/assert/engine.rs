@@ -467,6 +467,49 @@ mod tests {
     }
 
     #[test]
+    fn test_evaluate_bracket_index_assertion() {
+        let engine = AssertionEngine::new();
+        let response = serde_json::json!({
+            "ipsToDecorations": {
+                "10.0.0.1": {
+                    "decoration": "web-frontend",
+                    "environment": "production"
+                }
+            }
+        });
+
+        // Correct value - should PASS
+        let result1 = engine
+            .evaluate(
+                ".ipsToDecorations[\"10.0.0.1\"].environment == \"production\"",
+                &response,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(
+            matches!(result1, AssertionResult::Pass),
+            "Expected Pass for correct value, got: {:?}",
+            result1
+        );
+
+        // Wrong value - should FAIL
+        let result2 = engine
+            .evaluate(
+                ".ipsToDecorations[\"10.0.0.1\"].environment == \"production1\"",
+                &response,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(
+            matches!(result2, AssertionResult::Fail { .. }),
+            "Expected Fail for wrong value, got: {:?}",
+            result2
+        );
+    }
+
+    #[test]
     fn test_evaluate_equality_operator_fail() {
         let engine = AssertionEngine::new();
         let response = create_test_response();

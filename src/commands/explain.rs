@@ -1,4 +1,4 @@
-// Explain command - show detailed execution plan and workflow
+// Explain command - show detailed execution plan via Workflow
 
 use anyhow::Result;
 use serde::Serialize;
@@ -24,6 +24,23 @@ struct ExplainJsonOutput {
     execution_plan: ExecutionPlan,
 }
 
+#[derive(Serialize)]
+struct MultiDocExplainJson {
+    documents: Vec<DocumentPlan>,
+    optimization_trace: Vec<optimizer::OptimizationHint>,
+}
+
+#[derive(Serialize)]
+struct DocumentPlan {
+    index: usize,
+    endpoint: Option<String>,
+    address: Option<String>,
+    execution_plan: ExecutionPlan,
+    variable_extractions: Vec<(String, String)>,
+    has_streaming: bool,
+    rpc_mode: String,
+}
+
 pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
     let file_path = &args.file;
     if !file_path.exists() {
@@ -32,19 +49,12 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
 
     let parse_start = std::time::Instant::now();
 
-    // Use error recovery parsing to show all errors
     let parse_result = parser::parse_with_recovery(file_path);
     let doc = parse_result.document;
-    let diagnostics = parse_result.diagnostics;
-    let parse_diagnostics = parser::parse_gctf_with_diagnostics(file_path)
-        .ok()
-        .map(|(_, d)| d)
-        .unwrap_or_default();
 
     let parse_ms = parse_start.elapsed().as_secs_f64() * 1000.0;
 
-    // Show any parse diagnostics
-    if !diagnostics.is_empty() {
+    if !parse_result.diagnostics.is_empty() {
         eprintln!();
         eprintln!("PARSE DIAGNOSTICS");
         eprintln!("=================");
@@ -52,48 +62,104 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
         eprintln!("Recovered sections: {}", parse_result.recovered_sections);
         eprintln!("Failed sections: {}", parse_result.failed_sections);
         eprintln!();
-
-        for diagnostic in &diagnostics.diagnostics {
-            crate::commands::print_diagnostic(diagnostic);
+        for d in &parse_result.diagnostics.diagnostics {
+            crate::commands::print_diagnostic(d);
             eprintln!();
         }
     }
 
-    let validation_start = std::time::Instant::now();
-
-    // Build workflow with full semantic analysis - single source of truth
-    let workflow = Workflow::from_document_with_analysis(&doc);
-    let validation_result = parser::validate_document(&doc);
-    let validation_ms = validation_start.elapsed().as_secs_f64() * 1000.0;
-
     if args.is_json() {
-        let semantic_plan = ExecutionPlan::from_document(&doc);
+        // Backward compatible: single doc uses original format
+        if doc.is_single_document() {
+            let semantic_plan = ExecutionPlan::from_document(&doc);
+            let optimization_trace = optimizer::collect_assertion_optimizations(&doc);
+            let optimized_plan = semantic_plan.clone();
+            let execution_plan = optimized_plan.clone();
+            let output = ExplainJsonOutput {
+                semantic_plan,
+                optimization_trace,
+                optimized_plan,
+                execution_plan,
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            // Multi-doc: extended format
+            let mut documents = Vec::new();
+            let mut all_optimizations: Vec<optimizer::OptimizationHint> = Vec::new();
 
-        // Extract optimization hints from workflow events
-        let optimization_trace = optimizer::collect_assertion_optimizations(&doc);
+            for (doc_idx, d) in doc.iter_chain().enumerate() {
+                let workflow = Workflow::from_document_with_analysis(d);
+                let plan = ExecutionPlan::from_document(d);
 
-        let optimized_plan = semantic_plan.clone();
-        let execution_plan = optimized_plan.clone();
-        let output = ExplainJsonOutput {
-            semantic_plan,
-            optimization_trace,
-            optimized_plan,
-            execution_plan,
-        };
-        println!("{}", serde_json::to_string_pretty(&output)?);
+                let mut extractions: Vec<(String, String)> = Vec::new();
+                for section in &d.sections {
+                    if section.section_type == SectionType::Extract
+                        && let SectionContent::Extract(map) = &section.content
+                    {
+                        for (name, expr) in map {
+                            extractions.push((name.clone(), expr.clone()));
+                        }
+                    }
+                }
+                extractions.sort_by(|a, b| a.0.cmp(&b.0));
+
+                all_optimizations.extend(optimizer::collect_assertion_optimizations(d));
+
+                documents.push(DocumentPlan {
+                    index: doc_idx + 1,
+                    endpoint: d.get_endpoint(),
+                    address: d.get_address(None),
+                    execution_plan: plan,
+                    variable_extractions: extractions,
+                    has_streaming: workflow.has_streaming(),
+                    rpc_mode: workflow.rpc_mode_name().to_string(),
+                });
+            }
+
+            let output = MultiDocExplainJson {
+                documents,
+                optimization_trace: all_optimizations,
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
     } else {
-        // Print detailed workflow visualization
-        print_detailed_workflow(&doc, file_path, &parse_diagnostics);
-        println!();
+        // Text output
+        let total_docs = doc.document_count();
 
-        // Use optimizer directly for optimization trace
-        let optimization_trace = optimizer::collect_assertion_optimizations(&doc);
+        if total_docs > 1 {
+            println!();
+            println!("MULTI-DOCUMENT EXECUTION PLAN");
+            println!("==============================");
+            println!("File: {}", file_path.display());
+            println!("Documents: {}", total_docs);
+            println!();
+        } else {
+            println!();
+            println!("EXECUTION PLAN");
+            println!("==============");
+            println!();
+        }
+
+        // Print each document via workflow
+        for (doc_idx, d) in doc.iter_chain().enumerate() {
+            if total_docs > 1 {
+                print_doc_scenario(doc_idx + 1, d);
+            } else {
+                print_single_doc_workflow(d, file_path);
+            }
+        }
+
+        // Collect all optimizer hints
+        let mut all_optimizations: Vec<optimizer::OptimizationHint> = Vec::new();
+        for d in doc.iter_chain() {
+            all_optimizations.extend(optimizer::collect_assertion_optimizations(d));
+        }
 
         println!("OPTIMIZATION TRACE:");
-        if optimization_trace.is_empty() {
+        if all_optimizations.is_empty() {
             println!("  (no safe rewrites found)");
         } else {
-            for hint in &optimization_trace {
+            for hint in &all_optimizations {
                 println!(
                     "  - [{}] line {}: {} -> {}",
                     hint.rule_id, hint.line, hint.before, hint.after
@@ -102,131 +168,237 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
         }
         println!();
 
-        // Extract semantic errors from workflow
-        let mut semantic_type_mismatches = Vec::new();
-        let mut semantic_unknown_plugins = Vec::new();
-
-        for event in &workflow.events {
-            if let crate::execution::WorkflowEvent::SemanticAnalysis {
-                type_mismatches,
-                unknown_plugins,
-            } = event
-            {
-                semantic_type_mismatches = type_mismatches.clone();
-                semantic_unknown_plugins = unknown_plugins.clone();
+        // Validation summary
+        println!("VALIDATION:");
+        let mut all_valid = true;
+        for d in doc.iter_chain() {
+            if let Err(e) = parser::validate_document(d) {
+                println!("  FAILED: {}", e);
+                all_valid = false;
             }
         }
-
-        // Show validation result
-        println!("VALIDATION:");
-        match validation_result {
-            Err(e) => println!("  FAILED: {}", e),
-            Ok(_)
-                if !semantic_unknown_plugins.is_empty() || !semantic_type_mismatches.is_empty() =>
-            {
-                println!(
-                    "  FAILED: semantic validation failed ({} unknown plugin call(s), {} type mismatch(es))",
-                    semantic_unknown_plugins.len(),
-                    semantic_type_mismatches.len()
-                );
-                for unknown in &semantic_unknown_plugins {
-                    println!(
-                        "  - line {} [{}] {}",
-                        unknown.line, unknown.rule_id, unknown.message
-                    );
-                }
-                for mismatch in &semantic_type_mismatches {
-                    println!(
-                        "  - line {} [{}] {}",
-                        mismatch.line, mismatch.rule_id, mismatch.message
-                    );
-                }
-            }
-            Ok(_) => println!("  OK - No issues found. Test appears structurally valid."),
+        if all_valid {
+            println!("  OK - All documents structurally valid.");
         }
         println!();
+
         println!("TIMING:");
         println!("  Parse:      {:.3}ms", parse_ms);
-        println!("  Validation: {:.3}ms", validation_ms);
     }
 
     Ok(())
 }
 
-fn print_detailed_workflow(
-    doc: &parser::GctfDocument,
-    file_path: &Path,
-    parse_diagnostics: &parser::ParseDiagnostics,
-) {
+fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
+    let endpoint = doc.get_endpoint().unwrap_or_else(|| "unknown".to_string());
+    println!("SCENARIO {}: {}", doc_idx, endpoint);
+    println!("  {}", "-".repeat(60));
+
+    // Connection
+    if let Some(addr) = doc.get_address(None) {
+        println!("  → Connect: {}", addr);
+    }
+
+    // Request headers
+    if let Some(headers) = doc.get_request_headers() {
+        println!("  → Request headers:");
+        for (key, value) in sorted_key_values(&headers) {
+            println!("    {}: {}", key, value);
+        }
+    }
+
+    // Options
+    if let Some(options) = doc.get_options()
+        && !options.is_empty()
+    {
+        println!("  → Options:");
+        for (key, value) in sorted_key_values(&options) {
+            println!("    {}: {}", key, value);
+        }
+    }
+
+    // TLS
+    if let Some(tls) = doc.get_tls_config()
+        && !tls.is_empty()
+    {
+        println!("  → TLS config:");
+        for (key, value) in sorted_key_values(&tls) {
+            println!("    {}: {}", key, value);
+        }
+    }
+
+    // Proto
+    if let Some(proto) = doc.get_proto_config()
+        && !proto.is_empty()
+    {
+        println!("  → Proto config:");
+        for (key, value) in sorted_key_values(&proto) {
+            println!("    {}: {}", key, value);
+        }
+    }
+
+    // Requests
+    let requests = doc.get_requests();
+    if !requests.is_empty() {
+        if requests.len() == 1 {
+            let json_str = serde_json::to_string_pretty(&requests[0])
+                .unwrap_or_else(|_| requests[0].to_string());
+            println!("  → Send:");
+            for line in json_str.lines() {
+                println!("    {}", line);
+            }
+        } else {
+            println!("  → Send {} request(s) (client streaming):", requests.len());
+            for (i, req) in requests.iter().enumerate() {
+                let json_str =
+                    serde_json::to_string_pretty(req).unwrap_or_else(|_| req.to_string());
+                println!("    Request #{}:", i + 1);
+                for line in json_str.lines() {
+                    println!("      {}", line);
+                }
+            }
+        }
+    }
+
+    // Expected response
+    for section in &doc.sections {
+        match section.section_type {
+            SectionType::Response => {
+                match &section.content {
+                    SectionContent::Json(value) => {
+                        let json_str = serde_json::to_string_pretty(value)
+                            .unwrap_or_else(|_| value.to_string());
+                        println!("  ← Expect response:");
+                        for line in json_str.lines() {
+                            println!("    {}", line);
+                        }
+                    }
+                    SectionContent::JsonLines(values) => {
+                        println!(
+                            "  ← Expect {} response(s) (server streaming):",
+                            values.len()
+                        );
+                        for (i, v) in values.iter().enumerate() {
+                            let json_str =
+                                serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
+                            println!("    Response #{}:", i + 1);
+                            for line in json_str.lines() {
+                                println!("      {}", line);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                if section.inline_options.with_asserts {
+                    println!("    [with_asserts]");
+                }
+                if section.inline_options.partial {
+                    println!("    [partial]");
+                }
+            }
+            SectionType::Error => {
+                if let SectionContent::Json(value) = &section.content {
+                    let json_str =
+                        serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
+                    println!("  ← Expect error:");
+                    for line in json_str.lines() {
+                        println!("    {}", line);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Extract
+    let extractions: Vec<_> = doc
+        .sections
+        .iter()
+        .filter(|s| s.section_type == SectionType::Extract)
+        .flat_map(|s| match &s.content {
+            SectionContent::Extract(map) => map
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        })
+        .collect();
+
+    if !extractions.is_empty() {
+        println!("  ↓ Extract:");
+        for (name, expr) in &extractions {
+            println!("    {} = {}", name, expr);
+        }
+    }
+
+    // Assertions from workflow
+    let workflow = Workflow::from_document_with_analysis(doc);
+    for event in &workflow.events {
+        if let crate::execution::WorkflowEvent::Assert { count, .. } = event {
+            println!("  ✓ {} assertion(s)", count);
+        }
+        if let crate::execution::WorkflowEvent::SemanticAnalysis {
+            type_mismatches,
+            unknown_plugins,
+        } = event
+            && (!type_mismatches.is_empty() || !unknown_plugins.is_empty())
+        {
+            println!("  ⚠ Semantic issues:");
+            for m in type_mismatches {
+                println!("    - {}", m.message);
+            }
+            for u in unknown_plugins {
+                println!("    - {}", u.message);
+            }
+        }
+    }
+
     println!();
-    println!("EXECUTION PLAN");
-    println!("==============");
-    println!();
+}
+
+fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
     println!("FILE: {}", file_path.display());
     println!();
-
-    println!("PARSE PROFILING");
-    println!("---------------");
-    println!("  File size:         {} bytes", parse_diagnostics.bytes);
-    println!("  Total lines:       {}", parse_diagnostics.total_lines);
-    println!("  Section headers:   {}", parse_diagnostics.section_headers);
-    println!(
-        "  Read:              {:.3}ms",
-        parse_diagnostics.timings.read_ms
-    );
-    println!(
-        "  Parse sections:    {:.3}ms",
-        parse_diagnostics.timings.parse_sections_ms
-    );
-    println!(
-        "  Build document:    {:.3}ms",
-        parse_diagnostics.timings.build_document_ms
-    );
-    println!(
-        "  Total:             {:.3}ms",
-        parse_diagnostics.timings.total_ms
-    );
-    println!();
-
-    // Build execution plan for summary
-    let plan = ExecutionPlan::from_document(doc);
 
     // Connection info
     println!("CONNECTION");
     println!("----------");
-    println!("  Address: {}", plan.connection.address);
-    println!("  Source:  {}", plan.connection.source);
+    if let Some(addr) = doc.get_address(None) {
+        println!("  Address: {}", addr);
+    } else {
+        println!("  Address: (from GRPCTESTIFY_ADDRESS env or default)");
+    }
     println!();
 
-    // Target endpoint
+    // Endpoint
     println!("TARGET ENDPOINT");
     println!("---------------");
-    println!("  Endpoint: {}", plan.target.endpoint);
-    if let Some(pkg) = &plan.target.package {
-        println!("  Package: {}", pkg);
+    if let Some(endpoint) = doc.get_endpoint() {
+        println!("  Endpoint: {}", endpoint);
+        if let Some((pkg, svc, method)) = doc.parse_endpoint() {
+            if !pkg.is_empty() {
+                println!("  Package: {}", pkg);
+            }
+            println!("  Service: {}", svc);
+            println!("  Method:  {}", method);
+        }
     }
-    if let Some(svc) = &plan.target.service {
-        println!("  Service: {}", svc);
-    }
-    if let Some(method) = &plan.target.method {
-        println!("  Method:  {}", method);
-    }
-    println!("  RPC Mode: {}", plan.summary.rpc_mode_name);
     println!();
 
-    // Request headers
-    if let Some(headers) = &plan.headers {
-        println!("REQUEST HEADERS ({})", headers.count);
-        println!("-----------------");
-        for (key, value) in sorted_key_values(&headers.headers) {
-            println!("  {}: {}", key, value);
-        }
-        println!();
-    }
+    // Workflow
+    let workflow = Workflow::from_document_with_analysis(doc);
 
-    // Detailed workflow by sections
     println!("EXECUTION WORKFLOW");
     println!("------------------");
+
+    // Headers
+    if let Some(headers) = doc.get_request_headers() {
+        println!();
+        println!("REQUEST HEADERS");
+        for (key, value) in sorted_key_values(&headers) {
+            println!("  {}: {}", key, value);
+        }
+    }
 
     let mut step = 1;
     for section in &doc.sections {
@@ -289,11 +461,10 @@ fn print_detailed_workflow(
                         }
                     }
                     SectionContent::Empty => {
-                        println!("  {{}} (empty request - will send empty JSON object)");
+                        println!("  {{}} (empty request)");
                     }
                     _ => {}
                 }
-                println!("  Action: Send request to gRPC server");
                 step += 1;
             }
             SectionType::Response => {
@@ -306,43 +477,33 @@ fn print_detailed_workflow(
                 );
                 match &section.content {
                     SectionContent::Json(value) => {
-                        println!("  Expected response:");
                         let json_str = serde_json::to_string_pretty(value)
                             .unwrap_or_else(|_| value.to_string());
+                        println!("  Expected:");
                         for line in json_str.lines() {
-                            println!("  {}", line);
+                            println!("    {}", line);
                         }
                     }
-                    SectionContent::JsonLines(lines) => {
-                        println!("  Expected {} response message(s):", lines.len());
-                        for (idx, line) in lines.iter().enumerate() {
-                            println!("    {}. {}", idx + 1, line);
+                    SectionContent::JsonLines(values) => {
+                        println!("  Expected {} response(s):", values.len());
+                        for (i, v) in values.iter().enumerate() {
+                            let json_str =
+                                serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
+                            println!("    {}. {}", i + 1, json_str);
                         }
                     }
                     _ => {}
                 }
-
-                // Show comparison options
-                let mut option_flags = Vec::new();
-                if section.inline_options.partial {
-                    option_flags.push("partial");
-                }
-                if section.inline_options.unordered_arrays {
-                    option_flags.push("unordered_arrays");
-                }
+                let mut opts = Vec::new();
                 if section.inline_options.with_asserts {
-                    option_flags.push("with_asserts");
+                    opts.push("with_asserts");
                 }
-                if !option_flags.is_empty() {
-                    println!("  Options: {}", option_flags.join(", "));
+                if section.inline_options.partial {
+                    opts.push("partial");
                 }
-                if !section.inline_options.redact.is_empty() {
-                    println!("  Redact:  {:?}", section.inline_options.redact);
+                if !opts.is_empty() {
+                    println!("  Options: {}", opts.join(", "));
                 }
-                if let Some(tol) = section.inline_options.tolerance {
-                    println!("  Tolerance: {}", tol);
-                }
-                println!("  Action: Validate response against expected");
                 step += 1;
             }
             SectionType::Error => {
@@ -354,38 +515,13 @@ fn print_detailed_workflow(
                     section.end_line + 1
                 );
                 if let SectionContent::Json(value) = &section.content {
-                    println!("  Expected gRPC error:");
-                    if let Some(code) = value.get("code") {
-                        println!("    Code: {}", code);
-                    }
-                    if let Some(message) = value.get("message") {
-                        println!("    Message: {}", message);
-                    }
-                    if let Some(details) = value.get("details") {
-                        println!("    Details: required (strict match)");
-                        if let Some(items) = details.as_array() {
-                            println!("    Details Count: {}", items.len());
-                            let types: Vec<String> = items
-                                .iter()
-                                .filter_map(|item| item.get("@type").and_then(|v| v.as_str()))
-                                .map(ToString::to_string)
-                                .collect();
-                            if !types.is_empty() {
-                                println!("    Details Types: {}", types.join(", "));
-                            }
-                        }
-                    } else {
-                        println!("    Details: must be absent on backend");
+                    let json_str =
+                        serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
+                    println!("  Expected error:");
+                    for line in json_str.lines() {
+                        println!("    {}", line);
                     }
                 }
-                let mut option_flags = Vec::new();
-                if section.inline_options.with_asserts {
-                    option_flags.push("with_asserts");
-                }
-                if !option_flags.is_empty() {
-                    println!("  Options: {}", option_flags.join(", "));
-                }
-                println!("  Action: Verify gRPC error status, message, and details policy");
                 step += 1;
             }
             SectionType::Extract => {
@@ -397,11 +533,10 @@ fn print_detailed_workflow(
                     section.end_line + 1
                 );
                 if let SectionContent::Extract(extractions) = &section.content {
-                    for (var_name, jq_path) in sorted_key_values(extractions) {
-                        println!("  ${{ {} }} = {}", var_name, jq_path);
+                    for (name, expr) in sorted_key_values(extractions) {
+                        println!("  ${{ {} }} = {}", name, expr);
                     }
                 }
-                println!("  Action: Store variables for use in subsequent requests/assertions");
                 step += 1;
             }
             SectionType::Asserts => {
@@ -413,17 +548,11 @@ fn print_detailed_workflow(
                     section.end_line + 1
                 );
                 if let SectionContent::Assertions(assertions) = &section.content {
-                    for (idx, assertion) in assertions.iter().enumerate() {
-                        let rewritten =
-                            optimizer::rewrite_assertion_expression_fixed_point(assertion);
-                        if rewritten == assertion.trim() {
-                            println!("  {}. {}", idx + 1, assertion);
-                        } else {
-                            println!("  {}. {}", idx + 1, rewritten);
-                        }
+                    for (i, a) in assertions.iter().enumerate() {
+                        let rewritten = optimizer::rewrite_assertion_expression_fixed_point(a);
+                        println!("  {}. {}", i + 1, rewritten);
                     }
                 }
-                println!("  Action: Evaluate optimized assertions (must all pass)");
                 step += 1;
             }
             SectionType::Options => {
@@ -440,14 +569,7 @@ fn print_detailed_workflow(
                     } else {
                         println!("  Runtime overrides:");
                         for (key, value) in sorted_key_values(options) {
-                            let behavior = match key {
-                                "timeout" => "per-test timeout (seconds)",
-                                "retry" => "number of retries for network failures",
-                                "retry-delay" | "retry_delay" => "delay between retries (seconds)",
-                                "no-retry" | "no_retry" => "disable retries",
-                                _ => "unknown option (ignored at runtime)",
-                            };
-                            println!("    {}: {} ({})", key, value, behavior);
+                            println!("    {}: {}", key, value);
                         }
                     }
                 }
@@ -472,46 +594,8 @@ fn print_detailed_workflow(
     println!();
     println!("EXECUTION SUMMARY");
     println!("-----------------");
-    println!("  Total Requests:       {}", plan.summary.total_requests);
-    println!("  Total Responses:      {}", plan.summary.total_responses);
-    if plan.summary.total_errors > 0 {
-        println!("  Total Errors:         {}", plan.summary.total_errors);
-    }
-    println!(
-        "  Variable Extractions: {}",
-        plan.summary.variable_extractions
-    );
-    println!("  Assertion Blocks:     {}", plan.summary.assertion_blocks);
-    println!("  RPC Mode:             {}", plan.summary.rpc_mode_name);
-
-    // Workflow type description
-    println!();
-    println!("WORKFLOW TYPE");
-    println!("-------------");
-    print_workflow_type(doc);
-}
-
-fn print_workflow_type(doc: &parser::GctfDocument) {
-    use crate::execution::{build_workflow_graph, get_call_type, get_workflow_summary};
-
-    let summary = get_workflow_summary(&doc.sections);
-    let call_type = get_call_type(&summary);
-
-    println!("  {}", call_type);
-    println!(
-        "  Steps: {}",
-        summary.total_requests
-            + summary.total_responses
-            + summary.total_errors
-            + summary.total_extractions
-            + summary.total_assertions
-            + 1
-    );
-    println!("  Flow:");
-
-    // Build and print workflow steps with section references
-    let steps = build_workflow_graph(&doc.sections);
-    for step in &steps {
-        println!("    {} [line {}]", step.format(), step.section_line + 1);
+    println!("  RPC Mode: {}", workflow.rpc_mode_name());
+    if workflow.has_streaming() {
+        println!("  Streaming: enabled");
     }
 }

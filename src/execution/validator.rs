@@ -147,6 +147,7 @@ mod tests {
                 mtime: None,
                 parsed_at: 0,
             },
+            next_document: None,
         }
     }
 

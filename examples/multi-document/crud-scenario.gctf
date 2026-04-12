@@ -1,0 +1,87 @@
+// Document 1: Create - create a new user
+--- ADDRESS ---
+localhost:50051
+
+--- ENDPOINT ---
+api.UserService/CreateUser
+
+--- REQUEST ---
+{
+  "name": "testuser",
+  "email": "test@example.com"
+}
+
+--- RESPONSE ---
+{
+  "id": "usr-123",
+  "name": "testuser",
+  "email": "test@example.com",
+  "created_at": "2024-01-01T00:00:00Z"
+}
+
+--- EXTRACT ---
+user_id = .id
+
+// Document 2: Read - fetch the created user
+--- ENDPOINT ---
+api.UserService/GetUser
+
+--- REQUEST ---
+{
+  "id": "{{user_id}}"
+}
+
+--- RESPONSE ---
+{
+  "id": "usr-123",
+  "name": "testuser",
+  "email": "test@example.com"
+}
+
+// Document 3: Update - change the user's name
+--- ENDPOINT ---
+api.UserService/UpdateUser
+
+--- REQUEST ---
+{
+  "id": "{{user_id}}",
+  "name": "updated_name"
+}
+
+--- RESPONSE ---
+{
+  "id": "usr-123",
+  "name": "updated_name",
+  "email": "test@example.com"
+}
+
+// Document 4: Verify - confirm the update persisted
+--- ENDPOINT ---
+api.UserService/GetUser
+
+--- REQUEST ---
+{
+  "id": "{{user_id}}"
+}
+
+--- RESPONSE ---
+{
+  "id": "usr-123",
+  "name": "updated_name",
+  "email": "test@example.com"
+}
+
+// Document 5: Delete - remove the user
+--- ENDPOINT ---
+api.UserService/DeleteUser
+
+--- REQUEST ---
+{
+  "id": "{{user_id}}"
+}
+
+--- ERROR ---
+{
+  "code": 5,
+  "message": "NOT_FOUND"
+}

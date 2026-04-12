@@ -346,35 +346,36 @@ fn format_section_lines(section: &crate::parser::ast::Section) -> Vec<String> {
     lines
 }
 
-fn format_gctf_preserve_comments(doc: &crate::parser::GctfDocument, source: &str) -> String {
+/// Format a GCTF document chain via AST.
+/// Walks all sections in order. `New` sections become `--- NEW ---` separators.
+fn format_gctf_chain(head: &crate::parser::GctfDocument, source: &str) -> String {
     let eol = canonical_line_ending();
     let lines: Vec<&str> = source.lines().collect();
     let mut output: Vec<String> = Vec::new();
     let mut current_line = 0usize;
 
-    for (section_idx, section) in doc.sections.iter().enumerate() {
-        while current_line < section.start_line && current_line < lines.len() {
-            output.push(
-                normalize_hash_comment_line(lines[current_line])
-                    .unwrap_or_else(|| lines[current_line].to_string()),
-            );
-            current_line += 1;
-        }
-
-        output.push(section.format_header());
-        output.extend(format_section_lines(section));
-
-        current_line = section.end_line.min(lines.len());
-
-        if section_idx + 1 < doc.sections.len() {
-            let next_start = doc.sections[section_idx + 1].start_line.min(lines.len());
-            let has_detached_lines = current_line < next_start;
-            if !has_detached_lines {
-                ensure_single_section_separator(&mut output, true);
+    // Walk every section across all documents in the chain
+    for doc in head.iter_chain() {
+        for section in &doc.sections {
+            // Interleave comments between previous section end and current section start
+            while current_line < section.start_line && current_line < lines.len() {
+                output.push(
+                    normalize_hash_comment_line(lines[current_line])
+                        .unwrap_or_else(|| lines[current_line].to_string()),
+                );
+                current_line += 1;
             }
+
+            // Normal section
+            output.push(section.format_header());
+            output.extend(format_section_lines(section));
+
+            current_line = section.end_line.min(lines.len());
+            ensure_single_section_separator(&mut output, true);
         }
     }
 
+    // Trailing file lines
     while current_line < lines.len() {
         output.push(
             normalize_hash_comment_line(lines[current_line])
@@ -392,14 +393,18 @@ fn format_gctf_preserve_comments(doc: &crate::parser::GctfDocument, source: &str
 
 pub fn format_gctf_content(source: &str, file_name: &str) -> Result<String> {
     let doc = parser::parse_gctf_from_str(source, file_name)?;
-    Ok(format_gctf_preserve_comments(&doc, source))
+
+    // Apply optimizer rewrites before formatting
+    let eol = canonical_line_ending();
+    let source_after_optimizer = apply_optimizer_rewrites(&doc, source, eol);
+
+    // Re-parse after optimizer to get updated raw_content
+    let doc_after = parser::parse_gctf_from_str(&source_after_optimizer, file_name)?;
+    Ok(format_gctf_chain(&doc_after, &source_after_optimizer))
 }
 
-fn apply_optimizer_rewrites_to_doc(
-    doc: &crate::parser::GctfDocument,
-    source: &str,
-    eol: &str,
-) -> String {
+/// Apply optimizer rewrites to source lines
+fn apply_optimizer_rewrites(doc: &crate::parser::GctfDocument, source: &str, eol: &str) -> String {
     let hints = optimizer::collect_assertion_optimizations(doc);
     if hints.is_empty() {
         return source.to_string();
@@ -411,7 +416,6 @@ fn apply_optimizer_rewrites_to_doc(
         if line_idx >= lines.len() {
             continue;
         }
-
         let line = &mut lines[line_idx];
         if let Some(start) = line.find(&hint.before) {
             let end = start + hint.before.len();
@@ -424,39 +428,6 @@ fn apply_optimizer_rewrites_to_doc(
         rewritten.push_str(eol);
     }
     rewritten
-}
-
-fn collect_check_errors_for_doc(
-    doc: &crate::parser::GctfDocument,
-) -> Vec<(usize, String, String, Option<String>)> {
-    let mut errors = Vec::new();
-
-    if let Err(e) = parser::validate_document(doc) {
-        errors.push((1, "VALIDATION_ERROR".to_string(), e.to_string(), None));
-    }
-
-    for mismatch in semantics::collect_assertion_type_mismatches(doc) {
-        errors.push((
-            mismatch.line,
-            mismatch.rule_id,
-            mismatch.message,
-            Some(format!(
-                "Type contract violation in assertion: {}",
-                mismatch.expression
-            )),
-        ));
-    }
-
-    for unknown in semantics::collect_unknown_plugin_calls(doc) {
-        errors.push((
-            unknown.line,
-            unknown.rule_id,
-            unknown.message,
-            Some(format!("Assertion: {}", unknown.expression)),
-        ));
-    }
-
-    errors
 }
 
 pub async fn handle_fmt(args: &FmtArgs) -> Result<()> {
@@ -502,36 +473,48 @@ pub async fn handle_fmt(args: &FmtArgs) -> Result<()> {
             }
         };
 
-        let check_errors = collect_check_errors_for_doc(&doc);
-        if !check_errors.is_empty() {
-            for (line, code, message, hint) in check_errors {
-                error!("{}:{}: [{}] {}", file.display(), line, code, message);
-                if let Some(hint) = hint {
-                    error!("  hint: {}", hint);
-                }
+        // Validate each document in the chain
+        let mut chain_has_error = false;
+        for d in doc.iter_chain() {
+            if let Err(e) = parser::validate_document(d) {
+                error!("{}:1: [VALIDATION_ERROR] {}", file.display(), e);
+                chain_has_error = true;
             }
+            for mismatch in semantics::collect_assertion_type_mismatches(d) {
+                error!(
+                    "{}:{}: [{}] {}",
+                    file.display(),
+                    mismatch.line,
+                    mismatch.rule_id,
+                    mismatch.message
+                );
+                chain_has_error = true;
+            }
+            for unknown in semantics::collect_unknown_plugin_calls(d) {
+                error!(
+                    "{}:{}: [{}] {}",
+                    file.display(),
+                    unknown.line,
+                    unknown.rule_id,
+                    unknown.message
+                );
+                chain_has_error = true;
+            }
+        }
+        if chain_has_error {
             has_error = true;
             continue;
         }
 
-        let eol = canonical_line_ending();
-        let preformatted = apply_optimizer_rewrites_to_doc(&doc, &original, eol);
-
-        // Re-parse to get fresh doc with updated raw_content after optimizer
-        let doc_after_optimize = match parser::parse_gctf_from_str(&preformatted, &file_name) {
-            Ok(d) => d,
+        // Use the format function which handles multi-document automatically
+        let formatted = match format_gctf_content(&original, &file_name) {
+            Ok(f) => f,
             Err(e) => {
-                error!(
-                    "{}:1: [PARSE_ERROR] After optimization: {}",
-                    file.display(),
-                    e
-                );
+                error!("{}:1: [FORMAT_ERROR] {}", file.display(), e);
                 has_error = true;
                 continue;
             }
         };
-
-        let formatted = format_gctf_preserve_comments(&doc_after_optimize, &preformatted);
 
         if args.write {
             // Only write if content changed (idempotent check)

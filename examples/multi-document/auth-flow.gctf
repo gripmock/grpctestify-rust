@@ -1,0 +1,79 @@
+// Document 1: authenticate and obtain a token
+--- ADDRESS ---
+localhost:50051
+
+--- ENDPOINT ---
+auth.AuthService/Login
+
+--- REQUEST ---
+{
+  "login": "admin",
+  "password": "secret"
+}
+
+--- RESPONSE ---
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+  "expires_in": 3600
+}
+
+--- EXTRACT ---
+token = .token
+
+// Document 2: fetch user profile using the token
+--- ENDPOINT ---
+users.UserService/GetUser
+
+--- REQUEST_HEADERS ---
+Authorization: Bearer {{token}}
+
+--- REQUEST ---
+{
+  "user_id": 42
+}
+
+--- RESPONSE ---
+{
+  "id": 42,
+  "name": "Alice",
+  "email": "alice@example.com"
+}
+
+// Document 3: list orders with the same token
+--- ENDPOINT ---
+orders.OrderService/ListOrders
+
+--- REQUEST_HEADERS ---
+Authorization: Bearer {{token}}
+
+--- REQUEST ---
+{
+  "user_id": 42,
+  "limit": 10
+}
+
+--- RESPONSE ---
+{
+  "orders": [
+    {
+      "id": "ord-1",
+      "status": "delivered"
+    }
+  ]
+}
+
+--- EXTRACT ---
+order_count = .orders | length
+
+// Document 4: public settings endpoint (no auth required)
+--- ENDPOINT ---
+settings.SettingsService/GetPublicSettings
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{
+  "theme": "dark",
+  "language": "en"
+}

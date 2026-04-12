@@ -653,8 +653,40 @@ impl TestRunner {
         }
     }
 
-    /// Run a single test
+    /// Run a test document chain.
+    /// Walks the `next_document` linked list, accumulating EXTRACT variables
+    /// between documents. Fail-fast: stops on first failure.
     pub async fn run_test(&self, document: &GctfDocument) -> Result<TestExecutionResult> {
+        let mut variables: HashMap<String, Value> = HashMap::new();
+        let mut overall_status = TestExecutionStatus::Pass;
+        let mut total_duration_ms = 0.0;
+
+        for doc in document.iter_chain() {
+            let result = self.run_one(doc, &mut variables).await?;
+            if let Some(dur) = result.grpc_duration_ms {
+                total_duration_ms += dur as f64;
+            }
+
+            if let TestExecutionStatus::Fail(msg) = &result.status {
+                overall_status = TestExecutionStatus::Fail(msg.clone());
+                break;
+            }
+        }
+
+        // Build summary result
+        Ok(TestExecutionResult {
+            status: overall_status,
+            grpc_duration_ms: Some(total_duration_ms as u64),
+            captured_response: None,
+        })
+    }
+
+    /// Run a single document, sharing variables with the chain.
+    async fn run_one(
+        &self,
+        document: &GctfDocument,
+        variables: &mut HashMap<String, Value>,
+    ) -> Result<TestExecutionResult> {
         let effective_dry_run = self.dry_run;
         let effective_no_assert = self.no_assert;
         let effective_write_mode = self.write_mode;
@@ -882,7 +914,7 @@ impl TestRunner {
 
         let mut response_stream = None;
 
-        let mut variables: HashMap<String, Value> = HashMap::new();
+        // variables passed from caller (shared across chain)
         let mut last_message: Option<Value> = None;
         let mut last_error_message: Option<String> = None;
         let mut last_error_timing: Option<AssertionTiming> = None;
@@ -934,7 +966,7 @@ impl TestRunner {
                     let request_value = match &section.content {
                         SectionContent::Json(req_json) => {
                             let mut req = req_json.clone();
-                            self.substitute_variables(&mut req, &variables);
+                            self.substitute_variables(&mut req, variables);
                             req
                         }
                         SectionContent::Empty => Value::Object(serde_json::Map::new()),
@@ -1054,7 +1086,7 @@ impl TestRunner {
 
                                         if !effective_no_assert {
                                             let mut expected = expected_template.clone();
-                                            self.substitute_variables(&mut expected, &variables);
+                                            self.substitute_variables(&mut expected, variables);
 
                                             // Coverage: record expected response fields
                                             if let (Some(collector), Some(msg_type)) =
@@ -1399,7 +1431,7 @@ impl TestRunner {
                                 if !effective_no_assert {
                                     if let SectionContent::Json(expected_json) = &section.content {
                                         let mut expected = expected_json.clone();
-                                        self.substitute_variables(&mut expected, &variables);
+                                        self.substitute_variables(&mut expected, variables);
 
                                         // Try to extract tonic Status from anyhow::Error
                                         let (matches, got, mismatch_reason) = if let Some(status) =
@@ -1543,7 +1575,7 @@ impl TestRunner {
                             if !effective_no_assert {
                                 if let SectionContent::Json(expected_json) = &section.content {
                                     let mut expected = expected_json.clone();
-                                    self.substitute_variables(&mut expected, &variables);
+                                    self.substitute_variables(&mut expected, variables);
 
                                     if !super::error_handler::ErrorHandler::status_matches_expected(
                                         &status, &expected,

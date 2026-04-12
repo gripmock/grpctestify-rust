@@ -409,62 +409,126 @@ fn compare(
     }
 }
 
+/// Evaluate a JQ path expression using the jaq engine.
+/// Delegates to jaq's native parser — handles all JQ syntax:
+///   .foo["bar"].baz, .arr[0], .obj["key"]["nested"], etc.
 fn resolve_path(path: &str, root: &Value) -> Value {
     if path == "." {
         return root.clone();
     }
+    eval_jaq_one(path, root).unwrap_or(Value::Null)
+}
 
-    let mut current = root;
-    let clean_path = path.strip_prefix('.').unwrap_or(path);
+/// Evaluate a JQ expression and return the first result as serde_json::Value.
+fn eval_jaq_one(expr: &str, input: &Value) -> anyhow::Result<Value> {
+    use jaq_core::defs as core_defs;
+    use jaq_core::funs as core_funs;
+    use jaq_core::{Compiler, Ctx, Vars, data, load, unwrap_valr};
+    use jaq_json::Val as JaqVal;
 
-    let mut parts = Vec::new();
-    let mut start = 0;
-    let chars: Vec<char> = clean_path.chars().collect();
-    let mut i = 0;
+    let arena = load::Arena::default();
+    let defs = core_defs().chain(jaq_std::defs()).chain(jaq_json::defs());
+    let funs = core_funs().chain(jaq_std::funs()).chain(jaq_json::funs());
+    let loader = load::Loader::new(defs);
+    let program = load::File {
+        code: expr,
+        path: (),
+    };
 
-    while i < chars.len() {
-        if chars[i] == '.' {
-            parts.push(clean_path[start..i].to_string());
-            start = i + 1;
-        }
-        i += 1;
+    let modules = loader
+        .load(&arena, program)
+        .map_err(|errs| anyhow::anyhow!("JQ parse error: {:?}", errs))?;
+
+    let filter = Compiler::default()
+        .with_funs(funs)
+        .compile(modules)
+        .map_err(|errs| anyhow::anyhow!("JQ compile error: {:?}", errs))?;
+
+    let jaq_input = to_jaq_val(input);
+    let ctx = Ctx::<data::JustLut<JaqVal>>::new(&filter.lut, Vars::new([]));
+    let mut out = filter.id.run((ctx, jaq_input)).map(unwrap_valr);
+
+    if let Some(Ok(val)) = out.next() {
+        Ok(from_jaq_val(&val))
+    } else {
+        Err(anyhow::anyhow!("JQ produced no output"))
     }
-    parts.push(clean_path[start..].to_string());
+}
 
-    for part in parts {
-        if part.is_empty() {
-            continue;
-        }
-
-        if let Some(bracket_start) = part.find('[') {
-            if let Some(bracket_end) = part.find(']') {
-                let key = &part[0..bracket_start];
-                let index_str = &part[bracket_start + 1..bracket_end];
-
-                if !key.is_empty() {
-                    if let Some(val) = current.get(key) {
-                        current = val;
-                    } else {
-                        return Value::Null;
-                    }
-                }
-
-                if let Ok(idx) = index_str.parse::<usize>() {
-                    if let Some(val) = current.get(idx) {
-                        current = val;
-                    } else {
-                        return Value::Null;
-                    }
-                }
+/// Convert serde_json::Value → jaq_json::Val
+fn to_jaq_val(v: &Value) -> jaq_json::Val {
+    use jaq_json::Num as JaqNum;
+    match v {
+        Value::Null => jaq_json::Val::Null,
+        Value::Bool(b) => jaq_json::Val::Bool(*b),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                #[allow(clippy::cast_possible_wrap)]
+                let isize_val = i as isize;
+                jaq_json::Val::Num(JaqNum::Int(isize_val))
+            } else if let Some(f) = n.as_f64() {
+                jaq_json::Val::Num(JaqNum::Float(f))
+            } else {
+                jaq_json::Val::Null
             }
-        } else if let Some(val) = current.get(&part) {
-            current = val;
-        } else {
-            return Value::Null;
+        }
+        Value::String(s) => jaq_json::Val::utf8_str(bytes::Bytes::from(s.clone())),
+        Value::Array(arr) => {
+            jaq_json::Val::Arr(std::rc::Rc::new(arr.iter().map(to_jaq_val).collect()))
+        }
+        Value::Object(map) => {
+            let entries: Vec<(jaq_json::Val, jaq_json::Val)> = map
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        jaq_json::Val::utf8_str(bytes::Bytes::from(k.clone())),
+                        to_jaq_val(v),
+                    )
+                })
+                .collect();
+            jaq_json::Val::Obj(std::rc::Rc::new(jaq_json::Map::from_iter(entries)))
         }
     }
+}
 
-    current.clone()
+/// Convert jaq_json::Val → serde_json::Value
+fn from_jaq_val(v: &jaq_json::Val) -> Value {
+    match v {
+        jaq_json::Val::Null => Value::Null,
+        jaq_json::Val::Bool(b) => Value::Bool(*b),
+        jaq_json::Val::Num(n) => match n {
+            jaq_json::Num::Int(i) => Value::Number(serde_json::Number::from(*i as i64)),
+            jaq_json::Num::BigInt(_) => Value::Null,
+            jaq_json::Num::Float(f) => serde_json::Number::from_f64(*f)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+            jaq_json::Num::Dec(f) => f
+                .parse::<f64>()
+                .ok()
+                .and_then(serde_json::Number::from_f64)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+        },
+        jaq_json::Val::BStr(b) | jaq_json::Val::TStr(b) => {
+            String::from_utf8_lossy(b).into_owned().into()
+        }
+        jaq_json::Val::Arr(arr) => Value::Array(arr.iter().map(from_jaq_val).collect()),
+        jaq_json::Val::Obj(map) => {
+            let entries: serde_json::Map<String, Value> = map
+                .iter()
+                .map(|(k, v)| {
+                    let key = match k {
+                        jaq_json::Val::TStr(b) | jaq_json::Val::BStr(b) => {
+                            String::from_utf8_lossy(b).into_owned()
+                        }
+                        _ => k.to_string(),
+                    };
+                    (key, from_jaq_val(v))
+                })
+                .collect();
+            Value::Object(entries)
+        }
+    }
 }
 
 #[cfg(test)]
