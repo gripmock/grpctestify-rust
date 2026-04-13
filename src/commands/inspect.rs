@@ -202,6 +202,7 @@ fn section_to_info(section: &parser::ast::Section) -> SectionInfo {
         SectionContent::KeyValues(_) => "key-values",
         SectionContent::Assertions(_) => "assertions",
         SectionContent::Extract(_) => "extract",
+        SectionContent::Meta(_) => "meta",
         SectionContent::Empty => "empty",
     };
     let message_count = match &section.content {
@@ -346,6 +347,7 @@ fn print_ast_overview(doc: &parser::GctfDocument) {
             SectionContent::KeyValues(_) => "key-values",
             SectionContent::Assertions(_) => "assertions",
             SectionContent::Extract(_) => "extract",
+            SectionContent::Meta(_) => "meta",
             SectionContent::Empty => "empty",
         };
         let raw_bytes = section.raw_content.len();
@@ -358,6 +360,23 @@ fn print_ast_overview(doc: &parser::GctfDocument) {
             content_kind,
             raw_bytes
         );
+        if let SectionContent::Meta(meta) = &section.content {
+            if let Some(name) = &meta.name {
+                println!("       name: {}", name);
+            }
+            if let Some(summary) = &meta.summary {
+                println!("       summary: {}", summary);
+            }
+            if !meta.tags.is_empty() {
+                println!("       tags: {:?}", meta.tags);
+            }
+            if let Some(owner) = &meta.owner {
+                println!("       owner: {}", owner);
+            }
+            if !meta.links.is_empty() {
+                println!("       links: {:?}", meta.links);
+            }
+        }
     }
 }
 

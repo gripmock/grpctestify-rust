@@ -1890,6 +1890,7 @@ impl TestRunner {
                         }
                     }
                 }
+                SectionType::Meta => {}
             }
         }
 

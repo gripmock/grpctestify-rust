@@ -3,7 +3,10 @@
 
 use crate::diagnostics::{DiagnosticCode, DiagnosticCollection, Range};
 use crate::parser::assertions::strip_assertion_comments;
-use crate::parser::ast::{DocumentMetadata, GctfDocument, Section, SectionContent, SectionType};
+use crate::parser::ast::{
+    DocumentMetadata, FileMeta, GctfDocument, Section, SectionContent, SectionType,
+};
+use crate::parser::gctf_tokenizer;
 use std::path::Path;
 
 /// Result of error recovery parsing
@@ -189,6 +192,7 @@ fn parse_section_header(
         "TLS" => SectionType::Tls,
         "PROTO" => SectionType::Proto,
         "OPTIONS" => SectionType::Options,
+        "META" => SectionType::Meta,
         _ => {
             diagnostics.warning(
                 DiagnosticCode::UnknownSectionType,
@@ -320,6 +324,20 @@ fn parse_section_content(
                 }
             }
             SectionContent::KeyValues(key_values)
+        }
+        SectionType::Meta => {
+            // Use tokenizer to strip GCTF comment lines before parsing YAML
+            let raw = content.join("\n");
+            let tokens = gctf_tokenizer::tokenize_gctf(&raw);
+            let yaml_lines: Vec<String> = content
+                .iter()
+                .zip(tokens.iter())
+                .filter(|(_, t)| !matches!(t.kind, gctf_tokenizer::GctfTokenKind::Comment(_)))
+                .map(|(l, _)| l.clone())
+                .collect();
+            let cleaned = yaml_lines.join("\n");
+            let meta = serde_yaml_ng::from_str::<FileMeta>(&cleaned).unwrap_or_default();
+            SectionContent::Meta(meta)
         }
     }
 }

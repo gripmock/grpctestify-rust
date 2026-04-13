@@ -25,6 +25,7 @@ pub fn get_section_hover(section_type: &SectionType) -> Option<String> {
         SectionType::Options => Some("**OPTIONS**\n\nTest execution options.".to_string()),
         SectionType::Extract => Some("**EXTRACT**\n\nVariable extraction using JQ paths.\n\nExample:\n```\nuser_id: .id\ntoken: .auth.token\n```\n\nUse in REQUEST: `${user_id}`".to_string()),
         SectionType::Asserts => Some("**ASSERTS**\n\nAssertion expressions.\n\nOperators: `==`, `!=`, `>`, `<`, `contains`, `matches`\nPlugins: `@uuid`, `@email`, `@ip`, `@url`, `@timestamp`, `@elapsed_ms`, `@total_elapsed_ms`\nJQ: `select`, `length`, `startswith`".to_string()),
+        SectionType::Meta => Some("**META**\n\nFile-level metadata (YAML).\n\nMust be first section in file.\n\nOnly 0 or 1 per file.".to_string()),
     }
 }
 
@@ -697,6 +698,7 @@ fn section_contains_var_reference(section: &crate::parser::ast::Section, var_nam
         // Single value sections (ADDRESS, ENDPOINT)
         parser::ast::SectionContent::Single(s) => contains_var_pattern(s, var_name),
         parser::ast::SectionContent::Empty => false,
+        parser::ast::SectionContent::Meta(_) => false,
     }
 }
 

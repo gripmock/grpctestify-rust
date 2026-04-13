@@ -540,9 +540,12 @@ test.Service/Method
     // === scan_section_header edge cases ===
 
     #[test]
-    fn test_section_header_empty_name() {
-        let tokens = tokenize_gctf("--- ---");
-        assert!(matches!(tokens[0].kind, GctfTokenKind::Content(_)));
+    fn test_section_header_meta() {
+        let tokens = tokenize_gctf("--- META ---\nname: Test");
+        let GctfTokenKind::SectionHeader { name, .. } = &tokens[0].kind else {
+            panic!()
+        };
+        assert_eq!(name, "META");
     }
 
     #[test]

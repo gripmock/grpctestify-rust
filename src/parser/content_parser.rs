@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 
-use crate::parser::ast::{InlineOptions, Section, SectionContent, SectionType};
+use crate::parser::ast::{FileMeta, InlineOptions, Section, SectionContent, SectionType};
 use crate::parser::gctf_tokenizer::{
     tokenize_extract_line, tokenize_inline_options, tokenize_kv_line,
 };
@@ -73,6 +73,13 @@ pub fn parse_section_content(section_type: SectionType, content: &str) -> Result
         SectionType::Asserts => {
             let assertions = parse_assertions(content)?;
             Ok(SectionContent::Assertions(assertions))
+        }
+
+        // META section - parse as YAML (comments allowed)
+        SectionType::Meta => {
+            let meta = serde_yaml_ng::from_str::<FileMeta>(content)
+                .unwrap_or_else(|_| FileMeta::default());
+            Ok(SectionContent::Meta(meta))
         }
     }
 }
@@ -376,5 +383,45 @@ mod tests {
         // Current tokenizer splits by spaces, so this becomes tokens
         // This is a known limitation - redact with spaces in value
         assert!(!result.redact.is_empty()); // tokenizer splits "not_an_array" into parts
+    }
+
+    #[test]
+    fn test_parse_section_content_meta_full() {
+        let result = parse_section_content(
+            SectionType::Meta,
+            r#"name: Test
+summary: Summary
+tags: [a, b]
+owner: backend
+links:
+  - https://example.com
+"#,
+        )
+        .unwrap();
+        let SectionContent::Meta(m) = result else {
+            panic!()
+        };
+        assert_eq!(m.name.as_deref(), Some("Test"));
+        assert_eq!(m.summary.as_deref(), Some("Summary"));
+        assert_eq!(m.tags, ["a", "b"]);
+        assert_eq!(m.owner.as_deref(), Some("backend"));
+        assert_eq!(m.links, ["https://example.com"]);
+    }
+
+    #[test]
+    fn test_parse_section_content_meta_comments() {
+        let result = parse_section_content(
+            SectionType::Meta,
+            r#"# comment
+name: Test
+tags: [a]
+"#,
+        )
+        .unwrap();
+        let SectionContent::Meta(m) = result else {
+            panic!()
+        };
+        assert_eq!(m.name.as_deref(), Some("Test"));
+        assert_eq!(m.tags, ["a"]);
     }
 }

@@ -66,11 +66,15 @@ pub fn serialize_gctf(doc: &parser::GctfDocument) -> String {
             }
             parser::ast::SectionContent::Empty => {}
             parser::ast::SectionContent::Extract(vars) => {
-                // Sort keys for deterministic output
                 let mut sorted: Vec<_> = vars.iter().collect();
                 sorted.sort_by(|a, b| a.0.cmp(b.0));
                 for (k, v) in sorted {
                     writeln!(output, "{}: {}", k, v).unwrap();
+                }
+            }
+            parser::ast::SectionContent::Meta(meta) => {
+                if let Ok(yaml) = serde_yaml_ng::to_string(meta) {
+                    output.push_str(yaml.trim_end());
                 }
             }
         }

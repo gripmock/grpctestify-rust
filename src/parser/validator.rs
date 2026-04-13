@@ -356,8 +356,17 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
 fn validate_structure(document: &GctfDocument, errors: &mut Vec<ValidationError>) {
     // Check for duplicate non-multiple sections
     let mut seen_sections = std::collections::HashSet::new();
+    let mut meta_count = 0;
+    let mut meta_first_line = None;
 
     for section in &document.sections {
+        if section.section_type == SectionType::Meta {
+            meta_count += 1;
+            if meta_first_line.is_none() {
+                meta_first_line = Some(section.start_line);
+            }
+        }
+
         if !section.section_type.is_multiple_allowed() {
             if seen_sections.contains(&section.section_type) {
                 errors.push(ValidationError {
@@ -367,6 +376,28 @@ fn validate_structure(document: &GctfDocument, errors: &mut Vec<ValidationError>
                 });
             }
             seen_sections.insert(section.section_type);
+        }
+    }
+
+    // Validate META section: only 0 or 1 per file, must be first if present
+    if meta_count > 1 {
+        errors.push(ValidationError {
+            message: "Only one META section is allowed per file".to_string(),
+            line: meta_first_line,
+            severity: ErrorSeverity::Error,
+        });
+    }
+
+    // Check META is first section (if present)
+    if meta_count == 1 {
+        if let Some(first_section) = document.sections.first() {
+            if first_section.section_type != SectionType::Meta {
+                errors.push(ValidationError {
+                    message: "META section must be the first section in the file".to_string(),
+                    line: meta_first_line,
+                    severity: ErrorSeverity::Error,
+                });
+            }
         }
     }
 

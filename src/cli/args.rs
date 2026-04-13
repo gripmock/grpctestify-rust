@@ -160,6 +160,14 @@ pub struct RunArgs {
     #[arg(long = "exclude", value_name = "PATTERN")]
     pub exclude: Vec<String>,
 
+    /// Filter by tags (AND - file must have ALL tags)
+    #[arg(long = "tags", value_name = "TAGS")]
+    pub tags: Vec<String>,
+
+    /// Skip files with these tags (NOT OR - exclude if ANY matches)
+    #[arg(long = "skip-tags", value_name = "TAGS")]
+    pub skip_tags: Vec<String>,
+
     /// Run tests in parallel with N workers
     #[arg(short = 'p', long, default_value = "auto")]
     pub parallel: String,

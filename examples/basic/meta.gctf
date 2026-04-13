@@ -1,0 +1,23 @@
+--- META ---
+name: Unary hello world
+summary: Simple unary call returns greeting
+tags: [smoke, basic, unary]
+owner: backend
+links:
+  - https://github.com/gripmock/grpctestify-rust
+
+--- ADDRESS ---
+localhost:50051
+
+--- ENDPOINT ---
+hello.HelloService/SayHello
+
+--- REQUEST ---
+{
+  "name": "World"
+}
+
+--- RESPONSE ---
+{
+  "message": "Hello, World!"
+}
