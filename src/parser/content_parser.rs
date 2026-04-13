@@ -5,6 +5,9 @@
 use anyhow::Result;
 
 use crate::parser::ast::{InlineOptions, Section, SectionContent, SectionType};
+use crate::parser::gctf_tokenizer::{
+    tokenize_extract_line, tokenize_inline_options, tokenize_kv_line,
+};
 use crate::parser::json_mod;
 use crate::parser::json_stream_parser;
 
@@ -56,14 +59,10 @@ pub fn parse_section_content(section_type: SectionType, content: &str) -> Result
         SectionType::Extract => {
             let mut key_values = std::collections::HashMap::new();
             for line in content.lines() {
-                let trimmed = line.trim();
-                if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
-                    continue;
-                }
-
-                // Parse using ternary AST
-                if let Some(extract_var) = crate::parser::ternary_ast::ExtractVar::parse(trimmed) {
-                    // Store the JQ-converted value for backward compatibility
+                if let Some((name, value)) = tokenize_extract_line(line)
+                    && let Some(extract_var) =
+                        crate::parser::ternary_ast::ExtractVar::parse_raw(&name, &value)
+                {
                     key_values.insert(extract_var.name, extract_var.value.to_jq());
                 }
             }
@@ -99,110 +98,40 @@ pub fn build_section(
     })
 }
 
-/// Parse key=value options from string.
+/// Parse key=value options from section header inline options string.
 pub fn parse_inline_options(s: &str) -> Result<InlineOptions> {
-    let options = parse_key_value_options(s)?;
-
     let mut inline_options = InlineOptions::default();
 
-    if let Some(with_asserts) = options.get("with_asserts") {
-        inline_options.with_asserts = matches!(with_asserts.as_str(), "true" | "1");
-    }
-
-    if let Some(partial) = options.get("partial") {
-        inline_options.partial = matches!(partial.as_str(), "true" | "1");
-    }
-
-    if let Some(tolerance) = options.get("tolerance")
-        && let Ok(t) = tolerance.parse::<f64>()
-    {
-        inline_options.tolerance = Some(t);
-    }
-
-    if let Some(redact) = options.get("redact") {
-        // Parse array format: ["field1","field2"]
-        let redact_str = redact.trim().trim_matches('[').trim_matches(']');
-        let strings: Vec<String> = redact_str
-            .split(',')
-            .map(|s| s.trim().trim_matches('"').to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        inline_options.redact = strings;
-    }
-
-    if let Some(unnamed_arrays) = options.get("unordered_arrays") {
-        inline_options.unordered_arrays = matches!(unnamed_arrays.as_str(), "true" | "1");
+    for (key, value) in tokenize_inline_options(s) {
+        match key.as_str() {
+            "with_asserts" => {
+                inline_options.with_asserts = matches!(value.as_str(), "true" | "1");
+            }
+            "partial" => {
+                inline_options.partial = matches!(value.as_str(), "true" | "1");
+            }
+            "tolerance" => {
+                if let Ok(t) = value.parse::<f64>() {
+                    inline_options.tolerance = Some(t);
+                }
+            }
+            "redact" => {
+                let redact_str = value.trim().trim_matches('[').trim_matches(']');
+                let strings: Vec<String> = redact_str
+                    .split(',')
+                    .map(|s| s.trim().trim_matches('"').to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                inline_options.redact = strings;
+            }
+            "unordered_arrays" => {
+                inline_options.unordered_arrays = matches!(value.as_str(), "true" | "1");
+            }
+            _ => {}
+        }
     }
 
     Ok(inline_options)
-}
-
-/// Parse key-value options from string.
-pub fn parse_key_value_options(s: &str) -> Result<std::collections::HashMap<String, String>> {
-    let mut options = std::collections::HashMap::new();
-    let tokens = tokenize_options(s)?;
-
-    for token in tokens {
-        if let Some((key, value)) = token.split_once('=') {
-            let key = key.trim().to_string();
-            let value = value
-                .trim()
-                .trim_matches('"')
-                .trim_matches('\'')
-                .to_string();
-            options.insert(key, value);
-        } else {
-            // Short boolean form: token without "=" means "true"
-            let key = token.trim().to_string();
-            options.insert(key, "true".to_string());
-        }
-    }
-
-    Ok(options)
-}
-
-/// Tokenize options string, respecting quotes.
-fn tokenize_options(s: &str) -> Result<Vec<String>> {
-    let mut tokens = Vec::new();
-    let mut current_token = String::new();
-    let mut in_quotes = false;
-    let mut escaped = false;
-
-    for ch in s.chars() {
-        match (ch, in_quotes, escaped) {
-            ('\\', _, false) => {
-                escaped = true;
-                current_token.push(ch);
-            }
-            (_, _, true) => {
-                escaped = false;
-                current_token.push(ch);
-            }
-            ('"', false, _) => {
-                in_quotes = true;
-                current_token.push(ch);
-            }
-            ('"', true, _) => {
-                in_quotes = false;
-                current_token.push(ch);
-            }
-            (' ', false, _) => {
-                if !current_token.is_empty() {
-                    tokens.push(current_token.clone());
-                    current_token.clear();
-                }
-            }
-            _ => {
-                current_token.push(ch);
-            }
-        }
-    }
-
-    if !current_token.is_empty() {
-        tokens.push(current_token);
-    }
-
-    Ok(tokens)
 }
 
 /// Parse key-value section (one per line: key: value).
@@ -210,17 +139,7 @@ fn parse_key_value_section(content: &str) -> Result<std::collections::HashMap<St
     let mut key_values = std::collections::HashMap::new();
 
     for line in content.lines() {
-        let trimmed = line.trim();
-
-        // Skip empty lines and comments
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        // Parse key: value
-        if let Some((key, value)) = trimmed.split_once(':') {
-            let key = key.trim().to_string();
-            let value = value.trim().to_string();
+        if let Some((key, value)) = tokenize_kv_line(line) {
             key_values.insert(key, value);
         }
     }
@@ -249,9 +168,10 @@ mod tests {
 
     #[test]
     fn test_tokenize_options() {
-        let result = parse_key_value_options("key1=value1 key2=value2").unwrap();
-        assert_eq!(result.get("key1"), Some(&"value1".to_string()));
-        assert_eq!(result.get("key2"), Some(&"value2".to_string()));
+        let result = tokenize_inline_options("key1=value1 key2=value2");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], ("key1".into(), "value1".into()));
+        assert_eq!(result[1], ("key2".into(), "value2".into()));
     }
 
     #[test]
@@ -269,5 +189,192 @@ mod tests {
             result,
             SectionContent::Single("localhost:50051".to_string())
         );
+    }
+
+    #[test]
+    fn test_parse_section_content_empty() {
+        let result = parse_section_content(SectionType::Address, "").unwrap();
+        assert_eq!(result, SectionContent::Empty);
+    }
+
+    #[test]
+    fn test_parse_section_content_whitespace() {
+        let result = parse_section_content(SectionType::Address, "   ").unwrap();
+        assert_eq!(result, SectionContent::Empty);
+    }
+
+    #[test]
+    fn test_parse_section_content_endpoint() {
+        let result = parse_section_content(SectionType::Endpoint, "pkg.Service/Method").unwrap();
+        assert_eq!(
+            result,
+            SectionContent::Single("pkg.Service/Method".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_section_content_request_json() {
+        let result = parse_section_content(SectionType::Request, r#"{"key": "value"}"#).unwrap();
+        assert!(matches!(result, SectionContent::Json(_)));
+    }
+
+    #[test]
+    fn test_parse_section_content_error_json() {
+        let result = parse_section_content(SectionType::Error, r#"{"code": 5}"#).unwrap();
+        assert!(matches!(result, SectionContent::Json(_)));
+    }
+
+    #[test]
+    fn test_parse_section_content_response_json() {
+        let result = parse_section_content(SectionType::Response, r#"{"status": "ok"}"#).unwrap();
+        assert!(matches!(result, SectionContent::Json(_)));
+    }
+
+    #[test]
+    fn test_parse_section_content_response_jsonlines() {
+        let input = "{\"a\":1}\n{\"b\":2}";
+        let result = parse_section_content(SectionType::Response, input).unwrap();
+        assert!(matches!(result, SectionContent::JsonLines(v) if v.len() == 2));
+    }
+
+    #[test]
+    fn test_parse_section_content_key_values() {
+        let input = "ca_cert: /path/to/ca.pem\nserver_name: example.com";
+        let result = parse_section_content(SectionType::Tls, input).unwrap();
+        if let SectionContent::KeyValues(kv) = result {
+            assert_eq!(kv.get("ca_cert"), Some(&"/path/to/ca.pem".to_string()));
+            assert_eq!(kv.get("server_name"), Some(&"example.com".to_string()));
+        } else {
+            panic!("expected KeyValues");
+        }
+    }
+
+    #[test]
+    fn test_parse_section_content_key_values_with_comments() {
+        let input = "# comment\nca_cert: /path/ca.pem\n\nkey: value";
+        let result = parse_section_content(SectionType::Options, input).unwrap();
+        if let SectionContent::KeyValues(kv) = result {
+            assert_eq!(kv.len(), 2);
+        } else {
+            panic!("expected KeyValues");
+        }
+    }
+
+    #[test]
+    fn test_parse_section_content_extract() {
+        let input = "total = .response.total\ncount = .items | length";
+        let result = parse_section_content(SectionType::Extract, input).unwrap();
+        if let SectionContent::Extract(kv) = result {
+            assert_eq!(kv.get("total"), Some(&".response.total".to_string()));
+            assert!(kv.contains_key("count"));
+        } else {
+            panic!("expected Extract");
+        }
+    }
+
+    #[test]
+    fn test_parse_section_content_extract_with_comments() {
+        let input = "# ignore\n// ignore\ntotal = .response.total";
+        let result = parse_section_content(SectionType::Extract, input).unwrap();
+        if let SectionContent::Extract(kv) = result {
+            assert_eq!(kv.len(), 1);
+        } else {
+            panic!("expected Extract");
+        }
+    }
+
+    #[test]
+    fn test_parse_section_content_asserts() {
+        let input = ".x == 1\n.y != \"hello\"";
+        let result = parse_section_content(SectionType::Asserts, input).unwrap();
+        if let SectionContent::Assertions(asserts) = result {
+            assert_eq!(asserts.len(), 2);
+            assert_eq!(asserts[0], ".x == 1");
+        } else {
+            panic!("expected Assertions");
+        }
+    }
+
+    #[test]
+    fn test_parse_section_content_asserts_with_comments() {
+        let input = ".x == 1 # inline\n# full line\n.y == 2 // comment";
+        let result = parse_section_content(SectionType::Asserts, input).unwrap();
+        if let SectionContent::Assertions(asserts) = result {
+            assert_eq!(asserts.len(), 2);
+        } else {
+            panic!("expected Assertions");
+        }
+    }
+
+    #[test]
+    fn test_build_section() {
+        let content = vec!["localhost:50051".to_string()];
+        let section = build_section(
+            SectionType::Address,
+            5,
+            6,
+            &content,
+            InlineOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(section.section_type, SectionType::Address);
+        assert_eq!(section.start_line, 5);
+        assert_eq!(section.end_line, 6);
+    }
+
+    #[test]
+    fn test_parse_inline_options_all_fields() {
+        let result = parse_inline_options(
+            "with_asserts=true partial=true tolerance=0.5 unordered_arrays=true",
+        )
+        .unwrap();
+        assert!(result.with_asserts);
+        assert!(result.partial);
+        assert_eq!(result.tolerance, Some(0.5));
+        assert!(result.unordered_arrays);
+    }
+
+    #[test]
+    fn test_parse_inline_options_redact() {
+        let result = parse_inline_options(r#"redact=["token","password"]"#).unwrap();
+        assert_eq!(result.redact, vec!["token", "password"]);
+    }
+
+    #[test]
+    fn test_parse_inline_options_empty() {
+        let result = parse_inline_options("").unwrap();
+        assert_eq!(result, InlineOptions::default());
+    }
+
+    #[test]
+    fn test_parse_inline_options_unknown_key_ignored() {
+        let result = parse_inline_options("unknown_key=value").unwrap();
+        assert_eq!(result, InlineOptions::default());
+    }
+
+    #[test]
+    fn test_parse_inline_options_tolerance_negative() {
+        let result = parse_inline_options("tolerance=-0.5").unwrap();
+        assert_eq!(result.tolerance, Some(-0.5));
+    }
+
+    #[test]
+    fn test_parse_inline_options_tolerance_invalid() {
+        let result = parse_inline_options("tolerance=not_a_number").unwrap();
+        assert_eq!(result.tolerance, None);
+    }
+
+    #[test]
+    fn test_parse_inline_options_redact_empty_array() {
+        let result = parse_inline_options("redact=[]").unwrap();
+        assert!(result.redact.is_empty());
+    }
+
+    #[test]
+    fn test_parse_inline_options_redact_malformed() {
+        let result = parse_inline_options("redact=not_an_array").unwrap();
+        // Current tokenizer splits by spaces, so this becomes tokens
+        // This is a known limitation - redact with spaces in value
+        assert!(!result.redact.is_empty()); // tokenizer splits "not_an_array" into parts
     }
 }

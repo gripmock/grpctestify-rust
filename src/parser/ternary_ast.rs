@@ -98,6 +98,17 @@ impl ExtractVar {
         })
     }
 
+    /// Parse pre-split name and value (from tokenizer).
+    pub fn parse_raw(name: &str, value: &str) -> Option<Self> {
+        if name.is_empty() || value.is_empty() {
+            return None;
+        }
+        Some(Self {
+            name: name.to_string(),
+            value: ExtractValue::parse(value),
+        })
+    }
+
     /// Convert to JQ syntax
     pub fn to_jq(&self) -> String {
         format!("{} = {}", self.name, self.value.to_jq())

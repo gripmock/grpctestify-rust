@@ -335,8 +335,16 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
     // Assertions from workflow
     let workflow = Workflow::from_document_with_analysis(doc);
     for event in &workflow.events {
-        if let crate::execution::WorkflowEvent::Assert { count, .. } = event {
-            println!("  ✓ {} assertion(s)", count);
+        if let crate::execution::WorkflowEvent::Assert {
+            count, line_range, ..
+        } = event
+        {
+            println!(
+                "  ✓ {} assertion(s) at lines {}-{}",
+                count,
+                line_range.0 + 1,
+                line_range.1 + 1
+            );
         }
         if let crate::execution::WorkflowEvent::SemanticAnalysis {
             type_mismatches,
@@ -350,6 +358,18 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
             }
             for u in unknown_plugins {
                 println!("    - {}", u.message);
+            }
+        }
+    }
+
+    // Print actual assertion expressions
+    for section in &doc.sections {
+        if section.section_type == SectionType::Asserts {
+            if let SectionContent::Assertions(assertions) = &section.content {
+                for (i, a) in assertions.iter().enumerate() {
+                    let rewritten = optimizer::rewrite_assertion_expression_fixed_point(a);
+                    println!("    {}. {}", i + 1, rewritten);
+                }
             }
         }
     }

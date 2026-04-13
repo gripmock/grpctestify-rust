@@ -546,7 +546,24 @@ fn parse_if_then_else(expr: &str) -> Option<(&str, &str, &str)> {
     let mut then_pos = None;
 
     let mut i = 0;
+    let mut in_string = false;
+    let mut string_char = None;
     while i < bytes.len() {
+        // Handle string literals
+        if in_string {
+            if bytes[i] == string_char.unwrap() && (i == 0 || bytes[i - 1] != b'\\') {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'"' || bytes[i] == b'\'' {
+            in_string = true;
+            string_char = Some(bytes[i]);
+            i += 1;
+            continue;
+        }
+
         match &bytes[i..i + 1] {
             b"(" => paren_depth += 1,
             b")" => paren_depth -= 1,
@@ -578,8 +595,25 @@ fn parse_if_then_else(expr: &str) -> Option<(&str, &str, &str)> {
     let mut nested_if = 0;
     paren_depth = 0;
 
+    let mut in_string = false;
+    let mut string_char = None;
+
     i = 0;
     while i < bytes.len() {
+        if in_string {
+            if bytes[i] == string_char.unwrap() && (i == 0 || bytes[i - 1] != b'\\') {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'"' || bytes[i] == b'\'' {
+            in_string = true;
+            string_char = Some(bytes[i]);
+            i += 1;
+            continue;
+        }
+
         match &bytes[i..i + 1] {
             b"(" => paren_depth += 1,
             b")" => paren_depth -= 1,
@@ -797,7 +831,6 @@ fn suggest_type_aware_numeric_comparison(expr: &str) -> Option<(&'static str, St
     let signatures = plugin_signatures();
     let trimmed = expr.trim();
 
-    // Split by >= or <= to find the plugin call operand
     let (left, right) = if let Some(idx) = trimmed.find(">=") {
         (trimmed[..idx].trim(), trimmed[idx + 2..].trim())
     } else if let Some(idx) = trimmed.find("<=") {
@@ -806,7 +839,6 @@ fn suggest_type_aware_numeric_comparison(expr: &str) -> Option<(&'static str, St
         return None;
     };
 
-    // Check if one side is "0" and the other is a plugin call
     let plugin_call = if right == "0" {
         left
     } else if left == "0" {
@@ -819,10 +851,10 @@ fn suggest_type_aware_numeric_comparison(expr: &str) -> Option<(&'static str, St
         && let Some(sig) = signatures.get(plugin_name.as_str())
         && sig.return_type == TypeInfo::UInt
     {
-        return Some(("OPT_T001", "true".to_string()));
+        Some(("OPT_T001", "true".to_string()))
+    } else {
+        None
     }
-
-    None
 }
 
 /// Comparison negation: not (.x == 5) → .x != 5
@@ -1383,6 +1415,24 @@ if .status == 200 then false else true end
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, "OPT_I005");
         assert_eq!(hints[0].after, "!.status == 200");
+    }
+
+    #[test]
+    fn test_parse_if_then_else_string_with_else_keyword() {
+        let (cond, then_expr, else_expr) =
+            parse_if_then_else(r#"if true then " else " else "no" end"#).unwrap();
+        assert_eq!(cond, "true");
+        assert_eq!(then_expr, r#"" else ""#);
+        assert_eq!(else_expr, r#""no""#);
+    }
+
+    #[test]
+    fn test_parse_if_then_else_then_in_string_condition() {
+        let (cond, then_expr, else_expr) =
+            parse_if_then_else(r#"if .x == "then" then "yes" else "no" end"#).unwrap();
+        assert_eq!(cond, r#".x == "then""#);
+        assert_eq!(then_expr, r#""yes""#);
+        assert_eq!(else_expr, r#""no""#);
     }
 
     // === New optimization rules tests ===

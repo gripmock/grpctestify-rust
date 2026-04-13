@@ -1322,9 +1322,8 @@ impl TestRunner {
                                 }
                                 response_stream = Some(stream);
                             }
-                            Ok(Err(e)) => {
-                                // If ERROR section is expected, startup failures from unary/client-streaming
-                                // calls may represent the expected application error.
+                            Ok(Err(_e)) => {
+                                let e = _e;
                                 if !effective_no_assert {
                                     if let SectionContent::Json(expected_json) = &section.content {
                                         let mut expected = expected_json.clone();

@@ -19,14 +19,22 @@ pub enum TypeInfo {
     Number,
     /// String value. Used by @header, @trailer, @env, etc.
     String,
-    /// JSON value of any type. Used by plugins that return the input as-is.
-    Any,
+
+    // ─── Structured types ───
+    /// JSON object/array. Used in REQUEST, RESPONSE, ERROR sections.
+    Json,
+    /// YAML document. Used in configuration sections (EXTRACT, OPTIONS).
+    Yaml,
 
     // ─── Nullable variants ───
     /// Boolean or null (when lookup fails)
     BoolOrNull,
     /// String or null (when lookup fails)
     StringOrNull,
+    /// JSON or null (when lookup fails)
+    JsonOrNull,
+    /// YAML or null (when lookup fails)
+    YamlOrNull,
 
     // ─── Constrained strings ───
     /// String that matches UUID format
@@ -37,6 +45,10 @@ pub enum TypeInfo {
     Url,
     /// String that matches IPv4/IPv6 format
     Ip,
+
+    // ─── Wildcard ───
+    /// JSON value of any type. Used by plugins that return the input as-is.
+    Any,
 }
 
 impl TypeInfo {
@@ -67,7 +79,11 @@ impl TypeInfo {
     pub fn is_nullable(&self) -> bool {
         matches!(
             self,
-            TypeInfo::BoolOrNull | TypeInfo::StringOrNull | TypeInfo::Any
+            TypeInfo::BoolOrNull
+                | TypeInfo::StringOrNull
+                | TypeInfo::JsonOrNull
+                | TypeInfo::YamlOrNull
+                | TypeInfo::Any
         )
     }
 
@@ -76,6 +92,8 @@ impl TypeInfo {
         match self {
             TypeInfo::BoolOrNull => TypeInfo::Bool,
             TypeInfo::StringOrNull => TypeInfo::String,
+            TypeInfo::JsonOrNull => TypeInfo::Json,
+            TypeInfo::YamlOrNull => TypeInfo::Yaml,
             TypeInfo::Uuid | TypeInfo::Email | TypeInfo::Url | TypeInfo::Ip => TypeInfo::String,
             other => *other,
         }
@@ -88,9 +106,13 @@ impl TypeInfo {
             TypeInfo::UInt => "non-negative integer",
             TypeInfo::Number => "number",
             TypeInfo::String => "string",
+            TypeInfo::Json => "json",
+            TypeInfo::Yaml => "yaml",
             TypeInfo::Any => "any",
             TypeInfo::BoolOrNull => "bool | null",
             TypeInfo::StringOrNull => "string | null",
+            TypeInfo::JsonOrNull => "json | null",
+            TypeInfo::YamlOrNull => "yaml | null",
             TypeInfo::Uuid => "uuid (string)",
             TypeInfo::Email => "email (string)",
             TypeInfo::Url => "url (string)",

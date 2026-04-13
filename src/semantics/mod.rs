@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::parser;
-use crate::plugins::{PluginManager, PluginSignature, TypeInfo, extract_plugin_call_name};
+use crate::parser::tokenizer::{TokenKind, tokenize_assertion};
+use crate::plugins::{PluginManager, PluginSignature, TypeInfo};
 use crate::utils::section_content_line;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,20 +26,29 @@ pub struct UnknownPluginCall {
     pub suggestion: Option<String>,
 }
 
-fn operator_from_expression(expr: &str) -> Option<(&'static str, usize, usize)> {
-    for op in ["==", "!=", ">=", "<=", ">", "<"] {
-        if let Some(idx) = expr.find(op) {
-            return Some((op, idx, op.len()));
+fn operator_from_tokens(
+    tokens: &[parser::tokenizer::Token],
+) -> Option<(&'static str, usize, usize)> {
+    for token in tokens {
+        if let TokenKind::Op(op) = &token.kind {
+            let static_op: Option<&'static str> = match op.as_str() {
+                "==" => Some("=="),
+                "!=" => Some("!="),
+                ">=" => Some(">="),
+                "<=" => Some("<="),
+                ">" => Some(">"),
+                "<" => Some("<"),
+                "contains" => Some("contains"),
+                "matches" => Some("matches"),
+                "startsWith" => Some("startsWith"),
+                "endsWith" => Some("endsWith"),
+                _ => None,
+            };
+            if let Some(s) = static_op {
+                return Some((s, token.span.start, token.span.len()));
+            }
         }
     }
-
-    for op in ["contains", "matches", "startsWith", "endsWith"] {
-        let token = format!(" {} ", op);
-        if let Some(idx) = expr.find(&token) {
-            return Some((op, idx, token.len()));
-        }
-    }
-
     None
 }
 
@@ -114,34 +124,39 @@ fn best_plugin_suggestion(unknown: &str, known_plugins: &[String]) -> Option<Str
     })
 }
 
-fn infer_type_info(expr: &str, signatures: &HashMap<String, PluginSignature>) -> TypeInfo {
-    let trimmed = expr.trim();
-
-    // Literals
-    if trimmed == "true" || trimmed == "false" {
-        return TypeInfo::Bool;
-    }
-    if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
-        return TypeInfo::String;
-    }
-    if trimmed.starts_with('[') && trimmed.ends_with(']') {
-        return TypeInfo::Any; // array
-    }
-    if trimmed.starts_with('{') && trimmed.ends_with('}') {
-        return TypeInfo::Any; // object
-    }
-    if trimmed.parse::<f64>().is_ok() {
-        return TypeInfo::Number;
+fn infer_type_from_tokens(
+    tokens: &[parser::tokenizer::Token],
+    signatures: &HashMap<String, PluginSignature>,
+) -> TypeInfo {
+    if tokens.len() == 1 {
+        return match &tokens[0].kind {
+            TokenKind::StringLit(_) => TypeInfo::String,
+            TokenKind::NumberLit(v) if v.parse::<f64>().is_ok() => TypeInfo::Number,
+            TokenKind::Ident(s) if s == "true" || s == "false" => TypeInfo::Bool,
+            TokenKind::LBracket => TypeInfo::Any,
+            TokenKind::LBrace => TypeInfo::Any,
+            _ => TypeInfo::Any,
+        };
     }
 
-    // Plugin calls — use the plugin's TypeInfo
-    if let Some(plugin_name) = extract_plugin_call_name(trimmed)
-        && let Some(sig) = signatures.get(plugin_name.as_str())
+    if tokens.len() >= 3
+        && matches!(&tokens[0].kind, TokenKind::At)
+        && matches!(&tokens[1].kind, TokenKind::Ident(name) if {
+            if let Some(sig) = signatures.get(name.as_str()) {
+                return sig.return_type;
+            }
+            false
+        })
     {
-        return sig.return_type;
+        return TypeInfo::Any;
     }
 
-    // JQ paths and variables are unknown
+    for token in tokens {
+        if let TokenKind::StringLit(_) = &token.kind {
+            return TypeInfo::String;
+        }
+    }
+
     TypeInfo::Any
 }
 
@@ -149,15 +164,18 @@ fn detect_type_mismatch(
     expr: &str,
     signatures: &HashMap<String, PluginSignature>,
 ) -> Option<AssertionTypeMismatch> {
-    let (op, op_idx, op_len) = operator_from_expression(expr)?;
+    let tokens = tokenize_assertion(expr);
+    let (op, op_idx, op_len) = operator_from_tokens(&tokens)?;
     let lhs = expr[..op_idx].trim();
     let rhs = expr[op_idx + op_len..].trim();
     if lhs.is_empty() || rhs.is_empty() {
         return None;
     }
 
-    let lhs_type = infer_type_info(lhs, signatures);
-    let rhs_type = infer_type_info(rhs, signatures);
+    let lhs_tokens = tokenize_assertion(lhs);
+    let rhs_tokens = tokenize_assertion(rhs);
+    let lhs_type = infer_type_from_tokens(&lhs_tokens, signatures);
+    let rhs_type = infer_type_from_tokens(&rhs_tokens, signatures);
 
     // Check if the operator is valid for the left-hand side type
     let (valid, reason) = lhs_type.supports_operator(op);
@@ -290,12 +308,12 @@ pub fn collect_assertion_type_mismatches(doc: &parser::GctfDocument) -> Vec<Asse
         }
 
         for (idx, line) in section.raw_content.lines().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
-                continue;
-            }
+            let trimmed = match parser::assertions::strip_assertion_comments(line) {
+                Some(t) => t,
+                None => continue,
+            };
 
-            if let Some(mut mismatch) = detect_type_mismatch(trimmed, signatures) {
+            if let Some(mut mismatch) = detect_type_mismatch(&trimmed, signatures) {
                 mismatch.line = section_content_line(section.start_line, idx);
                 mismatches.push(mismatch);
             }
@@ -318,12 +336,12 @@ pub fn collect_unknown_plugin_calls(doc: &parser::GctfDocument) -> Vec<UnknownPl
         }
 
         for (idx, line) in section.raw_content.lines().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
-                continue;
-            }
+            let trimmed = match parser::assertions::strip_assertion_comments(line) {
+                Some(t) => t,
+                None => continue,
+            };
 
-            for plugin_name in extract_plugin_calls(trimmed) {
+            for plugin_name in extract_plugin_calls(&trimmed) {
                 if signatures.contains_key(plugin_name.as_str()) {
                     continue;
                 }

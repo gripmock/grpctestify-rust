@@ -126,9 +126,9 @@ impl<'a> PluginContext<'a> {
 /// Timing context available for assertion plugins.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssertionTiming {
-    /// Duration for current assertion scope (message or batch).
+    /// Duration for current assertion scope (message or batch), in milliseconds.
     pub elapsed_ms: u64,
-    /// Cumulative duration across all completed assertion scopes.
+    /// Cumulative duration across all completed assertion scopes, in milliseconds.
     pub total_elapsed_ms: u64,
     /// Number of messages in current scope.
     pub scope_message_count: usize,

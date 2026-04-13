@@ -3,20 +3,14 @@
 
 use super::ast::*;
 use super::content_parser;
+use super::gctf_tokenizer::{GctfTokenKind, tokenize_gctf};
+use super::split_sections_by_boundary;
 use anyhow::{Context, Result};
-use once_cell::sync::Lazy;
-use regex::Regex;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
-
-static SECTION_HEADER_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(SECTION_HEADER_PATTERN).expect("invalid section header regex"));
-
-/// Section header pattern: --- SECTION_NAME key=value ... ---
-const SECTION_HEADER_PATTERN: &str = r"^---\s*([A-Z_]+)(\s+.+)?\s*---$";
 
 /// Parse a .gctf file into an AST
 pub fn parse_gctf(file_path: &Path) -> Result<GctfDocument> {
@@ -28,11 +22,10 @@ pub fn parse_gctf(file_path: &Path) -> Result<GctfDocument> {
 /// Documents are determined implicitly: REQUEST after RESPONSE/ERROR/ASSERTS,
 /// or ENDPOINT/ADDRESS starts a new document.
 pub fn parse_gctf_from_str(content: &str, file_path: &str) -> Result<GctfDocument> {
-    let source_lines: Vec<&str> = content.lines().collect();
-    let (all_sections, _) = parse_sections(&source_lines)?;
+    let (all_sections, _) = parse_sections_from_str(content)?;
 
     // Split sections into documents based on implicit boundaries
-    let documents = split_into_documents(&all_sections);
+    let documents = split_sections_by_boundary(&all_sections);
 
     if documents.is_empty() {
         // Return empty single document for backward compatibility
@@ -57,75 +50,6 @@ pub fn parse_gctf_from_str(content: &str, file_path: &str) -> Result<GctfDocumen
 
 /// Split sections into documents based on implicit boundaries.
 ///
-/// Boundary = ENDPOINT with meaningful content before it.
-///
-/// "Preamble" sections (ADDRESS, TLS, PROTO, OPTIONS, REQUEST_HEADERS)
-/// that appear immediately before ENDPOINT are moved to the new document.
-/// They configure the next request, not the previous one.
-///
-/// The only thing propagated between documents is EXTRACT variables —
-/// they become part of the execution context, not the AST.
-fn split_into_documents(sections: &[Section]) -> Vec<Vec<Section>> {
-    if sections.is_empty() {
-        return Vec::new();
-    }
-
-    let mut docs: Vec<Vec<Section>> = Vec::new();
-    let mut current: Vec<Section> = Vec::new();
-
-    // Sections that are "preambles" — they belong to the next document
-    let is_preamble = |t: &SectionType| {
-        matches!(
-            t,
-            SectionType::Address
-                | SectionType::Tls
-                | SectionType::Proto
-                | SectionType::Options
-                | SectionType::RequestHeaders
-        )
-    };
-
-    for section in sections {
-        if section.section_type == SectionType::Endpoint {
-            // Check if current has meaningful content (request/response cycle completed)
-            let has_content = current.iter().any(|s| {
-                matches!(
-                    s.section_type,
-                    SectionType::Request
-                        | SectionType::Response
-                        | SectionType::Error
-                        | SectionType::Asserts
-                        | SectionType::Extract
-                )
-            });
-
-            if has_content {
-                // Before splitting: move trailing preamble sections to new document
-                let mut preamble: Vec<Section> = Vec::new();
-                while let Some(last) = current.last() {
-                    if is_preamble(&last.section_type) {
-                        preamble.insert(0, current.pop().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-
-                docs.push(std::mem::take(&mut current));
-                current = preamble;
-            }
-            // If no content yet (only preamble), preamble stays with ENDPOINT — no split
-        }
-
-        current.push(section.clone());
-    }
-
-    if !current.is_empty() {
-        docs.push(current);
-    }
-
-    docs
-}
-
 /// Extract source lines for a document from the original content.
 fn extract_doc_source(sections: &[Section], original: &str) -> String {
     if sections.is_empty() {
@@ -169,14 +93,12 @@ pub fn parse_gctf_with_diagnostics(file_path: &Path) -> Result<(GctfDocument, Pa
         .with_context(|| format!("Failed to read file: {}", file_path.display()))?;
     let read_ms = read_start.elapsed().as_secs_f64() * 1000.0;
 
-    let source_lines: Vec<&str> = source.lines().collect();
-
     let parse_sections_start = Instant::now();
-    let (sections, section_headers) = parse_sections(&source_lines)?;
+    let (sections, section_headers) = parse_sections_from_str(&source)?;
     let parse_sections_ms = parse_sections_start.elapsed().as_secs_f64() * 1000.0;
 
     // Split into documents using implicit boundaries
-    let documents = split_into_documents(&sections);
+    let documents = split_sections_by_boundary(&sections);
 
     let build_start = Instant::now();
     // Build chain — return head document
@@ -209,7 +131,7 @@ pub fn parse_gctf_with_diagnostics(file_path: &Path) -> Result<(GctfDocument, Pa
     let diagnostics = ParseDiagnostics {
         file_path: file_path.display().to_string(),
         bytes: source.len(),
-        total_lines: source_lines.len(),
+        total_lines: source.lines().count(),
         section_headers,
         section_counts,
         timings: ParseTimings {
@@ -223,66 +145,55 @@ pub fn parse_gctf_with_diagnostics(file_path: &Path) -> Result<(GctfDocument, Pa
     Ok((document, diagnostics))
 }
 
-/// Parse all sections from lines
-fn parse_sections(lines: &[&str]) -> Result<(Vec<Section>, usize)> {
+fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
+    let tokens = tokenize_gctf(source);
     let mut sections = Vec::new();
     let mut section_headers = 0;
     let mut current_section: Option<(SectionType, usize, Vec<String>, InlineOptions)> = None;
-    let header_regex = &*SECTION_HEADER_REGEX;
 
-    for (line_idx, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
+    for token in &tokens {
+        match &token.kind {
+            GctfTokenKind::SectionHeader { name, raw_options } => {
+                if let Some((section_type, start_line, content, options)) = current_section.take() {
+                    let section = content_parser::build_section(
+                        section_type,
+                        start_line,
+                        token.line,
+                        &content,
+                        options,
+                    )?;
+                    sections.push(section);
+                }
 
-        // Check for section header
-        if let Some(captures) = header_regex.captures(trimmed) {
-            // Save previous section
-            if let Some((section_type, start_line, content, options)) = current_section.take() {
-                let section = content_parser::build_section(
-                    section_type,
-                    start_line,
-                    line_idx,
-                    &content,
-                    options,
-                )?;
-                sections.push(section);
-            }
+                section_headers += 1;
 
-            section_headers += 1;
-
-            // Start new section
-            let section_name = captures.get(1).unwrap().as_str();
-            let inline_options_str = captures.get(2).map(|m| m.as_str());
-
-            if let Some(section_type) = SectionType::from_keyword(section_name) {
-                let inline_options = if section_type.supports_inline_options() {
-                    if let Some(opts_str) = inline_options_str {
-                        content_parser::parse_inline_options(opts_str)?
-                    } else {
-                        InlineOptions::default()
-                    }
+                if let Some(section_type) = SectionType::from_keyword(name) {
+                    let inline_options =
+                        if section_type.supports_inline_options() && !raw_options.is_empty() {
+                            content_parser::parse_inline_options(raw_options)?
+                        } else {
+                            InlineOptions::default()
+                        };
+                    current_section = Some((section_type, token.line, Vec::new(), inline_options));
                 } else {
-                    InlineOptions::default()
-                };
-
-                // Store with inline options flag
-                // We'll parse content after section header
-                current_section = Some((section_type, line_idx, Vec::new(), inline_options));
-            } else {
-                return Err(anyhow::anyhow!("Unknown section type: {}", section_name));
+                    return Err(anyhow::anyhow!("Unknown section type: {}", name));
+                }
             }
-
-            continue;
-        }
-
-        // Add content to current section
-        if let Some((_, _, ref mut content, _)) = current_section {
-            content.push(line.to_string());
+            GctfTokenKind::Comment(text) | GctfTokenKind::Content(text) => {
+                if let Some((_, _, ref mut content, _)) = current_section {
+                    content.push(text.clone());
+                }
+            }
+            GctfTokenKind::Blank => {
+                if let Some((_, _, ref mut content, _)) = current_section {
+                    content.push(String::new());
+                }
+            }
         }
     }
 
-    // Save last section
     if let Some((section_type, start_line, content, options)) = current_section {
-        let end_line = lines.len();
+        let end_line = source.lines().count();
         let section =
             content_parser::build_section(section_type, start_line, end_line, &content, options)?;
         sections.push(section);
@@ -297,26 +208,203 @@ mod tests {
 
     #[test]
     fn test_parse_sections_basic() {
-        let lines = vec![
-            "--- ENDPOINT ---",
-            "test.Service/Method",
-            "",
-            "--- REQUEST ---",
-            "{}",
-            "",
-            "--- RESPONSE ---",
-            "{}",
-        ];
-        let (sections, count) = parse_sections(&lines).unwrap();
+        let input = "\
+--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+";
+        let (sections, count) = parse_sections_from_str(input).unwrap();
         assert_eq!(count, 3);
         assert_eq!(sections.len(), 3);
     }
 
     #[test]
-    fn test_section_header_regex() {
-        assert!(SECTION_HEADER_REGEX.is_match("--- ENDPOINT ---"));
-        assert!(SECTION_HEADER_REGEX.is_match("--- REQUEST ---"));
-        assert!(SECTION_HEADER_REGEX.is_match("--- RESPONSE partial=true ---"));
-        assert!(!SECTION_HEADER_REGEX.is_match("not a section header"));
+    fn test_section_header_tokenizer() {
+        let input = "\
+--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE partial=true ---
+{}
+";
+        let (sections, count) = parse_sections_from_str(input).unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(sections.len(), 3);
+
+        let resp = sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Response)
+            .unwrap();
+        assert!(resp.inline_options.partial);
+    }
+
+    #[test]
+    fn test_parse_multi_document() {
+        let input = "\
+--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+
+--- ENDPOINT ---
+test.Service/Method2
+
+--- REQUEST ---
+{\"a\": 1}
+
+--- RESPONSE ---
+{\"b\": 2}
+";
+        let doc = parse_gctf_from_str(input, "test.gctf").unwrap();
+        assert_eq!(doc.document_count(), 2);
+
+        let first_endpoint = doc.get_endpoint().unwrap();
+        assert_eq!(first_endpoint, "test.Service/Method");
+
+        let second = doc.get_document(1).unwrap();
+        assert_eq!(second.get_endpoint().unwrap(), "test.Service/Method2");
+    }
+
+    #[test]
+    fn test_parse_empty_content() {
+        let doc = parse_gctf_from_str("", "test.gctf").unwrap();
+        assert!(doc.sections.is_empty());
+    }
+
+    #[test]
+    fn test_parse_all_section_types() {
+        let input = "\
+--- ADDRESS ---
+localhost:50051
+
+--- ENDPOINT ---
+test.Service/Method
+
+--- TLS ---
+ca_cert: /path/ca.pem
+
+--- PROTO ---
+files: service.proto
+
+--- OPTIONS ---
+timeout: 10
+
+--- REQUEST_HEADERS ---
+Authorization: Bearer token
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+
+--- ASSERTS ---
+.x == 1
+
+--- EXTRACT ---
+total = .response.total
+";
+        let (sections, count) = parse_sections_from_str(input).unwrap();
+        assert_eq!(count, 10);
+
+        let types: Vec<SectionType> = sections.iter().map(|s| s.section_type).collect();
+        assert_eq!(types[0], SectionType::Address);
+        assert_eq!(types[1], SectionType::Endpoint);
+        assert_eq!(types[2], SectionType::Tls);
+        assert_eq!(types[3], SectionType::Proto);
+        assert_eq!(types[4], SectionType::Options);
+        assert_eq!(types[5], SectionType::RequestHeaders);
+        assert_eq!(types[6], SectionType::Request);
+        assert_eq!(types[7], SectionType::Response);
+        assert_eq!(types[8], SectionType::Asserts);
+        assert_eq!(types[9], SectionType::Extract);
+    }
+
+    #[test]
+    fn test_parse_unknown_section_type() {
+        let input = "--- UNKNOWN ---\nhello\n";
+        let result = parse_sections_from_str(input);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unknown section type")
+        );
+    }
+
+    #[test]
+    fn test_parse_preserves_comments_in_content() {
+        let input = "\
+--- RESPONSE ---
+// This is a comment
+{\"status\": \"OK\"}
+# Another comment
+";
+        let (sections, _) = parse_sections_from_str(input).unwrap();
+        let resp = sections
+            .into_iter()
+            .find(|s| s.section_type == SectionType::Response)
+            .unwrap();
+        assert!(resp.raw_content.contains("// This is a comment"));
+        assert!(resp.raw_content.contains("# Another comment"));
+    }
+
+    #[test]
+    fn test_parse_with_diagnostics_file_not_found() {
+        let result = parse_gctf_with_diagnostics(Path::new("/nonexistent/file.gctf"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_from_str_section_counts() {
+        let input = "\
+--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- ASSERTS ---
+.x == 1
+";
+        let doc = parse_gctf_from_str(input, "test.gctf").unwrap();
+        assert_eq!(doc.sections.len(), 3);
+        assert!(doc.get_endpoint().is_some());
+        let asserts = doc.get_assertions();
+        assert_eq!(asserts.len(), 1);
+    }
+
+    #[test]
+    fn test_extract_doc_source() {
+        let source = "line0\nline1\nline2\nline3\nline4";
+        let sections = vec![Section {
+            section_type: SectionType::Endpoint,
+            content: SectionContent::Single("line1".into()),
+            inline_options: InlineOptions::default(),
+            raw_content: "line1".into(),
+            start_line: 1,
+            end_line: 2,
+        }];
+        let result = extract_doc_source(&sections, source);
+        assert_eq!(result, "line1");
+    }
+
+    #[test]
+    fn test_extract_doc_source_empty() {
+        let result = extract_doc_source(&[], "anything");
+        assert!(result.is_empty());
     }
 }

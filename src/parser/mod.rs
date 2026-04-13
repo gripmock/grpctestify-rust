@@ -1,11 +1,13 @@
 //! # Parser Module
 //!
+//! Pipeline: `text → tokenizer → parser → AST → semantic analysis → execution`
+//!
 //! Parses `.gctf` test files into an AST with support for:
 //! - JSON5 with comments, trailing commas, unquoted keys
 //! - Multi-document files separated by `--- NEW ---`
 //! - Error recovery parsing
 //! - Ternary expressions in EXTRACT sections
-//! - Full assertion AST with tokenization
+//! - Full assertion AST with tokenization and span tracking
 
 pub mod assertion_ast;
 pub(crate) mod assertions;
@@ -14,10 +16,12 @@ pub mod content_parser;
 pub mod core;
 pub mod document_splitter;
 pub mod error_recovery;
+pub mod gctf_tokenizer;
 pub mod json_mod;
 pub mod json_stream_parser;
 pub mod ternary;
 pub mod ternary_ast;
+pub mod tokenizer;
 pub mod validator;
 
 pub use assertion_ast::{
@@ -25,6 +29,15 @@ pub use assertion_ast::{
     remove_redundant_parens,
 };
 pub use content_parser::{build_section, parse_inline_options, parse_section_content};
+pub use tokenizer::{
+    Span, Token, TokenKind, collect_identifiers, collect_operators, collect_plugin_calls,
+    tokenize_assertion,
+};
+
+pub use gctf_tokenizer::{
+    GctfToken, GctfTokenKind, tokenize_extract_line, tokenize_gctf, tokenize_inline_options,
+    tokenize_kv_line,
+};
 
 pub use document_splitter::split_sections_by_boundary;
 

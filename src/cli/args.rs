@@ -57,14 +57,6 @@ pub struct Cli {
     #[arg(short = 'c', long, global = true, default_value_t = false)]
     pub no_color: bool,
 
-    /// Show current configuration and exit
-    #[arg(long, default_value_t = false)]
-    pub config: bool,
-
-    /// Create default configuration file
-    #[arg(long, value_name = "CONFIG_FILE")]
-    pub init_config: Option<PathBuf>,
-
     /// Install shell completion (bash, zsh, fish, elvish, powershell)
     #[arg(long, value_name = "SHELL_TYPE", value_parser = ["bash", "zsh", "fish", "elvish", "powershell"])]
     pub completion: Option<String>,
