@@ -42,10 +42,8 @@ fn file_matches_meta(path: &Path, tags_include: &[String], skip_tags: &[String])
         }
     }
 
-    if !skip_tags.is_empty() {
-        if file_tags.iter().any(|t| skip_tags.iter().any(|e| t == e)) {
-            return false;
-        }
+    if !skip_tags.is_empty() && file_tags.iter().any(|t| skip_tags.iter().any(|e| t == e)) {
+        return false;
     }
 
     true

@@ -46,9 +46,9 @@ pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
     );
 
     let channel = if let Some(tls_config) = &config.tls_config {
-        create_tls_channel(config, tls_config, user_agent).await?
+        create_tls_channel(config, tls_config).await?
     } else {
-        create_plaintext_channel(config, user_agent).await?
+        create_plaintext_channel(config).await?
     };
 
     {
@@ -59,11 +59,7 @@ pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
     Ok(channel)
 }
 
-async fn create_tls_channel(
-    config: &GrpcClientConfig,
-    tls_config: &TlsConfig,
-    user_agent: String,
-) -> Result<Channel> {
+async fn create_tls_channel(config: &GrpcClientConfig, tls_config: &TlsConfig) -> Result<Channel> {
     let mut tls = ClientTlsConfig::new();
 
     if let Some(domain) = &tls_config.server_name {
@@ -98,7 +94,7 @@ async fn create_tls_channel(
         config.address.clone()
     };
 
-    let endpoint = build_endpoint(addr, config.timeout_seconds, &user_agent)?;
+    let endpoint = build_endpoint(addr, config.timeout_seconds)?;
 
     Ok(endpoint
         .tls_config(tls)
@@ -106,32 +102,22 @@ async fn create_tls_channel(
         .connect_lazy())
 }
 
-async fn create_plaintext_channel(
-    config: &GrpcClientConfig,
-    user_agent: String,
-) -> Result<Channel> {
+async fn create_plaintext_channel(config: &GrpcClientConfig) -> Result<Channel> {
     let addr = if !config.address.contains("://") {
         format!("http://{}", config.address)
     } else {
         config.address.clone()
     };
 
-    let endpoint = build_endpoint(addr, config.timeout_seconds, &user_agent)?;
+    let endpoint = build_endpoint(addr, config.timeout_seconds)?;
 
     Ok(endpoint.connect_lazy())
 }
 
-/// Build a tonic endpoint with common settings (timeout, user-agent).
-fn build_endpoint(
-    addr: String,
-    timeout_secs: u64,
-    user_agent: &str,
-) -> Result<tonic::transport::Endpoint> {
-    Channel::from_shared(addr)
+fn build_endpoint(addr: String, timeout_secs: u64) -> Result<tonic::transport::Endpoint> {
+    Ok(Channel::from_shared(addr)
         .context("Invalid address format")?
-        .timeout(Duration::from_secs(timeout_secs))
-        .user_agent(user_agent)
-        .context("Invalid user-agent value")
+        .timeout(Duration::from_secs(timeout_secs)))
 }
 
 fn user_agent_value() -> String {
@@ -139,10 +125,12 @@ fn user_agent_value() -> String {
 }
 
 fn resolve_user_agent(custom_metadata: Option<&HashMap<String, String>>) -> String {
-    if let Some(metadata) = custom_metadata
-        && let Some(ua) = metadata.get("user-agent")
-    {
-        return ua.clone();
+    if let Some(metadata) = custom_metadata {
+        for (k, v) in metadata {
+            if k.eq_ignore_ascii_case("user-agent") {
+                return v.clone();
+            }
+        }
     }
     user_agent_value()
 }
@@ -182,4 +170,57 @@ pub fn build_metadata(config: &GrpcClientConfig) -> tonic::metadata::MetadataMap
     insert_user_agent(&mut metadata, &user_agent);
     insert_custom_metadata(&mut metadata, config.metadata.as_ref());
     metadata
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::grpc::tls::CompressionMode;
+
+    fn base_config(metadata: Option<HashMap<String, String>>) -> GrpcClientConfig {
+        GrpcClientConfig {
+            address: "localhost:50051".to_string(),
+            timeout_seconds: 30,
+            tls_config: None,
+            proto_config: None,
+            metadata,
+            target_service: None,
+            compression: CompressionMode::None,
+        }
+    }
+
+    #[test]
+    fn build_metadata_uses_default_user_agent() {
+        let config = base_config(None);
+        let metadata = build_metadata(&config);
+        let ua = metadata
+            .get("user-agent")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        assert_eq!(ua, user_agent_value());
+    }
+
+    #[test]
+    fn build_metadata_uses_custom_user_agent_case_insensitive() {
+        let mut map = HashMap::new();
+        map.insert("User-Agent".to_string(), "custom-client/1.0".to_string());
+        map.insert("x-request-id".to_string(), "abc-123".to_string());
+
+        let config = base_config(Some(map));
+        let metadata = build_metadata(&config);
+        let ua = metadata
+            .get("user-agent")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        assert_eq!(ua, "custom-client/1.0");
+        assert_eq!(
+            metadata
+                .get("x-request-id")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or(""),
+            "abc-123"
+        );
+    }
 }

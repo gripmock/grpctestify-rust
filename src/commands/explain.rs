@@ -379,14 +379,13 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
         }
     }
 
-    // Print actual assertion expressions
     for section in &doc.sections {
-        if section.section_type == SectionType::Asserts {
-            if let SectionContent::Assertions(assertions) = &section.content {
-                for (i, a) in assertions.iter().enumerate() {
-                    let rewritten = optimizer::rewrite_assertion_expression_fixed_point(a);
-                    println!("    {}. {}", i + 1, rewritten);
-                }
+        if section.section_type == SectionType::Asserts
+            && let SectionContent::Assertions(assertions) = &section.content
+        {
+            for (i, a) in assertions.iter().enumerate() {
+                let rewritten = optimizer::rewrite_assertion_expression_fixed_point(a);
+                println!("    {}. {}", i + 1, rewritten);
             }
         }
     }
@@ -400,28 +399,28 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
 
     // META section (if present)
     for section in &doc.sections {
-        if section.section_type == SectionType::Meta {
-            if let SectionContent::Meta(m) = &section.content {
-                println!("META");
-                println!("----");
-                if let Some(name) = &m.name {
-                    println!("  name: {}", name);
-                }
-                if let Some(summary) = &m.summary {
-                    println!("  summary: {}", summary);
-                }
-                if !m.tags.is_empty() {
-                    println!("  tags: {:?}", m.tags);
-                }
-                if let Some(owner) = &m.owner {
-                    println!("  owner: {}", owner);
-                }
-                if !m.links.is_empty() {
-                    println!("  links: {:?}", m.links);
-                }
-                println!();
-                break;
+        if section.section_type == SectionType::Meta
+            && let SectionContent::Meta(m) = &section.content
+        {
+            println!("META");
+            println!("----");
+            if let Some(name) = &m.name {
+                println!("  name: {}", name);
             }
+            if let Some(summary) = &m.summary {
+                println!("  summary: {}", summary);
+            }
+            if !m.tags.is_empty() {
+                println!("  tags: {:?}", m.tags);
+            }
+            if let Some(owner) = &m.owner {
+                println!("  owner: {}", owner);
+            }
+            if !m.links.is_empty() {
+                println!("  links: {:?}", m.links);
+            }
+            println!();
+            break;
         }
     }
 

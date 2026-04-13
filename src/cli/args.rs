@@ -65,27 +65,20 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Run tests (default)
-    Run(RunArgs),
-
-    /// Explain test execution workflow
-    Explain(ExplainArgs),
-
-    /// Inspect .gctf file structure (AST and Workflow)
-    Inspect(InspectArgs),
-
-    /// List test files (for IDE test discovery)
-    List(ListArgs),
-
-    /// Reflect on server metadata (uses gRPC Server Reflection Protocol)
+    Run(Box<RunArgs>),
+    /// Reflect gRPC service and generate test templates
     Reflect(ReflectArgs),
-
-    /// Format .gctf files
+    /// Format files
     Fmt(FmtArgs),
-
-    /// Check .gctf file syntax and structure
+    /// Validate files
     Check(CheckArgs),
-
-    /// Start LSP server for IDE integration
+    /// Show test information
+    Inspect(InspectArgs),
+    /// Explain test results
+    Explain(ExplainArgs),
+    /// List available plugins
+    List(ListArgs),
+    /// LSP server
     Lsp(LspArgs),
 }
 

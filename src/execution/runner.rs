@@ -518,6 +518,18 @@ fn parse_bool_flag(value: &str) -> bool {
     )
 }
 
+fn parse_compression_option(options: &HashMap<String, String>) -> CompressionMode {
+    options
+        .get("compression")
+        .map(|v| v.trim().to_ascii_lowercase())
+        .and_then(|v| match v.as_str() {
+            "gzip" => Some(CompressionMode::Gzip),
+            "none" | "" => Some(CompressionMode::None),
+            _ => None,
+        })
+        .unwrap_or_else(CompressionMode::from_env)
+}
+
 fn tls_env_defaults() -> HashMap<String, String> {
     let mut defaults = HashMap::new();
 
@@ -663,6 +675,8 @@ impl TestRunner {
             },
             None => self.timeout_seconds,
         };
+
+        let compression = parse_compression_option(&options);
 
         // Validate file path in update mode
         if effective_write_mode {
@@ -827,7 +841,7 @@ impl TestRunner {
             proto_config,
             metadata: document.get_request_headers(),
             target_service: Some(full_service.clone()),
-            compression: CompressionMode::from_env(),
+            compression,
         };
 
         let client = GrpcClient::new(client_config).await?;
@@ -2002,6 +2016,38 @@ mod tests {
         assert!(!parse_bool_flag("0"));
         assert!(!parse_bool_flag("off"));
         assert!(!parse_bool_flag(""));
+    }
+
+    #[test]
+    fn test_parse_compression_option_from_options() {
+        let mut options = HashMap::new();
+        options.insert("compression".to_string(), "gzip".to_string());
+
+        assert_eq!(parse_compression_option(&options), CompressionMode::Gzip);
+    }
+
+    #[test]
+    fn test_parse_compression_option_none_from_options() {
+        let mut options = HashMap::new();
+        options.insert("compression".to_string(), "none".to_string());
+
+        assert_eq!(parse_compression_option(&options), CompressionMode::None);
+    }
+
+    #[test]
+    fn test_parse_compression_option_fallback_to_env() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::set_var(crate::config::ENV_GRPCTESTIFY_COMPRESSION, "gzip");
+        }
+
+        let mut options = HashMap::new();
+        options.insert("compression".to_string(), "invalid".to_string());
+        assert_eq!(parse_compression_option(&options), CompressionMode::Gzip);
+
+        unsafe {
+            std::env::remove_var(crate::config::ENV_GRPCTESTIFY_COMPRESSION);
+        }
     }
 
     #[test]
