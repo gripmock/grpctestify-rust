@@ -144,16 +144,16 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
         // Print META once at file level (before documents)
         if total_docs > 1 {
             for section in &doc.sections {
-                if section.section_type == SectionType::Meta {
-                    if let SectionContent::Meta(m) = &section.content {
-                        println!("META");
-                        println!("----");
-                        if !m.tags.is_empty() {
-                            println!("  tags: {:?}", m.tags);
-                        }
-                        println!();
-                        break;
+                if section.section_type == SectionType::Meta
+                    && let SectionContent::Meta(m) = &section.content
+                {
+                    println!("META");
+                    println!("----");
+                    if !m.tags.is_empty() {
+                        println!("  tags: {:?}", m.tags);
                     }
+                    println!();
+                    break;
                 }
             }
         }

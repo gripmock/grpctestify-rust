@@ -390,14 +390,14 @@ fn validate_structure(document: &GctfDocument, errors: &mut Vec<ValidationError>
 
     // Check META is first section (if present)
     if meta_count == 1 {
-        if let Some(first_section) = document.sections.first() {
-            if first_section.section_type != SectionType::Meta {
-                errors.push(ValidationError {
-                    message: "META section must be the first section in the file".to_string(),
-                    line: meta_first_line,
-                    severity: ErrorSeverity::Error,
-                });
-            }
+        if let Some(first_section) = document.sections.first()
+            && first_section.section_type != SectionType::Meta
+        {
+            errors.push(ValidationError {
+                message: "META section must be the first section in the file".to_string(),
+                line: meta_first_line,
+                severity: ErrorSeverity::Error,
+            });
         }
     }
 
