@@ -98,11 +98,7 @@ async fn create_tls_channel(
         config.address.clone()
     };
 
-    let endpoint = Channel::from_shared(addr)
-        .context("Invalid address format")?
-        .timeout(Duration::from_secs(config.timeout_seconds))
-        .user_agent(user_agent)
-        .context("Invalid user-agent value")?;
+    let endpoint = build_endpoint(addr, config.timeout_seconds, &user_agent)?;
 
     Ok(endpoint
         .tls_config(tls)
@@ -120,13 +116,22 @@ async fn create_plaintext_channel(
         config.address.clone()
     };
 
-    let endpoint = Channel::from_shared(addr)
-        .context("Invalid address format")?
-        .timeout(Duration::from_secs(config.timeout_seconds))
-        .user_agent(user_agent)
-        .context("Invalid user-agent value")?;
+    let endpoint = build_endpoint(addr, config.timeout_seconds, &user_agent)?;
 
     Ok(endpoint.connect_lazy())
+}
+
+/// Build a tonic endpoint with common settings (timeout, user-agent).
+fn build_endpoint(
+    addr: String,
+    timeout_secs: u64,
+    user_agent: &str,
+) -> Result<tonic::transport::Endpoint> {
+    Channel::from_shared(addr)
+        .context("Invalid address format")?
+        .timeout(Duration::from_secs(timeout_secs))
+        .user_agent(user_agent)
+        .context("Invalid user-agent value")
 }
 
 fn user_agent_value() -> String {

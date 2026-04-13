@@ -3,6 +3,7 @@
 // Refactored to use RequestHandler, ResponseHandler, AssertionHandler
 
 use super::super::parser::GctfDocument;
+use super::runner_helpers;
 use super::{AssertionHandler, RequestHandler, ResponseHandler};
 use crate::assert::{AssertionEngine, JsonComparator, get_json_diff};
 use crate::grpc::{CompressionMode, GrpcClient, GrpcClientConfig, ProtoConfig, TlsConfig};
@@ -21,7 +22,11 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::metadata::KeyAndValueRef;
+
+/// Buffer size for the request message channel.
+/// Controls back-pressure for client streaming: larger values allow more
+/// buffered requests but consume more memory.
+const REQUEST_CHANNEL_BUFFER: usize = 100;
 
 /// Execution plan for inspect workflow visualization
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -561,56 +566,7 @@ fn resolve_tls_path(value: &str, from_env: bool, document_path: &Path) -> String
 }
 
 impl TestRunner {
-    pub fn full_service_name(package: &str, service: &str) -> String {
-        if package.is_empty() {
-            service.to_string()
-        } else {
-            format!("{}.{}", package, service)
-        }
-    }
-
-    fn format_json_pretty(value: &Value) -> String {
-        serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
-    }
-
-    fn interpolate_variables(template: &str, variables: &HashMap<String, Value>) -> Option<String> {
-        let mut out = String::with_capacity(template.len());
-        let mut cursor = 0usize;
-        let mut changed = false;
-
-        while let Some(open_rel) = template[cursor..].find("{{") {
-            let open = cursor + open_rel;
-            out.push_str(&template[cursor..open]);
-
-            let after_open = open + 2;
-            let Some(close_rel) = template[after_open..].find("}}") else {
-                out.push_str(&template[open..]);
-                return changed.then_some(out);
-            };
-            let close = after_open + close_rel;
-
-            let key = template[after_open..close].trim();
-            if let Some(val) = variables.get(key) {
-                match val {
-                    Value::String(s) => out.push_str(s),
-                    _ => out.push_str(&val.to_string()),
-                }
-                changed = true;
-            } else {
-                out.push_str(&template[open..close + 2]);
-            }
-
-            cursor = close + 2;
-        }
-
-        if !changed {
-            return None;
-        }
-
-        out.push_str(&template[cursor..]);
-        Some(out)
-    }
-
+    /// Create expected values from a response section.
     pub fn expected_values_for_response_section(
         section: &crate::parser::ast::Section,
     ) -> Vec<Value> {
@@ -862,7 +818,7 @@ impl TestRunner {
             None
         };
 
-        let full_service = Self::full_service_name(&package, &service);
+        let full_service = runner_helpers::full_service_name(&package, &service);
 
         let client_config = GrpcClientConfig {
             address,
@@ -889,7 +845,7 @@ impl TestRunner {
             .map(|m| m.output().full_name().to_string());
 
         // Setup Streaming
-        let (tx, rx) = mpsc::channel::<Value>(100);
+        let (tx, rx) = mpsc::channel::<Value>(REQUEST_CHANNEL_BUFFER);
         let request_stream = ReceiverStream::new(rx);
         let mut tx = Some(tx);
 
@@ -954,6 +910,37 @@ impl TestRunner {
             None
         };
 
+        /// Awaits the gRPC call handle and extracts the response stream.
+        /// Eliminates duplication across Response and Asserts section handlers.
+        macro_rules! ensure_stream_ready {
+            () => {
+                if response_stream.is_none()
+                    && let Some(handle) = call_handle.take()
+                {
+                    match handle.await {
+                        Ok(Ok((h, stream))) => {
+                            if let Some(resp) = &mut captured_response {
+                                captured_headers = h.clone();
+                                resp.headers = h;
+                            } else {
+                                captured_headers = h;
+                            }
+                            response_stream = Some(stream);
+                        }
+                        Ok(Err(e)) => {
+                            failure_reasons.push(format!("Failed to start gRPC stream: {}", e));
+                            break;
+                        }
+                        Err(e) => {
+                            failure_reasons
+                                .push(format!("Failed to join gRPC stream startup task: {}", e));
+                            break;
+                        }
+                    }
+                }
+            };
+        }
+
         for (i, section) in sections.iter().enumerate() {
             if skip_next_section {
                 skip_next_section = false;
@@ -1008,32 +995,7 @@ impl TestRunner {
                         drop(tx.take());
                     }
 
-                    if response_stream.is_none()
-                        && let Some(handle) = call_handle.take()
-                    {
-                        match handle.await {
-                            Ok(Ok((h, stream))) => {
-                                if let Some(resp) = &mut captured_response {
-                                    captured_headers = h.clone();
-                                    resp.headers = h;
-                                } else {
-                                    captured_headers = h;
-                                }
-                                response_stream = Some(stream);
-                            }
-                            Ok(Err(e)) => {
-                                failure_reasons.push(format!("Failed to start gRPC stream: {}", e));
-                                break;
-                            }
-                            Err(e) => {
-                                failure_reasons.push(format!(
-                                    "Failed to join gRPC stream startup task: {}",
-                                    e
-                                ));
-                                break;
-                            }
-                        }
-                    }
+                    ensure_stream_ready!();
 
                     let mut received_messages_for_section: Vec<Value> = Vec::new();
                     let expected_values = Self::expected_values_for_response_section(section);
@@ -1060,29 +1022,11 @@ impl TestRunner {
                                             resp.messages.push(msg_for_state);
                                         }
 
-                                        let should_format_message =
-                                            tracing::enabled!(tracing::Level::DEBUG)
-                                                || effective_no_assert
-                                                || self.verbose;
-                                        let msg_pretty = should_format_message
-                                            .then(|| Self::format_json_pretty(&msg));
-
-                                        if let Some(pretty) = msg_pretty.as_deref()
-                                            && tracing::enabled!(tracing::Level::DEBUG)
-                                        {
-                                            tracing::debug!("Received Response:\n{}", pretty);
-                                        }
-
-                                        if effective_no_assert {
-                                            println!("--- RESPONSE (Raw) ---");
-                                            if let Some(pretty) = msg_pretty.as_deref() {
-                                                println!("{}", pretty);
-                                            }
-                                        } else if self.verbose
-                                            && let Some(pretty) = msg_pretty.as_deref()
-                                        {
-                                            println!("🔍 gRPC response received: '{}'", pretty);
-                                        }
+                                        Self::log_response_message(
+                                            &msg,
+                                            effective_no_assert,
+                                            self.verbose,
+                                        );
 
                                         if !effective_no_assert {
                                             let mut expected = expected_template.clone();
@@ -1103,35 +1047,13 @@ impl TestRunner {
                                             );
 
                                             if !diffs.is_empty() {
-                                                failure_reasons.push(format!(
-                                                    "Response mismatch at line {}:",
-                                                    section.start_line
-                                                ));
-                                                for diff in diffs {
-                                                    match diff {
-                                                        crate::assert::AssertionResult::Fail {
-                                                            message,
-                                                            expected,
-                                                            actual,
-                                                        } => {
-                                                            let mut msg =
-                                                                format!("  - {}", message);
-                                                            if let (Some(exp), Some(act)) =
-                                                                (expected, actual)
-                                                            {
-                                                                msg.push_str(&format!("\n      Expected: {}\n      Actual:   {}", exp, act));
-                                                            }
-                                                            failure_reasons.push(msg);
-                                                        }
-                                                        crate::assert::AssertionResult::Error(
-                                                            m,
-                                                        ) => failure_reasons
-                                                            .push(format!("  - Error: {}", m)),
-                                                        _ => {}
-                                                    }
-                                                }
-                                                failure_reasons
-                                                    .push(get_json_diff(&expected, &msg));
+                                                self.append_response_diffs(
+                                                    diffs,
+                                                    section.start_line,
+                                                    &expected,
+                                                    &msg,
+                                                    &mut failure_reasons,
+                                                );
                                             }
                                         }
                                     }
@@ -1233,32 +1155,7 @@ impl TestRunner {
                         drop(tx.take());
                     }
 
-                    if response_stream.is_none()
-                        && let Some(handle) = call_handle.take()
-                    {
-                        match handle.await {
-                            Ok(Ok((h, stream))) => {
-                                if let Some(resp) = &mut captured_response {
-                                    captured_headers = h.clone();
-                                    resp.headers = h;
-                                } else {
-                                    captured_headers = h;
-                                }
-                                response_stream = Some(stream);
-                            }
-                            Ok(Err(e)) => {
-                                failure_reasons.push(format!("Failed to start gRPC stream: {}", e));
-                                break;
-                            }
-                            Err(e) => {
-                                failure_reasons.push(format!(
-                                    "Failed to join gRPC stream startup task: {}",
-                                    e
-                                ));
-                                break;
-                            }
-                        }
-                    }
+                    ensure_stream_ready!();
 
                     // Standalone ASSERTS usually consumes a new message.
                     // If stream is unavailable but we already captured an ERROR,
@@ -1303,8 +1200,8 @@ impl TestRunner {
 
                             let should_format_message =
                                 tracing::enabled!(tracing::Level::DEBUG) || effective_no_assert;
-                            let msg_pretty =
-                                should_format_message.then(|| Self::format_json_pretty(&msg));
+                            let msg_pretty = should_format_message
+                                .then(|| runner_helpers::format_json_pretty(&msg));
 
                             if let Some(pretty) = msg_pretty.as_deref()
                                 && tracing::enabled!(tracing::Level::DEBUG)
@@ -1354,7 +1251,7 @@ impl TestRunner {
 
                             last_error_message = Some(status.message().to_string());
                             captured_trailers
-                                .extend(Self::metadata_map_to_hashmap(status.metadata()));
+                                .extend(runner_helpers::metadata_map_to_hashmap(status.metadata()));
                             if !effective_no_assert {
                                 failure_reasons.push(format!(
                                      "Expected message for ASSERTS section at line {}, but received Error: {}",
@@ -1439,7 +1336,9 @@ impl TestRunner {
                                         {
                                             last_error_message = Some(status.message().to_string());
                                             captured_trailers.extend(
-                                                Self::metadata_map_to_hashmap(status.metadata()),
+                                                runner_helpers::metadata_map_to_hashmap(
+                                                    status.metadata(),
+                                                ),
                                             );
                                             let status_name = Self::grpc_code_name_from_numeric(
                                                 status.code() as i64,
@@ -1543,7 +1442,7 @@ impl TestRunner {
                             last_error_message = Some(status_message.to_string());
                             last_error_timing = error_scope_timing;
                             captured_trailers
-                                .extend(Self::metadata_map_to_hashmap(status.metadata()));
+                                .extend(runner_helpers::metadata_map_to_hashmap(status.metadata()));
                             let should_format_error = effective_no_assert || self.verbose;
                             let got = should_format_error.then(|| {
                                 let status_name =
@@ -1644,7 +1543,7 @@ impl TestRunner {
                                 // If we got a message instead of error in no_assert mode, print it
                                 if let crate::grpc::client::StreamItem::Message(msg) = msg_item {
                                     println!("--- RESPONSE (Raw) ---");
-                                    println!("{}", Self::format_json_pretty(&msg));
+                                    println!("{}", runner_helpers::format_json_pretty(&msg));
                                 }
                             }
                         }
@@ -1739,30 +1638,8 @@ impl TestRunner {
         &self,
         document: &GctfDocument,
         response: &crate::grpc::GrpcResponse,
-        _timeout_ms: u64,
     ) -> TestExecutionResult {
-        // Delegate to ResponseHandler
         self.response_handler.validate_document(document, response)
-    }
-
-    fn metadata_map_to_hashmap(metadata: &tonic::metadata::MetadataMap) -> HashMap<String, String> {
-        let mut out = HashMap::new();
-        for entry in metadata.iter() {
-            match entry {
-                KeyAndValueRef::Ascii(key, value) => {
-                    if let Ok(v) = value.to_str() {
-                        out.insert(key.to_string(), v.to_string());
-                    }
-                }
-                KeyAndValueRef::Binary(key, value) => {
-                    out.insert(
-                        key.to_string(),
-                        String::from_utf8_lossy(value.as_encoded_bytes()).into_owned(),
-                    );
-                }
-            }
-        }
-        out
     }
 
     fn substitute_variables(&self, value: &mut Value, variables: &HashMap<String, Value>) {
@@ -1785,7 +1662,7 @@ impl TestRunner {
                 }
 
                 // String interpolation "prefix {{ var }} suffix"
-                if let Some(result) = Self::interpolate_variables(s, variables) {
+                if let Some(result) = runner_helpers::interpolate_variables(s, variables) {
                     *value = Value::String(result);
                 }
             }
@@ -1841,6 +1718,56 @@ impl TestRunner {
         }
     }
 
+    /// Format JSON comparison diffs and append to failure_reasons.
+    fn append_response_diffs(
+        &self,
+        diffs: Vec<crate::assert::AssertionResult>,
+        section_line: usize,
+        expected: &Value,
+        actual: &Value,
+        failure_reasons: &mut Vec<String>,
+    ) {
+        failure_reasons.push(format!("Response mismatch at line {}:", section_line));
+        for diff in diffs {
+            match diff {
+                crate::assert::AssertionResult::Fail {
+                    message,
+                    expected: exp,
+                    actual: act,
+                } => {
+                    let mut msg = format!("  - {}", message);
+                    if let (Some(e), Some(a)) = (exp, act) {
+                        msg.push_str(&format!("\n      Expected: {}\n      Actual:   {}", e, a));
+                    }
+                    failure_reasons.push(msg);
+                }
+                crate::assert::AssertionResult::Error(m) => {
+                    failure_reasons.push(format!("  - Error: {}", m));
+                }
+                _ => {}
+            }
+        }
+        failure_reasons.push(get_json_diff(expected, actual));
+    }
+
+    /// Log a response message for debug/verbose/raw modes.
+    fn log_response_message(msg: &Value, effective_no_assert: bool, verbose: bool) {
+        let should_format =
+            tracing::enabled!(tracing::Level::DEBUG) || effective_no_assert || verbose;
+        if !should_format {
+            return;
+        }
+        let pretty = runner_helpers::format_json_pretty(msg);
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            tracing::debug!("Received Response:\n{}", pretty);
+        }
+        if effective_no_assert {
+            println!("--- RESPONSE (Raw) ---\n{}", pretty);
+        } else if verbose {
+            println!("🔍 gRPC response received: '{}'", pretty);
+        }
+    }
+
     /// Print dry-run preview of test execution
     fn print_dry_run_preview(
         &self,
@@ -1856,7 +1783,7 @@ impl TestRunner {
         println!();
         println!("📍 Target:");
         println!("   Address: {}", address);
-        let full_service = Self::full_service_name(package, service);
+        let full_service = runner_helpers::full_service_name(package, service);
         println!("   Endpoint: {} / {}", full_service, method);
         println!();
 
@@ -1897,7 +1824,7 @@ impl TestRunner {
                         has_request = true;
                     }
                     if let SectionContent::Json(json) = &section.content {
-                        let json_str = Self::format_json_pretty(json);
+                        let json_str = runner_helpers::format_json_pretty(json);
                         println!("   ➤ REQUEST:");
                         println!("     {}", json_str.replace('\n', "\n     "));
                     }
@@ -1910,7 +1837,7 @@ impl TestRunner {
                     };
                     match &section.content {
                         SectionContent::Json(json) => {
-                            let json_str = Self::format_json_pretty(json);
+                            let json_str = runner_helpers::format_json_pretty(json);
                             println!(
                                 "   ↤ RESPONSE (Line {}):{}",
                                 section.start_line, with_asserts
@@ -1925,7 +1852,7 @@ impl TestRunner {
                                 with_asserts
                             );
                             for value in values {
-                                let json_str = Self::format_json_pretty(value);
+                                let json_str = runner_helpers::format_json_pretty(value);
                                 println!("     {}", json_str.replace('\n', "\n     "));
                             }
                         }
@@ -1951,7 +1878,7 @@ impl TestRunner {
                         has_error = true;
                     }
                     if let SectionContent::Json(json) = &section.content {
-                        let json_str = Self::format_json_pretty(json);
+                        let json_str = runner_helpers::format_json_pretty(json);
                         println!("   {}", json_str);
                     }
                 }
@@ -2230,10 +2157,10 @@ mod tests {
     #[test]
     fn test_full_service_name() {
         assert_eq!(
-            TestRunner::full_service_name("package", "Service"),
+            runner_helpers::full_service_name("package", "Service"),
             "package.Service"
         );
-        assert_eq!(TestRunner::full_service_name("", "Service"), "Service");
+        assert_eq!(runner_helpers::full_service_name("", "Service"), "Service");
     }
 
     #[test]
@@ -2336,7 +2263,7 @@ mod tests {
         metadata.insert("code", "EXTERNAL_SERVICE_ERROR_CODE".parse().unwrap());
         metadata.insert("message", "External service error message".parse().unwrap());
 
-        let trailers = TestRunner::metadata_map_to_hashmap(&metadata);
+        let trailers = runner_helpers::metadata_map_to_hashmap(&metadata);
         assert_eq!(
             trailers.get("code"),
             Some(&"EXTERNAL_SERVICE_ERROR_CODE".to_string())

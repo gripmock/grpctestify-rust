@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::assert::engine::AssertionResult;
 use crate::plugins::{
-    Plugin, PluginContext, PluginPurity, PluginResult, PluginReturnKind, PluginSignature,
+    ArgTypeInfo, Plugin, PluginContext, PluginPurity, PluginResult, PluginSignature, TypeInfo,
 };
 
 pub struct LenPlugin;
@@ -14,12 +14,17 @@ impl Plugin for LenPlugin {
     }
 
     fn description(&self) -> &str {
-        "Returns the length of a string or array"
+        "Returns the length of a string or array as a non-negative integer"
     }
 
     fn signature(&self) -> PluginSignature {
         PluginSignature {
-            return_kind: PluginReturnKind::Number,
+            return_type: TypeInfo::UInt,
+            arg_types: &[ArgTypeInfo {
+                expected: TypeInfo::Any,
+                required: true,
+                default: None,
+            }],
             purity: PluginPurity::Pure,
             deterministic: true,
             idempotent: true,

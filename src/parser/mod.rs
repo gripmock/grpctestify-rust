@@ -1,14 +1,32 @@
-// .gctf file parser with AST (Abstract Syntax Tree)
-// This module provides robust parsing of .gctf files into an AST
+//! # Parser Module
+//!
+//! Parses `.gctf` test files into an AST with support for:
+//! - JSON5 with comments, trailing commas, unquoted keys
+//! - Multi-document files separated by `--- NEW ---`
+//! - Error recovery parsing
+//! - Ternary expressions in EXTRACT sections
+//! - Full assertion AST with tokenization
 
+pub mod assertion_ast;
 pub(crate) mod assertions;
 pub mod ast;
+pub mod content_parser;
 pub mod core;
+pub mod document_splitter;
 pub mod error_recovery;
 pub mod json_mod;
+pub mod json_stream_parser;
 pub mod ternary;
 pub mod ternary_ast;
 pub mod validator;
+
+pub use assertion_ast::{
+    AssertionExpr, BinaryOp, Expr, Literal, assertion_to_string, parse_assertion,
+    remove_redundant_parens,
+};
+pub use content_parser::{build_section, parse_inline_options, parse_section_content};
+
+pub use document_splitter::split_sections_by_boundary;
 
 pub use ast::{DocumentChainIter, GctfDocument};
 pub use core::{ParseDiagnostics, parse_gctf, parse_gctf_from_str, parse_gctf_with_diagnostics};

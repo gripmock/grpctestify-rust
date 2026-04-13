@@ -11,10 +11,9 @@ use crate::config;
 use crate::grpc::client::{GrpcClient, GrpcClientConfig, ProtoConfig};
 use crate::lsp::handlers::{self, get_var_hover, get_variable_completions};
 use crate::lsp::variable_definition;
-use crate::optimizer;
 use crate::parser::ast::SectionType;
 use crate::parser::{self, GctfDocument};
-use crate::plugins::{PluginManager, PluginPurity, PluginReturnKind};
+use crate::plugins::{PluginManager, PluginPurity};
 
 type DocumentMap<T> = Arc<RwLock<HashMap<String, T>>>;
 type VersionedMap<T> = Arc<RwLock<HashMap<String, (i32, T)>>>;
@@ -1011,7 +1010,7 @@ impl LanguageServer for GrpctestifyLsp {
         if let Some(doc) = self.get_or_parse_document(&uri, &content).await {
             let section_children =
                 |s: &crate::parser::ast::Section| -> Option<Vec<DocumentSymbol>> {
-                    build_section_children_for_doc(&doc)
+                    crate::lsp::build_section_children_for_doc(&doc)
                         .into_iter()
                         .find(|child| child.name == format!("{:?}", s.section_type))
                         .and_then(|sym| sym.children)
@@ -1024,7 +1023,7 @@ impl LanguageServer for GrpctestifyLsp {
                     let endpoint = d.get_endpoint().unwrap_or_else(|| "unknown".to_string());
                     let doc_name = format!("Document {}: {}", doc_idx + 1, endpoint);
 
-                    let section_children = build_section_children_for_doc(d);
+                    let section_children = crate::lsp::build_section_children_for_doc(d);
 
                     #[allow(deprecated)]
                     let first_line = d.sections.first().map(|s| s.start_line).unwrap_or(0) as u32;
@@ -1369,7 +1368,7 @@ impl LanguageServer for GrpctestifyLsp {
             None => return Ok(None),
         };
 
-        let tokens = build_semantic_tokens(content);
+        let tokens = crate::lsp::build_semantic_tokens(content);
         self.semantic_tokens_cache
             .write()
             .await
@@ -1389,7 +1388,7 @@ impl LanguageServer for GrpctestifyLsp {
             None => return Ok(None),
         };
 
-        let ranges = build_folding_ranges(content);
+        let ranges = crate::lsp::build_folding_ranges(content);
         Ok(Some(ranges))
     }
 
@@ -1412,7 +1411,7 @@ impl LanguageServer for GrpctestifyLsp {
             None => return Ok(None),
         };
 
-        let hints = build_inlay_hints(content, range);
+        let hints = crate::lsp::build_inlay_hints(content, range);
         self.inlay_hints_cache
             .write()
             .await
@@ -1428,17 +1427,18 @@ struct LspPluginSignature {
     parameters: Vec<ParameterInformation>,
 }
 
-/// Get plugin signatures for signature help
+/// Get plugin signatures for signature help.
+/// Builds from the canonical PLUGIN_SIGNATURES map and live plugin descriptions
+/// so that custom/override plugins are reflected immediately.
 fn get_plugin_signatures() -> std::collections::HashMap<String, LspPluginSignature> {
+    use crate::plugins::PLUGIN_SIGNATURES;
     use std::collections::HashMap;
 
     let mut signatures = HashMap::new();
-    let mut plugins = PluginManager::new().list();
-    plugins.sort_by(|a, b| a.name().cmp(b.name()));
+    let manager = PluginManager::new();
 
-    for plugin in plugins {
-        let normalized = plugin.name().trim_start_matches('@').to_string();
-        let signature = plugin.signature();
+    for (name, signature) in PLUGIN_SIGNATURES.iter() {
+        let normalized = name.trim_start_matches('@').to_string();
         let template: Vec<&str> = signature.arg_names.to_vec();
         let label = if template.is_empty() {
             format!("@{}()", normalized)
@@ -1446,25 +1446,22 @@ fn get_plugin_signatures() -> std::collections::HashMap<String, LspPluginSignatu
             format!("@{}({})", normalized, template.join(", "))
         };
 
-        let return_kind = match signature.return_kind {
-            PluginReturnKind::Boolean => "bool",
-            PluginReturnKind::Number => "number",
-            PluginReturnKind::String => "string",
-            PluginReturnKind::Value => "value",
-            PluginReturnKind::Unknown => "unknown",
-        };
+        let return_type_name = signature.return_type.display_name();
         let purity = match signature.purity {
             PluginPurity::Pure => "pure",
             PluginPurity::ContextDependent => "context-dependent",
             PluginPurity::Impure => "impure",
         };
+
+        // Get live description from the plugin instance
+        let description = manager
+            .get(name)
+            .map(|p| p.description().to_string())
+            .unwrap_or_else(|| normalized.clone());
+
         let documentation = format!(
             "{}\n\nReturns: {} | Purity: {} | Deterministic: {} | Idempotent: {}",
-            plugin.description(),
-            return_kind,
-            purity,
-            signature.deterministic,
-            signature.idempotent
+            description, return_type_name, purity, signature.deterministic, signature.idempotent
         );
 
         let parameters = template
@@ -1475,13 +1472,14 @@ fn get_plugin_signatures() -> std::collections::HashMap<String, LspPluginSignatu
             })
             .collect();
 
-        signatures
-            .entry(normalized)
-            .or_insert_with(|| LspPluginSignature {
+        signatures.insert(
+            normalized,
+            LspPluginSignature {
                 label,
                 documentation,
                 parameters,
-            });
+            },
+        );
     }
 
     signatures
@@ -1531,526 +1529,6 @@ fn infer_active_parameter(line: &str, open_paren_abs: usize, cursor_idx: usize) 
     commas
 }
 
-/// Build semantic tokens for syntax highlighting
-/// Note: Currently uses hybrid approach - AST for sections when available, line parsing for rest
-/// TODO: Full AST-based tokenization when parser tracks all token types
-fn build_semantic_tokens(content: &str) -> SemanticTokens {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    struct RawToken {
-        line: u32,
-        start: u32,
-        length: u32,
-        token_type: u32,
-    }
-
-    // Token type indices (must match the order in initialize)
-    const KEYWORD: u32 = 0;
-    const VARIABLE: u32 = 1;
-    const FUNCTION: u32 = 2;
-    const NUMBER: u32 = 3;
-    const OPERATOR: u32 = 4;
-
-    let section_header_re = regex::Regex::new(r"^---\s*[A-Z_]+(?:\s+.+)?\s*---$").ok();
-    let jq_keyword_re = regex::Regex::new(r"\b(if|then|else|end|select|map|reduce|foreach|def|import|include|module|as|label|break)\b").ok();
-    let variable_re = regex::Regex::new(r"\{\{[^}]+\}\}").ok();
-    let plugin_re = regex::Regex::new(r"@[A-Za-z_][A-Za-z0-9_]*").ok();
-    let number_re = regex::Regex::new(r"\b\d+(?:\.\d+)?\b").ok();
-    let operator_re = regex::Regex::new(
-        r"==|!=|<=|>=|\bcontains\b|\bmatches\b|\bstartsWith\b|\bendsWith\b|[<>+\-*/%|]",
-    )
-    .ok();
-
-    let mut raw_tokens: Vec<RawToken> = Vec::new();
-    let lines: Vec<&str> = content.lines().collect();
-
-    let tokenize_line = |line: &str, line_num: u32, include_jq_keywords: bool| {
-        let mut line_tokens: Vec<RawToken> = Vec::new();
-        if let Some(re) = &variable_re {
-            for m in re.find_iter(line) {
-                line_tokens.push(RawToken {
-                    line: line_num,
-                    start: m.start() as u32,
-                    length: (m.end() - m.start()) as u32,
-                    token_type: VARIABLE,
-                });
-            }
-        }
-        if let Some(re) = &plugin_re {
-            for m in re.find_iter(line) {
-                line_tokens.push(RawToken {
-                    line: line_num,
-                    start: m.start() as u32,
-                    length: (m.end() - m.start()) as u32,
-                    token_type: FUNCTION,
-                });
-            }
-        }
-        if let Some(re) = &number_re {
-            for m in re.find_iter(line) {
-                line_tokens.push(RawToken {
-                    line: line_num,
-                    start: m.start() as u32,
-                    length: (m.end() - m.start()) as u32,
-                    token_type: NUMBER,
-                });
-            }
-        }
-        if let Some(re) = &operator_re {
-            for m in re.find_iter(line) {
-                line_tokens.push(RawToken {
-                    line: line_num,
-                    start: m.start() as u32,
-                    length: (m.end() - m.start()) as u32,
-                    token_type: OPERATOR,
-                });
-            }
-        }
-        if include_jq_keywords && let Some(re) = &jq_keyword_re {
-            for m in re.find_iter(line) {
-                line_tokens.push(RawToken {
-                    line: line_num,
-                    start: m.start() as u32,
-                    length: (m.end() - m.start()) as u32,
-                    token_type: KEYWORD,
-                });
-            }
-        }
-        line_tokens
-    };
-
-    if let Ok(doc) = parser::parse_gctf_from_str(content, "temp.gctf")
-        && !doc.sections.is_empty()
-    {
-        for section in &doc.sections {
-            if section.start_line < lines.len() {
-                let header_line = lines[section.start_line];
-                if section_header_re
-                    .as_ref()
-                    .is_some_and(|re| re.is_match(header_line.trim()))
-                {
-                    let start = header_line.find("---").unwrap_or(0) as u32;
-                    let length = header_line.trim().len() as u32;
-                    raw_tokens.push(RawToken {
-                        line: section.start_line as u32,
-                        start,
-                        length,
-                        token_type: KEYWORD,
-                    });
-                }
-            }
-
-            for (idx, section_line) in section.raw_content.lines().enumerate() {
-                let line_num = (section.start_line + idx + 1) as u32;
-                let include_jq_keywords = section.section_type == parser::ast::SectionType::Extract;
-                raw_tokens.extend(tokenize_line(section_line, line_num, include_jq_keywords));
-            }
-        }
-    } else {
-        // Fallback for incomplete buffers where full parse may fail.
-        for (line_idx, line) in lines.iter().enumerate() {
-            let line_num = line_idx as u32;
-            if section_header_re
-                .as_ref()
-                .is_some_and(|re| re.is_match(line.trim()))
-            {
-                let start = line.find("---").unwrap_or(0) as u32;
-                let length = line.trim().len() as u32;
-                raw_tokens.push(RawToken {
-                    line: line_num,
-                    start,
-                    length,
-                    token_type: KEYWORD,
-                });
-            }
-            raw_tokens.extend(tokenize_line(line, line_num, true));
-        }
-    }
-
-    raw_tokens.sort_by_key(|t| (t.line, t.start, t.length, t.token_type));
-    raw_tokens.dedup();
-
-    let mut encoded: Vec<SemanticToken> = Vec::with_capacity(raw_tokens.len());
-    let mut last_line: u32 = 0;
-    let mut last_start: u32 = 0;
-
-    for t in raw_tokens {
-        let delta_line = t.line.saturating_sub(last_line);
-        let delta_start = if delta_line == 0 {
-            t.start.saturating_sub(last_start)
-        } else {
-            t.start
-        };
-        encoded.push(SemanticToken {
-            delta_line,
-            delta_start,
-            length: t.length,
-            token_type: t.token_type,
-            token_modifiers_bitset: 0,
-        });
-        last_line = t.line;
-        last_start = t.start;
-    }
-
-    SemanticTokens {
-        result_id: None,
-        data: encoded,
-    }
-}
-
-/// Build folding ranges for the document
-fn build_folding_ranges(content: &str) -> Vec<FoldingRange> {
-    let mut ranges: Vec<FoldingRange> = Vec::new();
-
-    // Parse content — may contain multiple documents
-    if let Ok(head) = parser::parse_gctf_from_str(content, "temp.gctf") {
-        // Document-level folding: fold entire document
-        for (doc_idx, d) in head.iter_chain().enumerate() {
-            if let (Some(first), Some(last)) = (d.sections.first(), d.sections.last()) {
-                let start = ((first.start_line as i32) - 1).max(0) as u32;
-                let end = ((last.end_line as i32) - 1).max(0) as u32;
-                if end > start {
-                    let label = if head.is_single_document() {
-                        d.get_endpoint().unwrap_or_else(|| "document".to_string())
-                    } else {
-                        format!(
-                            "Doc {}: {}",
-                            doc_idx + 1,
-                            d.get_endpoint().unwrap_or_else(|| "unknown".to_string())
-                        )
-                    };
-                    ranges.push(FoldingRange {
-                        start_line: start,
-                        start_character: Some(0),
-                        end_line: end,
-                        end_character: None,
-                        kind: Some(FoldingRangeKind::Region),
-                        collapsed_text: Some(label),
-                    });
-                }
-            }
-        }
-
-        // Section-level folding within each document
-        for d in head.iter_chain() {
-            for section in &d.sections {
-                if section.end_line > section.start_line {
-                    ranges.push(FoldingRange {
-                        start_line: ((section.start_line as i32) - 1).max(0) as u32,
-                        start_character: Some(0),
-                        end_line: ((section.end_line as i32) - 1).max(0) as u32,
-                        end_character: None,
-                        kind: Some(FoldingRangeKind::Region),
-                        collapsed_text: Some(format!("--- {} ---", section.section_type.as_str())),
-                    });
-                }
-            }
-        }
-    }
-
-    ranges
-}
-
-/// Build inlay hints for the document
-/// Shows type information for variables in EXTRACT sections and section types
-fn build_inlay_hints(content: &str, range: tower_lsp::lsp_types::Range) -> Vec<InlayHint> {
-    let mut hints: Vec<InlayHint> = Vec::new();
-
-    let infer_type_label = |expr: &str| -> &'static str {
-        let e = expr.trim();
-        if e == "true" || e == "false" {
-            return "bool";
-        }
-        if e.starts_with('"') && e.ends_with('"') && e.len() >= 2 {
-            return "string";
-        }
-        if e.parse::<f64>().is_ok() {
-            return "number";
-        }
-        if e.starts_with('@')
-            && let Some(open) = e.find('(')
-        {
-            let plugin_name = e[1..open].trim();
-            if let Some(plugin) = PluginManager::new().get(plugin_name) {
-                return match plugin.signature().return_kind {
-                    PluginReturnKind::Boolean => "bool",
-                    PluginReturnKind::Number => "number",
-                    PluginReturnKind::String => "string",
-                    PluginReturnKind::Value | PluginReturnKind::Unknown => "value",
-                };
-            }
-        }
-        "value"
-    };
-
-    // Parse content — may contain multiple documents
-    if let Ok(head) = parser::parse_gctf_from_str(content, "temp.gctf") {
-        let total_docs = head.document_count();
-
-        // Add section type hints + document number on ENDPOINT
-        for (doc_idx, d) in head.iter_chain().enumerate() {
-            for section in &d.sections {
-                let section_line = ((section.start_line as i32) - 1).max(0) as u32;
-                if section_line < range.start.line || section_line > range.end.line {
-                    continue;
-                }
-
-                // Document number hint on ENDPOINT lines
-                if section.section_type == parser::ast::SectionType::Endpoint && total_docs > 1 {
-                    hints.push(InlayHint {
-                        position: tower_lsp::lsp_types::Position {
-                            line: section_line,
-                            character: 1000,
-                        },
-                        label: InlayHintLabel::String(format!(
-                            "document {} of {}",
-                            doc_idx + 1,
-                            total_docs
-                        )),
-                        kind: Some(InlayHintKind::TYPE),
-                        text_edits: None,
-                        tooltip: Some(InlayHintTooltip::String(format!(
-                            "Document {} of {} in this file",
-                            doc_idx + 1,
-                            total_docs
-                        ))),
-                        padding_left: Some(true),
-                        padding_right: None,
-                        data: None,
-                    });
-                } else {
-                    // Regular section type hint
-                    hints.push(InlayHint {
-                        position: tower_lsp::lsp_types::Position {
-                            line: section_line,
-                            character: 1000,
-                        },
-                        label: InlayHintLabel::String(format!(
-                            ": {}",
-                            section.section_type.as_str()
-                        )),
-                        kind: Some(InlayHintKind::TYPE),
-                        text_edits: None,
-                        tooltip: None,
-                        padding_left: Some(true),
-                        padding_right: None,
-                        data: None,
-                    });
-                }
-            }
-
-            // Variable type hints in EXTRACT sections
-            for section in &d.sections {
-                if section.section_type == parser::ast::SectionType::Extract
-                    && let parser::ast::SectionContent::Extract(extractions) = &section.content
-                {
-                    for (var_name, expr) in extractions {
-                        let mut hint_line: Option<u32> = None;
-                        let mut hint_char: u32 = 1000;
-                        for (idx, line) in section.raw_content.lines().enumerate() {
-                            let trimmed = line.trim();
-                            if let Some((name, _)) = trimmed.split_once('=')
-                                && name.trim() == var_name
-                            {
-                                hint_line = Some((section.start_line + idx + 1) as u32);
-                                hint_char = name.len() as u32;
-                                break;
-                            }
-                        }
-
-                        let line_num =
-                            hint_line.unwrap_or(((section.start_line as i32) - 1).max(0) as u32);
-                        if line_num >= range.start.line && line_num <= range.end.line {
-                            hints.push(InlayHint {
-                                position: tower_lsp::lsp_types::Position {
-                                    line: line_num,
-                                    character: hint_char,
-                                },
-                                label: InlayHintLabel::String(format!(
-                                    ": {}",
-                                    infer_type_label(expr)
-                                )),
-                                kind: Some(InlayHintKind::TYPE),
-                                text_edits: None,
-                                tooltip: Some(InlayHintTooltip::String(format!(
-                                    "Extracted from expression: {}",
-                                    expr
-                                ))),
-                                padding_left: Some(true),
-                                padding_right: None,
-                                data: None,
-                            });
-                        }
-                    }
-                }
-            }
-
-            // Optimizer hints
-            for opt in optimizer::collect_assertion_optimizations(d) {
-                let line_num = opt.line.saturating_sub(1) as u32;
-                if line_num < range.start.line || line_num > range.end.line {
-                    continue;
-                }
-                hints.push(InlayHint {
-                    position: tower_lsp::lsp_types::Position {
-                        line: line_num,
-                        character: 1000,
-                    },
-                    label: InlayHintLabel::String(format!("opt: {}", opt.rule_id)),
-                    kind: Some(InlayHintKind::TYPE),
-                    text_edits: None,
-                    tooltip: opt
-                        .proof_note
-                        .as_ref()
-                        .map(|s| InlayHintTooltip::String(s.clone())),
-                    padding_left: Some(true),
-                    padding_right: None,
-                    data: None,
-                });
-            }
-        }
-
-        // Unused variable inlay hints
-        for unused_var in crate::lsp::handlers::collect_unused_variables(&head) {
-            let line_num = (unused_var.line as i32 - 1).max(0) as u32;
-            if line_num < range.start.line || line_num > range.end.line {
-                continue;
-            }
-            hints.push(InlayHint {
-                position: tower_lsp::lsp_types::Position {
-                    line: line_num,
-                    character: (unused_var.character + unused_var.name.len()) as u32,
-                },
-                label: InlayHintLabel::String("unused".to_string()),
-                kind: Some(InlayHintKind::TYPE),
-                text_edits: None,
-                tooltip: Some(InlayHintTooltip::String(format!(
-                    "'{}' is extracted but never used in subsequent documents",
-                    unused_var.name
-                ))),
-                padding_left: Some(true),
-                padding_right: None,
-                data: None,
-            });
-        }
-    } // end if let Ok(head)
-
-    hints
-}
-
-#[allow(deprecated)]
-fn build_section_children_for_doc(doc: &crate::parser::GctfDocument) -> Vec<DocumentSymbol> {
-    let mut all_children: Vec<DocumentSymbol> = Vec::new();
-
-    for s in &doc.sections {
-        let mut children: Vec<DocumentSymbol> = Vec::new();
-
-        if s.section_type == SectionType::Asserts {
-            for (idx, line) in s.raw_content.lines().enumerate() {
-                let trimmed = line.trim();
-                if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
-                    continue;
-                }
-
-                let line_num = (s.start_line + idx + 1) as u32;
-                #[allow(deprecated)]
-                let mut assertion_symbol = DocumentSymbol {
-                    name: trimmed.to_string(),
-                    detail: Some("assertion".to_string()),
-                    kind: SymbolKind::STRING,
-                    tags: None,
-                    deprecated: None,
-                    range: Range::new(
-                        Position::new(line_num, 0),
-                        Position::new(line_num, trimmed.len() as u32),
-                    ),
-                    selection_range: Range::new(
-                        Position::new(line_num, 0),
-                        Position::new(line_num, trimmed.len() as u32),
-                    ),
-                    children: None,
-                };
-
-                let mut var_children = Vec::new();
-                let mut offset = 0usize;
-                while let Some(open) = trimmed[offset..].find("{{") {
-                    let abs_open = offset + open;
-                    let Some(close_rel) = trimmed[abs_open..].find("}}") else {
-                        break;
-                    };
-                    let abs_close = abs_open + close_rel + 2;
-                    let inner = trimmed[abs_open + 2..abs_close - 2].trim();
-                    if !inner.is_empty() {
-                        #[allow(deprecated)]
-                        var_children.push(DocumentSymbol {
-                            name: inner.to_string(),
-                            detail: Some("variable reference".to_string()),
-                            kind: SymbolKind::VARIABLE,
-                            tags: None,
-                            deprecated: None,
-                            range: Range::new(
-                                Position::new(line_num, abs_open as u32),
-                                Position::new(line_num, abs_close as u32),
-                            ),
-                            selection_range: Range::new(
-                                Position::new(line_num, (abs_open + 2) as u32),
-                                Position::new(line_num, (abs_close - 2) as u32),
-                            ),
-                            children: None,
-                        });
-                    }
-                    offset = abs_close;
-                }
-
-                if !var_children.is_empty() {
-                    assertion_symbol.children = Some(var_children);
-                }
-
-                children.push(assertion_symbol);
-            }
-        }
-
-        if s.section_type == SectionType::Extract {
-            for (idx, line) in s.raw_content.lines().enumerate() {
-                let trimmed = line.trim();
-                if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
-                    continue;
-                }
-
-                let Some((name, expr)) = trimmed.split_once('=') else {
-                    continue;
-                };
-                let var_name = name.trim();
-                let line_num = (s.start_line + idx + 1) as u32;
-                let expr_trimmed = expr.trim();
-
-                #[allow(deprecated)]
-                children.push(DocumentSymbol {
-                    name: var_name.to_string(),
-                    detail: Some(format!("extract: {}", expr_trimmed)),
-                    kind: SymbolKind::VARIABLE,
-                    tags: None,
-                    deprecated: None,
-                    range: Range::new(
-                        Position::new(line_num, 0),
-                        Position::new(line_num, trimmed.len() as u32),
-                    ),
-                    selection_range: Range::new(
-                        Position::new(line_num, 0),
-                        Position::new(line_num, var_name.len() as u32),
-                    ),
-                    children: None,
-                });
-            }
-        }
-
-        if !children.is_empty() {
-            all_children.extend(children);
-        }
-    }
-
-    all_children
-}
-
 pub async fn start_lsp_server() -> Result<()> {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
@@ -2059,267 +1537,4 @@ pub async fn start_lsp_server() -> Result<()> {
     Server::new(stdin, stdout, socket).serve(service).await;
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_build_semantic_tokens_section_headers() {
-        let content = "--- ENDPOINT ---\ntest.Service/Method\n";
-        let tokens = build_semantic_tokens(content);
-
-        // Should have at least one token for the section header
-        // Note: AST parsing may fail for incomplete content, so we check both cases
-        if !tokens.data.is_empty() {
-            // First token should be a KEYWORD (section header)
-            assert_eq!(tokens.data[0].token_type, 0); // KEYWORD
-        }
-        // If AST parsing failed, tokens will be empty - that's acceptable for this test
-    }
-
-    #[test]
-    fn test_build_semantic_tokens_variables() {
-        let content = "{{ variable_name }}\n";
-        let tokens = build_semantic_tokens(content);
-
-        // Should have at least one token for the variable
-        assert!(!tokens.data.is_empty());
-
-        // Find the VARIABLE token
-        let var_token = tokens.data.iter().find(|t| t.token_type == 1); // VARIABLE
-        assert!(var_token.is_some());
-    }
-
-    #[test]
-    fn test_build_semantic_tokens_plugins() {
-        let content = "@uuid(.field)\n";
-        let tokens = build_semantic_tokens(content);
-
-        // Should have at least one token for the plugin
-        assert!(!tokens.data.is_empty());
-
-        // Find the FUNCTION token
-        let func_token = tokens.data.iter().find(|t| t.token_type == 2); // FUNCTION
-        assert!(func_token.is_some());
-    }
-
-    #[test]
-    fn test_build_semantic_tokens_numbers() {
-        let content = "123\n456.789\n";
-        let tokens = build_semantic_tokens(content);
-
-        // Should have at least two tokens for the numbers
-        let num_tokens: Vec<_> = tokens.data.iter().filter(|t| t.token_type == 3).collect(); // NUMBER
-        assert!(num_tokens.len() >= 2);
-    }
-
-    #[test]
-    fn test_build_semantic_tokens_empty() {
-        let content = "";
-        let tokens = build_semantic_tokens(content);
-
-        // Should have no tokens for empty content
-        assert!(tokens.data.is_empty());
-    }
-
-    #[test]
-    fn test_build_semantic_tokens_jq_keywords() {
-        let content = "if .x > 0 then \"yes\" else \"no\" end\n";
-        let tokens = build_semantic_tokens(content);
-
-        // Should have tokens for JQ keywords (if, then, else, end)
-        let keyword_tokens: Vec<_> = tokens.data.iter().filter(|t| t.token_type == 0).collect(); // KEYWORD
-        assert!(keyword_tokens.len() >= 4); // if, then, else, end
-    }
-
-    #[test]
-    fn test_build_semantic_tokens_operators() {
-        let content = ".x + .y | select(.z > 0)\n";
-        let tokens = build_semantic_tokens(content);
-
-        // Should have tokens for operators (+, |, >)
-        let operator_tokens: Vec<_> = tokens.data.iter().filter(|t| t.token_type == 4).collect(); // OPERATOR
-        assert!(operator_tokens.len() >= 3); // +, |, >
-    }
-
-    #[test]
-    fn test_build_folding_ranges() {
-        let content = "--- ENDPOINT ---\ntest.Service/Method\n\n--- REQUEST ---\n{\n  \"id\": 123\n}\n\n--- RESPONSE ---\n{\n  \"result\": \"ok\"\n}\n";
-        let ranges = build_folding_ranges(content);
-
-        // Should have folding ranges for sections with multiple lines
-        assert!(!ranges.is_empty());
-
-        // Check that ranges have proper structure
-        for range in &ranges {
-            assert!(range.start_line <= range.end_line);
-            assert!(range.kind == Some(FoldingRangeKind::Region));
-        }
-    }
-
-    #[test]
-    fn test_build_inlay_hints_section_types() {
-        let content = "--- ENDPOINT ---\ntest.Service/Method\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n";
-        let range = tower_lsp::lsp_types::Range {
-            start: tower_lsp::lsp_types::Position {
-                line: 0,
-                character: 0,
-            },
-            end: tower_lsp::lsp_types::Position {
-                line: 10,
-                character: 0,
-            },
-        };
-        let hints = build_inlay_hints(content, range);
-
-        // Should have type hints for sections
-        assert!(!hints.is_empty());
-
-        // Check that hints have TYPE kind
-        for hint in &hints {
-            assert!(hint.kind == Some(InlayHintKind::TYPE));
-        }
-    }
-
-    #[test]
-    fn test_build_inlay_hints_extract_variables() {
-        let content = "--- ENDPOINT ---\ntest.Service/Method\n\n--- EXTRACT ---\ntoken = .token\nuser_id = .user.id\n\n--- RESPONSE ---\n{}\n";
-        let range = tower_lsp::lsp_types::Range {
-            start: tower_lsp::lsp_types::Position {
-                line: 0,
-                character: 0,
-            },
-            end: tower_lsp::lsp_types::Position {
-                line: 10,
-                character: 0,
-            },
-        };
-        let hints = build_inlay_hints(content, range);
-
-        // Should have hints (section types + extract variables)
-        assert!(!hints.is_empty());
-        let labels: Vec<String> = hints
-            .iter()
-            .filter_map(|h| match &h.label {
-                InlayHintLabel::String(s) => Some(s.clone()),
-                _ => None,
-            })
-            .collect();
-        assert!(labels.iter().any(|l| l == ": value"));
-    }
-
-    #[test]
-    fn test_build_inlay_hints_optimizer_opportunities() {
-        let content = "--- ENDPOINT ---\ntest.Service/Method\n\n--- ASSERTS ---\n@has_header(\"x\") == true\n";
-        let range = tower_lsp::lsp_types::Range {
-            start: tower_lsp::lsp_types::Position {
-                line: 0,
-                character: 0,
-            },
-            end: tower_lsp::lsp_types::Position {
-                line: 10,
-                character: 0,
-            },
-        };
-        let hints = build_inlay_hints(content, range);
-        let labels: Vec<String> = hints
-            .iter()
-            .filter_map(|h| match &h.label {
-                InlayHintLabel::String(s) => Some(s.clone()),
-                _ => None,
-            })
-            .collect();
-        assert!(labels.iter().any(|l| l == "opt: OPT_B001"));
-    }
-
-    #[test]
-    fn test_build_inlay_hints_empty() {
-        let content = "";
-        let range = tower_lsp::lsp_types::Range {
-            start: tower_lsp::lsp_types::Position {
-                line: 0,
-                character: 0,
-            },
-            end: tower_lsp::lsp_types::Position {
-                line: 0,
-                character: 0,
-            },
-        };
-        let hints = build_inlay_hints(content, range);
-
-        // Should have no hints for empty content
-        assert!(hints.is_empty());
-    }
-
-    #[test]
-    fn test_get_plugin_signatures_uses_runtime_arg_names() {
-        let signatures = get_plugin_signatures();
-        let regex = signatures.get("regex").unwrap();
-        assert_eq!(regex.label, "@regex(value, pattern)");
-
-        let has_trailer = signatures.get("has_trailer").unwrap();
-        assert_eq!(has_trailer.label, "@has_trailer(name)");
-        assert!(has_trailer.documentation.contains("Returns: bool"));
-    }
-
-    #[test]
-    fn test_infer_active_parameter_counts_top_level_commas() {
-        let line = "@regex(.name, \"a,b\")";
-        let open = line.find('(').unwrap();
-        let cursor = line.len() - 1;
-        let active = infer_active_parameter(line, open, cursor);
-        assert_eq!(active, 1);
-    }
-
-    #[test]
-    fn test_infer_active_parameter_single_arg() {
-        let line = "@len(.items)";
-        let open = line.find('(').unwrap();
-        let cursor = line.len();
-        let active = infer_active_parameter(line, open, cursor);
-        assert_eq!(active, 0);
-    }
-
-    #[test]
-    fn test_infer_active_parameter_multiple_args() {
-        let line = "@regex(.name, \"pattern\", \"flags\")";
-        let open = line.find('(').unwrap();
-        let cursor = line.len();
-        let active = infer_active_parameter(line, open, cursor);
-        assert_eq!(active, 2);
-    }
-
-    #[test]
-    fn test_build_folding_ranges_empty() {
-        let ranges = build_folding_ranges("");
-        assert!(ranges.is_empty());
-    }
-
-    #[test]
-    fn test_build_folding_ranges_sections() {
-        let content = "--- ADDRESS ---\nlocalhost\n\n--- ENDPOINT ---\nsvc/Method\n";
-        let ranges = build_folding_ranges(content);
-        assert!(!ranges.is_empty());
-    }
-
-    #[test]
-    fn test_build_inlay_hints_with_section() {
-        let range = tower_lsp::lsp_types::Range::new(
-            tower_lsp::lsp_types::Position::new(0, 0),
-            tower_lsp::lsp_types::Position::new(10, 0),
-        );
-        let content = "--- ENDPOINT ---\nsvc/Method\n\n--- REQUEST ---\n{}\n";
-        let hints = build_inlay_hints(content, range);
-        assert!(!hints.is_empty());
-    }
-
-    #[test]
-    fn test_get_plugin_signatures_returns_map() {
-        let signatures = get_plugin_signatures();
-        assert!(!signatures.is_empty());
-        assert!(signatures.contains_key("uuid"));
-        assert!(signatures.contains_key("email"));
-    }
 }

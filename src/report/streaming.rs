@@ -21,10 +21,19 @@ impl StreamingJsonReporter {
 
     fn emit(&self, event: &serde_json::Value) {
         let mut stdout = io::stdout().lock();
-        if let Ok(s) = serde_json::to_string(event) {
-            let _ = writeln!(stdout, "{}", s);
+        match serde_json::to_string(event) {
+            Ok(s) => {
+                if let Err(e) = writeln!(stdout, "{}", s) {
+                    tracing::warn!("Failed to write streaming JSON to stdout: {e}");
+                }
+                if let Err(e) = stdout.flush() {
+                    tracing::warn!("Failed to flush stdout: {e}");
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to serialize streaming event: {e}");
+            }
         }
-        let _ = stdout.flush();
     }
 }
 

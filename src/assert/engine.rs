@@ -2,9 +2,9 @@
 
 use anyhow::Result;
 use serde_json::Value;
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::{LazyLock, Mutex};
 
 // Plugin imports
 use crate::plugins::AssertionTiming;
@@ -58,9 +58,11 @@ pub struct AssertionEngine {
 
 type JaqFilter = jaq_core::Filter<data::JustLut<JaqVal>>;
 
-thread_local! {
-    static JAQ_FILTER_CACHE: RefCell<HashMap<String, Rc<JaqFilter>>> = RefCell::new(HashMap::new());
-}
+/// Thread-safe cache for compiled JQ filters.
+/// Uses `Mutex` instead of `thread_local!` + `RefCell` to be safe with
+/// tokio's work-stealing runtime where futures can migrate across threads.
+static JAQ_FILTER_CACHE: LazyLock<Mutex<HashMap<String, Arc<JaqFilter>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 impl AssertionEngine {
     /// Create a new assertion engine
@@ -167,11 +169,16 @@ impl AssertionEngine {
         Ok(values)
     }
 
-    fn get_or_compile_jaq_filter(expr: &str) -> Result<Rc<JaqFilter>> {
+    fn get_or_compile_jaq_filter(expr: &str) -> Result<Arc<JaqFilter>> {
         use jaq_core::defs as core_defs;
         use jaq_core::funs as core_funs;
 
-        if let Some(cached) = JAQ_FILTER_CACHE.with(|cache| cache.borrow().get(expr).cloned()) {
+        if let Some(cached) = JAQ_FILTER_CACHE
+            .lock()
+            .expect("JQ filter cache poisoned")
+            .get(expr)
+            .cloned()
+        {
             return Ok(cached);
         }
 
@@ -193,12 +200,11 @@ impl AssertionEngine {
             .compile(modules)
             .map_err(|errs| anyhow::anyhow!("Failed to compile JQ expression: {:?}", errs))?;
 
-        let filter = Rc::new(filter);
-        JAQ_FILTER_CACHE.with(|cache| {
-            cache
-                .borrow_mut()
-                .insert(expr.to_string(), Rc::clone(&filter));
-        });
+        let filter = Arc::new(filter);
+        JAQ_FILTER_CACHE
+            .lock()
+            .expect("JQ filter cache poisoned")
+            .insert(expr.to_string(), Arc::clone(&filter));
 
         Ok(filter)
     }

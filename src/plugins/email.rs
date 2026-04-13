@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::assert::engine::AssertionResult;
 use crate::plugins::{
-    Plugin, PluginContext, PluginPurity, PluginResult, PluginReturnKind, PluginSignature,
+    ArgTypeInfo, Plugin, PluginContext, PluginPurity, PluginResult, PluginSignature, TypeInfo,
 };
 
 pub struct EmailPlugin;
@@ -20,7 +20,12 @@ impl Plugin for EmailPlugin {
 
     fn signature(&self) -> PluginSignature {
         PluginSignature {
-            return_kind: PluginReturnKind::Boolean,
+            return_type: TypeInfo::Bool,
+            arg_types: &[ArgTypeInfo {
+                expected: TypeInfo::String,
+                required: true,
+                default: None,
+            }],
             purity: PluginPurity::Pure,
             deterministic: true,
             idempotent: true,

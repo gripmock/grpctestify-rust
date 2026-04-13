@@ -17,7 +17,6 @@ pub mod state;
 pub mod time;
 pub mod utils;
 
-pub use commands::truncate_str;
 pub use parser::parse_gctf;
 pub use parser::validate_document;
 

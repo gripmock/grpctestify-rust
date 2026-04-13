@@ -323,27 +323,36 @@ fn is_json_format(value: &str) -> bool {
     value.eq_ignore_ascii_case("json")
 }
 
-impl ListArgs {
-    pub fn is_json(&self) -> bool {
-        is_json_format(&self.format)
+/// Trait for CLI argument types that have a `--format` option.
+pub trait HasFormat {
+    fn format(&self) -> &str;
+
+    fn is_json(&self) -> bool {
+        is_json_format(self.format())
     }
 }
 
-impl InspectArgs {
-    pub fn is_json(&self) -> bool {
-        is_json_format(&self.format)
+impl HasFormat for ListArgs {
+    fn format(&self) -> &str {
+        &self.format
     }
 }
 
-impl ExplainArgs {
-    pub fn is_json(&self) -> bool {
-        is_json_format(&self.format)
+impl HasFormat for InspectArgs {
+    fn format(&self) -> &str {
+        &self.format
     }
 }
 
-impl CheckArgs {
-    pub fn is_json(&self) -> bool {
-        is_json_format(&self.format)
+impl HasFormat for ExplainArgs {
+    fn format(&self) -> &str {
+        &self.format
+    }
+}
+
+impl HasFormat for CheckArgs {
+    fn format(&self) -> &str {
+        &self.format
     }
 }
 

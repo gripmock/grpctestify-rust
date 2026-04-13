@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use serde_json::Value;
 
 use crate::plugins::{
-    Plugin, PluginContext, PluginPurity, PluginResult, PluginReturnKind, PluginSignature,
+    Plugin, PluginContext, PluginPurity, PluginResult, PluginSignature, TypeInfo,
 };
 
 pub struct ElapsedMsPlugin;
@@ -26,7 +26,8 @@ impl Plugin for ElapsedMsPlugin {
 
     fn signature(&self) -> PluginSignature {
         PluginSignature {
-            return_kind: PluginReturnKind::Number,
+            return_type: TypeInfo::UInt,
+            arg_types: &[],
             purity: PluginPurity::ContextDependent,
             deterministic: true,
             idempotent: true,
@@ -57,7 +58,8 @@ impl Plugin for TotalElapsedMsPlugin {
 
     fn signature(&self) -> PluginSignature {
         PluginSignature {
-            return_kind: PluginReturnKind::Number,
+            return_type: TypeInfo::UInt,
+            arg_types: &[],
             purity: PluginPurity::ContextDependent,
             deterministic: true,
             idempotent: true,
@@ -88,7 +90,8 @@ impl Plugin for ScopeMessageCountPlugin {
 
     fn signature(&self) -> PluginSignature {
         PluginSignature {
-            return_kind: PluginReturnKind::Number,
+            return_type: TypeInfo::UInt,
+            arg_types: &[],
             purity: PluginPurity::ContextDependent,
             deterministic: true,
             idempotent: true,
@@ -119,7 +122,8 @@ impl Plugin for ScopeIndexPlugin {
 
     fn signature(&self) -> PluginSignature {
         PluginSignature {
-            return_kind: PluginReturnKind::Number,
+            return_type: TypeInfo::UInt,
+            arg_types: &[],
             purity: PluginPurity::ContextDependent,
             deterministic: true,
             idempotent: true,

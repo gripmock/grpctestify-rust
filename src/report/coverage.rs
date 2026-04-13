@@ -1,8 +1,14 @@
+//! gRPC method and protobuf message field coverage collector.
+//!
+//! Tracks which gRPC service/method calls were made during test execution
+//! and which protobuf message fields were covered by assertions.
+
 use prost_reflect::{DescriptorPool, MessageDescriptor};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+/// Coverage data for a single file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoverageFile {
     pub uri: String,
@@ -15,12 +21,14 @@ pub struct CoverageFile {
     pub fields: Option<CoverageStats>,
 }
 
+/// Coverage statistics (covered vs total).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoverageStats {
     pub covered: usize,
     pub total: usize,
 }
 
+/// Coverage data for a protobuf message type's fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageFieldCoverage {
     pub message_type: String,
@@ -28,6 +36,7 @@ pub struct MessageFieldCoverage {
     pub total_fields: usize,
 }
 
+/// Full coverage report with file and message-level statistics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoverageReport {
     pub files: Vec<CoverageFile>,
@@ -36,6 +45,7 @@ pub struct CoverageReport {
     pub field_summary: CoverageStats,
 }
 
+/// Collects gRPC method call and protobuf field coverage during test execution.
 #[derive(Debug, Clone)]
 pub struct CoverageCollector {
     calls: Arc<Mutex<HashMap<String, HashMap<String, u64>>>>,
@@ -53,13 +63,16 @@ impl CoverageCollector {
     }
 
     pub fn record_call(&self, service: &str, method: &str) {
-        let mut calls = self.calls.lock().unwrap();
+        let mut calls = self.calls.lock().expect("CoverageCollector lock poisoned");
         let service_calls = calls.entry(service.to_string()).or_default();
         *service_calls.entry(method.to_string()).or_insert(0) += 1;
     }
 
     pub fn record_fields_from_json(&self, message_type: &str, json: &serde_json::Value) {
-        let mut fields = self.fields_covered.lock().unwrap();
+        let mut fields = self
+            .fields_covered
+            .lock()
+            .expect("CoverageCollector lock poisoned");
         let message_fields = fields.entry(message_type.to_string()).or_default();
         Self::extract_fields_from_json(json, message_fields, "");
     }
@@ -87,7 +100,7 @@ impl CoverageCollector {
     }
 
     pub fn register_pool(&self, other: &DescriptorPool) {
-        let mut pool = self.pool.lock().unwrap();
+        let mut pool = self.pool.lock().expect("CoverageCollector lock poisoned");
         for file in other.files() {
             let _ = pool.add_file_descriptor_proto(file.file_descriptor_proto().clone());
         }
@@ -106,9 +119,12 @@ impl CoverageCollector {
     }
 
     pub fn generate_json_report(&self) -> CoverageReport {
-        let calls = self.calls.lock().unwrap();
-        let pool = self.pool.lock().unwrap();
-        let fields_covered = self.fields_covered.lock().unwrap();
+        let calls = self.calls.lock().expect("CoverageCollector lock poisoned");
+        let pool = self.pool.lock().expect("CoverageCollector lock poisoned");
+        let fields_covered = self
+            .fields_covered
+            .lock()
+            .expect("CoverageCollector lock poisoned");
 
         let mut files = Vec::new();
         let mut messages = Vec::new();
@@ -202,9 +218,12 @@ impl CoverageCollector {
     }
 
     pub fn generate_text_report(&self) -> String {
-        let calls = self.calls.lock().unwrap();
-        let pool = self.pool.lock().unwrap();
-        let fields_covered = self.fields_covered.lock().unwrap();
+        let calls = self.calls.lock().expect("CoverageCollector lock poisoned");
+        let pool = self.pool.lock().expect("CoverageCollector lock poisoned");
+        let fields_covered = self
+            .fields_covered
+            .lock()
+            .expect("CoverageCollector lock poisoned");
 
         let mut report = String::new();
         report.push_str("--- gRPC API Coverage Report ---\n\n");

@@ -1,5 +1,6 @@
 // Explain command - show detailed execution plan via Workflow
 
+use crate::cli::args::HasFormat;
 use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;

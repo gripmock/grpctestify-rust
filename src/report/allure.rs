@@ -1,3 +1,8 @@
+//! Allure TestOps compatible reporter.
+//!
+//! Writes individual JSON files per test in the Allure results format.
+//! Each file contains test metadata, status, timing, and gRPC call steps.
+
 use crate::report::Reporter;
 use crate::state::{TestResult, TestResults};
 use anyhow::Result;
@@ -6,11 +11,14 @@ use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+/// Allure reporter — writes one result file per test.
 pub struct AllureReporter {
     output_dir: PathBuf,
 }
 
 impl AllureReporter {
+    /// Create a new Allure reporter writing to `output_dir`.
+    /// Creates the directory if it doesn't exist.
     pub fn new(output_dir: PathBuf) -> Self {
         if let Err(e) = fs::create_dir_all(&output_dir) {
             eprintln!("Failed to create allure report directory: {}", e);
@@ -184,10 +192,15 @@ impl Reporter for AllureReporter {
         let file_name = format!("{}-result.json", uuid);
         let file_path = self.output_dir.join(file_name);
 
-        if let Ok(file) = fs::File::create(&file_path) {
-            let _ = serde_json::to_writer(&file, &report);
-        } else {
-            eprintln!("Failed to write allure report to {:?}", file_path);
+        match fs::File::create(&file_path) {
+            Ok(file) => {
+                if let Err(e) = serde_json::to_writer(&file, &report) {
+                    tracing::warn!("Failed to serialize Allure report: {e}");
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create Allure report file {:?}: {e}", file_path);
+            }
         }
     }
 

@@ -28,7 +28,7 @@ pub fn parse_content_with_recovery(content: &str, file_path: &str) -> ErrorRecov
     let single = parse_single_with_recovery(content, file_path);
 
     // Split by implicit boundaries
-    let docs = split_sections_by_boundary(&single.document.sections);
+    let docs = crate::parser::split_sections_by_boundary(&single.document.sections);
 
     if docs.len() <= 1 {
         return single;
@@ -51,56 +51,6 @@ pub fn parse_content_with_recovery(content: &str, file_path: &str) -> ErrorRecov
         recovered_sections: total_recovered,
         failed_sections: total_failed,
     }
-}
-
-fn split_sections_by_boundary(sections: &[Section]) -> Vec<Vec<Section>> {
-    let mut docs: Vec<Vec<Section>> = Vec::new();
-    let mut current: Vec<Section> = Vec::new();
-
-    let is_preamble = |t: &SectionType| {
-        matches!(
-            t,
-            SectionType::Address
-                | SectionType::Tls
-                | SectionType::Proto
-                | SectionType::Options
-                | SectionType::RequestHeaders
-        )
-    };
-
-    for section in sections {
-        if section.section_type == SectionType::Endpoint {
-            let has_content = current.iter().any(|s| {
-                matches!(
-                    s.section_type,
-                    SectionType::Request
-                        | SectionType::Response
-                        | SectionType::Error
-                        | SectionType::Asserts
-                        | SectionType::Extract
-                )
-            });
-
-            if has_content {
-                let mut preamble: Vec<Section> = Vec::new();
-                while let Some(last) = current.last() {
-                    if is_preamble(&last.section_type) {
-                        preamble.insert(0, current.pop().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-                docs.push(std::mem::take(&mut current));
-                current = preamble;
-            }
-        }
-        current.push(section.clone());
-    }
-
-    if !current.is_empty() {
-        docs.push(current);
-    }
-    docs
 }
 
 fn build_doc_from_sections(sections: &[Section], file_path: &str) -> GctfDocument {

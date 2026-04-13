@@ -1,5 +1,6 @@
 // Inspect command - show detailed AST analysis and structure
 
+use crate::cli::args::HasFormat;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;

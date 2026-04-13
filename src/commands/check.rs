@@ -1,5 +1,6 @@
 // Check command - validate GCTF files
 
+use crate::cli::args::HasFormat;
 use anyhow::Result;
 use std::path::PathBuf;
 use tracing::info;

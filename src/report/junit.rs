@@ -46,7 +46,11 @@ impl Reporter for JunitReporter {
         ));
 
         for result in results.all() {
-            let classname = "grpctestify.e2e"; // Group all under e2e for now or derive from path?
+            // Use file name (without extension) as classname, derived from test path
+            let classname = std::path::Path::new(&result.name)
+                .file_stem()
+                .map(|s| s.to_string_lossy())
+                .unwrap_or_else(|| "unknown".into());
             // Extract file name from full path for test name
             let name = std::path::Path::new(&result.name)
                 .file_name()

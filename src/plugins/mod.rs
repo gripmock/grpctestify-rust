@@ -1,3 +1,34 @@
+//! Assertion plugins — built-in functions for gRPC test assertions.
+//!
+//! Plugins extend the assertion engine with custom validation logic.
+//! Each plugin implements the [`Plugin`] trait and is registered with [`PluginManager`].
+//!
+//! # Type System
+//!
+//! Plugin signatures include full type information (`TypeInfo`, `ArgTypeInfo`)
+//! that is consumed by:
+//! - **Optimizer**: type-aware rewrites (e.g., `@len(.x) >= 0 → true`)
+//! - **LSP**: hover information, completion, signature help
+//! - **Semantics**: type-checking assertion expressions
+//! - **Explain/Inspect**: human-readable type information
+//!
+//! # Available Plugins
+//!
+//! | Plugin | Purpose | Returns |
+//! |--------|---------|---------|
+//! | `@uuid` | Validate UUID format | bool |
+//! | `@email` | Validate email format | bool |
+//! | `@ip` | Validate IP address | bool |
+//! | `@url` | Validate URL format | bool |
+//! | `@timestamp` | Validate Unix timestamp | bool |
+//! | `@regex` | Regex matching | bool |
+//! | `@len` / `@empty` | Length/emptiness checks | non-negative integer / bool |
+//! | `@header` / `@has_header` | HTTP header extraction/checks | string|null / bool |
+//! | `@trailer` / `@has_trailer` | gRPC trailer extraction/checks | string|null / bool |
+//! | `@env` | Environment variable (with optional default) | string|null |
+//! | `@elapsed_ms` / `@total_elapsed_ms` | Timing assertions | non-negative integer |
+//! | `@scope_message_count` / `@scope_index` | Streaming scope info | non-negative integer |
+
 pub mod email;
 pub mod empty;
 pub mod env;
@@ -9,24 +40,18 @@ pub mod regex;
 pub mod timestamp;
 pub mod timing;
 pub mod trailer_extract;
+pub mod type_info;
 pub mod url;
 pub mod uuid;
+
+pub use type_info::{ArgTypeInfo, TypeInfo, TypedPluginSignature};
 
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 
 use crate::assert::engine::AssertionResult;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PluginReturnKind {
-    Boolean,
-    Number,
-    String,
-    Value,
-    Unknown,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginPurity {
@@ -37,18 +62,24 @@ pub enum PluginPurity {
 
 #[derive(Debug, Clone, Copy)]
 pub struct PluginSignature {
-    pub return_kind: PluginReturnKind,
+    /// Extended return type — the single source of truth for return type information.
+    /// Used by optimizer, LSP hover, and semantics.
+    pub return_type: TypeInfo,
+    /// Type information for each argument (for LSP signature help).
+    pub arg_types: &'static [ArgTypeInfo],
     pub purity: PluginPurity,
     pub deterministic: bool,
     pub idempotent: bool,
     pub safe_for_rewrite: bool,
+    /// Human-readable argument names for signature display.
     pub arg_names: &'static [&'static str],
 }
 
 impl Default for PluginSignature {
     fn default() -> Self {
         Self {
-            return_kind: PluginReturnKind::Unknown,
+            return_type: TypeInfo::Any,
+            arg_types: &[],
             purity: PluginPurity::Impure,
             deterministic: false,
             idempotent: false,
@@ -156,6 +187,10 @@ pub fn plugin_signature_map() -> HashMap<String, PluginSignature> {
         .collect()
 }
 
+/// Cached plugin signatures — single source of truth for all modules.
+pub static PLUGIN_SIGNATURES: LazyLock<HashMap<String, PluginSignature>> =
+    LazyLock::new(plugin_signature_map);
+
 /// Manager to register and retrieve plugins
 pub struct PluginManager {
     plugins: RwLock<HashMap<String, Arc<dyn Plugin>>>,
@@ -193,24 +228,33 @@ impl PluginManager {
     pub fn register(&mut self, plugin: Arc<dyn Plugin>) {
         self.plugins
             .write()
-            .unwrap()
+            .expect("PluginManager write lock poisoned")
             .insert(plugin.name().to_string(), plugin);
     }
 
     pub fn register_with_name(&mut self, name: &str, plugin: Arc<dyn Plugin>) {
         self.plugins
             .write()
-            .unwrap()
+            .expect("PluginManager write lock poisoned")
             .insert(name.to_string(), plugin);
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Plugin>> {
         let normalized = normalize_plugin_name(name);
-        self.plugins.read().unwrap().get(normalized).cloned()
+        self.plugins
+            .read()
+            .expect("PluginManager read lock poisoned")
+            .get(normalized)
+            .cloned()
     }
 
     pub fn list(&self) -> Vec<Arc<dyn Plugin>> {
-        self.plugins.read().unwrap().values().cloned().collect()
+        self.plugins
+            .read()
+            .expect("PluginManager read lock poisoned")
+            .values()
+            .cloned()
+            .collect()
     }
 }
 
@@ -307,7 +351,7 @@ mod tests {
     fn test_signature_metadata_empty() {
         let manager = PluginManager::new();
         let signature = manager.get("empty").unwrap().signature();
-        assert_eq!(signature.return_kind, PluginReturnKind::Boolean);
+        assert_eq!(signature.return_type, TypeInfo::Bool);
         assert_eq!(signature.purity, PluginPurity::Pure);
         assert!(signature.deterministic);
         assert!(signature.idempotent);
@@ -318,8 +362,8 @@ mod tests {
     fn test_signature_metadata_env() {
         let manager = PluginManager::new();
         let signature = manager.get("env").unwrap().signature();
-        assert_eq!(signature.return_kind, PluginReturnKind::String);
-        assert_eq!(signature.purity, PluginPurity::ContextDependent);
+        assert_eq!(signature.return_type, TypeInfo::StringOrNull);
+        assert_eq!(signature.purity, PluginPurity::Impure);
         assert!(!signature.deterministic);
         assert!(!signature.idempotent);
         assert!(!signature.safe_for_rewrite);

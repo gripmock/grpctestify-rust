@@ -1,12 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::LazyLock;
 
 use crate::parser;
-use crate::plugins::{
-    PluginManager, PluginReturnKind, PluginSignature, extract_plugin_call_name,
-    plugin_signature_map,
-};
+use crate::plugins::{PluginManager, PluginSignature, TypeInfo, extract_plugin_call_name};
+use crate::utils::section_content_line;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssertionTypeMismatch {
@@ -28,43 +25,6 @@ pub struct UnknownPluginCall {
     pub suggestion: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ValueKind {
-    Boolean,
-    Number,
-    String,
-    Array,
-    Object,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum OperatorContractKind {
-    SameKnownType,
-    BothNumber,
-    BothString,
-    Contains,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct OperatorContract {
-    rule_id: &'static str,
-    kind: OperatorContractKind,
-}
-
-impl ValueKind {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Boolean => "boolean",
-            Self::Number => "number",
-            Self::String => "string",
-            Self::Array => "array",
-            Self::Object => "object",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
 fn operator_from_expression(expr: &str) -> Option<(&'static str, usize, usize)> {
     for op in ["==", "!=", ">=", "<=", ">", "<"] {
         if let Some(idx) = expr.find(op) {
@@ -82,36 +42,9 @@ fn operator_from_expression(expr: &str) -> Option<(&'static str, usize, usize)> 
     None
 }
 
-fn operator_contract(op: &str) -> Option<OperatorContract> {
-    match op {
-        "==" | "!=" => Some(OperatorContract {
-            rule_id: "SEM_T001",
-            kind: OperatorContractKind::SameKnownType,
-        }),
-        ">" | "<" | ">=" | "<=" => Some(OperatorContract {
-            rule_id: "SEM_T002",
-            kind: OperatorContractKind::BothNumber,
-        }),
-        "matches" | "startsWith" | "endsWith" => Some(OperatorContract {
-            rule_id: "SEM_T003",
-            kind: OperatorContractKind::BothString,
-        }),
-        "contains" => Some(OperatorContract {
-            rule_id: "SEM_T004",
-            kind: OperatorContractKind::Contains,
-        }),
-        _ => None,
-    }
-}
-
 fn plugin_signatures() -> &'static HashMap<String, PluginSignature> {
-    static PLUGIN_SIGNATURES: LazyLock<HashMap<String, PluginSignature>> =
-        LazyLock::new(plugin_signature_map);
+    use crate::plugins::PLUGIN_SIGNATURES;
     &PLUGIN_SIGNATURES
-}
-
-fn section_content_line(start_line: usize, idx: usize) -> usize {
-    start_line + idx + 2
 }
 
 fn extract_plugin_calls(expr: &str) -> Vec<String> {
@@ -181,39 +114,35 @@ fn best_plugin_suggestion(unknown: &str, known_plugins: &[String]) -> Option<Str
     })
 }
 
-fn infer_value_kind(expr: &str, signatures: &HashMap<String, PluginSignature>) -> ValueKind {
+fn infer_type_info(expr: &str, signatures: &HashMap<String, PluginSignature>) -> TypeInfo {
     let trimmed = expr.trim();
 
+    // Literals
     if trimmed == "true" || trimmed == "false" {
-        return ValueKind::Boolean;
+        return TypeInfo::Bool;
     }
-
     if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
-        return ValueKind::String;
+        return TypeInfo::String;
     }
-
     if trimmed.starts_with('[') && trimmed.ends_with(']') {
-        return ValueKind::Array;
+        return TypeInfo::Any; // array
     }
-
     if trimmed.starts_with('{') && trimmed.ends_with('}') {
-        return ValueKind::Object;
+        return TypeInfo::Any; // object
     }
-
     if trimmed.parse::<f64>().is_ok() {
-        return ValueKind::Number;
+        return TypeInfo::Number;
     }
 
-    if let Some(plugin_name) = extract_plugin_call_name(trimmed) {
-        return match signatures.get(plugin_name.as_str()).map(|s| s.return_kind) {
-            Some(PluginReturnKind::Boolean) => ValueKind::Boolean,
-            Some(PluginReturnKind::Number) => ValueKind::Number,
-            Some(PluginReturnKind::String) => ValueKind::String,
-            _ => ValueKind::Unknown,
-        };
+    // Plugin calls — use the plugin's TypeInfo
+    if let Some(plugin_name) = extract_plugin_call_name(trimmed)
+        && let Some(sig) = signatures.get(plugin_name.as_str())
+    {
+        return sig.return_type;
     }
 
-    ValueKind::Unknown
+    // JQ paths and variables are unknown
+    TypeInfo::Any
 }
 
 fn detect_type_mismatch(
@@ -221,98 +150,120 @@ fn detect_type_mismatch(
     signatures: &HashMap<String, PluginSignature>,
 ) -> Option<AssertionTypeMismatch> {
     let (op, op_idx, op_len) = operator_from_expression(expr)?;
-    let contract = operator_contract(op)?;
     let lhs = expr[..op_idx].trim();
     let rhs = expr[op_idx + op_len..].trim();
     if lhs.is_empty() || rhs.is_empty() {
         return None;
     }
 
-    let lhs_kind = infer_value_kind(lhs, signatures);
-    let rhs_kind = infer_value_kind(rhs, signatures);
+    let lhs_type = infer_type_info(lhs, signatures);
+    let rhs_type = infer_type_info(rhs, signatures);
 
-    match contract.kind {
-        OperatorContractKind::SameKnownType => {
-            if lhs_kind != ValueKind::Unknown
-                && rhs_kind != ValueKind::Unknown
-                && lhs_kind != rhs_kind
-            {
-                return Some(AssertionTypeMismatch {
-                    rule_id: contract.rule_id.to_string(),
-                    line: 0,
-                    expression: expr.to_string(),
-                    message: format!(
-                        "Type-incompatible comparison: {} is {}, but {} is {}",
-                        lhs,
-                        lhs_kind.as_str(),
-                        rhs,
-                        rhs_kind.as_str()
-                    ),
-                    expected: lhs_kind.as_str().to_string(),
-                    actual: rhs_kind.as_str().to_string(),
-                });
-            }
-        }
-        OperatorContractKind::BothNumber => {
-            for (side_expr, side_kind) in [(lhs, lhs_kind), (rhs, rhs_kind)] {
-                if side_kind != ValueKind::Unknown && side_kind != ValueKind::Number {
-                    return Some(AssertionTypeMismatch {
-                        rule_id: contract.rule_id.to_string(),
-                        line: 0,
-                        expression: expr.to_string(),
-                        message: format!(
-                            "Ordering operator '{}' requires numbers, but {} is {}",
-                            op,
-                            side_expr,
-                            side_kind.as_str()
-                        ),
-                        expected: "number".to_string(),
-                        actual: side_kind.as_str().to_string(),
-                    });
-                }
-            }
-        }
-        OperatorContractKind::BothString => {
-            for (side_expr, side_kind) in [(lhs, lhs_kind), (rhs, rhs_kind)] {
-                if side_kind != ValueKind::Unknown && side_kind != ValueKind::String {
-                    return Some(AssertionTypeMismatch {
-                        rule_id: contract.rule_id.to_string(),
-                        line: 0,
-                        expression: expr.to_string(),
-                        message: format!(
-                            "Operator '{}' requires strings, but {} is {}",
-                            op,
-                            side_expr,
-                            side_kind.as_str()
-                        ),
-                        expected: "string".to_string(),
-                        actual: side_kind.as_str().to_string(),
-                    });
-                }
-            }
-        }
-        OperatorContractKind::Contains => {
-            if lhs_kind == ValueKind::String
-                && rhs_kind != ValueKind::Unknown
-                && rhs_kind != ValueKind::String
-            {
-                return Some(AssertionTypeMismatch {
-                    rule_id: contract.rule_id.to_string(),
-                    line: 0,
-                    expression: expr.to_string(),
-                    message: format!(
-                        "Operator 'contains' with string LHS requires string RHS, but {} is {}",
-                        rhs,
-                        rhs_kind.as_str()
-                    ),
-                    expected: "string".to_string(),
-                    actual: rhs_kind.as_str().to_string(),
-                });
-            }
+    // Check if the operator is valid for the left-hand side type
+    let (valid, reason) = lhs_type.supports_operator(op);
+    if !valid {
+        return Some(AssertionTypeMismatch {
+            rule_id: "SEM_T005".to_string(),
+            line: 0,
+            expression: expr.to_string(),
+            message: format!(
+                "Operator '{}' is not valid for {}: {}",
+                op,
+                lhs_type.display_name(),
+                reason.unwrap_or("")
+            ),
+            expected: format!("a type that supports '{}'", op),
+            actual: lhs_type.display_name().to_string(),
+        });
+    }
+
+    // For comparison operators, also check type compatibility between LHS and RHS
+    if op == "==" || op == "!=" {
+        // Equality is allowed between most types, but flag obvious mismatches
+        if lhs_type != TypeInfo::Any
+            && rhs_type != TypeInfo::Any
+            && !types_compatible(lhs_type, rhs_type)
+        {
+            return Some(AssertionTypeMismatch {
+                rule_id: "SEM_T001".to_string(),
+                line: 0,
+                expression: expr.to_string(),
+                message: format!(
+                    "Type-incompatible comparison: {} is {}, but {} is {}",
+                    lhs,
+                    lhs_type.display_name(),
+                    rhs,
+                    rhs_type.display_name()
+                ),
+                expected: lhs_type.display_name().to_string(),
+                actual: rhs_type.display_name().to_string(),
+            });
         }
     }
 
+    if matches!(op, ">" | "<" | ">=" | "<=") && !rhs_type.is_numeric() && rhs_type != TypeInfo::Any
+    {
+        return Some(AssertionTypeMismatch {
+            rule_id: "SEM_T002".to_string(),
+            line: 0,
+            expression: expr.to_string(),
+            message: format!(
+                "Ordering operator '{}' requires a number on the right, but {} is {}",
+                op,
+                rhs,
+                rhs_type.display_name()
+            ),
+            expected: "number".to_string(),
+            actual: rhs_type.display_name().to_string(),
+        });
+    }
+
+    if matches!(op, "contains" | "startsWith" | "endsWith" | "matches")
+        && !rhs_type.is_stringy()
+        && rhs_type != TypeInfo::Any
+    {
+        return Some(AssertionTypeMismatch {
+            rule_id: "SEM_T003".to_string(),
+            line: 0,
+            expression: expr.to_string(),
+            message: format!(
+                "Operator '{}' requires a string on the right, but {} is {}",
+                op,
+                rhs,
+                rhs_type.display_name()
+            ),
+            expected: "string".to_string(),
+            actual: rhs_type.display_name().to_string(),
+        });
+    }
+
     None
+}
+
+/// Check if two types can be reasonably compared with ==/!=.
+fn types_compatible(a: TypeInfo, b: TypeInfo) -> bool {
+    if a == b {
+        return true;
+    }
+    // Numeric types are compatible
+    if a.is_numeric() && b.is_numeric() {
+        return true;
+    }
+    // String-like types are compatible
+    if a.is_stringy() && b.is_stringy() {
+        return true;
+    }
+    // Bool is compatible with BoolOrNull
+    if matches!(a, TypeInfo::Bool | TypeInfo::BoolOrNull)
+        && matches!(b, TypeInfo::Bool | TypeInfo::BoolOrNull)
+    {
+        return true;
+    }
+    // Unknown (Any) is compatible with anything
+    if a == TypeInfo::Any || b == TypeInfo::Any {
+        return true;
+    }
+    false
 }
 
 pub fn validate_plugin_semantics_completeness() -> Vec<String> {
@@ -321,8 +272,8 @@ pub fn validate_plugin_semantics_completeness() -> Vec<String> {
         let name = plugin.name().to_string();
         let sig = plugin.signature();
 
-        if sig.return_kind == PluginReturnKind::Unknown {
-            issues.push(format!("{}: return_kind is Unknown", name));
+        if sig.return_type == TypeInfo::Any {
+            issues.push(format!("{}: return_type is Any (unknown)", name));
         }
         let _ = sig.arg_names;
     }
@@ -447,7 +398,8 @@ test.Service/Method
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
         let mismatches = collect_assertion_type_mismatches(&doc);
         assert_eq!(mismatches.len(), 1);
-        assert_eq!(mismatches[0].rule_id, "SEM_T003");
+        // SEM_T005: startsWith is not valid for non-string LHS (UInt from @len)
+        assert_eq!(mismatches[0].rule_id, "SEM_T005");
     }
 
     #[test]
