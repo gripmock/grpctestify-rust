@@ -347,3 +347,88 @@ fn test_console_reporter_print_slowest_tests() {
     // Act: Should not panic
     reporter.print_slowest_tests(&results, 2);
 }
+
+#[test]
+fn test_coverage_collector_new() {
+    let collector = grpctestify::report::coverage::CoverageCollector::new();
+    let report = collector.generate_json_report();
+    assert_eq!(report.files.len(), 0);
+    assert_eq!(report.messages.len(), 0);
+    assert_eq!(report.summary.covered, 0);
+    assert_eq!(report.summary.total, 0);
+}
+
+#[test]
+fn test_coverage_collector_record_call() {
+    let collector = grpctestify::report::coverage::CoverageCollector::new();
+    collector.record_call("TestService", "TestMethod");
+    collector.record_call("TestService", "TestMethod");
+    collector.record_call("TestService", "OtherMethod");
+
+    let report = collector.generate_json_report();
+    assert_eq!(report.summary.covered, 0);
+    assert_eq!(report.summary.total, 0);
+}
+
+#[test]
+fn test_coverage_collector_extract_fields() {
+    let collector = grpctestify::report::coverage::CoverageCollector::new();
+    let json = serde_json::json!({
+        "name": "test",
+        "age": 30,
+        "nested": {
+            "key": "value"
+        }
+    });
+    collector.record_fields_from_json("TestMessage", &json);
+
+    let report = collector.generate_json_report();
+    assert_eq!(report.messages.len(), 0);
+}
+
+#[test]
+fn test_coverage_stats() {
+    let stats = grpctestify::report::coverage::CoverageStats {
+        covered: 5,
+        total: 10,
+    };
+    assert_eq!(stats.covered, 5);
+    assert_eq!(stats.total, 10);
+}
+
+#[test]
+fn test_coverage_file() {
+    let file = grpctestify::report::coverage::CoverageFile {
+        uri: "grpc://test.Service".to_string(),
+        statements: grpctestify::report::coverage::CoverageStats {
+            covered: 2,
+            total: 5,
+        },
+        branches: None,
+        functions: Some(grpctestify::report::coverage::CoverageStats {
+            covered: 2,
+            total: 5,
+        }),
+        fields: None,
+    };
+    assert_eq!(file.uri, "grpc://test.Service");
+    assert_eq!(file.functions.as_ref().unwrap().covered, 2);
+}
+
+#[test]
+fn test_message_field_coverage() {
+    let msg = grpctestify::report::coverage::MessageFieldCoverage {
+        message_type: "User".to_string(),
+        covered_fields: vec!["name".to_string(), "email".to_string()],
+        total_fields: 3,
+    };
+    assert_eq!(msg.message_type, "User");
+    assert_eq!(msg.covered_fields.len(), 2);
+}
+
+#[test]
+fn test_coverage_text_report_empty() {
+    let collector = grpctestify::report::coverage::CoverageCollector::new();
+    let text = collector.generate_text_report();
+    assert!(text.contains("No services found"));
+}

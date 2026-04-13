@@ -317,3 +317,174 @@ pub fn typed_plugin_signatures() -> std::collections::HashMap<String, TypedPlugi
 
     map
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_type_info_is_truthy() {
+        assert!(TypeInfo::Bool.is_truthy());
+        assert!(TypeInfo::BoolOrNull.is_truthy());
+        assert!(!TypeInfo::String.is_truthy());
+        assert!(!TypeInfo::UInt.is_truthy());
+    }
+
+    #[test]
+    fn test_type_info_is_numeric() {
+        assert!(TypeInfo::UInt.is_numeric());
+        assert!(TypeInfo::Number.is_numeric());
+        assert!(!TypeInfo::String.is_numeric());
+    }
+
+    #[test]
+    fn test_type_info_is_stringy() {
+        assert!(TypeInfo::String.is_stringy());
+        assert!(TypeInfo::StringOrNull.is_stringy());
+        assert!(TypeInfo::Uuid.is_stringy());
+        assert!(TypeInfo::Email.is_stringy());
+        assert!(TypeInfo::Url.is_stringy());
+        assert!(TypeInfo::Ip.is_stringy());
+        assert!(!TypeInfo::Bool.is_stringy());
+    }
+
+    #[test]
+    fn test_type_info_is_nullable() {
+        assert!(TypeInfo::BoolOrNull.is_nullable());
+        assert!(TypeInfo::StringOrNull.is_nullable());
+        assert!(TypeInfo::JsonOrNull.is_nullable());
+        assert!(TypeInfo::YamlOrNull.is_nullable());
+        assert!(TypeInfo::Any.is_nullable());
+        assert!(!TypeInfo::Bool.is_nullable());
+    }
+
+    #[test]
+    fn test_type_info_base_type() {
+        assert_eq!(TypeInfo::BoolOrNull.base_type(), TypeInfo::Bool);
+        assert_eq!(TypeInfo::StringOrNull.base_type(), TypeInfo::String);
+        assert_eq!(TypeInfo::Uuid.base_type(), TypeInfo::String);
+        assert_eq!(TypeInfo::Email.base_type(), TypeInfo::String);
+        assert_eq!(TypeInfo::Url.base_type(), TypeInfo::String);
+        assert_eq!(TypeInfo::Ip.base_type(), TypeInfo::String);
+        assert_eq!(TypeInfo::Bool.base_type(), TypeInfo::Bool);
+    }
+
+    #[test]
+    fn test_type_info_display_name() {
+        assert_eq!(TypeInfo::Bool.display_name(), "bool");
+        assert_eq!(TypeInfo::UInt.display_name(), "non-negative integer");
+        assert_eq!(TypeInfo::Number.display_name(), "number");
+        assert_eq!(TypeInfo::String.display_name(), "string");
+        assert_eq!(TypeInfo::Json.display_name(), "json");
+        assert_eq!(TypeInfo::Yaml.display_name(), "yaml");
+        assert_eq!(TypeInfo::Any.display_name(), "any");
+        assert_eq!(TypeInfo::BoolOrNull.display_name(), "bool | null");
+        assert_eq!(TypeInfo::Uuid.display_name(), "uuid (string)");
+        assert_eq!(TypeInfo::Email.display_name(), "email (string)");
+        assert_eq!(TypeInfo::Url.display_name(), "url (string)");
+        assert_eq!(TypeInfo::Ip.display_name(), "ip address (string)");
+    }
+
+    #[test]
+    fn test_type_info_supports_operator() {
+        let (valid, _) = TypeInfo::Bool.supports_operator("==");
+        assert!(valid);
+
+        let (valid, reason) = TypeInfo::Bool.supports_operator("<");
+        assert!(!valid);
+        assert!(reason.is_some());
+
+        let (valid, reason) = TypeInfo::String.supports_operator("<");
+        assert!(!valid);
+        assert!(reason.is_some());
+
+        let (valid, _) = TypeInfo::String.supports_operator("contains");
+        assert!(valid);
+
+        let (valid, _) = TypeInfo::Number.supports_operator("contains");
+        assert!(!valid);
+
+        let (valid, _) = TypeInfo::Uuid.supports_operator("==");
+        assert!(valid);
+
+        let (valid, reason) = TypeInfo::Uuid.supports_operator(">");
+        assert!(!valid);
+        assert!(reason.is_some());
+
+        let (valid, _reason) = TypeInfo::Uuid.supports_operator("contains");
+        assert!(valid);
+
+        let (valid, _) = TypeInfo::Any.supports_operator("==");
+        assert!(valid);
+    }
+
+    #[test]
+    fn test_typed_plugin_signature_valid_arg_count() {
+        let sig = TypedPluginSignature {
+            return_type: TypeInfo::Bool,
+            arg_types: &[
+                ArgTypeInfo {
+                    expected: TypeInfo::String,
+                    required: true,
+                    default: None,
+                },
+                ArgTypeInfo {
+                    expected: TypeInfo::String,
+                    required: false,
+                    default: Some("default"),
+                },
+            ],
+            purity: crate::plugins::PluginPurity::Pure,
+            deterministic: true,
+            idempotent: true,
+            safe_for_rewrite: true,
+        };
+
+        assert!(sig.valid_arg_count(1));
+        assert!(sig.valid_arg_count(2));
+        assert!(!sig.valid_arg_count(0));
+        assert!(!sig.valid_arg_count(3));
+    }
+
+    #[test]
+    fn test_typed_plugin_signature_count() {
+        let sig = TypedPluginSignature {
+            return_type: TypeInfo::Bool,
+            arg_types: &[
+                ArgTypeInfo {
+                    expected: TypeInfo::String,
+                    required: true,
+                    default: None,
+                },
+                ArgTypeInfo {
+                    expected: TypeInfo::String,
+                    required: false,
+                    default: Some("default"),
+                },
+            ],
+            purity: crate::plugins::PluginPurity::Pure,
+            deterministic: true,
+            idempotent: true,
+            safe_for_rewrite: true,
+        };
+
+        assert_eq!(sig.arg_type(0), Some(TypeInfo::String));
+        assert_eq!(sig.arg_type(1), Some(TypeInfo::String));
+        assert_eq!(sig.arg_type(2), None);
+    }
+
+    #[test]
+    fn test_typed_plugin_signatures() {
+        let sigs = typed_plugin_signatures();
+        assert!(sigs.contains_key("@uuid"));
+        assert!(sigs.contains_key("@email"));
+        assert!(sigs.contains_key("@ip"));
+        assert!(sigs.contains_key("@url"));
+        assert!(sigs.contains_key("@len"));
+        assert!(sigs.contains_key("@empty"));
+        assert!(sigs.contains_key("@header"));
+        assert!(sigs.contains_key("@trailer"));
+        assert!(sigs.contains_key("@env"));
+        assert!(sigs.contains_key("@elapsed_ms"));
+    }
+}
