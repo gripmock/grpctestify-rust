@@ -14,6 +14,13 @@ pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
         std::env::var(config::ENV_GRPCTESTIFY_ADDRESS).unwrap_or_else(|_| config::default_address())
     };
 
+    if args.plaintext && address.starts_with("https://") {
+        anyhow::bail!(
+            "--plaintext cannot be used with an https:// address ('{}'). Use http:// or host:port.",
+            address
+        );
+    }
+
     // Build client config
     let config = GrpcClientConfig {
         address,
@@ -32,6 +39,12 @@ pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
         .context("Failed to connect to gRPC server")?;
 
     let pool = client.descriptor_pool();
+
+    if let Some(symbol) = args.symbol.as_deref() {
+        let output = client.describe(Some(symbol))?;
+        println!("\n{}", output);
+        return Ok(());
+    }
 
     println!("\nAvailable services:");
 

@@ -66,7 +66,7 @@ pub struct Cli {
 pub enum Commands {
     /// Run tests (default)
     Run(Box<RunArgs>),
-    /// Reflect gRPC service and generate test templates
+    /// Reflect gRPC service and list methods
     Reflect(ReflectArgs),
     /// Format files
     Fmt(FmtArgs),
@@ -74,9 +74,9 @@ pub enum Commands {
     Check(CheckArgs),
     /// Show test information
     Inspect(InspectArgs),
-    /// Explain test results
+    /// Explain test execution flow
     Explain(ExplainArgs),
-    /// List available plugins
+    /// List discovered .gctf test files
     List(ListArgs),
     /// LSP server
     Lsp(LspArgs),

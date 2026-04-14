@@ -2,9 +2,17 @@
 
 Install and set up gRPC Testify (Rust).
 
+Homebrew is usually the fastest on macOS/Linux.
+
+## Quick decision
+
+- macOS/Linux developer machine -> Homebrew
+- Rust-first workflow -> Cargo
+- CI or pinned binary setup -> GitHub Releases
+
 ## Prerequisites
 
-- Docker is optional (for example servers)
+- A reachable gRPC endpoint for validation runs
 
 ## Install
 
@@ -41,6 +49,8 @@ grpctestify --version
 grpctestify --help
 ```
 
+Expected result: command runs without errors and prints version/help.
+
 ## Quick Check
 
 ```bash
@@ -63,17 +73,12 @@ grpctestify test.gctf
 
 ## Next Steps
 
-1. [Write Your First Test](first-test.md)
-2. [Learn Basic Concepts](basic-concepts.md)
-3. [Explore Examples](../examples/)
+1. [Write Your First Test](first-test)
+2. [Learn Basic Concepts](basic-concepts)
+3. [Read CLI Reference](../reference/api/command-line)
 
 ## Troubleshooting
 
 - If `grpctestify` is not found, ensure install path is in `PATH`
 - If connection fails, verify your gRPC server address and availability
 - For TLS issues, validate your cert paths in `TLS` section
-
-## Support
-
-- [Troubleshooting Guide](../troubleshooting)
-- [GitHub Issues](https://github.com/gripmock/grpctestify-rust/issues)

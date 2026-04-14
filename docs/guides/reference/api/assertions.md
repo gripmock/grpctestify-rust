@@ -2,15 +2,26 @@
 
 Use `ASSERTS` to validate responses.
 
+Each line in `ASSERTS` is evaluated as a boolean expression.
+
+Rule of thumb: use `RESPONSE` for exact payload checks, `ASSERTS` for intent checks.
+
 ## Basic examples
 
 ```gctf
 --- ASSERTS ---
 .status == "ok"
-.count > 0
-.items | length > 0
+.count != null
+@len(.items) > 0
 .user.email | test("@")
 ```
+
+## Recommended style
+
+- Start with high-signal checks (`.status`, IDs, required fields)
+- Prefer semantic checks over full payload equality
+- Use direct boolean plugin calls (`@has_header("x-id")`) instead of `== true`
+- Use negation for absence checks (`!@has_trailer("grpc-status-details-bin")`)
 
 ## Metadata helpers
 
@@ -22,10 +33,10 @@ Use `ASSERTS` to validate responses.
 
 ## Timing helpers
 
-Timing helpers are available inside `ASSERTS` and are most useful with `RESPONSE with_asserts=true`:
+Timing helpers are available inside `ASSERTS` and are most useful with `RESPONSE with_asserts`:
 
 ```gctf
---- RESPONSE with_asserts=true ---
+--- RESPONSE with_asserts ---
 {
   "status": "NOT_SERVING"
 }
@@ -48,25 +59,29 @@ Scope behavior:
 
 - Single message in `RESPONSE` section -> single-message scope.
 - Multiple messages in one `RESPONSE` section -> batch scope for the whole section.
+- `ASSERTS` following `ERROR with_asserts` use the current error event scope.
 
 ## Type helpers
 
 ```gctf
 --- ASSERTS ---
-@uuid(.user.id, "v4")
+@uuid(.user.id)
 @email(.user.email)
-@url(.profile.website, "https")
-@ip(.client_ip, "v4")
-@timestamp(.created_at, "rfc3339")
+@url(.profile.website)
+@ip(.client_ip)
+@timestamp(.created_at)
 ```
+
+## String helpers
+
+Preferred canonical operators:
+
+- `contains`
+- `startsWith`
+- `endsWith`
 
 ## Notes
 
-- `ASSERTS` can be used alone or together with `RESPONSE with_asserts=true`
-- For unary tests, prefer either strict `RESPONSE` matching or `ASSERTS`
-
-## Preferred style
-
-- Use boolean plugin calls directly: `@has_header("x-id")` instead of `@has_header("x-id") == true`
-- Use negation for false checks: `!@has_trailer("grpc-status-details-bin")`
-- Use canonical operators: `startsWith` and `endsWith`
+- `ASSERTS` can be used alone or together with `RESPONSE with_asserts`
+- For unary tests, use one style per test: strict `RESPONSE` or `ASSERTS`
+- For a full plugin catalog, see [Plugin System](../../plugins/)

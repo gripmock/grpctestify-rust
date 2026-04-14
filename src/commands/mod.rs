@@ -59,10 +59,11 @@ pub fn handle_completion(shell_type: &str) -> Result<()> {
         "bash" => Shell::Bash,
         "zsh" => Shell::Zsh,
         "fish" => Shell::Fish,
+        "elvish" => Shell::Elvish,
         "powershell" => Shell::PowerShell,
         _ => {
             anyhow::bail!(
-                "Unsupported shell: {}. Supported: bash, zsh, fish, powershell",
+                "Unsupported shell: {}. Supported: bash, zsh, fish, elvish, powershell",
                 shell_type
             );
         }
