@@ -700,7 +700,28 @@ impl LanguageServer for GrpctestifyLsp {
                     retrigger_characters: None,
                     work_done_progress_options: Default::default(),
                 }),
-                semantic_tokens_provider: None,
+                semantic_tokens_provider: Some(
+                    SemanticTokensOptions {
+                        work_done_progress_options: WorkDoneProgressOptions {
+                            work_done_progress: Some(false),
+                        },
+                        legend: SemanticTokensLegend {
+                            token_types: vec![
+                                SemanticTokenType::KEYWORD,
+                                SemanticTokenType::VARIABLE,
+                                SemanticTokenType::FUNCTION,
+                                SemanticTokenType::NUMBER,
+                                SemanticTokenType::OPERATOR,
+                                SemanticTokenType::STRING,
+                                SemanticTokenType::REGEXP,
+                            ],
+                            token_modifiers: vec![],
+                        },
+                        range: None,
+                        full: Some(SemanticTokensFullOptions::Bool(true)),
+                    }
+                    .into(),
+                ),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 ..Default::default()
