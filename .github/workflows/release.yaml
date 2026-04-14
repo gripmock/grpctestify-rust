@@ -113,7 +113,7 @@ jobs:
           fpm -s dir -t deb -n grpctestify -v "${RELEASE_VERSION}" -a amd64 --license MIT --url "https://github.com/gripmock/grpctestify-rust" --description "gRPC testing utility written in Rust" -C pkg usr/bin/grpctestify
           fpm -s dir -t rpm -n grpctestify -v "${RELEASE_VERSION}" -a x86_64 --license MIT --url "https://github.com/gripmock/grpctestify-rust" --description "gRPC testing utility written in Rust" -C pkg usr/bin/grpctestify
       - name: Upload artifacts
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             ${{ matrix.artifact_name }}
@@ -136,6 +136,6 @@ jobs:
           files=(grpctestify-* grpctestify_*)
           sha256sum "${files[@]}" > checksums.txt
       - name: Upload
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: checksums.txt
