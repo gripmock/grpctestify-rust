@@ -33,7 +33,8 @@ package.Service/Method
 - `REQUEST_HEADERS` - request metadata
 - `TLS` - TLS/mTLS parameters
 - `PROTO` - descriptor/reflection configuration
-- `OPTIONS` - parsed, validated, and used for per-test runtime overrides (`timeout`, `retry`, `retry-delay`, `no-retry`, `compression`)
+- `OPTIONS` - parsed, validated, and used for per-test runtime overrides
+  (`timeout`, `retry`, `retry-delay`, `no-retry`, `compression`)
 
 Use [Section Reference](../reference/sections/) for exact syntax and section rules.
 
