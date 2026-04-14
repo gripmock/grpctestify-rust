@@ -205,6 +205,7 @@ fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::polyfill::runtime;
 
     #[test]
     fn test_parse_sections_basic() {
@@ -364,6 +365,9 @@ total = .response.total
 
     #[test]
     fn test_parse_with_diagnostics_file_not_found() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
         let result = parse_gctf_with_diagnostics(Path::new("/nonexistent/file.gctf"));
         assert!(result.is_err());
     }
