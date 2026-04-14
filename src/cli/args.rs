@@ -57,14 +57,6 @@ pub struct Cli {
     #[arg(short = 'c', long, global = true, default_value_t = false)]
     pub no_color: bool,
 
-    /// Show current configuration and exit
-    #[arg(long, default_value_t = false)]
-    pub config: bool,
-
-    /// Create default configuration file
-    #[arg(long, value_name = "CONFIG_FILE")]
-    pub init_config: Option<PathBuf>,
-
     /// Install shell completion (bash, zsh, fish, elvish, powershell)
     #[arg(long, value_name = "SHELL_TYPE", value_parser = ["bash", "zsh", "fish", "elvish", "powershell"])]
     pub completion: Option<String>,
@@ -73,27 +65,20 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Run tests (default)
-    Run(RunArgs),
-
-    /// Explain test execution workflow
-    Explain(ExplainArgs),
-
-    /// Inspect .gctf file structure (AST and Workflow)
-    Inspect(InspectArgs),
-
-    /// List test files (for IDE test discovery)
-    List(ListArgs),
-
-    /// Reflect on server metadata (uses gRPC Server Reflection Protocol)
+    Run(Box<RunArgs>),
+    /// Reflect gRPC service and generate test templates
     Reflect(ReflectArgs),
-
-    /// Format .gctf files
+    /// Format files
     Fmt(FmtArgs),
-
-    /// Check .gctf file syntax and structure
+    /// Validate files
     Check(CheckArgs),
-
-    /// Start LSP server for IDE integration
+    /// Show test information
+    Inspect(InspectArgs),
+    /// Explain test results
+    Explain(ExplainArgs),
+    /// List available plugins
+    List(ListArgs),
+    /// LSP server
     Lsp(LspArgs),
 }
 
@@ -167,6 +152,14 @@ pub struct RunArgs {
     /// Exclude files/directories matching the given glob pattern (can be used multiple times)
     #[arg(long = "exclude", value_name = "PATTERN")]
     pub exclude: Vec<String>,
+
+    /// Filter by tags (AND - file must have ALL tags)
+    #[arg(long = "tags", value_name = "TAGS")]
+    pub tags: Vec<String>,
+
+    /// Skip files with these tags (NOT OR - exclude if ANY matches)
+    #[arg(long = "skip-tags", value_name = "TAGS")]
+    pub skip_tags: Vec<String>,
 
     /// Run tests in parallel with N workers
     #[arg(short = 'p', long, default_value = "auto")]
@@ -323,27 +316,36 @@ fn is_json_format(value: &str) -> bool {
     value.eq_ignore_ascii_case("json")
 }
 
-impl ListArgs {
-    pub fn is_json(&self) -> bool {
-        is_json_format(&self.format)
+/// Trait for CLI argument types that have a `--format` option.
+pub trait HasFormat {
+    fn format(&self) -> &str;
+
+    fn is_json(&self) -> bool {
+        is_json_format(self.format())
     }
 }
 
-impl InspectArgs {
-    pub fn is_json(&self) -> bool {
-        is_json_format(&self.format)
+impl HasFormat for ListArgs {
+    fn format(&self) -> &str {
+        &self.format
     }
 }
 
-impl ExplainArgs {
-    pub fn is_json(&self) -> bool {
-        is_json_format(&self.format)
+impl HasFormat for InspectArgs {
+    fn format(&self) -> &str {
+        &self.format
     }
 }
 
-impl CheckArgs {
-    pub fn is_json(&self) -> bool {
-        is_json_format(&self.format)
+impl HasFormat for ExplainArgs {
+    fn format(&self) -> &str {
+        &self.format
+    }
+}
+
+impl HasFormat for CheckArgs {
+    fn format(&self) -> &str {
+        &self.format
     }
 }
 

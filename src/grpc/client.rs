@@ -326,6 +326,23 @@ fn insert_request_metadata(
     meta: &mut MetadataMap,
     custom_metadata: Option<&HashMap<String, String>>,
 ) {
+    let custom_ua = custom_metadata.and_then(|m| {
+        m.iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("user-agent"))
+            .map(|(_, v)| v.as_str())
+    });
+
+    if let Some(ua) = custom_ua {
+        if let Ok(val) = MetadataValue::from_str(ua) {
+            meta.insert("user-agent", val);
+        }
+    } else {
+        let ua = format!("grpctestify/{}", env!("CARGO_PKG_VERSION"));
+        if let Ok(val) = MetadataValue::from_str(&ua) {
+            meta.insert("user-agent", val);
+        }
+    }
+
     if let Some(metadata) = custom_metadata {
         for (k, v) in metadata {
             if k.eq_ignore_ascii_case("user-agent") {
@@ -821,5 +838,71 @@ mod tests {
         }
         let mode = CompressionMode::from_env();
         assert_eq!(mode, CompressionMode::None);
+    }
+
+    #[test]
+    fn test_insert_request_metadata_sets_default_user_agent() {
+        let mut meta = MetadataMap::new();
+
+        insert_request_metadata(&mut meta, None);
+
+        let expected = format!("grpctestify/{}", env!("CARGO_PKG_VERSION"));
+        let ua = meta
+            .get("user-agent")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(ua, expected);
+    }
+
+    #[test]
+    fn test_insert_request_metadata_uses_custom_user_agent() {
+        let mut meta = MetadataMap::new();
+        let mut custom = HashMap::new();
+        custom.insert("user-agent".to_string(), "my-agent/2.0".to_string());
+
+        insert_request_metadata(&mut meta, Some(&custom));
+
+        let ua = meta
+            .get("user-agent")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(ua, "my-agent/2.0");
+    }
+
+    #[test]
+    fn test_insert_request_metadata_user_agent_case_insensitive() {
+        let mut meta = MetadataMap::new();
+        let mut custom = HashMap::new();
+        custom.insert("User-Agent".to_string(), "my-agent/3.0".to_string());
+
+        insert_request_metadata(&mut meta, Some(&custom));
+
+        let ua = meta
+            .get("user-agent")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(ua, "my-agent/3.0");
+    }
+
+    #[test]
+    fn test_insert_request_metadata_keeps_custom_headers() {
+        let mut meta = MetadataMap::new();
+        let mut custom = HashMap::new();
+        custom.insert("x-trace-id".to_string(), "trace-123".to_string());
+        custom.insert("User-Agent".to_string(), "my-agent/4.0".to_string());
+
+        insert_request_metadata(&mut meta, Some(&custom));
+
+        let trace = meta
+            .get("x-trace-id")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let ua = meta
+            .get("user-agent")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        assert_eq!(trace, "trace-123");
+        assert_eq!(ua, "my-agent/4.0");
     }
 }

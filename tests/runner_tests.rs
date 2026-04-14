@@ -44,7 +44,7 @@ fn test_validate_response_exact_match() {
     let mut response = GrpcResponse::new();
     response.messages.push(json!({"foo": "bar"}));
 
-    let result = runner.validate_response(&doc, &response, 100);
+    let result = runner.validate_response(&doc, &response);
 
     assert_eq!(result.status, TestExecutionStatus::Pass);
 }
@@ -81,7 +81,7 @@ fn test_validate_response_with_asserts() {
     let mut response = GrpcResponse::new();
     response.messages.push(json!({"foo": "bar"}));
 
-    let result = runner.validate_response(&doc, &response, 100);
+    let result = runner.validate_response(&doc, &response);
 
     assert_eq!(result.status, TestExecutionStatus::Pass);
 }
@@ -108,7 +108,7 @@ fn test_validate_response_with_asserts_fail() {
     let mut response = GrpcResponse::new();
     response.messages.push(json!({"foo": "bar"}));
 
-    let result = runner.validate_response(&doc, &response, 100);
+    let result = runner.validate_response(&doc, &response);
 
     match result.status {
         TestExecutionStatus::Fail(msg) => {
@@ -153,7 +153,7 @@ fn test_validate_response_mixed_asserts() {
     response.messages.push(json!({"id": 1}));
     response.messages.push(json!({"id": 2}));
 
-    let result = runner.validate_response(&doc, &response, 100);
+    let result = runner.validate_response(&doc, &response);
 
     assert_eq!(result.status, TestExecutionStatus::Pass);
 }
@@ -173,7 +173,7 @@ fn test_validate_response_mismatch() {
     let mut response = GrpcResponse::new();
     response.messages.push(json!({"foo": "baz"}));
 
-    let result = runner.validate_response(&doc, &response, 100);
+    let result = runner.validate_response(&doc, &response);
 
     match result.status {
         TestExecutionStatus::Fail(msg) => {
@@ -201,7 +201,7 @@ fn test_validate_response_partial() {
     let mut response = GrpcResponse::new();
     response.messages.push(json!({"foo": "bar", "extra": 1}));
 
-    let result = runner.validate_response(&doc, &response, 100);
+    let result = runner.validate_response(&doc, &response);
 
     assert_eq!(result.status, TestExecutionStatus::Pass);
 }
@@ -220,7 +220,7 @@ fn test_validate_response_partial_fail() {
     let mut response = GrpcResponse::new();
     response.messages.push(json!({"foo": "bar", "extra": 1}));
 
-    let result = runner.validate_response(&doc, &response, 100);
+    let result = runner.validate_response(&doc, &response);
 
     match result.status {
         TestExecutionStatus::Fail(msg) => {
@@ -254,7 +254,7 @@ fn test_validate_response_multiple() {
     response.messages.push(json!({"id": 1}));
     response.messages.push(json!({"id": 2}));
 
-    let result = runner.validate_response(&doc, &response, 100);
+    let result = runner.validate_response(&doc, &response);
 
     assert_eq!(result.status, TestExecutionStatus::Pass);
 }
@@ -281,7 +281,7 @@ fn test_validate_response_count_mismatch() {
     let mut response = GrpcResponse::new();
     response.messages.push(json!({"id": 1}));
 
-    let result = runner.validate_response(&doc, &response, 100);
+    let result = runner.validate_response(&doc, &response);
 
     match result.status {
         TestExecutionStatus::Fail(msg) => {
@@ -312,7 +312,7 @@ fn test_validate_response_unordered_arrays() {
     let mut response = GrpcResponse::new();
     response.messages.push(json!([{"id": 1}, {"id": 2}]));
 
-    let result = runner.validate_response(&doc, &response, 100);
+    let result = runner.validate_response(&doc, &response);
 
     assert_eq!(result.status, TestExecutionStatus::Pass);
 }
@@ -333,7 +333,7 @@ fn test_validate_response_unordered_arrays_fail() {
     let mut response = GrpcResponse::new();
     response.messages.push(json!([{"id": 1}, {"id": 2}]));
 
-    let result = runner.validate_response(&doc, &response, 100);
+    let result = runner.validate_response(&doc, &response);
 
     match result.status {
         TestExecutionStatus::Fail(msg) => {
@@ -388,7 +388,7 @@ fn test_validate_response_extract() {
     response.messages.push(json!({"id": 123}));
     response.messages.push(json!({"echo": 123}));
 
-    let result = runner.validate_response(&doc, &response, 100);
+    let result = runner.validate_response(&doc, &response);
 
     match result.status {
         TestExecutionStatus::Pass => {}

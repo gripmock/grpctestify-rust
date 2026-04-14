@@ -1,5 +1,6 @@
 // Explain command - show detailed execution plan via Workflow
 
+use crate::cli::args::HasFormat;
 use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
@@ -138,6 +139,23 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
             println!("EXECUTION PLAN");
             println!("==============");
             println!();
+        }
+
+        // Print META once at file level (before documents)
+        if total_docs > 1 {
+            for section in &doc.sections {
+                if section.section_type == SectionType::Meta
+                    && let SectionContent::Meta(m) = &section.content
+                {
+                    println!("META");
+                    println!("----");
+                    if !m.tags.is_empty() {
+                        println!("  tags: {:?}", m.tags);
+                    }
+                    println!();
+                    break;
+                }
+            }
         }
 
         // Print each document via workflow
@@ -334,8 +352,16 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
     // Assertions from workflow
     let workflow = Workflow::from_document_with_analysis(doc);
     for event in &workflow.events {
-        if let crate::execution::WorkflowEvent::Assert { count, .. } = event {
-            println!("  ✓ {} assertion(s)", count);
+        if let crate::execution::WorkflowEvent::Assert {
+            count, line_range, ..
+        } = event
+        {
+            println!(
+                "  ✓ {} assertion(s) at lines {}-{}",
+                count,
+                line_range.0 + 1,
+                line_range.1 + 1
+            );
         }
         if let crate::execution::WorkflowEvent::SemanticAnalysis {
             type_mismatches,
@@ -353,12 +379,50 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
         }
     }
 
+    for section in &doc.sections {
+        if section.section_type == SectionType::Asserts
+            && let SectionContent::Assertions(assertions) = &section.content
+        {
+            for (i, a) in assertions.iter().enumerate() {
+                let rewritten = optimizer::rewrite_assertion_expression_fixed_point(a);
+                println!("    {}. {}", i + 1, rewritten);
+            }
+        }
+    }
+
     println!();
 }
 
 fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
     println!("FILE: {}", file_path.display());
     println!();
+
+    // META section (if present)
+    for section in &doc.sections {
+        if section.section_type == SectionType::Meta
+            && let SectionContent::Meta(m) = &section.content
+        {
+            println!("META");
+            println!("----");
+            if let Some(name) = &m.name {
+                println!("  name: {}", name);
+            }
+            if let Some(summary) = &m.summary {
+                println!("  summary: {}", summary);
+            }
+            if !m.tags.is_empty() {
+                println!("  tags: {:?}", m.tags);
+            }
+            if let Some(owner) = &m.owner {
+                println!("  owner: {}", owner);
+            }
+            if !m.links.is_empty() {
+                println!("  links: {:?}", m.links);
+            }
+            println!();
+            break;
+        }
+    }
 
     // Connection info
     println!("CONNECTION");
@@ -587,6 +651,7 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
                 println!("  (configuration section)");
                 step += 1;
             }
+            SectionType::Meta => {}
         }
     }
 

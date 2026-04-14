@@ -1,11 +1,16 @@
 // Request Handler - handles request building and sending
 
+#[cfg(test)]
 use crate::grpc::GrpcClientConfig;
-use crate::parser::ast::{Section, SectionContent, SectionType};
+#[cfg(test)]
+use crate::parser::ast::SectionType;
+use crate::parser::ast::{Section, SectionContent};
 use crate::report::CoverageCollector;
+#[cfg(test)]
 use crate::utils::file::FileUtils;
 use prost_reflect::MessageDescriptor;
 use serde_json::Value;
+#[cfg(test)]
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
@@ -97,7 +102,8 @@ impl RequestHandler {
         }
     }
 
-    /// Check if request stream should be closed
+    /// Check if request stream should be closed (test-only)
+    #[cfg(test)]
     pub fn should_close_request_stream(&self, sections: &[Section], current_index: usize) -> bool {
         // Close stream if no more REQUEST sections follow
         sections[current_index + 1..]
@@ -138,7 +144,8 @@ impl RequestHandler {
         }
     }
 
-    /// Build TLS config from document
+    /// Build TLS config from document (test-only)
+    #[cfg(test)]
     pub fn build_tls_config(
         document: &crate::parser::ast::GctfDocument,
         document_path: &Path,
@@ -169,7 +176,8 @@ impl RequestHandler {
             })
     }
 
-    /// Build proto config from document
+    /// Build proto config from document (test-only)
+    #[cfg(test)]
     pub fn build_proto_config(
         document: &crate::parser::ast::GctfDocument,
         document_path: &Path,
@@ -215,7 +223,8 @@ impl RequestHandler {
         })
     }
 
-    /// Build gRPC client config
+    /// Build gRPC client config (test-only)
+    #[cfg(test)]
     pub fn build_client_config(
         document: &crate::parser::ast::GctfDocument,
         document_path: &Path,

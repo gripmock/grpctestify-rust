@@ -5,9 +5,8 @@ use std::sync::LazyLock;
 
 use crate::parser;
 use crate::parser::assertions::strip_assertion_comments;
-use crate::plugins::{
-    PluginReturnKind, PluginSignature, extract_plugin_call_name, plugin_signature_map,
-};
+use crate::plugins::{PluginSignature, TypeInfo, extract_plugin_call_name};
+use crate::utils::section_content_line;
 
 fn likely_needs_assertion_rewrite(expr: &str) -> bool {
     expr.contains("==")
@@ -17,12 +16,16 @@ fn likely_needs_assertion_rewrite(expr: &str) -> bool {
         || expr.contains(" startswith ")
         || expr.contains(" endswith ")
         || expr.contains("!!")
+        || expr.contains("not not ")
         || expr.contains("if ")
         || expr.contains(" then ")
         || expr.contains(" else ")
         || expr.contains(" or ")
         || expr.contains(" and ")
         || expr.contains("@len(")
+        || expr.contains(">= 0")
+        || expr.contains("<= @")
+        || expr.starts_with('(')
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -178,6 +181,12 @@ const REWRITE_RULES: &[RewriteRuleMetadata] = &[
         negative_cases: "inner expression is not a comparison",
         proof_note: "Comparison negation: not (A == B) = A != B",
     },
+    RewriteRuleMetadata {
+        id: "OPT_T001",
+        preconditions: "UInt-returning plugin (e.g. @len) compared with 0 via >= or <=",
+        negative_cases: "plugin does not return UInt or comparison is not with 0",
+        proof_note: "Unsigned integers are always >= 0, so @uint() >= 0 = true",
+    },
 ];
 
 fn rule_metadata(rule_id: &str) -> Option<&'static RewriteRuleMetadata> {
@@ -211,14 +220,13 @@ fn build_hint(rule_id: &str, line: usize, before: &str, after: String) -> Optimi
     }
 }
 
-static PLUGIN_SIGNATURES: LazyLock<HashMap<String, PluginSignature>> =
-    LazyLock::new(plugin_signature_map);
+use crate::plugins::PLUGIN_SIGNATURES;
 
 static BOOLEAN_PLUGINS: LazyLock<HashSet<String>> = LazyLock::new(|| {
     PLUGIN_SIGNATURES
         .iter()
         .filter(|(_, signature)| {
-            signature.return_kind == PluginReturnKind::Boolean
+            signature.return_type == TypeInfo::Bool
                 && signature.safe_for_rewrite
                 && signature.deterministic
                 && signature.idempotent
@@ -229,10 +237,6 @@ static BOOLEAN_PLUGINS: LazyLock<HashSet<String>> = LazyLock::new(|| {
 
 fn plugin_signatures() -> &'static HashMap<String, PluginSignature> {
     &PLUGIN_SIGNATURES
-}
-
-fn section_content_line(start_line: usize, idx: usize) -> usize {
-    start_line + idx + 2
 }
 
 fn boolean_plugins() -> &'static HashSet<String> {
@@ -282,7 +286,7 @@ fn suggest_not_not_rewrite(
 
     let inner = trimmed[8..].trim();
     if is_boolean_plugin_expr(inner, bool_plugins) {
-        return Some(("OPT_B006", inner.to_string()));
+        return Some(("OPT_B017", inner.to_string()));
     }
 
     None
@@ -542,7 +546,24 @@ fn parse_if_then_else(expr: &str) -> Option<(&str, &str, &str)> {
     let mut then_pos = None;
 
     let mut i = 0;
+    let mut in_string = false;
+    let mut string_char = None;
     while i < bytes.len() {
+        // Handle string literals
+        if in_string {
+            if bytes[i] == string_char.unwrap() && (i == 0 || bytes[i - 1] != b'\\') {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'"' || bytes[i] == b'\'' {
+            in_string = true;
+            string_char = Some(bytes[i]);
+            i += 1;
+            continue;
+        }
+
         match &bytes[i..i + 1] {
             b"(" => paren_depth += 1,
             b")" => paren_depth -= 1,
@@ -574,8 +595,25 @@ fn parse_if_then_else(expr: &str) -> Option<(&str, &str, &str)> {
     let mut nested_if = 0;
     paren_depth = 0;
 
+    let mut in_string = false;
+    let mut string_char = None;
+
     i = 0;
     while i < bytes.len() {
+        if in_string {
+            if bytes[i] == string_char.unwrap() && (i == 0 || bytes[i - 1] != b'\\') {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'"' || bytes[i] == b'\'' {
+            in_string = true;
+            string_char = Some(bytes[i]);
+            i += 1;
+            continue;
+        }
+
         match &bytes[i..i + 1] {
             b"(" => paren_depth += 1,
             b")" => paren_depth -= 1,
@@ -786,6 +824,39 @@ fn suggest_plugin_length_simplification(expr: &str) -> Option<(&'static str, Str
     None
 }
 
+/// Type-aware numeric comparison optimization.
+/// Uses TypeInfo to detect that certain plugins return unsigned integers,
+/// making comparisons like `@len(.x) >= 0` always true.
+fn suggest_type_aware_numeric_comparison(expr: &str) -> Option<(&'static str, String)> {
+    let signatures = plugin_signatures();
+    let trimmed = expr.trim();
+
+    let (left, right) = if let Some(idx) = trimmed.find(">=") {
+        (trimmed[..idx].trim(), trimmed[idx + 2..].trim())
+    } else if let Some(idx) = trimmed.find("<=") {
+        (trimmed[..idx].trim(), trimmed[idx + 2..].trim())
+    } else {
+        return None;
+    };
+
+    let plugin_call = if right == "0" {
+        left
+    } else if left == "0" {
+        right
+    } else {
+        return None;
+    };
+
+    if let Some(plugin_name) = extract_plugin_call_name(plugin_call)
+        && let Some(sig) = signatures.get(plugin_name.as_str())
+        && sig.return_type == TypeInfo::UInt
+    {
+        Some(("OPT_T001", "true".to_string()))
+    } else {
+        None
+    }
+}
+
 /// Comparison negation: not (.x == 5) → .x != 5
 fn suggest_comparison_negation(expr: &str) -> Option<(&'static str, String)> {
     let expr = expr.trim();
@@ -886,6 +957,11 @@ fn rewrite_assertion_expression_with_context(
 
     // Plugin-specific optimizations
     if let Some((rule_id, rewrite)) = suggest_plugin_length_simplification(expr) {
+        return Some((rule_id, rewrite));
+    }
+
+    // Type-aware optimizations based on TypeInfo
+    if let Some((rule_id, rewrite)) = suggest_type_aware_numeric_comparison(expr) {
         return Some((rule_id, rewrite));
     }
 
@@ -1077,8 +1153,9 @@ test.Service/Method
     fn test_rewrite_rule_metadata_is_complete() {
         let expected = [
             "OPT_B001", "OPT_B002", "OPT_B003", "OPT_B004", "OPT_B005", "OPT_B006", "OPT_B007",
-            "OPT_B008", "OPT_B009", "OPT_B010", "OPT_N001", "OPT_N002", "OPT_I001", "OPT_I002",
-            "OPT_I003", "OPT_I004", "OPT_I005", "OPT_P001",
+            "OPT_B008", "OPT_B009", "OPT_B010", "OPT_B013", "OPT_B014", "OPT_B015", "OPT_B016",
+            "OPT_B017", "OPT_N001", "OPT_N002", "OPT_I001", "OPT_I002", "OPT_I003", "OPT_I004",
+            "OPT_I005", "OPT_P001", "OPT_P002", "OPT_T001",
         ];
 
         for id in expected {
@@ -1340,6 +1417,24 @@ if .status == 200 then false else true end
         assert_eq!(hints[0].after, "!.status == 200");
     }
 
+    #[test]
+    fn test_parse_if_then_else_string_with_else_keyword() {
+        let (cond, then_expr, else_expr) =
+            parse_if_then_else(r#"if true then " else " else "no" end"#).unwrap();
+        assert_eq!(cond, "true");
+        assert_eq!(then_expr, r#"" else ""#);
+        assert_eq!(else_expr, r#""no""#);
+    }
+
+    #[test]
+    fn test_parse_if_then_else_then_in_string_condition() {
+        let (cond, then_expr, else_expr) =
+            parse_if_then_else(r#"if .x == "then" then "yes" else "no" end"#).unwrap();
+        assert_eq!(cond, r#".x == "then""#);
+        assert_eq!(then_expr, r#""yes""#);
+        assert_eq!(else_expr, r#""no""#);
+    }
+
     // === New optimization rules tests ===
 
     #[test]
@@ -1459,6 +1554,22 @@ test.Service/Method
     }
 
     #[test]
+    fn test_collect_optimizations_type_aware_uint_gte_zero() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+@len(.items) >= 0
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let hints = collect_assertion_optimizations(&doc);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].rule_id, "OPT_T001");
+        assert_eq!(hints[0].after, "true");
+    }
+
+    #[test]
     fn test_collect_optimizations_comparison_negation() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
@@ -1475,6 +1586,117 @@ not (.status == 200)
     }
 
     #[test]
+    fn test_collect_optimizations_b002_expr_equals_false() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+@has_header("x") == false
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let hints = collect_assertion_optimizations(&doc);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].rule_id, "OPT_B002");
+        assert_eq!(hints[0].after, "!@has_header(\"x\")");
+    }
+
+    #[test]
+    fn test_collect_optimizations_b004_false_equals_expr() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+false == @has_header("x")
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let hints = collect_assertion_optimizations(&doc);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].rule_id, "OPT_B004");
+        assert_eq!(hints[0].after, "!@has_header(\"x\")");
+    }
+
+    #[test]
+    fn test_collect_optimizations_b013_inequality_true() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+@has_header("x") != true
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let hints = collect_assertion_optimizations(&doc);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].rule_id, "OPT_B013");
+        assert_eq!(hints[0].after, "!@has_header(\"x\")");
+    }
+
+    #[test]
+    fn test_collect_optimizations_b014_inequality_false() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+@has_header("x") != false
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let hints = collect_assertion_optimizations(&doc);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].rule_id, "OPT_B014");
+        assert_eq!(hints[0].after, "@has_header(\"x\")");
+    }
+
+    #[test]
+    fn test_collect_optimizations_b015_true_inequality() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+true != @has_header("x")
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let hints = collect_assertion_optimizations(&doc);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].rule_id, "OPT_B015");
+        assert_eq!(hints[0].after, "!@has_header(\"x\")");
+    }
+
+    #[test]
+    fn test_collect_optimizations_b016_false_inequality() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+false != @has_header("x")
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let hints = collect_assertion_optimizations(&doc);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].rule_id, "OPT_B016");
+        assert_eq!(hints[0].after, "@has_header(\"x\")");
+    }
+
+    #[test]
+    fn test_collect_optimizations_b017_double_not_word() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+not not @has_header("x")
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let hints = collect_assertion_optimizations(&doc);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].rule_id, "OPT_B017");
+        assert_eq!(hints[0].after, "@has_header(\"x\")");
+    }
+
+    #[test]
+    fn test_collect_optimizations_p002_redundant_parens() {
+        let result = rewrite_assertion_expression_fixed_point("(@has_header(\"x\"))");
+        assert_eq!(result, "@has_header(\"x\")");
+    }
+
+    #[test]
     fn test_boolean_plugins_contains_uuid() {
         let bp = boolean_plugins();
         assert!(bp.contains("uuid"));
@@ -1487,12 +1709,6 @@ not (.status == 200)
         let sigs = plugin_signatures();
         assert!(!sigs.is_empty());
         assert!(sigs.contains_key("uuid"));
-    }
-
-    #[test]
-    fn test_section_content_line_calculation() {
-        assert_eq!(section_content_line(5, 0), 7);
-        assert_eq!(section_content_line(10, 3), 15);
     }
 
     #[test]

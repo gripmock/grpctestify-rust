@@ -1,98 +1,79 @@
 // Test validation logic
 
+#[cfg(test)]
 use crate::execution::TestExecutionResult;
+#[cfg(test)]
 use crate::parser::ast::GctfDocument;
 
-/// Test validator
+/// Test validator — only compiled in test builds
+#[cfg(test)]
 pub struct TestValidator;
 
+#[cfg(test)]
 impl TestValidator {
-    /// Validate test document before execution
+    /// Validate execution plan
     pub fn validate(document: &GctfDocument) -> Result<(), String> {
-        // Check for required sections
         Self::validate_required_sections(document)?;
-
-        // Check for conflicting sections
         Self::validate_no_conflicts(document)?;
-
-        // Validate EXTRACT section
         Self::validate_extract(document)?;
-
-        // Validate ASSERTS section
         Self::validate_asserts(document)?;
-
         Ok(())
     }
 
-    /// Validate required sections exist
     fn validate_required_sections(document: &GctfDocument) -> Result<(), String> {
         let has_endpoint = document
             .sections
             .iter()
             .any(|s| matches!(s.section_type, crate::parser::ast::SectionType::Endpoint));
-
         if !has_endpoint {
             return Err("Missing required ENDPOINT section".to_string());
         }
-
         let has_request = document
             .sections
             .iter()
             .any(|s| matches!(s.section_type, crate::parser::ast::SectionType::Request));
-
         if !has_request {
             return Err("Missing required REQUEST section".to_string());
         }
-
         Ok(())
     }
 
-    /// Validate no conflicting sections
     fn validate_no_conflicts(document: &GctfDocument) -> Result<(), String> {
         let has_response = document
             .sections
             .iter()
             .any(|s| matches!(s.section_type, crate::parser::ast::SectionType::Response));
-
         let has_error = document
             .sections
             .iter()
             .any(|s| matches!(s.section_type, crate::parser::ast::SectionType::Error));
-
         if has_response && has_error {
             return Err("Cannot have both RESPONSE and ERROR sections".to_string());
         }
-
         Ok(())
     }
 
-    /// Validate EXTRACT section
     fn validate_extract(document: &GctfDocument) -> Result<(), String> {
         let extract_sections: Vec<_> = document
             .sections
             .iter()
             .filter(|s| matches!(s.section_type, crate::parser::ast::SectionType::Extract))
             .collect();
-
         if extract_sections.len() > 1 {
             return Err("Multiple EXTRACT sections found".to_string());
         }
-
         Ok(())
     }
 
-    /// Validate ASSERTS section
     fn validate_asserts(document: &GctfDocument) -> Result<(), String> {
         let asserts_sections: Vec<_> = document
             .sections
             .iter()
             .filter(|s| matches!(s.section_type, crate::parser::ast::SectionType::Asserts))
             .collect();
-
         if asserts_sections.len() > 1 {
             return Err("Multiple ASSERTS sections found".to_string());
         }
-
         Ok(())
     }
 
@@ -163,7 +144,6 @@ mod tests {
         let mut doc = create_test_document();
         doc.sections
             .retain(|s| !matches!(s.section_type, SectionType::Endpoint));
-
         let result = TestValidator::validate(&doc);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("ENDPOINT"));
@@ -174,7 +154,6 @@ mod tests {
         let mut doc = create_test_document();
         doc.sections
             .retain(|s| !matches!(s.section_type, SectionType::Request));
-
         let result = TestValidator::validate(&doc);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("REQUEST"));
@@ -199,7 +178,6 @@ mod tests {
             start_line: 9,
             end_line: 11,
         });
-
         let result = TestValidator::validate(&doc);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("RESPONSE"));

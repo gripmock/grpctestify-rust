@@ -319,10 +319,23 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                                     });
                                 }
                             }
+                            "compression" => {
+                                let normalized = value.trim().to_ascii_lowercase();
+                                if !matches!(normalized.as_str(), "none" | "gzip") {
+                                    errors.push(ValidationError {
+                                        message: format!(
+                                            "OPTIONS.compression must be one of: none, gzip (got '{}')",
+                                            value
+                                        ),
+                                        line: Some(section.start_line),
+                                        severity: ErrorSeverity::Error,
+                                    });
+                                }
+                            }
                             _ => {
                                 errors.push(ValidationError {
                                     message: format!(
-                                        "Unknown OPTIONS key '{}'. Supported keys: timeout, retry, retry-delay, no-retry",
+                                        "Unknown OPTIONS key '{}'. Supported keys: timeout, retry, retry-delay, no-retry, compression",
                                         key
                                     ),
                                     line: Some(section.start_line),
@@ -356,8 +369,17 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
 fn validate_structure(document: &GctfDocument, errors: &mut Vec<ValidationError>) {
     // Check for duplicate non-multiple sections
     let mut seen_sections = std::collections::HashSet::new();
+    let mut meta_count = 0;
+    let mut meta_first_line = None;
 
     for section in &document.sections {
+        if section.section_type == SectionType::Meta {
+            meta_count += 1;
+            if meta_first_line.is_none() {
+                meta_first_line = Some(section.start_line);
+            }
+        }
+
         if !section.section_type.is_multiple_allowed() {
             if seen_sections.contains(&section.section_type) {
                 errors.push(ValidationError {
@@ -368,6 +390,27 @@ fn validate_structure(document: &GctfDocument, errors: &mut Vec<ValidationError>
             }
             seen_sections.insert(section.section_type);
         }
+    }
+
+    // Validate META section: only 0 or 1 per file, must be first if present
+    if meta_count > 1 {
+        errors.push(ValidationError {
+            message: "Only one META section is allowed per file".to_string(),
+            line: meta_first_line,
+            severity: ErrorSeverity::Error,
+        });
+    }
+
+    // Check META is first section (if present)
+    if meta_count == 1
+        && let Some(first_section) = document.sections.first()
+        && first_section.section_type != SectionType::Meta
+    {
+        errors.push(ValidationError {
+            message: "META section must be the first section in the file".to_string(),
+            line: meta_first_line,
+            severity: ErrorSeverity::Error,
+        });
     }
 
     // Validate section order (optional, but good for readability)
@@ -821,7 +864,7 @@ mod tests {
         assert!(diagnostics.iter().any(|d| {
             d.severity == ErrorSeverity::Warning
                 && d.message
-                    .contains("Unknown OPTIONS key 'dry_run'. Supported keys: timeout, retry, retry-delay, no-retry")
+                    .contains("Unknown OPTIONS key 'dry_run'. Supported keys: timeout, retry, retry-delay, no-retry, compression")
         }));
     }
 
@@ -863,6 +906,7 @@ mod tests {
         options.insert("retry".to_string(), "2".to_string());
         options.insert("retry-delay".to_string(), "0.5".to_string());
         options.insert("no-retry".to_string(), "false".to_string());
+        options.insert("compression".to_string(), "gzip".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Options,
             content: SectionContent::KeyValues(options),
@@ -891,6 +935,36 @@ mod tests {
                 .iter()
                 .any(|d| d.severity == ErrorSeverity::Error)
         );
+    }
+
+    #[test]
+    fn test_validate_options_compression_invalid_error() {
+        let mut doc = create_test_document();
+        let mut options = std::collections::HashMap::new();
+        options.insert("compression".to_string(), "brotli".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Options,
+            content: SectionContent::KeyValues(options),
+            inline_options: InlineOptions::default(),
+            raw_content: "compression: brotli".to_string(),
+            start_line: 5,
+            end_line: 6,
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 7,
+            end_line: 8,
+        });
+
+        let diagnostics = validate_document_diagnostics(&doc);
+        assert!(diagnostics.iter().any(|d| {
+            d.severity == ErrorSeverity::Error
+                && d.message
+                    .contains("OPTIONS.compression must be one of: none, gzip")
+        }));
     }
 
     #[test]

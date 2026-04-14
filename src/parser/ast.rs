@@ -37,6 +37,38 @@ pub struct DocumentMetadata {
     pub parsed_at: i64,
 }
 
+/// File-level metadata (META section)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct FileMeta {
+    /// Test name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Test summary (one-liner)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Test tags
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Test owner (team/person)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// Related links (docs, jira, etc)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<String>,
+}
+
+impl FileMeta {
+    /// Check if meta has any content
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none()
+            && self.summary.is_none()
+            && self.tags.is_empty()
+            && self.owner.is_none()
+            && self.links.is_empty()
+    }
+}
+
 /// A section in the .gctf file
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Section {
@@ -80,6 +112,9 @@ pub enum SectionContent {
     /// Assertion expressions (ASSERTS)
     Assertions(Vec<String>),
 
+    /// File-level metadata (META)
+    Meta(FileMeta),
+
     /// Empty section
     Empty,
 }
@@ -119,6 +154,9 @@ pub enum SectionType {
 
     /// Extract variables from response
     Extract,
+
+    /// File-level metadata (suite, tags)
+    Meta,
 }
 
 impl SectionType {
@@ -144,6 +182,7 @@ impl SectionType {
             SectionType::Tls => "TLS",
             SectionType::Options => "OPTIONS",
             SectionType::Extract => "EXTRACT",
+            SectionType::Meta => "META",
         }
     }
 
@@ -161,6 +200,7 @@ impl SectionType {
             "TLS" => Some(SectionType::Tls),
             "OPTIONS" => Some(SectionType::Options),
             "EXTRACT" => Some(SectionType::Extract),
+            "META" => Some(SectionType::Meta),
             _ => None,
         }
     }
@@ -174,6 +214,11 @@ impl SectionType {
                 | SectionType::Asserts
                 | SectionType::Extract
         )
+    }
+
+    /// Check if section is file-level (not inside documents)
+    pub fn is_file_level(&self) -> bool {
+        matches!(self, SectionType::Meta)
     }
 
     /// Check if section supports inline options

@@ -1,5 +1,6 @@
 // List command - list GCTF test files
 
+use crate::cli::args::HasFormat;
 use anyhow::Result;
 use std::path::Path;
 use tracing::error;

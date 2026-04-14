@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use futures::stream::StreamExt;
+use std::path::Path;
 use std::sync::Arc;
 use tracing::{info, warn};
 
@@ -10,9 +11,43 @@ use crate::cli::args::RunArgs;
 use crate::config;
 use crate::execution;
 use crate::parser;
+use crate::parser::ast::{SectionContent, SectionType};
 use crate::report;
 use crate::state::{TestResult, TestResults};
 use crate::utils::FileUtils;
+
+fn file_matches_meta(path: &Path, tags_include: &[String], skip_tags: &[String]) -> bool {
+    let parse_result = parser::parse_with_recovery(path);
+    let doc = parse_result.document;
+
+    let meta = doc.sections.iter().find_map(|s| {
+        if s.section_type == SectionType::Meta {
+            if let SectionContent::Meta(m) = &s.content {
+                Some(m)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    });
+
+    let file_tags: Vec<&str> = meta
+        .map(|m| m.tags.iter().map(|s| s.as_str()).collect())
+        .unwrap_or_default();
+
+    for tag in tags_include {
+        if !file_tags.iter().any(|t| t == tag) {
+            return false;
+        }
+    }
+
+    if !skip_tags.is_empty() && file_tags.iter().any(|t| skip_tags.iter().any(|e| t == e)) {
+        return false;
+    }
+
+    true
+}
 
 fn parse_bool_option(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
@@ -59,6 +94,30 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
         } else if path.is_file() {
             test_files.push(path.clone());
         }
+    }
+
+    // Filter by META tags if provided
+    let has_meta_filters = !args.tags.is_empty() || !args.skip_tags.is_empty();
+
+    if has_meta_filters {
+        let tags_inc: Vec<String> = args
+            .tags
+            .iter()
+            .flat_map(|t| t.split(','))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let tags_exc: Vec<String> = args
+            .skip_tags
+            .iter()
+            .flat_map(|t| t.split(','))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        test_files.retain(|path| file_matches_meta(path, &tags_inc, &tags_exc));
+
+        info!("Filtered to {} test file(s) by META", test_files.len());
     }
 
     info!("Found {} test file(s)", test_files.len());

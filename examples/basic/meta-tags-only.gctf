@@ -1,0 +1,21 @@
+--- META ---
+name: User creation
+tags: [smoke, users, positive]
+owner: platform
+
+--- ADDRESS ---
+localhost:50051
+
+--- ENDPOINT ---
+user.UserService/CreateUser
+
+--- REQUEST ---
+{
+  "username": "alice"
+}
+
+--- RESPONSE ---
+{
+  "id": "123",
+  "username": "alice"
+}

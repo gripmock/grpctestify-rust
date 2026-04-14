@@ -3,7 +3,10 @@
 
 use crate::diagnostics::{DiagnosticCode, DiagnosticCollection, Range};
 use crate::parser::assertions::strip_assertion_comments;
-use crate::parser::ast::{DocumentMetadata, GctfDocument, Section, SectionContent, SectionType};
+use crate::parser::ast::{
+    DocumentMetadata, FileMeta, GctfDocument, Section, SectionContent, SectionType,
+};
+use crate::parser::gctf_tokenizer;
 use std::path::Path;
 
 /// Result of error recovery parsing
@@ -28,7 +31,7 @@ pub fn parse_content_with_recovery(content: &str, file_path: &str) -> ErrorRecov
     let single = parse_single_with_recovery(content, file_path);
 
     // Split by implicit boundaries
-    let docs = split_sections_by_boundary(&single.document.sections);
+    let docs = crate::parser::split_sections_by_boundary(&single.document.sections);
 
     if docs.len() <= 1 {
         return single;
@@ -51,56 +54,6 @@ pub fn parse_content_with_recovery(content: &str, file_path: &str) -> ErrorRecov
         recovered_sections: total_recovered,
         failed_sections: total_failed,
     }
-}
-
-fn split_sections_by_boundary(sections: &[Section]) -> Vec<Vec<Section>> {
-    let mut docs: Vec<Vec<Section>> = Vec::new();
-    let mut current: Vec<Section> = Vec::new();
-
-    let is_preamble = |t: &SectionType| {
-        matches!(
-            t,
-            SectionType::Address
-                | SectionType::Tls
-                | SectionType::Proto
-                | SectionType::Options
-                | SectionType::RequestHeaders
-        )
-    };
-
-    for section in sections {
-        if section.section_type == SectionType::Endpoint {
-            let has_content = current.iter().any(|s| {
-                matches!(
-                    s.section_type,
-                    SectionType::Request
-                        | SectionType::Response
-                        | SectionType::Error
-                        | SectionType::Asserts
-                        | SectionType::Extract
-                )
-            });
-
-            if has_content {
-                let mut preamble: Vec<Section> = Vec::new();
-                while let Some(last) = current.last() {
-                    if is_preamble(&last.section_type) {
-                        preamble.insert(0, current.pop().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-                docs.push(std::mem::take(&mut current));
-                current = preamble;
-            }
-        }
-        current.push(section.clone());
-    }
-
-    if !current.is_empty() {
-        docs.push(current);
-    }
-    docs
 }
 
 fn build_doc_from_sections(sections: &[Section], file_path: &str) -> GctfDocument {
@@ -239,6 +192,7 @@ fn parse_section_header(
         "TLS" => SectionType::Tls,
         "PROTO" => SectionType::Proto,
         "OPTIONS" => SectionType::Options,
+        "META" => SectionType::Meta,
         _ => {
             diagnostics.warning(
                 DiagnosticCode::UnknownSectionType,
@@ -370,6 +324,20 @@ fn parse_section_content(
                 }
             }
             SectionContent::KeyValues(key_values)
+        }
+        SectionType::Meta => {
+            // Use tokenizer to strip GCTF comment lines before parsing YAML
+            let raw = content.join("\n");
+            let tokens = gctf_tokenizer::tokenize_gctf(&raw);
+            let yaml_lines: Vec<String> = content
+                .iter()
+                .zip(tokens.iter())
+                .filter(|(_, t)| !matches!(t.kind, gctf_tokenizer::GctfTokenKind::Comment(_)))
+                .map(|(l, _)| l.clone())
+                .collect();
+            let cleaned = yaml_lines.join("\n");
+            let meta = serde_yaml_ng::from_str::<FileMeta>(&cleaned).unwrap_or_default();
+            SectionContent::Meta(meta)
         }
     }
 }

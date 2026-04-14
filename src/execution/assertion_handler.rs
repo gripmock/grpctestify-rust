@@ -1,6 +1,7 @@
 // Assertion Handler - handles assertion evaluation
 
 use crate::assert::AssertionEngine;
+#[cfg(test)]
 use crate::parser::ast::{Section, SectionContent, SectionType};
 use crate::plugins::AssertionTiming;
 use serde_json::Value;
@@ -51,7 +52,8 @@ impl AssertionHandler {
         }
     }
 
-    /// Evaluate assertions for a response
+    /// Evaluate assertions for a document (test-only)
+    #[cfg(test)]
     pub fn evaluate_assertions(
         &self,
         sections: &[Section],
@@ -81,7 +83,8 @@ impl AssertionHandler {
         }
     }
 
-    /// Evaluate assertions for a specific section
+    /// Evaluate assertions for a specific section (test-only)
+    #[cfg(test)]
     pub fn evaluate_section_assertions(
         &self,
         section: &Section,
@@ -108,12 +111,14 @@ impl AssertionHandler {
         }
     }
 
-    /// Check if section has assertions
+    /// Check if section has assertions (test-only)
+    #[cfg(test)]
     pub fn has_assertions(&self, section: &Section) -> bool {
         section.section_type == SectionType::Asserts
     }
 
-    /// Get assertion lines from section
+    /// Get assertion lines from section (test-only)
+    #[cfg(test)]
     pub fn get_assertion_lines<'a>(&self, section: &'a Section) -> Vec<&'a String> {
         if let SectionContent::Assertions(lines) = &section.content {
             lines.iter().collect()
@@ -122,7 +127,8 @@ impl AssertionHandler {
         }
     }
 
-    /// Evaluate a single assertion
+    /// Evaluate a single assertion (test-only)
+    #[cfg(test)]
     pub fn evaluate_single_assertion(
         &self,
         assertion: &str,

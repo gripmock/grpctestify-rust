@@ -1,0 +1,861 @@
+//! AST nodes for assertion expressions.
+//!
+//! Pipeline: `text → tokenize_assertion() → Vec<Token> → parse_assertion() → AssertionExpr`
+//!
+//! The tokenizer (`super::tokenizer`) is the single source of tokens with exact byte positions.
+
+use serde::{Deserialize, Serialize};
+
+use super::tokenizer::{TokenKind, tokenize_assertion};
+
+/// A complete assertion expression (top-level).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum AssertionExpr {
+    Binary {
+        op: BinaryOp,
+        left: Box<AssertionExpr>,
+        right: Box<AssertionExpr>,
+    },
+    Not(Box<AssertionExpr>),
+    NotNot(Box<AssertionExpr>),
+    And {
+        left: Box<AssertionExpr>,
+        right: Box<AssertionExpr>,
+    },
+    Or {
+        left: Box<AssertionExpr>,
+        right: Box<AssertionExpr>,
+    },
+    IfThenElse {
+        condition: Box<AssertionExpr>,
+        then_branch: Box<AssertionExpr>,
+        else_branch: Box<AssertionExpr>,
+    },
+    Paren(Box<AssertionExpr>),
+    Atom(Expr),
+    Raw(String),
+}
+
+/// Atomic expressions (leaf nodes).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Expr {
+    JqPath(String),
+    PluginCall {
+        name: String,
+        args: Vec<AssertionExpr>,
+    },
+    Literal(Literal),
+    Variable(String),
+    RegExp {
+        pattern: String,
+        flags: String,
+    },
+    Json(String),
+    Yaml(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Literal {
+    Bool(bool),
+    Number(String),
+    Str(String),
+    Null,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BinaryOp {
+    Eq,
+    Ne,
+    Gt,
+    Lt,
+    Ge,
+    Le,
+    Contains,
+    Matches,
+    StartsWith,
+    EndsWith,
+}
+
+impl BinaryOp {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Eq => "==",
+            Self::Ne => "!=",
+            Self::Gt => ">",
+            Self::Lt => "<",
+            Self::Ge => ">=",
+            Self::Le => "<=",
+            Self::Contains => "contains",
+            Self::Matches => "matches",
+            Self::StartsWith => "startsWith",
+            Self::EndsWith => "endsWith",
+        }
+    }
+    fn try_parse(s: &str) -> Option<Self> {
+        match s {
+            "==" => Some(Self::Eq),
+            "!=" => Some(Self::Ne),
+            ">" => Some(Self::Gt),
+            "<" => Some(Self::Lt),
+            ">=" => Some(Self::Ge),
+            "<=" => Some(Self::Le),
+            "contains" => Some(Self::Contains),
+            "matches" => Some(Self::Matches),
+            "startsWith" | "startswith" => Some(Self::StartsWith),
+            "endsWith" | "endswith" => Some(Self::EndsWith),
+            _ => None,
+        }
+    }
+}
+
+// ─── Display ───────────────────────────────────────────────────────────
+
+impl std::fmt::Display for Expr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::JqPath(p) => write!(f, "{}", p),
+            Self::PluginCall { name, args } => {
+                write!(f, "@{}(", name)?;
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", a)?;
+                }
+                write!(f, ")")
+            }
+            Self::Literal(Literal::Bool(b)) => write!(f, "{}", b),
+            Self::Literal(Literal::Number(n)) => write!(f, "{}", n),
+            Self::Literal(Literal::Str(s)) => write!(f, "\"{}\"", s),
+            Self::Literal(Literal::Null) => write!(f, "null"),
+            Self::RegExp { pattern, flags } => {
+                write!(f, "/{}/", pattern)?;
+                if !flags.is_empty() {
+                    write!(f, "{}", flags)?;
+                }
+                Ok(())
+            }
+            Self::Json(s) => write!(f, "{}", s),
+            Self::Yaml(s) => write!(f, "{}", s),
+            Self::Variable(n) => write!(f, "{{{{{}}}}}", n),
+        }
+    }
+}
+
+impl std::fmt::Display for AssertionExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fmt_assertion(self, f, 0)
+    }
+}
+
+fn fmt_assertion(e: &AssertionExpr, f: &mut std::fmt::Formatter<'_>, prec: u8) -> std::fmt::Result {
+    match e {
+        AssertionExpr::Or { left, right } => {
+            if prec > 1 {
+                write!(f, "(")?;
+            }
+            fmt_assertion(left, f, 1)?;
+            write!(f, " or ")?;
+            fmt_assertion(right, f, 1)?;
+            if prec > 1 {
+                write!(f, ")")?;
+            }
+            Ok(())
+        }
+        AssertionExpr::And { left, right } => {
+            if prec > 2 {
+                write!(f, "(")?;
+            }
+            fmt_assertion(left, f, 2)?;
+            write!(f, " and ")?;
+            fmt_assertion(right, f, 2)?;
+            if prec > 2 {
+                write!(f, ")")?;
+            }
+            Ok(())
+        }
+        AssertionExpr::Binary { op, left, right } => {
+            if prec > 3 {
+                write!(f, "(")?;
+            }
+            fmt_assertion(left, f, 3)?;
+            write!(f, " {} ", op.as_str())?;
+            fmt_assertion(right, f, 3)?;
+            if prec > 3 {
+                write!(f, ")")?;
+            }
+            Ok(())
+        }
+        AssertionExpr::Not(inner) => {
+            write!(f, "!")?;
+            fmt_assertion(inner, f, 4)
+        }
+        AssertionExpr::NotNot(inner) => {
+            write!(f, "not not ")?;
+            fmt_assertion(inner, f, 4)
+        }
+        AssertionExpr::IfThenElse {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            write!(f, "(")?;
+            fmt_assertion(condition, f, 0)?;
+            write!(f, " ? ")?;
+            fmt_assertion(then_branch, f, 0)?;
+            write!(f, " : ")?;
+            fmt_assertion(else_branch, f, 0)?;
+            write!(f, ")")
+        }
+        AssertionExpr::Paren(inner) => {
+            write!(f, "(")?;
+            fmt_assertion(inner, f, 0)?;
+            write!(f, ")")
+        }
+        AssertionExpr::Atom(e) => write!(f, "{}", e),
+        AssertionExpr::Raw(s) => write!(f, "{}", s),
+    }
+}
+
+// ─── Parser ────────────────────────────────────────────────────────────
+// Uses the public tokenizer. Pipeline: text → tokens → AST.
+
+/// Parse a raw assertion string into an AST.
+/// Falls back to `Raw` if parsing fails.
+pub fn parse_assertion(raw: &str) -> AssertionExpr {
+    let tokens = tokenize_assertion(raw);
+    if tokens.is_empty() {
+        return AssertionExpr::Raw(raw.to_string());
+    }
+    let mut pos = 0;
+    let expr = parse_or(&tokens, &mut pos);
+    if pos >= tokens.len() {
+        expr
+    } else {
+        AssertionExpr::Raw(raw.to_string())
+    }
+}
+
+fn parse_or(ts: &[super::tokenizer::Token], p: &mut usize) -> AssertionExpr {
+    let mut left = parse_and(ts, p);
+    while *p < ts.len() && is_keyword(ts, *p, "or") {
+        *p += 1;
+        let right = parse_and(ts, p);
+        left = AssertionExpr::Or {
+            left: Box::new(left),
+            right: Box::new(right),
+        };
+    }
+    left
+}
+
+fn parse_and(ts: &[super::tokenizer::Token], p: &mut usize) -> AssertionExpr {
+    let mut left = parse_bin(ts, p);
+    while *p < ts.len() && is_keyword(ts, *p, "and") {
+        *p += 1;
+        let right = parse_bin(ts, p);
+        left = AssertionExpr::And {
+            left: Box::new(left),
+            right: Box::new(right),
+        };
+    }
+    left
+}
+
+fn parse_bin(ts: &[super::tokenizer::Token], p: &mut usize) -> AssertionExpr {
+    let mut left = parse_unary(ts, p);
+    loop {
+        let op_info = if *p < ts.len() {
+            match &ts[*p].kind {
+                TokenKind::Op(s) => Some(s.clone()),
+                TokenKind::Ident(s) if is_bin_op_keyword(s) => Some(s.clone()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let op_str = match op_info {
+            Some(s) => s,
+            None => break,
+        };
+        *p += 1;
+        let right = parse_unary(ts, p);
+        let op = BinaryOp::try_parse(&op_str).unwrap_or(match op_str.as_str() {
+            "contains" => BinaryOp::Contains,
+            "matches" => BinaryOp::Matches,
+            "startsWith" | "startswith" => BinaryOp::StartsWith,
+            _ => BinaryOp::EndsWith,
+        });
+        left = AssertionExpr::Binary {
+            op,
+            left: Box::new(left),
+            right: Box::new(right),
+        };
+    }
+    left
+}
+
+fn parse_unary(ts: &[super::tokenizer::Token], p: &mut usize) -> AssertionExpr {
+    if *p >= ts.len() {
+        return AssertionExpr::Raw(String::new());
+    }
+    match &ts[*p].kind {
+        TokenKind::Bang => {
+            *p += 1;
+            if *p < ts.len() && matches!(ts[*p].kind, TokenKind::Bang) {
+                *p += 1;
+                AssertionExpr::NotNot(Box::new(parse_atom(ts, p)))
+            } else {
+                AssertionExpr::Not(Box::new(parse_atom(ts, p)))
+            }
+        }
+        TokenKind::Ident(s) if s == "not" => {
+            *p += 1;
+            if *p < ts.len() && matches!(ts[*p].kind, TokenKind::Ident(ref s2) if s2 == "not") {
+                *p += 1;
+                AssertionExpr::NotNot(Box::new(parse_atom(ts, p)))
+            } else {
+                AssertionExpr::Not(Box::new(parse_atom(ts, p)))
+            }
+        }
+        TokenKind::Ident(s) if s == "if" => parse_if(ts, p),
+        TokenKind::LParen => {
+            *p += 1;
+            let inner = parse_or(ts, p);
+            if *p < ts.len() && matches!(ts[*p].kind, TokenKind::RParen) {
+                *p += 1;
+            }
+            AssertionExpr::Paren(Box::new(inner))
+        }
+        _ => parse_atom(ts, p),
+    }
+}
+
+fn parse_if(ts: &[super::tokenizer::Token], p: &mut usize) -> AssertionExpr {
+    *p += 1;
+    let cond = parse_or(ts, p);
+    if *p >= ts.len() || !is_keyword(ts, *p, "then") {
+        return AssertionExpr::Raw("if..then missing".into());
+    }
+    *p += 1;
+    let then_b = parse_or(ts, p);
+    if *p >= ts.len() || !is_keyword(ts, *p, "else") {
+        return AssertionExpr::Raw("if..else missing".into());
+    }
+    *p += 1;
+    let else_b = parse_or(ts, p);
+    if *p < ts.len() && is_keyword(ts, *p, "end") {
+        *p += 1;
+    }
+    AssertionExpr::IfThenElse {
+        condition: Box::new(cond),
+        then_branch: Box::new(then_b),
+        else_branch: Box::new(else_b),
+    }
+}
+
+fn parse_atom(ts: &[super::tokenizer::Token], p: &mut usize) -> AssertionExpr {
+    if *p >= ts.len() {
+        return AssertionExpr::Atom(Expr::JqPath(String::new()));
+    }
+    let expr = match &ts[*p].kind {
+        TokenKind::StringLit(s) => {
+            *p += 1;
+            Expr::Literal(Literal::Str(s.clone()))
+        }
+        TokenKind::NumberLit(n) => {
+            *p += 1;
+            Expr::Literal(Literal::Number(n.clone()))
+        }
+        TokenKind::Ident(s) if s == "true" => {
+            *p += 1;
+            Expr::Literal(Literal::Bool(true))
+        }
+        TokenKind::Ident(s) if s == "false" => {
+            *p += 1;
+            Expr::Literal(Literal::Bool(false))
+        }
+        TokenKind::Ident(s) if s == "null" => {
+            *p += 1;
+            Expr::Literal(Literal::Null)
+        }
+        TokenKind::VarDelim => {
+            *p += 1;
+            let mut name = String::new();
+            while *p < ts.len() && !matches!(ts[*p].kind, TokenKind::VarDelim) {
+                if let TokenKind::Ident(s) = &ts[*p].kind {
+                    if !name.is_empty() {
+                        name.push(' ');
+                    }
+                    name.push_str(s);
+                }
+                *p += 1;
+            }
+            if *p < ts.len() {
+                *p += 1;
+            }
+            Expr::Variable(name)
+        }
+        TokenKind::At => {
+            *p += 1;
+            let name = if *p < ts.len() {
+                if let TokenKind::Ident(s) = &ts[*p].kind {
+                    *p += 1;
+                    s.clone()
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+            let args = if *p < ts.len() && matches!(ts[*p].kind, TokenKind::LParen) {
+                *p += 1;
+                let mut args = Vec::new();
+                while *p < ts.len() && !matches!(ts[*p].kind, TokenKind::RParen) {
+                    args.push(parse_or(ts, p));
+                    if *p < ts.len() && matches!(ts[*p].kind, TokenKind::Comma) {
+                        *p += 1;
+                    }
+                }
+                if *p < ts.len() {
+                    *p += 1;
+                }
+                args
+            } else {
+                Vec::new()
+            };
+            Expr::PluginCall { name, args }
+        }
+        TokenKind::RegExpLit { pattern, flags } => {
+            *p += 1;
+            Expr::RegExp {
+                pattern: pattern.clone(),
+                flags: flags.clone(),
+            }
+        }
+        TokenKind::LBrace => {
+            *p += 1;
+            let mut json = String::from("{");
+            let mut depth = 1;
+            while *p < ts.len() && depth > 0 {
+                match &ts[*p].kind {
+                    TokenKind::LBrace => {
+                        depth += 1;
+                        json.push('{');
+                        *p += 1;
+                    }
+                    TokenKind::RBrace => {
+                        depth -= 1;
+                        if depth > 0 {
+                            json.push('}');
+                        }
+                        *p += 1;
+                    }
+                    TokenKind::LParen => {
+                        json.push('(');
+                        *p += 1;
+                    }
+                    TokenKind::RParen => {
+                        json.push(')');
+                        *p += 1;
+                    }
+                    TokenKind::LBracket => {
+                        json.push('[');
+                        *p += 1;
+                    }
+                    TokenKind::RBracket => {
+                        json.push(']');
+                        *p += 1;
+                    }
+                    TokenKind::StringLit(s) => {
+                        json.push('"');
+                        json.push_str(s);
+                        json.push('"');
+                        *p += 1;
+                    }
+                    TokenKind::NumberLit(n) => {
+                        json.push_str(n);
+                        *p += 1;
+                    }
+                    TokenKind::Ident(s) => {
+                        json.push_str(s);
+                        *p += 1;
+                    }
+                    TokenKind::Comma => {
+                        json.push(',');
+                        *p += 1;
+                    }
+                    TokenKind::Op(s) => {
+                        json.push_str(s);
+                        *p += 1;
+                    }
+                    TokenKind::Dot => {
+                        json.push('.');
+                        *p += 1;
+                    }
+                    TokenKind::At => {
+                        json.push('@');
+                        *p += 1;
+                    }
+                    TokenKind::VarDelim => {
+                        json.push_str("{{ }}");
+                        *p += 1;
+                    }
+                    _ => {
+                        *p += 1;
+                    }
+                }
+            }
+            json.push('}');
+            Expr::Json(json)
+        }
+        TokenKind::Dot | TokenKind::Ident(_) => {
+            let mut path = String::new();
+            while *p < ts.len() {
+                if let TokenKind::Ident(s) = &ts[*p].kind
+                    && (is_bin_op_keyword(s) || is_keyword_token(&ts[*p].kind))
+                {
+                    break;
+                }
+                match &ts[*p].kind {
+                    TokenKind::Dot => {
+                        path.push('.');
+                        *p += 1;
+                    }
+                    TokenKind::Ident(s) => {
+                        path.push_str(s);
+                        *p += 1;
+                    }
+                    TokenKind::LBracket => {
+                        path.push('[');
+                        *p += 1;
+                        while *p < ts.len() && !matches!(ts[*p].kind, TokenKind::RBracket) {
+                            if let TokenKind::NumberLit(n) = &ts[*p].kind {
+                                path.push_str(n);
+                            } else if let TokenKind::Ident(s) = &ts[*p].kind {
+                                path.push_str(s);
+                            }
+                            *p += 1;
+                        }
+                        if *p < ts.len() {
+                            path.push(']');
+                            *p += 1;
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            Expr::JqPath(path)
+        }
+        _ => {
+            *p += 1;
+            Expr::JqPath(String::new())
+        }
+    };
+    AssertionExpr::Atom(expr)
+}
+
+fn is_keyword(ts: &[super::tokenizer::Token], idx: usize, kw: &str) -> bool {
+    matches!(ts.get(idx), Some(t) if matches!(&t.kind, TokenKind::Ident(s) if s == kw))
+}
+
+fn is_bin_op_keyword(s: &str) -> bool {
+    matches!(
+        s,
+        "contains" | "matches" | "startsWith" | "endsWith" | "startswith" | "endswith"
+    )
+}
+
+fn is_keyword_token(k: &TokenKind) -> bool {
+    matches!(k, TokenKind::Ident(s) if matches!(s.as_str(), "and"|"or"|"contains"|"matches"|"startsWith"|"endsWith"|"startswith"|"endswith"))
+}
+
+// ─── Public helpers ─────────────────────────────────────────────────────
+
+/// Convert AssertionExpr back to string (ternary for if-then-else).
+pub fn assertion_to_string(expr: &AssertionExpr) -> String {
+    expr.to_string()
+}
+
+/// Remove redundant parentheses.
+pub fn remove_redundant_parens(expr: &AssertionExpr) -> AssertionExpr {
+    match expr {
+        AssertionExpr::Paren(inner) => remove_redundant_parens(inner),
+        AssertionExpr::Binary { op, left, right } => AssertionExpr::Binary {
+            op: *op,
+            left: Box::new(remove_redundant_parens(left)),
+            right: Box::new(remove_redundant_parens(right)),
+        },
+        AssertionExpr::Not(e) => AssertionExpr::Not(Box::new(remove_redundant_parens(e))),
+        AssertionExpr::NotNot(e) => AssertionExpr::NotNot(Box::new(remove_redundant_parens(e))),
+        AssertionExpr::And { left, right } => AssertionExpr::And {
+            left: Box::new(remove_redundant_parens(left)),
+            right: Box::new(remove_redundant_parens(right)),
+        },
+        AssertionExpr::Or { left, right } => AssertionExpr::Or {
+            left: Box::new(remove_redundant_parens(left)),
+            right: Box::new(remove_redundant_parens(right)),
+        },
+        AssertionExpr::IfThenElse {
+            condition,
+            then_branch,
+            else_branch,
+        } => AssertionExpr::IfThenElse {
+            condition: Box::new(remove_redundant_parens(condition)),
+            then_branch: Box::new(remove_redundant_parens(then_branch)),
+            else_branch: Box::new(remove_redundant_parens(else_branch)),
+        },
+        _ => expr.clone(),
+    }
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_simple_equality() {
+        let expr = parse_assertion(".id == 123");
+        if let AssertionExpr::Binary { op, left, right } = expr {
+            assert_eq!(op, BinaryOp::Eq);
+            assert!(matches!(*left, AssertionExpr::Atom(Expr::JqPath(_))));
+            assert!(matches!(
+                *right,
+                AssertionExpr::Atom(Expr::Literal(Literal::Number(_)))
+            ));
+        } else {
+            panic!("Expected Binary");
+        }
+    }
+
+    #[test]
+    fn test_parse_plugin_call() {
+        let expr = parse_assertion("@uuid(.user_id) == true");
+        if let AssertionExpr::Binary { op, left, .. } = expr {
+            assert_eq!(op, BinaryOp::Eq);
+            if let AssertionExpr::Atom(Expr::PluginCall { name, args }) = &*left {
+                assert_eq!(name, "uuid");
+                assert_eq!(args.len(), 1);
+            } else {
+                panic!("Expected PluginCall");
+            }
+        } else {
+            panic!("Expected Binary");
+        }
+    }
+
+    #[test]
+    fn test_parse_negation() {
+        let expr = parse_assertion("!@has_header(\"x\")");
+        if let AssertionExpr::Not(inner) = expr {
+            if let AssertionExpr::Atom(Expr::PluginCall { name, .. }) = &*inner {
+                assert_eq!(name, "has_header");
+            } else {
+                panic!("Expected PluginCall");
+            }
+        } else {
+            panic!("Expected Not");
+        }
+    }
+
+    #[test]
+    fn test_parse_contains() {
+        let expr = parse_assertion(".name contains \"test\"");
+        if let AssertionExpr::Binary { op, left, right } = expr {
+            assert_eq!(op, BinaryOp::Contains);
+            assert!(matches!(*left, AssertionExpr::Atom(Expr::JqPath(_))));
+            assert!(matches!(
+                *right,
+                AssertionExpr::Atom(Expr::Literal(Literal::Str(_)))
+            ));
+        } else {
+            panic!("Expected Binary");
+        }
+    }
+
+    #[test]
+    fn test_parse_startswith() {
+        let expr = parse_assertion(".name startsWith \"te\"");
+        if let AssertionExpr::Binary { op, .. } = expr {
+            assert_eq!(op, BinaryOp::StartsWith);
+        } else {
+            panic!("Expected Binary");
+        }
+    }
+
+    #[test]
+    fn test_parse_matches() {
+        let expr = parse_assertion(".name matches \"^te.*t$\"");
+        if let AssertionExpr::Binary { op, .. } = expr {
+            assert_eq!(op, BinaryOp::Matches);
+        } else {
+            panic!("Expected Binary");
+        }
+    }
+
+    #[test]
+    fn test_parse_if_then_else() {
+        let expr = parse_assertion("if @len(.items) == 0 then true else false end");
+        if let AssertionExpr::IfThenElse {
+            condition,
+            then_branch,
+            else_branch,
+        } = expr
+        {
+            assert!(matches!(*condition, AssertionExpr::Binary { .. }));
+            assert!(matches!(
+                *then_branch,
+                AssertionExpr::Atom(Expr::Literal(Literal::Bool(true)))
+            ));
+            assert!(matches!(
+                *else_branch,
+                AssertionExpr::Atom(Expr::Literal(Literal::Bool(false)))
+            ));
+        } else {
+            panic!("Expected IfThenElse");
+        }
+    }
+
+    #[test]
+    fn test_if_then_else_serializes_as_ternary() {
+        let expr = parse_assertion("if .x == 0 then true else false end");
+        let s = assertion_to_string(&expr);
+        assert!(s.contains('?'), "Should contain ternary: {}", s);
+        assert!(s.contains(':'), "Should contain colon: {}", s);
+    }
+
+    #[test]
+    fn test_nested_if_serializes_correctly() {
+        let expr =
+            parse_assertion("if .a == 1 then if .b == 2 then \"A\" else \"B\" end else \"C\" end");
+        if let AssertionExpr::IfThenElse {
+            then_branch,
+            else_branch,
+            ..
+        } = &expr
+        {
+            assert!(matches!(**then_branch, AssertionExpr::IfThenElse { .. }));
+            assert!(matches!(
+                **else_branch,
+                AssertionExpr::Atom(Expr::Literal(Literal::Str(_)))
+            ));
+        } else {
+            panic!("Expected IfThenElse");
+        }
+        let s = assertion_to_string(&expr);
+        assert!(s.contains('('), "Nested ternary should have parens: {}", s);
+    }
+
+    #[test]
+    fn test_remove_redundant_parens() {
+        let expr = parse_assertion("((.x == 1))");
+        let simplified = remove_redundant_parens(&expr);
+        let s = assertion_to_string(&simplified);
+        assert!(!s.starts_with("(("), "Should not have double parens: {}", s);
+    }
+
+    #[test]
+    fn test_roundtrip_simple() {
+        let original = ".id == 123";
+        let expr = parse_assertion(original);
+        assert_eq!(assertion_to_string(&expr), original);
+    }
+
+    #[test]
+    fn test_roundtrip_with_plugin() {
+        let original = "@len(.items) == 0";
+        let expr = parse_assertion(original);
+        assert_eq!(assertion_to_string(&expr), original);
+    }
+
+    #[test]
+    fn test_parse_and_or() {
+        assert!(matches!(
+            parse_assertion(".x == 1 and .y == 2"),
+            AssertionExpr::And { .. }
+        ));
+        assert!(matches!(
+            parse_assertion(".x == 1 or .y == 2"),
+            AssertionExpr::Or { .. }
+        ));
+    }
+
+    #[test]
+    fn test_parse_not_not() {
+        if let AssertionExpr::NotNot(inner) = parse_assertion("not not .x") {
+            assert!(matches!(*inner, AssertionExpr::Atom(Expr::JqPath(_))));
+        } else {
+            panic!("Expected NotNot");
+        }
+    }
+
+    #[test]
+    fn test_parse_double_bang() {
+        if let AssertionExpr::NotNot(inner) = parse_assertion("!!.x") {
+            assert!(matches!(*inner, AssertionExpr::Atom(Expr::JqPath(_))));
+        } else {
+            panic!("Expected NotNot");
+        }
+    }
+
+    #[test]
+    fn test_parse_regex_literal() {
+        let expr = parse_assertion("@regex(.name, /^hello/i) == true");
+        if let AssertionExpr::Binary { op, left, .. } = expr {
+            assert_eq!(op, BinaryOp::Eq);
+            if let AssertionExpr::Atom(Expr::PluginCall { name, args }) = &*left {
+                assert_eq!(name, "regex");
+                assert_eq!(args.len(), 2);
+                if let AssertionExpr::Atom(a) = &args[1] {
+                    if let Expr::RegExp { pattern, flags } = &a {
+                        assert_eq!(pattern, "^hello");
+                        assert_eq!(flags, "");
+                    } else {
+                        panic!("Expected RegExp");
+                    }
+                } else {
+                    panic!("Expected Atom");
+                }
+            } else {
+                panic!("Expected PluginCall");
+            }
+        } else {
+            panic!("Expected Binary");
+        }
+    }
+
+    #[test]
+    fn test_parse_regex_serializes_correctly() {
+        let expr = parse_assertion("@regex(.x, /\\d{4}/gi) == true");
+        let s = assertion_to_string(&expr);
+        assert!(s.contains("/\\d{4}/"), "Should contain regex: {}", s);
+    }
+
+    #[test]
+    fn test_parse_json_literal() {
+        let expr = parse_assertion("@json(.data) == {\"key\": \"value\"}");
+        if let AssertionExpr::Binary { op, right, .. } = expr {
+            assert_eq!(op, BinaryOp::Eq);
+            if let AssertionExpr::Atom(Expr::Json(s)) = &*right {
+                assert!(s.contains("\"key\""));
+                assert!(s.contains("\"value\""));
+            } else {
+                panic!("Expected Json");
+            }
+        } else {
+            panic!("Expected Binary");
+        }
+    }
+
+    #[test]
+    fn test_nested_ternary_roundtrip() {
+        let original = "if .x == 1 then if .y == 2 then true else false end else false end";
+        let expr = parse_assertion(original);
+        let s = assertion_to_string(&expr);
+        assert!(s.contains('?'), "Should contain ternary: {}", s);
+        assert!(s.contains('('), "Should contain parens: {}", s);
+    }
+}

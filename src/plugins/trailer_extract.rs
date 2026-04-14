@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::assert::engine::AssertionResult;
 use crate::plugins::{
-    Plugin, PluginContext, PluginPurity, PluginResult, PluginReturnKind, PluginSignature,
+    ArgTypeInfo, Plugin, PluginContext, PluginPurity, PluginResult, PluginSignature, TypeInfo,
 };
 
 /// Trailer plugin - extracts trailer values
@@ -24,7 +24,12 @@ impl Plugin for TrailerExtractPlugin {
 
     fn signature(&self) -> PluginSignature {
         PluginSignature {
-            return_kind: PluginReturnKind::String,
+            return_type: TypeInfo::StringOrNull,
+            arg_types: &[ArgTypeInfo {
+                expected: TypeInfo::String,
+                required: true,
+                default: None,
+            }],
             purity: PluginPurity::ContextDependent,
             deterministic: true,
             idempotent: true,
@@ -93,7 +98,12 @@ impl Plugin for HasTrailerPlugin {
 
     fn signature(&self) -> PluginSignature {
         PluginSignature {
-            return_kind: PluginReturnKind::Boolean,
+            return_type: TypeInfo::Bool,
+            arg_types: &[ArgTypeInfo {
+                expected: TypeInfo::String,
+                required: true,
+                default: None,
+            }],
             purity: PluginPurity::ContextDependent,
             deterministic: true,
             idempotent: true,

@@ -1,4 +1,15 @@
-// Report module - Console output and reporting
+//! Output reporters for test results.
+//!
+//! This module provides multiple output formats for test execution results:
+//!
+//! | Reporter | Purpose |
+//! |----------|---------|
+//! | [`ConsoleReporter`] | Pytest-style terminal output with progress bars |
+//! | [`JsonReporter`] | Machine-readable JSON results |
+//! | [`JunitReporter`] | JUnit XML for CI/CD integration |
+//! | [`AllureReporter`] | Allure TestOps compatible reports |
+//! | [`StreamingJsonReporter`] | NDJSON stream for real-time consumption |
+//! | [`CoverageCollector`] | gRPC method and protobuf field coverage |
 
 pub mod allure;
 pub mod console;

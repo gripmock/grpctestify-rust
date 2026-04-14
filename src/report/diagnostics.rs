@@ -151,15 +151,4 @@ impl Diagnostic {
         self.hint = Some(hint.to_string());
         self
     }
-
-    pub fn with_quick_fix(mut self, title: &str, range: DiagnosticRange, new_text: &str) -> Self {
-        self.quick_fix = Some(QuickFix {
-            title: title.to_string(),
-            edits: vec![TextEdit {
-                range,
-                new_text: new_text.to_string(),
-            }],
-        });
-        self
-    }
 }

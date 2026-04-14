@@ -24,7 +24,6 @@ macro_rules! define_validation_plugin {
 
             fn signature(&self) -> PluginSignature {
                 PluginSignature {
-                    return_kind: PluginReturnKind::Boolean,
                     purity: PluginPurity::Pure,
                     deterministic: true,
                     idempotent: true,
@@ -89,7 +88,6 @@ macro_rules! define_metadata_extract_plugin {
 
             fn signature(&self) -> PluginSignature {
                 PluginSignature {
-                    return_kind: PluginReturnKind::String,
                     purity: PluginPurity::ContextDependent,
                     deterministic: true,
                     idempotent: true,

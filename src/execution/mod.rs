@@ -5,6 +5,7 @@ pub mod error_handler;
 pub mod request_handler;
 pub mod response_handler;
 pub mod runner;
+pub mod runner_helpers;
 pub mod validator;
 pub mod workflow_events;
 pub mod workflow_graph;
@@ -18,6 +19,7 @@ pub use runner::{
     ExpectationInfo, ExtractionInfo, HeadersInfo, RequestInfo, RpcMode, TargetInfo,
     TestExecutionResult, TestExecutionStatus, TestRunner,
 };
+#[cfg(test)]
 pub use validator::TestValidator;
 pub use workflow_events::{StreamingPattern, ValidationResult, Workflow, WorkflowEvent};
-pub use workflow_graph::{WorkflowStep, build_workflow_graph, get_call_type, get_workflow_summary};
+pub use workflow_graph::{WorkflowSummary, get_call_type, get_workflow_summary};
