@@ -1,10 +1,19 @@
 # Troubleshooting
 
+Quick checklist for unexpected failures.
+
+## Fast triage
+
+1. Run `grpctestify check <file>` to validate syntax/sections.
+2. Run the same file with `--verbose`.
+3. Reduce concurrency (`--parallel 1`) if failures are flaky.
+4. Check endpoint address/TLS settings.
+
 ## Connection problems
 
 ### Service unavailable
 
-- Verify server is running and reachable
+- Verify server is running
 - Confirm `ADDRESS` value or `GRPCTESTIFY_ADDRESS`
 - Check TLS settings if server requires TLS/mTLS
 
@@ -16,18 +25,32 @@ Use a higher timeout:
 grpctestify test.gctf --timeout 60
 ```
 
+For unstable endpoints, run with reduced parallelism to isolate load-related failures:
+
+```bash
+grpctestify tests/ --parallel 1 --verbose
+```
+
 ## Test file problems
 
 ### JSON parse errors
 
 - Validate JSON in `REQUEST` / `RESPONSE` / `ERROR`
 - Remove trailing commas
-- Ensure section markers are correct
+- Ensure section markers are valid
 
 ### Missing required sections
 
 - `ENDPOINT` is required
 - At least one verification block is required: `RESPONSE`, `ERROR`, or `ASSERTS`
+- `RESPONSE` and `ERROR` cannot appear in the same file
+- `META` (if present) must be the first section and appear only once
+
+### Unexpected section behavior
+
+- Use `REQUEST_HEADERS` instead of legacy `HEADERS`
+- Keep section markers exact: `--- SECTION_NAME ---`
+- For inline options, use `key=value` when needed, or short boolean flags like `with_asserts`
 
 ## Assertion problems
 
@@ -35,7 +58,12 @@ grpctestify test.gctf --timeout 60
 
 - Start with simple checks (`.status == "ok"`)
 - Validate paths exist in actual response
-- For metadata checks use built-ins like `@header()` / `@trailer()`
+- For metadata checks use `@header()` / `@trailer()`
+
+### Type/format checks fail
+
+- Verify values match expected format for `@timestamp`, `@url`, `@ip`, `@email`, `@uuid`
+- Check raw response types with `inspect` output before writing strict assertions
 
 ## Debugging commands
 
@@ -51,6 +79,9 @@ grpctestify check test.gctf
 
 # Inspect parsed structure
 grpctestify inspect test.gctf --format json
+
+# Explain execution plan and assertion scopes
+grpctestify explain test.gctf
 ```
 
 ## Environment variables

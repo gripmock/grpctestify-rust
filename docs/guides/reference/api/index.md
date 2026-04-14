@@ -1,35 +1,18 @@
 # API Reference
 
-Reference pages for CLI usage and `.gctf` syntax.
+Reference pages for CLI behavior and `.gctf` rules.
 
-## Start with
+Use this section when you need exact behavior.
 
-- [Command Line Interface](./command-line)
-- [Test File Format](./test-files)
-- [Assertions](./assertions)
-- [Type Validation](./type-validation)
-- [Report Formats](./report-formats)
-- [Plugin Development](./plugin-development)
+## Core pages
 
-## Quick Example
+- [Command Line Interface](./command-line) - commands and flags
+- [Test File Format](./test-files) - syntax rules and execution order
+- [Assertions](./assertions) - expression and plugin usage
+- [Report Formats](./report-formats) - JSON, JUnit, Allure output
+- [Section Reference](../sections/) - one page per `.gctf` section
 
-```gctf
---- ADDRESS ---
-localhost:4770
-
---- ENDPOINT ---
-service.Method
-
---- REQUEST ---
-{
-  "field": "value"
-}
-
---- ASSERTS ---
-.field == "value"
-```
-
-## See Also
+## Related
 
 - [Getting Started](../../getting-started/installation)
-- [Real-time Chat Example](../../examples/basic/real-time-chat)
+- [Guides Overview](../../)

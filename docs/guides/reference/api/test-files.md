@@ -2,6 +2,8 @@
 
 Specification of `.gctf` files for the Rust CLI.
 
+Think of a `.gctf` file as: target + input + expected outcome.
+
 ## Minimal Example
 
 ```gctf
@@ -22,17 +24,16 @@ package.Service/Method
 
 ## Supported Sections
 
-- `ADDRESS` - server address (`host:port`)
-- `ENDPOINT` - gRPC method (`package.Service/Method`)
-- `REQUEST` - JSON payload (multiple allowed)
-- `RESPONSE` - expected JSON (multiple allowed)
-- `ERROR` - expected error JSON/string
-- `ASSERTS` - assertion expressions (multiple allowed)
-- `EXTRACT` - variable extraction rules (multiple allowed)
-- `REQUEST_HEADERS` (or `HEADERS`) - request metadata
-- `TLS` - TLS/mTLS config
-- `PROTO` - descriptor/reflection configuration
-- `OPTIONS` - parsed, validated, and applied for per-test runtime overrides (`timeout`, `retry`, `retry-delay`, `no-retry`)
+- Core: `META`, `ADDRESS`, `ENDPOINT`, `REQUEST`, `RESPONSE`, `ERROR`, `ASSERTS`
+- Supporting: `EXTRACT`, `REQUEST_HEADERS`, `TLS`, `PROTO`, `OPTIONS`
+
+For section details, use [Section Reference](../sections/).
+
+## Execution order
+
+- Preamble sections are read first: `ADDRESS`, `TLS`, `PROTO`, `OPTIONS`, `REQUEST_HEADERS`
+- Request/validation flow is processed in-order for each RPC interaction
+- Multiple `REQUEST`/`RESPONSE`/`ASSERTS` blocks are allowed depending on RPC pattern
 
 ## Validation Rules
 
@@ -40,13 +41,14 @@ package.Service/Method
 - At least one of `RESPONSE`, `ERROR`, or `ASSERTS` is required
 - `RESPONSE` and `ERROR` cannot be used together in one file
 - `ADDRESS` may be omitted if `GRPCTESTIFY_ADDRESS` is set
+- `META` is optional, but only one is allowed and it must be the first section
 
 ## RESPONSE Inline Options
 
-Inline options use `key=value` in the section header:
+Inline options use section-header flags and `key=value` pairs:
 
 ```gctf
---- RESPONSE with_asserts=true partial=true tolerance=0.1 unordered_arrays=true ---
+--- RESPONSE with_asserts partial tolerance=0.1 unordered_arrays ---
 {
   "status": "ok"
 }
@@ -54,55 +56,27 @@ Inline options use `key=value` in the section header:
 
 Supported options for `RESPONSE`:
 
-- `with_asserts=true|false`
-- `partial=true|false`
+- `with_asserts` or `with_asserts=true|false`
+- `partial` or `partial=true|false`
 - `tolerance=<number>`
 - `redact=["field1","field2"]`
-- `unordered_arrays=true|false`
+- `unordered_arrays` or `unordered_arrays=true|false`
 
-`ERROR` supports only `with_asserts=true|false`.
+`ERROR` supports only `with_asserts` (or `with_asserts=true|false`).
 
-## TLS Section
+## Quick links by section
 
-```gctf
---- TLS ---
-ca_cert: ./certs/ca.pem
-cert: ./certs/client.pem
-key: ./certs/client-key.pem
-server_name: api.example.com
-insecure: false
-```
+- [META](../sections/meta)
+- [ADDRESS](../sections/address)
+- [ENDPOINT](../sections/endpoint)
+- [REQUEST](../sections/request)
+- [RESPONSE](../sections/response)
+- [ERROR](../sections/error)
+- [ASSERTS](../sections/asserts)
+- [EXTRACT](../sections/extract)
+- [REQUEST_HEADERS](../sections/request-headers)
+- [TLS](../sections/tls)
+- [PROTO](../sections/proto)
+- [OPTIONS](../sections/options)
 
-Supported keys include:
-
-- `ca_cert` or `ca_file`
-- `cert`, `client_cert`, or `cert_file`
-- `key`, `client_key`, or `key_file`
-- `server_name`
-- `insecure`
-
-## PROTO Section
-
-```gctf
---- PROTO ---
-descriptor: ./descriptors/api.desc
-```
-
-Notes:
-
-- Native mode supports `descriptor=<path>` and server reflection
-- `PROTO files=...` is currently not supported in native mode
-
-## Assertion Plugins
-
-Examples of built-in plugins:
-
-```gctf
---- ASSERTS ---
-@header("x-request-id") != null
-@uuid(.user.id, "v4")
-@email(.user.email)
-@elapsed_ms() >= 10
-```
-
-See also: [Assertions](./assertions.md), [Type Validation](./type-validation.md).
+Related: [Assertions](./assertions), [Plugin System](../../plugins/).

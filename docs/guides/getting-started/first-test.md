@@ -1,5 +1,7 @@
 # Your First Test
 
+Create a test, validate it, run it, and inspect output.
+
 ## 1) Create a file
 
 Create `hello_test.gctf`:
@@ -20,16 +22,33 @@ hello.HelloService/SayHello
 .message == "Hello, World!"
 ```
 
-## 2) Run it
+## 2) Validate before run
+
+```bash
+grpctestify check hello_test.gctf
+```
+
+## 3) Run it
 
 ```bash
 grpctestify hello_test.gctf
 ```
 
-## 3) Helpful commands
+Expected result: the test finishes with a pass status.
+
+## 4) Debug commands
 
 ```bash
-grpctestify check hello_test.gctf
 grpctestify inspect hello_test.gctf --format json
 grpctestify explain hello_test.gctf
+grpctestify hello_test.gctf --verbose
 ```
+
+## 5) Common next upgrades
+
+- Add request metadata with `REQUEST_HEADERS`
+- Add payload matching with `RESPONSE`
+- Add TLS/mTLS settings in `TLS`
+- Add per-test execution overrides in `OPTIONS`
+
+Next: [Basic Concepts](basic-concepts).

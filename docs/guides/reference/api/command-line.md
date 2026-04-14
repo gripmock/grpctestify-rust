@@ -8,45 +8,64 @@ Reference for the Rust CLI.
 grpctestify [OPTIONS] [TEST_PATHS]... [COMMAND]
 ```
 
-## Main Commands
+## Quick workflow
 
-- `run` - run tests (default)
-- `check` - validate `.gctf` syntax/structure
-- `fmt` - format `.gctf` files
-- `inspect` - inspect AST/workflow for a file
-- `explain` - explain execution flow for a file
-- `list` - list test files (IDE discovery)
-- `reflect` - query server reflection metadata
-- `lsp` - start LSP server
+- If no subcommand is provided, `grpctestify` runs tests using the provided paths
+- `run` is available explicitly, but optional for normal usage
+- Global flags apply to commands (`-v`, `-c`, `--completion`)
+- Typical flow: `check` -> `run` -> report flags in CI
 
-## Global Options
+## Commands
+
+- `run [TEST_PATHS]...` - run tests (default command)
+- `check <FILES...>` - validate `.gctf` syntax and semantic rules
+- `fmt <FILES...>` - format `.gctf` files
+- `inspect <FILE>` - inspect parsed file structure (`text` or `json`)
+- `explain <FILE>` - show execution explanation (`text` or `json`)
+- `list [PATH]` - list discovered tests for tooling and IDE integration
+- `reflect [SYMBOL]` - list reflected services and methods from a target server
+- `lsp` - start language server protocol mode
+
+## Global options
 
 - `-v, --verbose` - verbose output
-- `-c, --no-color` - disable colors
-- `--config` - print resolved config
-- `--init-config <FILE>` - create default config file
-- `--completion <SHELL>` - install shell completion (`bash`, `zsh`, `fish`, `elvish`, `powershell`)
+- `-c, --no-color` - disable colorized output
+- `--completion <SHELL_TYPE>` - install shell completion (`bash`, `zsh`, `fish`, `elvish`, `powershell`)
 
-## Run Options
+## Run options
 
+- `--exclude <PATTERN>` - exclude files/directories by glob (repeatable)
+- `--tags <TAGS>` - include only tests containing all provided tags (from `META.tags`)
+- `--skip-tags <TAGS>` - exclude tests containing any provided tags (from `META.tags`)
 - `-p, --parallel <N|auto>` - parallel workers (`auto` by default)
-- `-d, --dry-run` - show execution plan without running
-- `-s, --sort <TYPE>` - sort input files
-- `--log-format <FORMAT>` - report format (`json`, `junit`, `allure`)
-- `--log-output <FILE>` - report output file
-- `--stream` - JSON event stream output
+- `-d, --dry-run` - print execution plan without running requests
+- `-s, --sort <TYPE>` - sort discovered test files (default `path`)
+- `--log-format <FORMAT>` - file report format (`json`, `junit`, `allure`)
+- `--log-output <OUTPUT_FILE>` - output path for file report
+- `--stream` - emit streaming JSON events for integration
 - `-t, --timeout <SECONDS>` - per-test timeout (default `30`)
-- `-r, --retry <COUNT>` - retry count (default `0`)
+- `-r, --retry <COUNT>` - retry count for failed network calls (default `0`)
 - `--retry-delay <SECONDS>` - initial retry delay (default `1`)
-- `--no-retry` - disable retries
-- `--progress <MODE>` - progress style (`auto`, `dots`, `bar`, `none`)
-- `--no-assert` - skip assertions and print raw responses
+- `--no-retry` - disable retry mechanisms completely
+- `--progress <MODE>` - progress mode (`auto`, `dots`, `bar`, `none`)
+- `--no-assert` - skip assertion evaluation and print raw responses
 - `--coverage` - generate API coverage report
 - `--coverage-format <text|json>` - coverage output format
-- `-w, --write` - snapshot mode: write actual responses back to files
+- `-w, --write` - write actual server responses back to test files (snapshot mode)
 
-Note: retry-related flags are currently compatibility options.
-Prefer timeout, parallel, and reporting controls for deterministic behavior.
+Note: if `--log-format` is set without `--log-output`, the run continues and file report generation is skipped with a warning.
+
+## Subcommand options
+
+- `fmt`: `-w, --write` rewrites files in place (without `-w`, checks formatting)
+- `check`: `--format <text|json>`
+- `inspect`: `--format <text|json>`
+- `explain`: `--format <text|json>`
+- `list`: `--format <text|json>`, `--with-range`
+- `reflect`: `--address <ADDR>`, `--plaintext`
+- `lsp`: `--stdio`
+
+`reflect --plaintext` expects `http://...` or `host:port` addresses. It is rejected for explicit `https://...` addresses.
 
 ## Examples
 
@@ -57,11 +76,23 @@ grpctestify test.gctf
 # Run a directory in parallel
 grpctestify tests/ --parallel 4
 
+# Run explicit command form
+grpctestify run tests/
+
 # Create JUnit report
 grpctestify tests/ --log-format junit --log-output test-results.xml
 
+# Stream JSON events for integrations
+grpctestify tests/ --stream
+
+# Use include/exclude filtering
+grpctestify tests/ --exclude "tests/legacy/**" --tags smoke --skip-tags flaky
+
 # Validate files
 grpctestify check tests/**/*.gctf
+
+# Reflect one method signature
+grpctestify reflect user.UserService/GetUser --address localhost:50051
 
 # Format files in-place
 grpctestify fmt -w .
@@ -70,13 +101,12 @@ grpctestify fmt -w .
 grpctestify fmt .
 ```
 
-## Fmt Behavior
+## Fmt behavior
 
 - `grpctestify fmt <files...>` works as a formatting check and exits with code `1` if any file needs reformatting.
 - `grpctestify fmt -w <files...>` rewrites files in place.
-- Safe optimizer rewrites are applied by default during formatting.
-
-For CI, run both `fmt` and `check`: `fmt` enforces style, while `check` enforces parse/validation/semantics.
+- Safe optimizer rewrites are applied by default.
+- For CI, run both `fmt` and `check`.
 
 ## See Also
 

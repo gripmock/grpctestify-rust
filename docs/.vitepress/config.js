@@ -8,7 +8,7 @@ export default defineConfig({
   base: '/grpctestify-rust/',
   
   head: [
-    ['link', { rel: 'icon', href: '/favicon.ico' }],
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/grpctestify-rust/icon.svg' }],
     ['meta', { name: 'theme-color', content: '#667eea' }],
     ['meta', { property: 'og:type', content: 'website' }],
     ['meta', { property: 'og:site_name', content: 'gRPC Testify' }]
@@ -16,24 +16,26 @@ export default defineConfig({
 
   themeConfig: {
     logo: {
-      light: '/logo-light.svg',
-      dark: '/logo-dark.svg'
+      light: '/icon.svg',
+      dark: '/icon.svg'
     },
 
     siteTitle: 'gRPC Testify',
 
     nav: [
       { text: 'Home', link: '/' },
-      { text: 'Install', link: '/guides/getting-started/installation' },
+      { text: 'Get Started', link: '/guides/getting-started/installation' },
+      { text: 'Test Files', link: '/guides/reference/api/test-files' },
       { text: 'CLI', link: '/guides/reference/api/command-line' },
-      { text: 'Generator', link: '/generator' }
+      { text: 'Sections', link: '/guides/reference/sections/' }
     ],
 
     sidebar: {
       '/guides/': [
         {
-          text: 'Start',
+          text: 'Getting Started',
           items: [
+            { text: 'Overview', link: '/guides/' },
             { text: 'Installation', link: '/guides/getting-started/installation' },
             { text: 'First Test', link: '/guides/getting-started/first-test' },
             { text: 'Basic Concepts', link: '/guides/getting-started/basic-concepts' },
@@ -41,40 +43,37 @@ export default defineConfig({
           ]
         },
         {
-          text: 'Testing Patterns',
+          text: 'CLI and Workflow',
           items: [
-            { text: 'Testing Patterns', link: '/guides/testing-patterns/testing-patterns' },
-            { text: 'Data Validation', link: '/guides/testing-patterns/data-validation' },
-            { text: 'Error Testing', link: '/guides/testing-patterns/error-testing' },
-            { text: 'Security Testing', link: '/guides/testing-patterns/security-testing' },
-            { text: 'Performance Testing', link: '/guides/testing-patterns/performance-testing' },
-            { text: 'Assertion Patterns', link: '/guides/testing-patterns/assertion-patterns' }
+            { text: 'API Overview', link: '/guides/reference/api/' },
+            { text: 'Command Line', link: '/guides/reference/api/command-line' },
+            { text: 'Report Formats', link: '/guides/reference/api/report-formats' }
           ]
         },
         {
-          text: 'Reference',
+          text: 'Test Format',
           items: [
-            { text: 'Command Line', link: '/guides/reference/api/command-line' },
             { text: 'Test Files', link: '/guides/reference/api/test-files' },
             { text: 'Assertions', link: '/guides/reference/api/assertions' },
-            { text: 'Report Formats', link: '/guides/reference/api/report-formats' },
-            { text: 'Type Validation', link: '/guides/reference/api/type-validation' },
-            { text: 'Plugin Development', link: '/guides/reference/api/plugin-development' },
-            { text: 'Core gRPC Execution', link: '/guides/reference/api/grpc-default-test' }
+            { text: 'Plugin System', link: '/guides/plugins/' }
           ]
         },
         {
-          text: 'Plugins',
+          text: 'Section Reference',
           items: [
-            { text: 'Plugin System', link: '/guides/plugins/' },
-            { text: 'Timing Assertions', link: '/guides/plugins/timing-assertions' },
-            { text: 'State API', link: '/guides/plugins/development/state-api' }
-          ]
-        },
-        {
-          text: 'Example',
-          items: [
-            { text: 'Real-time Chat', link: '/guides/examples/basic/real-time-chat' }
+            { text: 'Overview', link: '/guides/reference/sections/' },
+            { text: 'META', link: '/guides/reference/sections/meta' },
+            { text: 'ADDRESS', link: '/guides/reference/sections/address' },
+            { text: 'ENDPOINT', link: '/guides/reference/sections/endpoint' },
+            { text: 'REQUEST', link: '/guides/reference/sections/request' },
+            { text: 'RESPONSE', link: '/guides/reference/sections/response' },
+            { text: 'ERROR', link: '/guides/reference/sections/error' },
+            { text: 'ASSERTS', link: '/guides/reference/sections/asserts' },
+            { text: 'EXTRACT', link: '/guides/reference/sections/extract' },
+            { text: 'REQUEST_HEADERS', link: '/guides/reference/sections/request-headers' },
+            { text: 'TLS', link: '/guides/reference/sections/tls' },
+            { text: 'PROTO', link: '/guides/reference/sections/proto' },
+            { text: 'OPTIONS', link: '/guides/reference/sections/options' }
           ]
         }
       ]
@@ -86,7 +85,7 @@ export default defineConfig({
 
     footer: {
       message: 'Released under the MIT License.',
-      copyright: 'Copyright © 2024 gRPC Testify Contributors'
+      copyright: 'Copyright © 2025 gRPC Testify Contributors'
     },
 
     search: {

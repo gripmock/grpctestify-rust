@@ -2,17 +2,19 @@
 
 Rust version includes built-in assertion plugins available in `ASSERTS`.
 
+Use plugins when basic field comparisons are not enough.
+
 ## Available Plugins
 
 - `@header("name")`
 - `@has_header("name")`
 - `@trailer("name")`
 - `@has_trailer("name")`
-- `@uuid(value, "v4")`
+- `@uuid(value)`
 - `@email(value)`
-- `@ip(value, "v4"|"v6")`
-- `@url(value, "https")`
-- `@timestamp(value, "iso8601"|"rfc3339"|"unix")`
+- `@ip(value)`
+- `@url(value)`
+- `@timestamp(value)`
 - `@len(value)`
 - `@regex(value, pattern)`
 - `@empty(value)`
@@ -22,55 +24,23 @@ Rust version includes built-in assertion plugins available in `ASSERTS`.
 - `@scope_message_count()`
 - `@scope_index()`
 
-## Usage
+## Quick choice
 
-```gctf
---- ASSERTS ---
-@has_header("x-request-id")
-@uuid(.user.id, "v4")
-@email(.user.email)
-@len(.items) > 0
-```
-
-Timing assertions (`with_asserts=true`):
-
-```gctf
---- RESPONSE with_asserts=true ---
-{
-  "status": "NOT_SERVING"
-}
-{
-  "status": "SERVING"
-}
-
---- ASSERTS ---
-@scope_message_count() == 2
-@elapsed_ms() >= 10
-@total_elapsed_ms() >= 10
-```
-
-`@elapsed_ms()` uses current assertion scope:
-
-- If `RESPONSE` section has one expected message -> elapsed for that single message scope.
-- If `RESPONSE` section has multiple expected messages -> elapsed for the whole section batch scope.
+- Metadata checks: `@header`, `@trailer`, `@has_header`, `@has_trailer`
+- Format checks: `@uuid`, `@email`, `@url`, `@ip`, `@timestamp`
+- Utility checks: `@len`, `@regex`, `@empty`, `@env`
+- Timing checks: `@elapsed_ms`, `@total_elapsed_ms`, `@scope_message_count`, `@scope_index`
 
 ## Notes
 
 - External runtime plugin commands are not part of current CLI
 - Plugin support is native and loaded by default
 
-## Development
+## For contributors
 
-Built-in plugins are implemented as native Rust modules in this repository.
-
-To add a new built-in plugin:
-
-1. Add a plugin module in `src/plugins/`
-2. Register it in `src/plugins/mod.rs`
-3. Add parser/execution tests for the new behavior
-4. Update docs with a usage example
+Built-in plugins live in `src/plugins/` and are registered in `src/plugins/mod.rs`.
 
 ## Related
 
-- [Assertion Reference](../reference/api/assertions.md)
-- [Type Validation](../reference/api/type-validation.md)
+- [Assertion Reference](../reference/api/assertions)
+- [ASSERTS section](../reference/sections/asserts)
