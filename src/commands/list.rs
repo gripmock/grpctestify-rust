@@ -64,10 +64,9 @@ pub fn handle_list(args: &ListArgs) -> Result<()> {
                         } else {
                             None
                         }
-                    }) {
-                        if !meta.tags.is_empty() {
-                            test["tags"] = serde_json::json!(meta.tags);
-                        }
+                    }) && !meta.tags.is_empty()
+                    {
+                        test["tags"] = serde_json::json!(meta.tags);
                     }
                 }
 

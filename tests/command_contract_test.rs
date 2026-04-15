@@ -1002,3 +1002,16 @@ fn test_list_with_range() {
         }
     }
 }
+
+#[test]
+#[cfg(not(miri))]
+fn test_list_with_range_includes_meta_tags() {
+    let dir = fixture_path("tests/data/gctf_meta");
+    let output = run_cli(&["list", &dir, "--format", "json", "--with-range"]);
+    let json = parse_json_stdout(&output);
+
+    let tests = json["tests"].as_array().expect("tests should be array");
+    assert_eq!(tests.len(), 1);
+    assert_eq!(tests[0]["id"], "tagged.gctf");
+    assert_eq!(tests[0]["tags"], serde_json::json!(["smoke", "critical"]));
+}
