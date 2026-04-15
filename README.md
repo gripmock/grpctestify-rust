@@ -13,7 +13,6 @@ Native CLI for gRPC testing with `.gctf` files.
 ## Documentation
 
 - [Docs](https://gripmock.github.io/grpctestify-rust/)
-- [Generator](https://gripmock.github.io/grpctestify-rust/generator)
 - [Repository](https://github.com/gripmock/grpctestify-rust)
 
 ## Key Features
