@@ -1,0 +1,16 @@
+--- META ---
+name: Tagged test
+tags: [smoke, critical]
+
+--- ENDPOINT ---
+example.v1.Greeter/SayHello
+
+--- REQUEST ---
+{
+  "name": "World"
+}
+
+--- RESPONSE ---
+{
+  "message": "Hello World"
+}

@@ -6,7 +6,8 @@ use std::path::Path;
 use tracing::error;
 
 use crate::cli::args::ListArgs;
-use crate::parser;
+use crate::parser::ast::{SectionContent, SectionType};
+use crate::parser::{self};
 use crate::utils::FileUtils;
 
 pub fn handle_list(args: &ListArgs) -> Result<()> {
@@ -57,6 +58,16 @@ pub fn handle_list(args: &ListArgs) -> Result<()> {
                         "start": {"line": 1, "column": 1},
                         "end": {"line": line_count, "column": 1}
                     });
+                    if let Some(SectionContent::Meta(meta)) = doc.sections.iter().find_map(|s| {
+                        if s.section_type == SectionType::Meta {
+                            Some(&s.content)
+                        } else {
+                            None
+                        }
+                    }) && !meta.tags.is_empty()
+                    {
+                        test["tags"] = serde_json::json!(meta.tags);
+                    }
                 }
 
                 test
