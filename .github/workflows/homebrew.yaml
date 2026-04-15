@@ -193,6 +193,6 @@ jobs:
           cd homebrew-tap
           git add Formula/grpctestify.rb Casks/grpctestify.rb
           if ! git diff --cached --quiet; then
-            git commit -m "chore: update homebrew to ${{ steps.version.outputs.VERSION }}"
+            git commit -m "chore: update grpctestify (${{ steps.version.outputs.VERSION }})"
             git push origin master
           fi
