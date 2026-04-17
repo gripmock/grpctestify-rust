@@ -1,5 +1,6 @@
 // Console reporter - pytest-style output
 
+use std::cmp::Reverse;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -170,7 +171,7 @@ impl ConsoleReporter {
             }
 
             let mut sorted = test_results.to_vec();
-            sorted.sort_by(|a, b| b.duration_ms.cmp(&a.duration_ms));
+            sorted.sort_by_key(|b| Reverse(b.duration_ms));
 
             println!("🐢 Slowest Tests:");
             let count = limit.min(sorted.len());

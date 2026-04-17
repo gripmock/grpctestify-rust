@@ -450,14 +450,14 @@ fn test_header_case_insensitive() {
     // @has_header returns boolean - use explicit comparison
     let result = engine
         .evaluate(
-            "@has_header(content-type) == true",
+            "@has_header(\"content-type\") == true",
             &response,
             Some(&headers),
             None,
         )
         .unwrap();
 
-    assert!(matches!(result, AssertionResult::Pass));
+    assert!(matches!(result, AssertionResult::Pass), "got: {:?}", result);
 }
 
 #[test]

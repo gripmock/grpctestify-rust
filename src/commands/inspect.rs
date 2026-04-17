@@ -486,7 +486,7 @@ fn print_variables(doc: &parser::GctfDocument) {
 
 fn sorted_kv(map: &HashMap<String, String>) -> Vec<(&str, &str)> {
     let mut pairs: Vec<(&str, &str)> = map.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    pairs.sort_by(|(ka, _), (kb, _)| ka.cmp(kb));
+    pairs.sort_by_key(|(ka, _)| *ka);
     pairs
 }
 

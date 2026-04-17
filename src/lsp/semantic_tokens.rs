@@ -84,7 +84,7 @@ fn tokenize_line_as_assertion(line: &str, line_num: u32, tokens: &mut Vec<SrcTok
             TokenKind::Ident(s) if s.starts_with('.') || s.starts_with("{{") => VARIABLE,
             TokenKind::Ident(s) if s == "if" || s == "then" || s == "else" || s == "end" => KEYWORD,
             TokenKind::Ident(s) if s == "true" || s == "false" || s == "null" => KEYWORD,
-            TokenKind::Ident(s) if s == "and" || s == "or" || s == "not" => KEYWORD,
+            TokenKind::Ident(s) if s == "and" || s == "or" || s == "xor" || s == "not" => KEYWORD,
             TokenKind::NumberLit(_) => NUMBER,
             TokenKind::StringLit(_) => STRING,
             TokenKind::RegExpLit { .. } => REGEXP,
@@ -99,6 +99,7 @@ fn tokenize_line_as_assertion(line: &str, line_num: u32, tokens: &mut Vec<SrcTok
             | TokenKind::Dot
             | TokenKind::Comma
             | TokenKind::Bang
+            | TokenKind::Pipe
             | TokenKind::Slash
             | TokenKind::VarDelim => continue,
             TokenKind::Ident(_) => VARIABLE,
