@@ -150,18 +150,15 @@ pub fn tokenize_assertion(source: &str) -> Vec<Token> {
                     out.push(Token::new(TokenKind::Bang, Span { start: s, end: i }));
                 }
             }
-            '=' => {
-                if i + 1 < cs.len() && cs[i + 1] == '=' {
-                    let s = i;
-                    i += 2;
-                    out.push(Token::new(
-                        TokenKind::Op("==".into()),
-                        Span { start: s, end: i },
-                    ));
-                } else {
-                    i += 1;
-                }
+            '=' if i + 1 < cs.len() && cs[i + 1] == '=' => {
+                let s = i;
+                i += 2;
+                out.push(Token::new(
+                    TokenKind::Op("==".into()),
+                    Span { start: s, end: i },
+                ));
             }
+            '=' => i += 1,
             '>' => {
                 if i + 1 < cs.len() && cs[i + 1] == '=' {
                     let s = i;

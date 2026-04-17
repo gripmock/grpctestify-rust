@@ -862,28 +862,26 @@ impl LanguageServer for GrpctestifyLsp {
                         SectionType::Address if !on_section_header => {
                             items.extend(handlers::get_address_completions())
                         }
-                        SectionType::Endpoint => {
-                            if !on_section_header {
-                                items.push(CompletionItem {
-                                    label: "package.Service/Method".to_string(),
-                                    kind: Some(CompletionItemKind::SNIPPET),
-                                    detail: Some("gRPC endpoint template".to_string()),
-                                    insert_text: Some(
-                                        "${1:package}.${2:Service}/${3:Method}".to_string(),
-                                    ),
-                                    insert_text_format: Some(InsertTextFormat::SNIPPET),
-                                    ..CompletionItem::default()
-                                });
+                        SectionType::Endpoint if !on_section_header => {
+                            items.push(CompletionItem {
+                                label: "package.Service/Method".to_string(),
+                                kind: Some(CompletionItemKind::SNIPPET),
+                                detail: Some("gRPC endpoint template".to_string()),
+                                insert_text: Some(
+                                    "${1:package}.${2:Service}/${3:Method}".to_string(),
+                                ),
+                                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                                ..CompletionItem::default()
+                            });
 
-                                let address = handlers::get_address_from_document(&content)
-                                    .or_else(|| std::env::var(config::ENV_GRPCTESTIFY_ADDRESS).ok())
-                                    .unwrap_or_else(config::default_address);
-                                let proto_config = Self::proto_config_from_document(&doc, &uri);
-                                items.extend(
-                                    self.schema_endpoint_completions(&address, proto_config)
-                                        .await,
-                                );
-                            }
+                            let address = handlers::get_address_from_document(&content)
+                                .or_else(|| std::env::var(config::ENV_GRPCTESTIFY_ADDRESS).ok())
+                                .unwrap_or_else(config::default_address);
+                            let proto_config = Self::proto_config_from_document(&doc, &uri);
+                            items.extend(
+                                self.schema_endpoint_completions(&address, proto_config)
+                                    .await,
+                            );
                         }
                         SectionType::Request if !on_section_header => {
                             // Variable completions for {{var}} in JSON
@@ -1537,11 +1535,7 @@ fn infer_active_parameter(line: &str, open_paren_abs: usize, cursor_idx: usize) 
         match ch {
             '"' => in_string = true,
             '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => {
-                if depth > 0 {
-                    depth -= 1;
-                }
-            }
+            ')' | ']' | '}' if depth > 0 => depth -= 1,
             ',' if depth == 0 => commas += 1,
             _ => {}
         }
