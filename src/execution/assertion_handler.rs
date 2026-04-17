@@ -4,6 +4,7 @@ use crate::assert::AssertionEngine;
 #[cfg(test)]
 use crate::parser::ast::{Section, SectionContent, SectionType};
 use crate::plugins::AssertionTiming;
+use crate::utils::section_content_line;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -17,31 +18,6 @@ pub struct AssertionResult {
 /// Assertion Handler - evaluates assertions
 pub struct AssertionHandler {
     engine: AssertionEngine,
-}
-
-fn append_failures_with_context(
-    results: &[crate::assert::AssertionResult],
-    context: &str,
-    failure_messages: &mut Vec<String>,
-) {
-    for fail in results {
-        match fail {
-            crate::assert::AssertionResult::Fail {
-                message,
-                expected,
-                actual,
-            } => {
-                failure_messages.push(format!("Assertion failed {}: {}", context, message));
-                if let (Some(exp), Some(act)) = (expected, actual) {
-                    failure_messages.push(format!("    Expected: {}\n    Actual:   {}", exp, act));
-                }
-            }
-            crate::assert::AssertionResult::Error(msg) => {
-                failure_messages.push(format!("Assertion error {}: {}", context, msg));
-            }
-            _ => {}
-        }
-    }
 }
 
 impl AssertionHandler {
@@ -63,7 +39,6 @@ impl AssertionHandler {
     ) -> AssertionResult {
         let mut failure_messages = Vec::new();
 
-        // Find ASSERTS sections and evaluate them
         for section in sections {
             if section.section_type == SectionType::Asserts
                 && let SectionContent::Assertions(lines) = &section.content
@@ -72,8 +47,11 @@ impl AssertionHandler {
                     self.engine
                         .evaluate_all(lines, target_value, Some(headers), Some(trailers));
 
-                let context = format!("at line {}", section.start_line);
-                append_failures_with_context(&results, &context, &mut failure_messages);
+                for (idx, result) in results.iter().enumerate() {
+                    let line_num = section_content_line(section.start_line, idx);
+                    let context = format!("at line {}", line_num);
+                    append_single_failure(result, &context, &mut failure_messages);
+                }
             }
         }
 
@@ -101,8 +79,11 @@ impl AssertionHandler {
                 self.engine
                     .evaluate_all(lines, target_value, Some(headers), Some(trailers));
 
-            let context = format!("at line {}", section.start_line);
-            append_failures_with_context(&results, &context, &mut failure_messages);
+            for (idx, result) in results.iter().enumerate() {
+                let line_num = section_content_line(section.start_line, idx);
+                let context = format!("at line {}", line_num);
+                append_single_failure(result, &context, &mut failure_messages);
+            }
         }
 
         AssertionResult {
@@ -142,13 +123,15 @@ impl AssertionHandler {
     }
 
     /// Evaluate assertions for a section (convenience method for runner.rs)
+    #[allow(clippy::too_many_arguments)]
     pub fn evaluate_assertions_for_section(
         &self,
         lines: &[String],
         target_value: &Value,
         headers: &HashMap<String, String>,
         trailers: &HashMap<String, String>,
-        context: &str,
+        section_context: &str,
+        start_line: usize,
         timing: Option<&AssertionTiming>,
     ) -> AssertionResult {
         let mut failure_messages = Vec::new();
@@ -161,12 +144,39 @@ impl AssertionHandler {
             timing,
         );
 
-        append_failures_with_context(&results, context, &mut failure_messages);
+        for (idx, result) in results.iter().enumerate() {
+            let line_num = section_content_line(start_line, idx);
+            let context = format!("{} (assertion at line {})", section_context, line_num);
+            append_single_failure(result, &context, &mut failure_messages);
+        }
 
         AssertionResult {
             passed: failure_messages.is_empty(),
             failure_messages,
         }
+    }
+}
+
+fn append_single_failure(
+    result: &crate::assert::AssertionResult,
+    context: &str,
+    failure_messages: &mut Vec<String>,
+) {
+    match result {
+        crate::assert::AssertionResult::Fail {
+            message,
+            expected,
+            actual,
+        } => {
+            failure_messages.push(format!("Assertion failed {}: {}", context, message));
+            if let (Some(exp), Some(act)) = (expected, actual) {
+                failure_messages.push(format!("    Expected: {}\n    Actual:   {}", exp, act));
+            }
+        }
+        crate::assert::AssertionResult::Error(msg) => {
+            failure_messages.push(format!("Assertion error {}: {}", context, msg));
+        }
+        _ => {}
     }
 }
 

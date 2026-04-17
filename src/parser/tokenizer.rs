@@ -44,6 +44,7 @@ pub enum TokenKind {
     Dot,
     Comma,
     Bang,
+    Pipe,
     Slash,
     VarDelim,
 }
@@ -129,6 +130,11 @@ pub fn tokenize_assertion(source: &str) -> Vec<Token> {
                 let s = i;
                 i += 1;
                 out.push(Token::new(TokenKind::Comma, Span { start: s, end: i }));
+            }
+            '|' => {
+                let s = i;
+                i += 1;
+                out.push(Token::new(TokenKind::Pipe, Span { start: s, end: i }));
             }
             '!' => {
                 if i + 1 < cs.len() && cs[i + 1] == '=' {

@@ -49,6 +49,14 @@ impl AssertionResult {
             actual: Some(actual.into()),
         }
     }
+
+    pub fn negate(self) -> Self {
+        match self {
+            Self::Pass => Self::fail("Negated assertion passed (expected false)"),
+            Self::Fail { .. } => Self::Pass,
+            Self::Error(e) => Self::Error(e),
+        }
+    }
 }
 
 /// Assertion engine
@@ -93,7 +101,7 @@ impl AssertionEngine {
     ) -> Result<AssertionResult> {
         let trimmed = assertion.trim();
 
-        // 1. Try operators engine (handles @ functions and custom operators)
+        // 1. Try AST-based operator engine
         match operators::evaluate_assertion(
             &self.plugin_manager,
             trimmed,
@@ -102,11 +110,12 @@ impl AssertionEngine {
             trailers,
             timing,
         ) {
-            Ok(AssertionResult::Error(msg)) if msg.starts_with("Unsupported assertion syntax") => {
-                // Fallback to JQ
+            Ok(Some(result)) => Ok(result),
+            Ok(None) => {
+                // AST could not parse it — fall through to JQ
                 self.evaluate_jaq(trimmed, response)
             }
-            other => other,
+            Err(e) => Err(e),
         }
     }
 

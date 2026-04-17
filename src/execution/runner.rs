@@ -1148,6 +1148,7 @@ impl TestRunner {
                                         "(attached to RESPONSE at line {})",
                                         section.start_line
                                     ),
+                                    section.start_line,
                                     AssertionContext {
                                         headers: &captured_headers,
                                         trailers: &captured_trailers,
@@ -1185,6 +1186,7 @@ impl TestRunner {
                                     &error_value,
                                     &mut failure_reasons,
                                     format!("after ERROR at line {}", section.start_line),
+                                    section.start_line,
                                     AssertionContext {
                                         headers: &captured_headers,
                                         trailers: &captured_trailers,
@@ -1238,6 +1240,7 @@ impl TestRunner {
                                     &msg,
                                     &mut failure_reasons,
                                     format!("at line {}", section.start_line),
+                                    section.start_line,
                                     AssertionContext {
                                         headers: &captured_headers,
                                         trailers: &captured_trailers,
@@ -1528,6 +1531,7 @@ impl TestRunner {
                                             "(attached to ERROR at line {})",
                                             section.start_line
                                         ),
+                                        section.start_line,
                                         AssertionContext {
                                             headers: &captured_headers,
                                             trailers: &captured_trailers,
@@ -1699,6 +1703,7 @@ impl TestRunner {
         target_value: &Value,
         failure_reasons: &mut Vec<String>,
         context: String,
+        start_line: usize,
         assertion_context: AssertionContext<'_>,
     ) {
         let mut optimized_lines: Option<Vec<String>> = None;
@@ -1723,6 +1728,7 @@ impl TestRunner {
             assertion_context.headers,
             assertion_context.trailers,
             &context,
+            start_line,
             assertion_context.timing,
         );
 
