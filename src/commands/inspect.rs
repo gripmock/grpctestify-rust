@@ -546,10 +546,16 @@ fn print_logic_flow(doc: &parser::GctfDocument) {
     let with_asserts_count = doc
         .sections
         .iter()
-        .filter(|s| s.section_type == SectionType::Response && s.inline_options.with_asserts)
+        .filter(|s| {
+            matches!(s.section_type, SectionType::Response | SectionType::Error)
+                && s.inline_options.with_asserts
+        })
         .count();
     if with_asserts_count > 0 {
-        println!("  With Asserts: {} response(s)", with_asserts_count);
+        println!(
+            "  With Asserts: {} response/error section(s)",
+            with_asserts_count
+        );
     }
 
     let unordered_count = doc
@@ -655,10 +661,9 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
 
     for (i, section) in sections.iter().enumerate() {
         if section.inline_options.with_asserts {
-            let has_following_asserts = sections[i + 1..]
-                .iter()
-                .take_while(|s| s.section_type != SectionType::Request)
-                .any(|s| s.section_type == SectionType::Asserts);
+            let has_following_asserts = sections
+                .get(i + 1)
+                .is_some_and(|s| s.section_type == SectionType::Asserts);
             if !has_following_asserts {
                 println!(
                     "  [WARN] Line {}: with_asserts option set but no",

@@ -51,6 +51,24 @@ impl ErrorHandler {
 
     /// Check if tonic::Status matches expected error JSON (supports details)
     pub fn status_matches_expected(status: &tonic::Status, expected: &Value) -> bool {
+        Self::status_matches_expected_with_options(status, expected, false)
+    }
+
+    /// Check if tonic::Status matches expected error JSON, optionally as partial subset.
+    pub fn status_matches_expected_with_options(
+        status: &tonic::Status,
+        expected: &Value,
+        partial: bool,
+    ) -> bool {
+        if !partial && !Self::status_has_no_unexpected_top_level_fields(status, expected) {
+            return false;
+        }
+
+        if partial {
+            let actual = Self::status_to_json(status);
+            return Self::is_subset_match(&actual, expected);
+        }
+
         if !Self::message_matches_status(status, expected)
             || !Self::code_matches_status(status, expected)
         {
@@ -94,6 +112,26 @@ impl ErrorHandler {
 
     /// Returns a human-readable mismatch reason for tonic::Status comparison
     pub fn status_mismatch_reason(status: &tonic::Status, expected: &Value) -> Option<String> {
+        Self::status_mismatch_reason_with_options(status, expected, false)
+    }
+
+    /// Returns mismatch reason for tonic::Status comparison with optional partial mode.
+    pub fn status_mismatch_reason_with_options(
+        status: &tonic::Status,
+        expected: &Value,
+        partial: bool,
+    ) -> Option<String> {
+        if !partial
+            && let Some(reason) = Self::status_unexpected_top_level_field_reason(status, expected)
+        {
+            return Some(reason);
+        }
+
+        if partial {
+            let actual = Self::status_to_json(status);
+            return Self::subset_mismatch_reason(&actual, expected, "$");
+        }
+
         if !Self::message_matches_status(status, expected) {
             let actual = status.message();
             if let Some(expected_msg) = expected.get("message").and_then(|v| v.as_str()) {
@@ -133,6 +171,89 @@ impl ErrorHandler {
         };
 
         Self::compare_details(expected, actual_details)
+    }
+
+    fn is_subset_match(actual: &Value, expected: &Value) -> bool {
+        Self::subset_mismatch_reason(actual, expected, "$").is_none()
+    }
+
+    fn status_has_no_unexpected_top_level_fields(status: &tonic::Status, expected: &Value) -> bool {
+        Self::status_unexpected_top_level_field_reason(status, expected).is_none()
+    }
+
+    fn status_unexpected_top_level_field_reason(
+        status: &tonic::Status,
+        expected: &Value,
+    ) -> Option<String> {
+        let Value::Object(expected_obj) = expected else {
+            return None;
+        };
+        let Value::Object(actual_obj) = Self::status_to_json(status) else {
+            return None;
+        };
+
+        for key in actual_obj.keys() {
+            if !expected_obj.contains_key(key) {
+                return Some(format!(
+                    "unexpected field in actual error: '{}' is present but missing in ERROR section (use partial=true or ASSERTS)",
+                    key
+                ));
+            }
+        }
+
+        None
+    }
+
+    fn subset_mismatch_reason(actual: &Value, expected: &Value, path: &str) -> Option<String> {
+        match (actual, expected) {
+            (Value::Object(act_map), Value::Object(exp_map)) => {
+                for (k, exp_val) in exp_map {
+                    let key_path = format!("{}.{}", path, k);
+                    let Some(act_val) = act_map.get(k) else {
+                        return Some(format!("partial mismatch: missing key '{}'", key_path));
+                    };
+                    if let Some(reason) = Self::subset_mismatch_reason(act_val, exp_val, &key_path)
+                    {
+                        return Some(reason);
+                    }
+                }
+                None
+            }
+            (Value::Array(act_arr), Value::Array(exp_arr)) => {
+                let mut used_actual = vec![false; act_arr.len()];
+                for (exp_idx, exp_item) in exp_arr.iter().enumerate() {
+                    let mut matched = false;
+                    for (act_idx, act_item) in act_arr.iter().enumerate() {
+                        if used_actual[act_idx] {
+                            continue;
+                        }
+                        if Self::subset_mismatch_reason(act_item, exp_item, path).is_none() {
+                            used_actual[act_idx] = true;
+                            matched = true;
+                            break;
+                        }
+                    }
+
+                    if !matched {
+                        return Some(format!(
+                            "partial mismatch: expected array item at '{}[{}]' not found",
+                            path, exp_idx
+                        ));
+                    }
+                }
+                None
+            }
+            _ => {
+                if actual == expected {
+                    None
+                } else {
+                    Some(format!(
+                        "partial mismatch at '{}': expected {}, got {}",
+                        path, expected, actual
+                    ))
+                }
+            }
+        }
     }
 
     fn message_matches_error_text(error_text: &str, expected: &Value) -> bool {
@@ -609,6 +730,98 @@ mod tests {
         let reason = ErrorHandler::status_mismatch_reason(&status, &expected).unwrap();
         assert!(reason.contains("expected 'Invalid argument'"));
         assert!(reason.contains("got 'Invalid argument provided'"));
+    }
+
+    #[test]
+    fn test_status_matches_expected_partial_allows_subset_top_level_fields() {
+        let status = status_with_details();
+        let expected = json!({
+            "code": 3
+        });
+
+        assert!(ErrorHandler::status_matches_expected_with_options(
+            &status, &expected, true
+        ));
+    }
+
+    #[test]
+    fn test_status_matches_expected_partial_allows_subset_details_payload() {
+        let status = status_with_details();
+        let expected = json!({
+            "code": 3,
+            "details": [
+                {
+                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                    "reason": "API_DISABLED"
+                }
+            ]
+        });
+
+        assert!(ErrorHandler::status_matches_expected_with_options(
+            &status, &expected, true
+        ));
+    }
+
+    #[test]
+    fn test_status_matches_expected_partial_fails_when_expected_detail_item_missing() {
+        let status = status_with_details();
+        let expected = json!({
+            "code": 3,
+            "details": [
+                {
+                    "@type": "type.googleapis.com/google.rpc.DebugInfo",
+                    "detail": "not-present"
+                }
+            ]
+        });
+
+        assert!(!ErrorHandler::status_matches_expected_with_options(
+            &status, &expected, true
+        ));
+        let reason = ErrorHandler::status_mismatch_reason_with_options(&status, &expected, true)
+            .expect("partial mismatch reason");
+        assert!(reason.contains("expected array item"));
+    }
+
+    #[test]
+    fn test_status_matches_expected_strict_fails_when_message_omitted() {
+        let status = status_without_details();
+        let expected = json!({
+            "code": 3
+        });
+
+        assert!(!ErrorHandler::status_matches_expected_with_options(
+            &status, &expected, false
+        ));
+        let reason = ErrorHandler::status_mismatch_reason_with_options(&status, &expected, false)
+            .expect("strict mismatch reason");
+        assert!(reason.contains("unexpected field"));
+        assert!(reason.contains("message"));
+    }
+
+    #[test]
+    fn test_status_matches_expected_partial_passes_when_message_omitted() {
+        let status = status_without_details();
+        let expected = json!({
+            "code": 3
+        });
+
+        assert!(ErrorHandler::status_matches_expected_with_options(
+            &status, &expected, true
+        ));
+    }
+
+    #[test]
+    fn test_status_matches_expected_strict_allows_missing_details_when_not_present_in_actual() {
+        let status = status_without_details();
+        let expected = json!({
+            "code": 3,
+            "message": "Invalid argument provided"
+        });
+
+        assert!(ErrorHandler::status_matches_expected_with_options(
+            &status, &expected, false
+        ));
     }
 
     #[test]

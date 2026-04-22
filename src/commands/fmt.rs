@@ -1209,6 +1209,40 @@ test.Service/Method
     }
 
     #[test]
+    fn test_fmt_section_error_with_partial_and_with_asserts_options() {
+        let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- ERROR with_asserts=true partial=true ---
+{
+  "code": 5
+}
+
+--- ASSERTS ---
+.code == 5
+"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- ERROR partial with_asserts ---
+{
+  "code": 5
+}
+
+--- ASSERTS ---
+.code == 5
+"#;
+        assert_eq!(formatted, expected);
+    }
+
+    #[test]
     fn test_fmt_section_request_headers() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
