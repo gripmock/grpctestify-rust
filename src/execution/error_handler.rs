@@ -98,7 +98,7 @@ impl ErrorHandler {
             let actual = status.message();
             if let Some(expected_msg) = expected.get("message").and_then(|v| v.as_str()) {
                 return Some(format!(
-                    "message mismatch: expected to contain '{}', got '{}'",
+                    "message mismatch: expected '{}', got '{}'",
                     expected_msg, actual
                 ));
             }
@@ -106,7 +106,7 @@ impl ErrorHandler {
                 && let Some(s) = expected.as_str()
             {
                 return Some(format!(
-                    "message mismatch: expected to contain '{}', got '{}'",
+                    "message mismatch: expected '{}', got '{}'",
                     s, actual
                 ));
             }
@@ -153,13 +153,13 @@ impl ErrorHandler {
 
     fn message_matches_status(status: &tonic::Status, expected: &Value) -> bool {
         if let Some(expected_msg) = expected.get("message").and_then(|v| v.as_str()) {
-            return status.message().contains(expected_msg);
+            return status.message() == expected_msg;
         }
 
         if expected.is_string()
             && let Some(s) = expected.as_str()
         {
-            return status.message().contains(s);
+            return status.message() == s;
         }
 
         true
@@ -595,6 +595,20 @@ mod tests {
         });
 
         assert!(ErrorHandler::status_matches_expected(&status, &expected));
+    }
+
+    #[test]
+    fn test_status_matches_expected_rejects_partial_message_match() {
+        let status = status_without_details();
+        let expected = json!({
+            "code": 3,
+            "message": "Invalid argument"
+        });
+
+        assert!(!ErrorHandler::status_matches_expected(&status, &expected));
+        let reason = ErrorHandler::status_mismatch_reason(&status, &expected).unwrap();
+        assert!(reason.contains("expected 'Invalid argument'"));
+        assert!(reason.contains("got 'Invalid argument provided'"));
     }
 
     #[test]
