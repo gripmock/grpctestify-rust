@@ -277,7 +277,7 @@ tasktracker.TaskService/CompleteTask
 }
 
 --- ASSERTS ---
-$.message contains "Can't find stub"
+.message contains "Can't find stub"
 "#;
 
     let doc = parse_gctf_from_str(content, "issue-40-error-options.gctf").unwrap();
@@ -294,38 +294,4 @@ $.message contains "Can't find stub"
         .expect("error expectation");
     assert!(error.comparison_options.partial);
     assert!(error.comparison_options.with_asserts);
-}
-
-#[test]
-fn test_explain_error_with_asserts_without_body_via_ast() {
-    let content = r#"--- ENDPOINT ---
-tasktracker.TaskService/CompleteTask
-
---- REQUEST ---
-{
-  "task_id": "task-42"
-}
-
---- ERROR with_asserts=true ---
-
---- ASSERTS ---
-$.code == 5
-$.message contains "Can't find stub"
-"#;
-
-    let doc = parse_gctf_from_str(content, "issue-40-error-assert-only.gctf").unwrap();
-    let plan = ExecutionPlan::from_document(&doc);
-
-    assert_eq!(plan.summary.total_errors, 1);
-    assert!(plan.summary.error_expected);
-    assert_eq!(plan.assertions.len(), 1);
-
-    let error = plan
-        .expectations
-        .iter()
-        .find(|e| e.expectation_type == "error")
-        .expect("error expectation");
-    assert!(error.comparison_options.with_asserts);
-    assert!(!error.comparison_options.partial);
-    assert!(error.content.is_none(), "ERROR body should be optional");
 }

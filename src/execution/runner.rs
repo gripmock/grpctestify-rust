@@ -1316,15 +1316,26 @@ impl TestRunner {
                                 assertion_timing.finish_scope(scope_start_ms, scope_end_ms, 1);
 
                             last_error_message = Some(status.message().to_string());
-                            last_error_json =
-                                Some(super::error_handler::ErrorHandler::status_to_json(&status));
+                            let error_json =
+                                super::error_handler::ErrorHandler::status_to_json(&status);
+                            last_error_json = Some(error_json.clone());
                             captured_trailers
                                 .extend(runner_helpers::metadata_map_to_hashmap(status.metadata()));
-                            if !effective_no_assert {
-                                failure_reasons.push(format!(
-                                     "Expected message for ASSERTS section at line {}, but received Error: {}",
-                                     section.start_line, status.message()
-                                 ));
+                            if !effective_no_assert
+                                && let SectionContent::Assertions(lines) = &section.content
+                            {
+                                self.run_assertions(
+                                    lines,
+                                    &error_json,
+                                    &mut failure_reasons,
+                                    format!("after ERROR at line {}", section.start_line),
+                                    section.start_line,
+                                    AssertionContext {
+                                        headers: &captured_headers,
+                                        trailers: &captured_trailers,
+                                        timing: last_error_timing.as_ref(),
+                                    },
+                                );
                             } else {
                                 println!("--- RESPONSE (Error) ---");
                                 println!("{}", status.message());
@@ -1499,46 +1510,43 @@ impl TestRunner {
                                     i,
                                     effective_no_assert,
                                     &mut failure_reasons,
-                                ) {
-                                    if let Some(next_section) = sections.get(i + 1)
-                                        && next_section.section_type == SectionType::Asserts
+                                ) && let Some(next_section) = sections.get(i + 1)
+                                    && next_section.section_type == SectionType::Asserts
+                                {
+                                    if !effective_no_assert
+                                        && let SectionContent::Assertions(lines) =
+                                            &next_section.content
                                     {
-                                        if !effective_no_assert
-                                            && let SectionContent::Assertions(lines) =
-                                                &next_section.content
+                                        if error_assert_target.is_none()
+                                            && let Some(status) = e.downcast_ref::<tonic::Status>()
                                         {
-                                            if error_assert_target.is_none()
-                                                && let Some(status) =
-                                                    e.downcast_ref::<tonic::Status>()
-                                            {
-                                                let actual_error_json =
-                                                    super::error_handler::ErrorHandler::status_to_json(
-                                                        status,
-                                                    );
-                                                last_error_json = Some(actual_error_json.clone());
-                                                error_assert_target = Some(actual_error_json);
-                                            }
-
-                                            if let Some(target) = error_assert_target.as_ref() {
-                                                self.run_assertions(
-                                                    lines,
-                                                    target,
-                                                    &mut failure_reasons,
-                                                    format!(
-                                                        "(attached to ERROR at line {})",
-                                                        section.start_line
-                                                    ),
-                                                    section.start_line,
-                                                    AssertionContext {
-                                                        headers: &captured_headers,
-                                                        trailers: &captured_trailers,
-                                                        timing: last_error_timing.as_ref(),
-                                                    },
+                                            let actual_error_json =
+                                                super::error_handler::ErrorHandler::status_to_json(
+                                                    status,
                                                 );
-                                            }
+                                            last_error_json = Some(actual_error_json.clone());
+                                            error_assert_target = Some(actual_error_json);
                                         }
-                                        skip_next_section = true;
+
+                                        if let Some(target) = error_assert_target.as_ref() {
+                                            self.run_assertions(
+                                                lines,
+                                                target,
+                                                &mut failure_reasons,
+                                                format!(
+                                                    "(attached to ERROR at line {})",
+                                                    section.start_line
+                                                ),
+                                                section.start_line,
+                                                AssertionContext {
+                                                    headers: &captured_headers,
+                                                    trailers: &captured_trailers,
+                                                    timing: last_error_timing.as_ref(),
+                                                },
+                                            );
+                                        }
                                     }
+                                    skip_next_section = true;
                                 }
 
                                 // Error has been consumed at startup stage; continue with next sections.

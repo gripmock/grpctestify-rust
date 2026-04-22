@@ -32,7 +32,7 @@ test.Service/Method
 }
 
 --- ASSERTS ---
-$.code == 5
+.code == 5
 "#;
     let tokens = lsp::build_semantic_tokens(content);
 

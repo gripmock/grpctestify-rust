@@ -193,6 +193,12 @@ impl ErrorHandler {
         };
 
         for key in actual_obj.keys() {
+            if key == "details" && !expected_obj.contains_key("details") {
+                return Some(format!(
+                    "backend returned details, but ERROR.details is missing in gctf; actual details: {}",
+                    Self::status_details_json(status)
+                ));
+            }
             if !expected_obj.contains_key(key) {
                 return Some(format!(
                     "unexpected field in actual error: '{}' is present but missing in ERROR section (use partial=true or ASSERTS)",
