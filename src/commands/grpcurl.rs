@@ -13,7 +13,6 @@ struct GrpcurlOutput {
     doc_index: usize,
     address: String,
     endpoint: String,
-    request_index: usize,
     command: String,
 }
 
@@ -51,7 +50,6 @@ fn build_grpcurl_command(
     gctf_file: &Path,
     cwd: &Path,
     doc_index: usize,
-    request_index: usize,
 ) -> Result<GrpcurlOutput> {
     let endpoint = doc
         .get_endpoint()
@@ -135,12 +133,15 @@ fn build_grpcurl_command(
         parts.push("-d".to_string());
         parts.push(shell_quote("{}"));
     } else {
-        let idx = request_index.saturating_sub(1);
-        let chosen = requests.get(idx).or_else(|| requests.last());
-        if let Some(body) = chosen {
-            let json = serde_json::to_string(body)?;
+        let serialized = requests
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let data = serialized.join("\n");
+
+        if !data.is_empty() {
             parts.push("-d".to_string());
-            parts.push(shell_quote(&json));
+            parts.push(shell_quote(&data));
         }
     }
 
@@ -152,15 +153,11 @@ fn build_grpcurl_command(
         doc_index,
         address,
         endpoint,
-        request_index,
         command: parts.join(" "),
     })
 }
 
 pub async fn handle_grpcurl(args: &GrpcurlArgs) -> Result<()> {
-    if args.request_index == 0 {
-        anyhow::bail!("--request-index must be >= 1");
-    }
     if args.doc_index == Some(0) {
         anyhow::bail!("--doc-index must be >= 1");
     }
@@ -188,13 +185,7 @@ pub async fn handle_grpcurl(args: &GrpcurlArgs) -> Result<()> {
             continue;
         }
 
-        outputs.push(build_grpcurl_command(
-            d,
-            &file_path,
-            &cwd,
-            doc_index,
-            args.request_index,
-        )?);
+        outputs.push(build_grpcurl_command(d, &file_path, &cwd, doc_index)?);
     }
 
     if outputs.is_empty() {

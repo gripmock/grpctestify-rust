@@ -328,3 +328,30 @@ import_paths: api
     assert!(!stdout.contains("-proto '"));
     assert!(!stdout.contains("-import-path '"));
 }
+
+#[test]
+fn test_grpcurl_default_includes_all_requests() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let gctf_path = root.join("sample.gctf");
+    let gctf = r#"--- ENDPOINT ---
+demo.UserService/StreamUsers
+
+--- REQUEST ---
+{"id": 1}
+
+--- REQUEST ---
+{"id": 2}
+"#;
+    std::fs::write(&gctf_path, gctf).expect("write gctf");
+
+    let out = run_cli_in_dir(root, &["grpcurl", "sample.gctf"]);
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("-d '{\"id\":1}\n{\"id\":2}'"));
+}

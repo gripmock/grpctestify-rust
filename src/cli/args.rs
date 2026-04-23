@@ -94,10 +94,6 @@ pub struct GrpcurlArgs {
     #[arg(long)]
     pub doc_index: Option<usize>,
 
-    /// Request index for streaming REQUEST sections (1-based)
-    #[arg(long, default_value_t = 1)]
-    pub request_index: usize,
-
     /// Output format (text, json)
     #[arg(long, default_value = "text")]
     pub format: String,
