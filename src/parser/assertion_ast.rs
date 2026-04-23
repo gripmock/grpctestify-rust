@@ -863,6 +863,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn perf_phase_breakdown_simple() {
         let expr = ".id == 42 and .active == true";
 
@@ -887,6 +888,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn perf_phase_breakdown_complex() {
         let expr = "if @len(.items) > 0 then (@regex(.name, /foo.*/i) and .meta.version >= 2) else (.status == \"empty\" or {{ feature_flag }} == true) end";
 
