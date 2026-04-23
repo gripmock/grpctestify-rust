@@ -1,31 +1,43 @@
 #![cfg(not(miri))]
 
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
 
 fn get_binary() -> String {
     env!("CARGO_BIN_EXE_grpctestify").to_string()
 }
 
-fn run_cli_in_dir(cwd: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(get_binary())
-        .current_dir(cwd)
-        .args(args)
-        .output()
-        .expect("failed to run grpctestify")
-}
+fn run_with_optional_runner(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
+    let binary = get_binary();
+    let runner = std::env::var("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER")
+        .ok()
+        .or_else(|| std::env::var("CROSS_RUNNER").ok());
 
-fn run_cli_in_dir_with_env(
-    cwd: &Path,
-    args: &[&str],
-    envs: &[(&str, &str)],
-) -> std::process::Output {
-    let mut cmd = Command::new(get_binary());
+    let mut cmd = if let Some(runner) = runner {
+        let mut parts = runner.split_whitespace();
+        let program = parts.next().expect("Runner must not be empty");
+        let mut command = Command::new(program);
+        command.args(parts);
+        command.arg(&binary);
+        command
+    } else {
+        Command::new(&binary)
+    };
+
     cmd.current_dir(cwd).args(args);
     for (k, v) in envs {
         cmd.env(k, v);
     }
+
     cmd.output().expect("failed to run grpctestify")
+}
+
+fn run_cli_in_dir(cwd: &Path, args: &[&str]) -> Output {
+    run_with_optional_runner(cwd, args, &[])
+}
+
+fn run_cli_in_dir_with_env(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
+    run_with_optional_runner(cwd, args, envs)
 }
 
 #[test]

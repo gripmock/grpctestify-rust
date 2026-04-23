@@ -36,12 +36,14 @@ fn grpcurl_address_parts(raw: &str) -> (String, bool) {
 }
 
 fn path_for_invocation(resolved: &Path, cwd: &Path) -> String {
+    let normalize = |p: &Path| p.to_string_lossy().replace('\\', "/");
+
     if let Ok(relative) = resolved.strip_prefix(cwd)
         && !relative.as_os_str().is_empty()
     {
-        return relative.to_string_lossy().to_string();
+        return normalize(relative);
     }
-    resolved.to_string_lossy().to_string()
+    normalize(resolved)
 }
 
 fn build_grpcurl_command(
