@@ -323,28 +323,29 @@ fn parse_and(ts: &[super::tokenizer::Token], p: &mut usize) -> AssertionExpr {
 fn parse_bin(ts: &[super::tokenizer::Token], p: &mut usize) -> AssertionExpr {
     let mut left = parse_unary(ts, p);
     loop {
-        let op_info = if *p < ts.len() {
-            match &ts[*p].kind {
-                TokenKind::Op(s) => Some(s.clone()),
-                TokenKind::Ident(s) if is_bin_op_keyword(s) => Some(s.clone()),
-                _ => None,
+        let op = match ts.get(*p).map(|t| &t.kind) {
+            Some(TokenKind::Op(s)) => match s.as_str() {
+                "==" => BinaryOp::Eq,
+                "!=" => BinaryOp::Ne,
+                ">" => BinaryOp::Gt,
+                "<" => BinaryOp::Lt,
+                ">=" => BinaryOp::Ge,
+                "<=" => BinaryOp::Le,
+                "contains" => BinaryOp::Contains,
+                "matches" => BinaryOp::Matches,
+                "startsWith" | "startswith" => BinaryOp::StartsWith,
+                "endsWith" | "endswith" => BinaryOp::EndsWith,
+                _ => BinaryOp::EndsWith,
+            },
+            Some(TokenKind::Ident(s)) if is_bin_op_keyword(s) => {
+                BinaryOp::try_parse(s).unwrap_or(BinaryOp::EndsWith)
             }
-        } else {
-            None
+            None => break,
+            _ => break,
         };
 
-        let op_str = match op_info {
-            Some(s) => s,
-            None => break,
-        };
         *p += 1;
         let right = parse_unary(ts, p);
-        let op = BinaryOp::try_parse(&op_str).unwrap_or(match op_str.as_str() {
-            "contains" => BinaryOp::Contains,
-            "matches" => BinaryOp::Matches,
-            "startsWith" | "startswith" => BinaryOp::StartsWith,
-            _ => BinaryOp::EndsWith,
-        });
         left = AssertionExpr::Binary {
             op,
             left: Box::new(left),
@@ -444,7 +445,7 @@ fn parse_atom(ts: &[super::tokenizer::Token], p: &mut usize) -> AssertionExpr {
         }
         TokenKind::VarDelim => {
             *p += 1;
-            let mut name = String::new();
+            let mut name = String::with_capacity(16);
             while *p < ts.len() && !matches!(ts[*p].kind, TokenKind::VarDelim) {
                 if let TokenKind::Ident(s) = &ts[*p].kind {
                     if !name.is_empty() {
@@ -473,7 +474,7 @@ fn parse_atom(ts: &[super::tokenizer::Token], p: &mut usize) -> AssertionExpr {
             };
             let args = if *p < ts.len() && matches!(ts[*p].kind, TokenKind::LParen) {
                 *p += 1;
-                let mut args = Vec::new();
+                let mut args = Vec::with_capacity(4);
                 while *p < ts.len() && !matches!(ts[*p].kind, TokenKind::RParen) {
                     let arg = parse_pipe(ts, p);
                     args.push(arg);
@@ -499,7 +500,8 @@ fn parse_atom(ts: &[super::tokenizer::Token], p: &mut usize) -> AssertionExpr {
         }
         TokenKind::LBrace => {
             *p += 1;
-            let mut json = String::from("{");
+            let mut json = String::with_capacity(64);
+            json.push('{');
             let mut depth = 1;
             while *p < ts.len() && depth > 0 {
                 match &ts[*p].kind {
@@ -574,7 +576,7 @@ fn parse_atom(ts: &[super::tokenizer::Token], p: &mut usize) -> AssertionExpr {
             Expr::Json(json)
         }
         TokenKind::Dot | TokenKind::Ident(_) => {
-            let mut path = String::new();
+            let mut path = String::with_capacity(24);
             while *p < ts.len() {
                 if let TokenKind::Ident(s) = &ts[*p].kind
                     && (is_bin_op_keyword(s) || is_keyword_token(&ts[*p].kind))
@@ -629,30 +631,32 @@ fn merge_hyphenated_args(args: Vec<AssertionExpr>) -> Vec<AssertionExpr> {
     if args.len() <= 1 {
         return args;
     }
-    let mut merged = Vec::new();
-    let mut i = 0;
-    while i < args.len() {
-        let mut current = args[i].clone();
-        while i + 1 < args.len() {
-            let next = &args[i + 1];
-            if let (
-                AssertionExpr::Atom(Expr::JqPath(cur)),
-                AssertionExpr::Atom(Expr::JqPath(nxt)),
-            ) = (&current, next)
-            {
-                let cur_no_dot = !cur.contains('.');
-                let nxt_no_dot = !nxt.contains('.');
-                if cur_no_dot && nxt_no_dot {
-                    current = AssertionExpr::Atom(Expr::JqPath(format!("{}-{}", cur, nxt)));
-                    i += 1;
-                    continue;
+
+    let mut merged = Vec::with_capacity(args.len());
+
+    let mut iter = args.into_iter().peekable();
+    while let Some(current) = iter.next() {
+        match current {
+            AssertionExpr::Atom(Expr::JqPath(mut cur)) if !cur.contains('.') => {
+                while let Some(AssertionExpr::Atom(Expr::JqPath(nxt))) = iter.peek() {
+                    if nxt.contains('.') {
+                        break;
+                    }
+
+                    let Some(AssertionExpr::Atom(Expr::JqPath(nxt_owned))) = iter.next() else {
+                        break;
+                    };
+
+                    cur.push('-');
+                    cur.push_str(&nxt_owned);
                 }
+
+                merged.push(AssertionExpr::Atom(Expr::JqPath(cur)));
             }
-            break;
+            other => merged.push(other),
         }
-        merged.push(current);
-        i += 1;
     }
+
     merged
 }
 
@@ -679,7 +683,126 @@ fn is_keyword_token(k: &TokenKind) -> bool {
 
 /// Convert AssertionExpr back to string (ternary for if-then-else).
 pub fn assertion_to_string(expr: &AssertionExpr) -> String {
-    expr.to_string()
+    let mut out = String::with_capacity(64);
+    push_assertion(expr, &mut out, 0);
+    out
+}
+
+fn push_expr(expr: &Expr, out: &mut String) {
+    match expr {
+        Expr::JqPath(p) => out.push_str(p),
+        Expr::PluginCall { name, args } => {
+            out.push('@');
+            out.push_str(name);
+            out.push('(');
+            for (i, a) in args.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                push_assertion(a, out, 0);
+            }
+            out.push(')');
+        }
+        Expr::Literal(Literal::Bool(b)) => out.push_str(if *b { "true" } else { "false" }),
+        Expr::Literal(Literal::Number(n)) => out.push_str(n),
+        Expr::Literal(Literal::Str(s)) => {
+            out.push('"');
+            out.push_str(s);
+            out.push('"');
+        }
+        Expr::Literal(Literal::Null) => out.push_str("null"),
+        Expr::Variable(n) => {
+            out.push_str("{{");
+            out.push_str(n);
+            out.push_str("}}");
+        }
+        Expr::RegExp { pattern, flags } => {
+            out.push('/');
+            out.push_str(pattern);
+            out.push('/');
+            out.push_str(flags);
+        }
+        Expr::Json(s) | Expr::Yaml(s) => out.push_str(s),
+    }
+}
+
+fn push_assertion(expr: &AssertionExpr, out: &mut String, prec: u8) {
+    match expr {
+        AssertionExpr::Or { left, right } => {
+            if prec > 1 {
+                out.push('(');
+            }
+            push_assertion(left, out, 1);
+            out.push_str(" or ");
+            push_assertion(right, out, 1);
+            if prec > 1 {
+                out.push(')');
+            }
+        }
+        AssertionExpr::Xor { left, right } => {
+            if prec > 1 {
+                out.push('(');
+            }
+            push_assertion(left, out, 1);
+            out.push_str(" xor ");
+            push_assertion(right, out, 1);
+            if prec > 1 {
+                out.push(')');
+            }
+        }
+        AssertionExpr::And { left, right } => {
+            if prec > 2 {
+                out.push('(');
+            }
+            push_assertion(left, out, 2);
+            out.push_str(" and ");
+            push_assertion(right, out, 2);
+            if prec > 2 {
+                out.push(')');
+            }
+        }
+        AssertionExpr::Binary { op, left, right } => {
+            if prec > 3 {
+                out.push('(');
+            }
+            push_assertion(left, out, 3);
+            out.push(' ');
+            out.push_str(op.as_str());
+            out.push(' ');
+            push_assertion(right, out, 3);
+            if prec > 3 {
+                out.push(')');
+            }
+        }
+        AssertionExpr::Not(inner) => {
+            out.push('!');
+            push_assertion(inner, out, 4);
+        }
+        AssertionExpr::NotNot(inner) => {
+            out.push_str("not not ");
+            push_assertion(inner, out, 4);
+        }
+        AssertionExpr::IfThenElse {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            out.push('(');
+            push_assertion(condition, out, 0);
+            out.push_str(" ? ");
+            push_assertion(then_branch, out, 0);
+            out.push_str(" : ");
+            push_assertion(else_branch, out, 0);
+            out.push(')');
+        }
+        AssertionExpr::Paren(inner) => {
+            out.push('(');
+            push_assertion(inner, out, 0);
+            out.push(')');
+        }
+        AssertionExpr::Atom(e) => push_expr(e, out),
+        AssertionExpr::Raw(s) => out.push_str(s),
+    }
 }
 
 /// Remove redundant parentheses.
@@ -723,6 +846,69 @@ pub fn remove_redundant_parens(expr: &AssertionExpr) -> AssertionExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    fn bench_phase(name: &str, iterations: u32, mut f: impl FnMut()) {
+        let start = Instant::now();
+        for _ in 0..iterations {
+            f();
+        }
+        let elapsed = start.elapsed();
+        let per_call = elapsed / iterations;
+        eprintln!(
+            "{}: {} iterations in {:?} ({:?}/call)",
+            name, iterations, elapsed, per_call
+        );
+    }
+
+    #[test]
+    fn perf_phase_breakdown_simple() {
+        let expr = ".id == 42 and .active == true";
+
+        bench_phase("ast_phase_simple_tokenize", 200_000, || {
+            let tokens = tokenize_assertion(black_box(expr));
+            black_box(tokens.len());
+        });
+
+        bench_phase("ast_phase_simple_parse_from_tokens", 200_000, || {
+            let tokens = tokenize_assertion(black_box(expr));
+            let mut pos = 0;
+            let ast = parse_pipe(&tokens, &mut pos);
+            black_box(matches!(ast, AssertionExpr::Raw(_)));
+            black_box(pos);
+        });
+
+        bench_phase("ast_phase_simple_serialize", 200_000, || {
+            let ast = parse_assertion(black_box(expr));
+            let s = assertion_to_string(&ast);
+            black_box(s.len());
+        });
+    }
+
+    #[test]
+    fn perf_phase_breakdown_complex() {
+        let expr = "if @len(.items) > 0 then (@regex(.name, /foo.*/i) and .meta.version >= 2) else (.status == \"empty\" or {{ feature_flag }} == true) end";
+
+        bench_phase("ast_phase_complex_tokenize", 100_000, || {
+            let tokens = tokenize_assertion(black_box(expr));
+            black_box(tokens.len());
+        });
+
+        bench_phase("ast_phase_complex_parse_from_tokens", 100_000, || {
+            let tokens = tokenize_assertion(black_box(expr));
+            let mut pos = 0;
+            let ast = parse_pipe(&tokens, &mut pos);
+            black_box(matches!(ast, AssertionExpr::Raw(_)));
+            black_box(pos);
+        });
+
+        bench_phase("ast_phase_complex_serialize", 50_000, || {
+            let ast = parse_assertion(black_box(expr));
+            let s = assertion_to_string(&ast);
+            black_box(s.len());
+        });
+    }
 
     #[test]
     fn test_parse_simple_equality() {

@@ -1,15 +1,14 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::RwLock;
+use std::sync::{LazyLock, RwLock};
 use std::time::Duration;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
 use crate::grpc::tls::{ChannelCacheKey, GrpcClientConfig, TlsConfig};
 
-lazy_static::lazy_static! {
-    static ref CHANNEL_CACHE: RwLock<HashMap<ChannelCacheKey, Channel>> = RwLock::new(HashMap::new());
-}
+static CHANNEL_CACHE: LazyLock<RwLock<HashMap<ChannelCacheKey, Channel>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
     if config.address.is_empty() {

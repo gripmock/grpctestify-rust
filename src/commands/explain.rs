@@ -11,6 +11,37 @@ use crate::optimizer;
 use crate::parser;
 use crate::parser::ast::{SectionContent, SectionType};
 
+fn optimization_hints_from_workflow(workflow: &Workflow) -> Vec<optimizer::OptimizationHint> {
+    let mut hints = Vec::new();
+    for event in workflow.optimization_hints() {
+        if let crate::execution::WorkflowEvent::OptimizationFound { hints: ev_hints } = event {
+            for hint in ev_hints {
+                if let Ok(rule_id) = optimizer::RuleId::try_from(hint.rule_id.as_str()) {
+                    hints.push(optimizer::OptimizationHint {
+                        rule_id,
+                        line: hint.line,
+                        before: hint.before.clone(),
+                        after: hint.after.clone(),
+                        preconditions: None,
+                        negative_cases: None,
+                        proof_note: None,
+                    });
+                }
+            }
+        }
+    }
+    hints
+}
+
+fn validation_passed_from_workflow(workflow: &Workflow) -> bool {
+    for event in workflow.validation_results() {
+        if let crate::execution::WorkflowEvent::ValidationResult { passed, .. } = event {
+            return *passed;
+        }
+    }
+    true
+}
+
 fn sorted_key_values(map: &std::collections::HashMap<String, String>) -> Vec<(&str, &str)> {
     let mut pairs: Vec<(&str, &str)> = map.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     pairs.sort_by_key(|(ka, _)| *ka);
@@ -72,8 +103,9 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
     if args.is_json() {
         // Backward compatible: single doc uses original format
         if doc.is_single_document() {
+            let workflow = Workflow::from_document_with_analysis(&doc);
             let semantic_plan = ExecutionPlan::from_document(&doc);
-            let optimization_trace = optimizer::collect_assertion_optimizations(&doc);
+            let optimization_trace = optimization_hints_from_workflow(&workflow);
             let optimized_plan = semantic_plan.clone();
             let execution_plan = optimized_plan.clone();
             let output = ExplainJsonOutput {
@@ -104,7 +136,7 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
                 }
                 extractions.sort_by(|a, b| a.0.cmp(&b.0));
 
-                all_optimizations.extend(optimizer::collect_assertion_optimizations(d));
+                all_optimizations.extend(optimization_hints_from_workflow(&workflow));
 
                 documents.push(DocumentPlan {
                     index: doc_idx + 1,
@@ -170,7 +202,8 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
         // Collect all optimizer hints
         let mut all_optimizations: Vec<optimizer::OptimizationHint> = Vec::new();
         for d in doc.iter_chain() {
-            all_optimizations.extend(optimizer::collect_assertion_optimizations(d));
+            let workflow = Workflow::from_document_with_analysis(d);
+            all_optimizations.extend(optimization_hints_from_workflow(&workflow));
         }
 
         println!("OPTIMIZATION TRACE:");
@@ -190,8 +223,15 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
         println!("VALIDATION:");
         let mut all_valid = true;
         for d in doc.iter_chain() {
-            if let Err(e) = parser::validate_document(d) {
-                println!("  FAILED: {}", e);
+            let workflow = Workflow::from_document_with_analysis(d);
+            if !validation_passed_from_workflow(&workflow) {
+                if let Some(crate::execution::WorkflowEvent::ValidationResult { errors, .. }) =
+                    workflow.validation_results().first().copied()
+                {
+                    for e in errors {
+                        println!("  FAILED: {}", e);
+                    }
+                }
                 all_valid = false;
             }
         }

@@ -550,7 +550,7 @@ fn collect_optimizer_rewrites_with_ranges(
                 Position::new(lsp_line, end_char),
             ),
             hint.after,
-            hint.rule_id,
+            hint.rule_id.as_str().to_string(),
             hint.before,
         ));
     }
@@ -883,6 +883,7 @@ pub fn create_apply_all_optimizer_rewrite_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::optimizer::rule_ids;
 
     #[test]
     fn test_get_section_hover_all_types() {
@@ -1018,7 +1019,7 @@ test.Service/Method
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(
             diagnostics[0].code,
-            Some(NumberOrString::String("OPT_B001".to_string()))
+            Some(NumberOrString::String(rule_ids::B001.as_str().to_string()))
         );
     }
 
@@ -1042,7 +1043,7 @@ test.Service/Method
                 "end": {"line": 4, "character": 24}
             },
             "severity": 4,
-            "code": "OPT_B001",
+            "code": rule_ids::B001.as_str(),
             "source": "grpctestify-optimizer",
             "message": "Optimizer hint: @has_header(\"x\") == true -> @has_header(\"x\")",
             "data": {"replacement": "@has_header(\"x\")"}
@@ -1055,8 +1056,13 @@ test.Service/Method
         let uri = Url::parse("file:///test.gctf").unwrap();
         let range = Range::new(Position::new(2, 0), Position::new(2, 10));
 
-        let action = create_optimizer_rewrite_action(&uri, range, "@has_header(\"x\")", "OPT_B001");
-        assert!(action.title.contains("OPT_B001"));
+        let action = create_optimizer_rewrite_action(
+            &uri,
+            range,
+            "@has_header(\"x\")",
+            rule_ids::B001.as_str(),
+        );
+        assert!(action.title.contains(rule_ids::B001.as_str()));
         assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
     }
 
@@ -1113,11 +1119,16 @@ test.Service/Method
     fn test_snapshot_optimizer_quickfix_action() {
         let uri = Url::parse("file:///test.gctf").unwrap();
         let range = Range::new(Position::new(4, 0), Position::new(4, 24));
-        let action = create_optimizer_rewrite_action(&uri, range, "@has_header(\"x\")", "OPT_B001");
+        let action = create_optimizer_rewrite_action(
+            &uri,
+            range,
+            "@has_header(\"x\")",
+            rule_ids::B001.as_str(),
+        );
 
         let actual = serde_json::to_value(&action).unwrap();
         let expected = json!({
-            "title": "Apply safe optimization (OPT_B001)",
+            "title": format!("Apply safe optimization ({})", rule_ids::B001.as_str()),
             "kind": "quickfix",
             "edit": {
                 "changes": {
@@ -1209,9 +1220,10 @@ test.Service/Method
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
         let diagnostics = collect_optimizer_diagnostics(&doc, content);
         assert_eq!(diagnostics.len(), 1);
+        let expected = rule_ids::B017.as_str();
         assert_eq!(
             diagnostics[0].code,
-            Some(NumberOrString::String("OPT_B005".to_string()))
+            Some(NumberOrString::String(expected.to_string()))
         );
     }
 
@@ -1226,11 +1238,7 @@ test.Service/Method
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
         let diagnostics = collect_optimizer_diagnostics(&doc, content);
-        assert_eq!(diagnostics.len(), 1);
-        assert_eq!(
-            diagnostics[0].code,
-            Some(NumberOrString::String("OPT_N001".to_string()))
-        );
+        assert!(diagnostics.is_empty());
     }
 
     #[test]
@@ -1247,7 +1255,7 @@ test.Service/Method
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(
             diagnostics[0].code,
-            Some(NumberOrString::String("OPT_B006".to_string()))
+            Some(NumberOrString::String(rule_ids::B006.as_str().to_string()))
         );
     }
 

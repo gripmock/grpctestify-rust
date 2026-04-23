@@ -154,10 +154,10 @@ impl Plugin for HasHeaderPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use once_cell::sync::Lazy;
     use std::collections::HashMap;
+    use std::sync::LazyLock;
 
-    static HEADERS: Lazy<HashMap<String, String>> = Lazy::new(|| {
+    static HEADERS: LazyLock<HashMap<String, String>> = LazyLock::new(|| {
         let mut h = HashMap::new();
         h.insert("content-type".to_string(), "application/json".to_string());
         h.insert("authorization".to_string(), "Bearer token123".to_string());

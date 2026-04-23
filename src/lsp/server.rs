@@ -330,14 +330,17 @@ impl GrpctestifyLsp {
                             in_string = false;
 
                             let mut lookahead = chars.clone();
-                            while let Some(next) = lookahead.peek() {
-                                if next.is_whitespace() {
-                                    lookahead.next();
-                                } else {
-                                    break;
-                                }
-                            }
-                            if matches!(lookahead.peek(), Some(':')) {
+                            while lookahead
+                                .next_if_map(|next| {
+                                    if next.is_whitespace() {
+                                        Ok(())
+                                    } else {
+                                        Err(next)
+                                    }
+                                })
+                                .is_some()
+                            {}
+                            if lookahead.next_if_eq(&':').is_some() {
                                 pending_key = Some(string_buf.clone());
                             }
                             string_buf.clear();
@@ -351,7 +354,7 @@ impl GrpctestifyLsp {
                     break;
                 }
 
-                if ch == '/' && matches!(chars.peek(), Some('/')) {
+                if ch == '/' && chars.next_if_eq(&'/').is_some() {
                     break;
                 }
 

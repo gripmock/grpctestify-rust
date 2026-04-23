@@ -34,43 +34,37 @@ fn tokenize_strip_comments(input: &str) -> String {
                 }
             }
             '/' => {
-                if let Some(&next) = chars.peek() {
-                    match next {
-                        '/' => {
-                            // Line comment — skip to end of line
-                            chars.next();
-                            for c in chars.by_ref() {
-                                if c == '\n' {
+                if let Some(kind) = chars.next_if_map(|next| match next {
+                    '/' | '*' => Ok(next),
+                    _ => Err(next),
+                }) {
+                    if kind == '/' {
+                        // Line comment — skip to end of line
+                        for c in chars.by_ref() {
+                            if c == '\n' {
+                                out.push(c);
+                                break;
+                            }
+                        }
+                    } else {
+                        // Block comment — skip until */
+                        loop {
+                            match chars.next() {
+                                Some('*') => {
+                                    if chars.next_if_eq(&'/').is_some() {
+                                        break;
+                                    }
+                                }
+                                Some(c) if c == '\n' => {
                                     out.push(c);
-                                    break;
                                 }
+                                Some(_) => {}
+                                None => break,
                             }
-                        }
-                        '*' => {
-                            // Block comment — skip until */
-                            chars.next();
-                            loop {
-                                match chars.next() {
-                                    Some('*') => {
-                                        if let Some(&'/') = chars.peek() {
-                                            chars.next();
-                                            break;
-                                        }
-                                    }
-                                    Some(c) if c == '\n' => {
-                                        out.push(c);
-                                    }
-                                    Some(_) => {}
-                                    None => break,
-                                }
-                            }
-                        }
-                        _ => {
-                            out.push(ch);
                         }
                     }
                 } else {
-                    out.push(ch);
+                    out.push(ch)
                 }
             }
             '#' => {

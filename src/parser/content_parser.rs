@@ -163,7 +163,6 @@ fn parse_assertions(content: &str) -> Result<Vec<String>> {
     let assertions: Vec<String> = content
         .lines()
         .filter_map(strip_assertion_comments)
-        .map(|line| line.to_string())
         .collect();
 
     Ok(assertions)

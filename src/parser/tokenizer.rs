@@ -65,7 +65,7 @@ impl Token {
 /// Tokenize an assertion expression string into a list of tokens with
 /// exact byte positions.
 pub fn tokenize_assertion(source: &str) -> Vec<Token> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(source.len() / 2);
     let cs: Vec<char> = source.chars().collect();
     let mut i = 0;
 
@@ -235,8 +235,8 @@ pub fn tokenize_assertion(source: &str) -> Vec<Token> {
                 }
                 let kind = match v.as_str() {
                     "contains" | "matches" | "startsWith" | "endsWith" | "startswith"
-                    | "endswith" => TokenKind::Op(v.clone()),
-                    _ => TokenKind::Ident(v.clone()),
+                    | "endswith" => TokenKind::Op(v),
+                    _ => TokenKind::Ident(v),
                 };
                 out.push(Token::new(kind, Span { start: s, end: i }));
             }
@@ -335,15 +335,13 @@ pub fn collect_operators(tokens: &[Token]) -> Vec<&str> {
 
 /// Collect plugin call names with spans.
 pub fn collect_plugin_calls(tokens: &[Token]) -> Vec<(&str, Span)> {
-    let mut result = Vec::new();
-    let mut i = 0;
-    while i + 1 < tokens.len() {
-        if let TokenKind::At = tokens[i].kind
-            && let TokenKind::Ident(name) = &tokens[i + 1].kind
+    let mut result = Vec::with_capacity(tokens.len() / 4);
+    for [at, ident] in tokens.array_windows::<2>() {
+        if let TokenKind::At = at.kind
+            && let TokenKind::Ident(name) = &ident.kind
         {
-            result.push((name.as_str(), tokens[i].span));
+            result.push((name.as_str(), at.span));
         }
-        i += 1;
     }
     result
 }

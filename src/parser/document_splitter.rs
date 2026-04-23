@@ -18,46 +18,49 @@ fn is_preamble(t: &SectionType) -> bool {
     )
 }
 
-/// Sections that indicate a completed request/response cycle.
-fn has_content(sections: &[Section]) -> bool {
-    sections.iter().any(|s| {
-        matches!(
-            s.section_type,
-            SectionType::Request
-                | SectionType::Response
-                | SectionType::Error
-                | SectionType::Asserts
-                | SectionType::Extract
-        )
-    })
+fn is_content_section(t: &SectionType) -> bool {
+    matches!(
+        t,
+        SectionType::Request
+            | SectionType::Response
+            | SectionType::Error
+            | SectionType::Asserts
+            | SectionType::Extract
+    )
 }
 
-/// Split sections into documents based on ENDPOINT boundaries.
+/// Split owned sections into documents based on ENDPOINT boundaries.
 ///
 /// Each ENDPOINT with meaningful content before it starts a new document.
-/// Preamble sections перед ENDPOINT перемещаются в новый документ.
-pub fn split_sections_by_boundary(sections: &[Section]) -> Vec<Vec<Section>> {
+pub fn split_sections_by_boundary_owned(sections: Vec<Section>) -> Vec<Vec<Section>> {
     if sections.is_empty() {
         return Vec::new();
     }
 
     let mut docs: Vec<Vec<Section>> = Vec::new();
     let mut current: Vec<Section> = Vec::new();
+    let mut current_has_content = false;
 
     for section in sections {
-        if section.section_type == SectionType::Endpoint && has_content(&current) {
+        if section.section_type == SectionType::Endpoint && current_has_content {
             let mut preamble: Vec<Section> = Vec::new();
             while let Some(last) = current.last() {
                 if is_preamble(&last.section_type) {
-                    preamble.insert(0, current.pop().unwrap());
+                    preamble.push(current.pop().unwrap());
                 } else {
                     break;
                 }
             }
+            preamble.reverse();
             docs.push(std::mem::take(&mut current));
             current = preamble;
+            current_has_content = false;
         }
-        current.push(section.clone());
+
+        if is_content_section(&section.section_type) {
+            current_has_content = true;
+        }
+        current.push(section);
     }
 
     if !current.is_empty() {
@@ -65,6 +68,13 @@ pub fn split_sections_by_boundary(sections: &[Section]) -> Vec<Vec<Section>> {
     }
 
     docs
+}
+
+/// Split sections into documents based on ENDPOINT boundaries.
+///
+/// Convenience wrapper for borrowed input.
+pub fn split_sections_by_boundary(sections: &[Section]) -> Vec<Vec<Section>> {
+    split_sections_by_boundary_owned(sections.to_vec())
 }
 
 #[cfg(test)]

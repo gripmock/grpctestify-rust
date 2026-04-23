@@ -53,9 +53,7 @@ pub fn parse_response_json_values(content: &str) -> Option<Vec<serde_json::Value
             if ch == '#' {
                 break;
             }
-            if ch == '/'
-                && let Some('/') = chars.peek()
-            {
+            if ch == '/' && chars.next_if_eq(&'/').is_some() {
                 break;
             }
 

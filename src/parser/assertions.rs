@@ -36,7 +36,7 @@ pub(crate) fn strip_assertion_comments(line: &str) -> Option<String> {
             break;
         }
 
-        if ch == '/' && matches!(chars.peek(), Some('/')) {
+        if ch == '/' && chars.next_if_eq(&'/').is_some() {
             let prev_is_whitespace = out.chars().last().is_none_or(char::is_whitespace);
             if !saw_non_whitespace || prev_is_whitespace {
                 break;
