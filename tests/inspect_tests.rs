@@ -1,6 +1,6 @@
 // Inspect output tests - verify AST and document structure analysis
 
-use grpctestify::parser::{parse_gctf, parse_gctf_with_diagnostics};
+use grpctestify::parser::{parse_gctf, parse_gctf_from_str, parse_gctf_with_diagnostics};
 use std::path::Path;
 
 /// Test inspect returns correct section count
@@ -261,6 +261,35 @@ fn test_inspect_with_asserts_option() {
     let response = &response_sections[0];
     assert!(
         response.inline_options.with_asserts,
+        "Expected with_asserts=true option"
+    );
+}
+
+#[test]
+fn test_inspect_error_inline_options_partial_and_with_asserts() {
+    let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- ERROR partial=true with_asserts=true ---
+{
+  "code": 5
+}
+
+--- ASSERTS ---
+.code == 5
+"#;
+
+    let doc = parse_gctf_from_str(content, "inline-error-options.gctf").unwrap();
+    let error_sections = doc.sections_by_type(grpctestify::parser::ast::SectionType::Error);
+    assert_eq!(error_sections.len(), 1, "Expected one ERROR section");
+
+    let error = &error_sections[0];
+    assert!(error.inline_options.partial, "Expected partial=true option");
+    assert!(
+        error.inline_options.with_asserts,
         "Expected with_asserts=true option"
     );
 }

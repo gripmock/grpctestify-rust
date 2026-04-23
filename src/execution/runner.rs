@@ -278,7 +278,13 @@ impl ExecutionPlan {
                 expectation_type: "error".to_string(),
                 content,
                 message_count: None,
-                comparison_options: ComparisonOptions::default(),
+                comparison_options: ComparisonOptions {
+                    partial: section.inline_options.partial,
+                    redact: section.inline_options.redact.clone(),
+                    tolerance: section.inline_options.tolerance,
+                    unordered_arrays: section.inline_options.unordered_arrays,
+                    with_asserts: section.inline_options.with_asserts,
+                },
                 line_start: section.start_line,
                 line_end: section.end_line,
             }]
@@ -597,6 +603,35 @@ impl TestRunner {
         super::error_handler::ErrorHandler::error_matches_expected(error_text, expected)
     }
 
+    fn has_required_followup_asserts(
+        section: &crate::parser::ast::Section,
+        sections: &[crate::parser::ast::Section],
+        index: usize,
+        effective_no_assert: bool,
+        failure_reasons: &mut Vec<String>,
+    ) -> bool {
+        if !section.inline_options.with_asserts {
+            return false;
+        }
+
+        if sections
+            .get(index + 1)
+            .is_some_and(|next| next.section_type == SectionType::Asserts)
+        {
+            return true;
+        }
+
+        if !effective_no_assert {
+            failure_reasons.push(format!(
+                "{} at line {} has 'with_asserts' but is not followed by ASSERTS",
+                section.section_type.as_str(),
+                section.start_line
+            ));
+        }
+
+        false
+    }
+
     /// Create a new test runner
     pub fn new(
         dry_run: bool,
@@ -887,6 +922,7 @@ impl TestRunner {
         // variables passed from caller (shared across chain)
         let mut last_message: Option<Value> = None;
         let mut last_error_message: Option<String> = None;
+        let mut last_error_json: Option<Value> = None;
         let mut last_error_timing: Option<AssertionTiming> = None;
         let mut captured_headers: HashMap<String, String> = HashMap::new();
         let mut captured_trailers: HashMap<String, String> = HashMap::new();
@@ -1179,7 +1215,20 @@ impl TestRunner {
                         if !effective_no_assert
                             && let SectionContent::Assertions(lines) = &section.content
                         {
-                            if let Some(error_message) = &last_error_message {
+                            if let Some(error_value) = &last_error_json {
+                                self.run_assertions(
+                                    lines,
+                                    error_value,
+                                    &mut failure_reasons,
+                                    format!("after ERROR at line {}", section.start_line),
+                                    section.start_line,
+                                    AssertionContext {
+                                        headers: &captured_headers,
+                                        trailers: &captured_trailers,
+                                        timing: last_error_timing.as_ref(),
+                                    },
+                                );
+                            } else if let Some(error_message) = &last_error_message {
                                 let error_value = Value::String(error_message.clone());
                                 self.run_assertions(
                                     lines,
@@ -1267,13 +1316,26 @@ impl TestRunner {
                                 assertion_timing.finish_scope(scope_start_ms, scope_end_ms, 1);
 
                             last_error_message = Some(status.message().to_string());
+                            let error_json =
+                                super::error_handler::ErrorHandler::status_to_json(&status);
+                            last_error_json = Some(error_json.clone());
                             captured_trailers
                                 .extend(runner_helpers::metadata_map_to_hashmap(status.metadata()));
-                            if !effective_no_assert {
-                                failure_reasons.push(format!(
-                                     "Expected message for ASSERTS section at line {}, but received Error: {}",
-                                     section.start_line, status.message()
-                                 ));
+                            if !effective_no_assert
+                                && let SectionContent::Assertions(lines) = &section.content
+                            {
+                                self.run_assertions(
+                                    lines,
+                                    &error_json,
+                                    &mut failure_reasons,
+                                    format!("after ERROR at line {}", section.start_line),
+                                    section.start_line,
+                                    AssertionContext {
+                                        headers: &captured_headers,
+                                        trailers: &captured_trailers,
+                                        timing: last_error_timing.as_ref(),
+                                    },
+                                );
                             } else {
                                 println!("--- RESPONSE (Error) ---");
                                 println!("{}", status.message());
@@ -1341,6 +1403,7 @@ impl TestRunner {
                             }
                             Ok(Err(_e)) => {
                                 let e = _e;
+                                let mut error_assert_target: Option<Value> = None;
                                 if !effective_no_assert {
                                     if let SectionContent::Json(expected_json) = &section.content {
                                         let mut expected = expected_json.clone();
@@ -1351,6 +1414,12 @@ impl TestRunner {
                                             e.downcast_ref::<tonic::Status>()
                                         {
                                             last_error_message = Some(status.message().to_string());
+                                            let actual_error_json =
+                                                super::error_handler::ErrorHandler::status_to_json(
+                                                    status,
+                                                );
+                                            last_error_json = Some(actual_error_json.clone());
+                                            error_assert_target = Some(actual_error_json.clone());
                                             captured_trailers.extend(
                                                 runner_helpers::metadata_map_to_hashmap(
                                                     status.metadata(),
@@ -1361,23 +1430,26 @@ impl TestRunner {
                                             )
                                             .unwrap_or("Unknown");
                                             (
-                                                super::error_handler::ErrorHandler::status_matches_expected(
+                                                super::error_handler::ErrorHandler::status_matches_expected_with_options(
                                                     status,
                                                     &expected,
+                                                    section.inline_options.partial,
                                                 ),
                                                 format!(
                                                     "status: {}, message: \"{}\"",
                                                     status_name,
                                                     status.message()
                                                 ),
-                                                super::error_handler::ErrorHandler::status_mismatch_reason(
+                                                super::error_handler::ErrorHandler::status_mismatch_reason_with_options(
                                                     status,
                                                     &expected,
+                                                    section.inline_options.partial,
                                                 ),
                                             )
                                         } else {
                                             // Fallback to error string representation
                                             let text = e.to_string();
+                                            error_assert_target = Some(Value::String(text.clone()));
                                             (
                                                 Self::error_matches_expected(&text, &expected),
                                                 text,
@@ -1431,6 +1503,52 @@ impl TestRunner {
                                     println!("--- RESPONSE (Error) ---");
                                     println!("{}", e);
                                 }
+
+                                if Self::has_required_followup_asserts(
+                                    section,
+                                    sections,
+                                    i,
+                                    effective_no_assert,
+                                    &mut failure_reasons,
+                                ) && let Some(next_section) = sections.get(i + 1)
+                                    && next_section.section_type == SectionType::Asserts
+                                {
+                                    if !effective_no_assert
+                                        && let SectionContent::Assertions(lines) =
+                                            &next_section.content
+                                    {
+                                        if error_assert_target.is_none()
+                                            && let Some(status) = e.downcast_ref::<tonic::Status>()
+                                        {
+                                            let actual_error_json =
+                                                super::error_handler::ErrorHandler::status_to_json(
+                                                    status,
+                                                );
+                                            last_error_json = Some(actual_error_json.clone());
+                                            error_assert_target = Some(actual_error_json);
+                                        }
+
+                                        if let Some(target) = error_assert_target.as_ref() {
+                                            self.run_assertions(
+                                                lines,
+                                                target,
+                                                &mut failure_reasons,
+                                                format!(
+                                                    "(attached to ERROR at line {})",
+                                                    section.start_line
+                                                ),
+                                                section.start_line,
+                                                AssertionContext {
+                                                    headers: &captured_headers,
+                                                    trailers: &captured_trailers,
+                                                    timing: last_error_timing.as_ref(),
+                                                },
+                                            );
+                                        }
+                                    }
+                                    skip_next_section = true;
+                                }
+
                                 // Error has been consumed at startup stage; continue with next sections.
                                 continue;
                             }
@@ -1456,6 +1574,9 @@ impl TestRunner {
 
                             let status_message = status.message();
                             last_error_message = Some(status_message.to_string());
+                            let error_json =
+                                super::error_handler::ErrorHandler::status_to_json(&status);
+                            last_error_json = Some(error_json.clone());
                             last_error_timing = error_scope_timing;
                             captured_trailers
                                 .extend(runner_helpers::metadata_map_to_hashmap(status.metadata()));
@@ -1492,17 +1613,20 @@ impl TestRunner {
                                     let mut expected = expected_json.clone();
                                     self.substitute_variables(&mut expected, variables);
 
-                                    if !super::error_handler::ErrorHandler::status_matches_expected(
-                                        &status, &expected,
+                                    if !super::error_handler::ErrorHandler::status_matches_expected_with_options(
+                                        &status,
+                                        &expected,
+                                        section.inline_options.partial,
                                     ) {
                                         failure_reasons.push(format!(
                                             "Error mismatch at line {}:",
                                             section.start_line
                                         ));
                                         if let Some(reason) =
-                                            super::error_handler::ErrorHandler::status_mismatch_reason(
+                                            super::error_handler::ErrorHandler::status_mismatch_reason_with_options(
                                                 &status,
                                                 &expected,
+                                                section.inline_options.partial,
                                             )
                                         {
                                             failure_reasons.push(format!("  - {}", reason));
@@ -1517,15 +1641,19 @@ impl TestRunner {
                                 }
 
                                 // Handle with_asserts for Error
-                                if section.inline_options.with_asserts
-                                    && let Some(next_section) = sections.get(i + 1)
+                                if Self::has_required_followup_asserts(
+                                    section,
+                                    sections,
+                                    i,
+                                    effective_no_assert,
+                                    &mut failure_reasons,
+                                ) && let Some(next_section) = sections.get(i + 1)
                                     && next_section.section_type == SectionType::Asserts
                                     && let SectionContent::Assertions(lines) = &next_section.content
                                 {
-                                    let error_value = Value::String(status.message().to_string());
                                     self.run_assertions(
                                         lines,
-                                        &error_value,
+                                        &error_json,
                                         &mut failure_reasons,
                                         format!(
                                             "(attached to ERROR at line {})",
@@ -2363,5 +2491,102 @@ mod tests {
         assert_eq!(second.total_elapsed_ms, 35);
         assert_eq!(second.scope_message_count, 3);
         assert_eq!(second.scope_index, 2);
+    }
+
+    #[test]
+    fn test_has_required_followup_asserts_for_error_requires_adjacent_asserts() {
+        use crate::parser::ast::{InlineOptions, Section, SectionContent, SectionType};
+
+        let error = Section {
+            section_type: SectionType::Error,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions {
+                with_asserts: true,
+                ..InlineOptions::default()
+            },
+            raw_content: "".to_string(),
+            start_line: 12,
+            end_line: 12,
+        };
+        let sections = vec![error.clone()];
+        let mut failures = Vec::new();
+
+        let has_followup =
+            TestRunner::has_required_followup_asserts(&error, &sections, 0, false, &mut failures);
+
+        assert!(!has_followup);
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].contains("ERROR at line 12 has 'with_asserts'"));
+    }
+
+    #[test]
+    fn test_has_required_followup_asserts_for_error_accepts_adjacent_asserts() {
+        use crate::parser::ast::{InlineOptions, Section, SectionContent, SectionType};
+
+        let error = Section {
+            section_type: SectionType::Error,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions {
+                with_asserts: true,
+                ..InlineOptions::default()
+            },
+            raw_content: "".to_string(),
+            start_line: 20,
+            end_line: 20,
+        };
+        let asserts = Section {
+            section_type: SectionType::Asserts,
+            content: SectionContent::Assertions(vec![".code == 5".to_string()]),
+            inline_options: InlineOptions::default(),
+            raw_content: ".code == 5".to_string(),
+            start_line: 21,
+            end_line: 21,
+        };
+        let sections = vec![error.clone(), asserts];
+        let mut failures = Vec::new();
+
+        let has_followup =
+            TestRunner::has_required_followup_asserts(&error, &sections, 0, false, &mut failures);
+
+        assert!(has_followup);
+        assert!(failures.is_empty());
+    }
+
+    #[test]
+    fn test_error_assertions_evaluate_against_error_json_object() {
+        let runner = TestRunner::new(false, 30, false, false, false, None);
+        let target = json!({
+            "code": 5,
+            "message": "resource not found in backend",
+            "details": [
+                {
+                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                    "reason": "NOT_FOUND"
+                }
+            ]
+        });
+        let lines = vec![
+            ".code == 5".to_string(),
+            ".message contains \"not found\"".to_string(),
+            ".details[0][\"@type\"] == \"type.googleapis.com/google.rpc.ErrorInfo\"".to_string(),
+        ];
+        let mut failures = Vec::new();
+        let headers: HashMap<String, String> = HashMap::new();
+        let trailers: HashMap<String, String> = HashMap::new();
+
+        runner.run_assertions(
+            &lines,
+            &target,
+            &mut failures,
+            "(attached to ERROR at line 1)".to_string(),
+            1,
+            AssertionContext {
+                headers: &headers,
+                trailers: &trailers,
+                timing: None,
+            },
+        );
+
+        assert!(failures.is_empty(), "unexpected failures: {failures:?}");
     }
 }

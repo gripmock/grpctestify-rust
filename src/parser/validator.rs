@@ -434,14 +434,14 @@ fn validate_structure(document: &GctfDocument, errors: &mut Vec<ValidationError>
                 // All known options are supported for RESPONSE section
             }
             SectionType::Error => {
-                if section.inline_options.partial
-                    || section.inline_options.tolerance.is_some()
+                if section.inline_options.tolerance.is_some()
                     || !section.inline_options.redact.is_empty()
                     || section.inline_options.unordered_arrays
                 {
                     errors.push(ValidationError {
-                        message: "ERROR section only supports with_asserts inline option"
-                            .to_string(),
+                        message:
+                            "ERROR section only supports partial and with_asserts inline options"
+                                .to_string(),
                         line: Some(section.start_line),
                         severity: ErrorSeverity::Warning,
                     });
@@ -457,6 +457,26 @@ fn validate_structure(document: &GctfDocument, errors: &mut Vec<ValidationError>
                     severity: ErrorSeverity::Warning,
                 });
             }
+        }
+    }
+
+    // Warn about redundant empty ERROR with with_asserts
+    for (i, section) in document.sections.iter().enumerate() {
+        if section.section_type == SectionType::Error
+            && section.inline_options.with_asserts
+            && matches!(section.content, SectionContent::Empty)
+            && document
+                .sections
+                .get(i + 1)
+                .is_some_and(|next| next.section_type == SectionType::Asserts)
+        {
+            errors.push(ValidationError {
+                message:
+                    "Empty ERROR with with_asserts is redundant; remove ERROR and keep ASSERTS"
+                        .to_string(),
+                line: Some(section.start_line),
+                severity: ErrorSeverity::Warning,
+            });
         }
     }
 }
@@ -597,6 +617,176 @@ mod tests {
         let result = validate_document(&doc);
         // Should pass with ADDRESS, ENDPOINT, and ERROR
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_document_error_partial_option_allowed() {
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Error,
+            content: SectionContent::Json(serde_json::json!({"code": 5})),
+            inline_options: InlineOptions {
+                partial: true,
+                ..InlineOptions::default()
+            },
+            raw_content: "{\"code\": 5}".to_string(),
+            start_line: 5,
+            end_line: 6,
+        });
+
+        let errors = validate_document_diagnostics(&doc);
+        assert!(!errors.iter().any(|e| {
+            e.message
+                .contains("ERROR section only supports partial and with_asserts")
+        }));
+    }
+
+    #[test]
+    fn test_validate_document_error_tolerance_still_warns() {
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Error,
+            content: SectionContent::Json(serde_json::json!({"code": 5})),
+            inline_options: InlineOptions {
+                tolerance: Some(0.1),
+                ..InlineOptions::default()
+            },
+            raw_content: "{\"code\": 5}".to_string(),
+            start_line: 5,
+            end_line: 6,
+        });
+
+        let errors = validate_document_diagnostics(&doc);
+        assert!(errors.iter().any(|e| {
+            e.message
+                .contains("ERROR section only supports partial and with_asserts")
+        }));
+    }
+
+    #[test]
+    fn test_validate_document_warns_on_empty_error_with_asserts() {
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Error,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions {
+                with_asserts: true,
+                ..InlineOptions::default()
+            },
+            raw_content: "".to_string(),
+            start_line: 5,
+            end_line: 5,
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Asserts,
+            content: SectionContent::Assertions(vec![".code == 5".to_string()]),
+            inline_options: InlineOptions::default(),
+            raw_content: ".code == 5".to_string(),
+            start_line: 6,
+            end_line: 6,
+        });
+
+        let errors = validate_document_diagnostics(&doc);
+        assert!(errors.iter().any(|e| {
+            e.message
+                .contains("Empty ERROR with with_asserts is redundant")
+                && e.severity == ErrorSeverity::Warning
+        }));
+    }
+
+    #[test]
+    fn test_validate_document_no_warning_for_non_empty_error_with_asserts() {
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Error,
+            content: SectionContent::Json(serde_json::json!({"code": 5})),
+            inline_options: InlineOptions {
+                with_asserts: true,
+                ..InlineOptions::default()
+            },
+            raw_content: "{\"code\": 5}".to_string(),
+            start_line: 5,
+            end_line: 6,
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Asserts,
+            content: SectionContent::Assertions(vec![".code == 5".to_string()]),
+            inline_options: InlineOptions::default(),
+            raw_content: ".code == 5".to_string(),
+            start_line: 7,
+            end_line: 7,
+        });
+
+        let errors = validate_document_diagnostics(&doc);
+        assert!(!errors.iter().any(|e| {
+            e.message
+                .contains("Empty ERROR with with_asserts is redundant")
+        }));
+    }
+
+    #[test]
+    fn test_validate_document_no_warning_for_empty_error_without_with_asserts() {
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Error,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: "".to_string(),
+            start_line: 5,
+            end_line: 5,
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Asserts,
+            content: SectionContent::Assertions(vec![".code == 5".to_string()]),
+            inline_options: InlineOptions::default(),
+            raw_content: ".code == 5".to_string(),
+            start_line: 6,
+            end_line: 6,
+        });
+
+        let errors = validate_document_diagnostics(&doc);
+        assert!(!errors.iter().any(|e| {
+            e.message
+                .contains("Empty ERROR with with_asserts is redundant")
+        }));
+    }
+
+    #[test]
+    fn test_validate_document_no_warning_for_empty_error_with_non_adjacent_asserts() {
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Error,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions {
+                with_asserts: true,
+                ..InlineOptions::default()
+            },
+            raw_content: "".to_string(),
+            start_line: 5,
+            end_line: 5,
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Json(serde_json::json!({"id": 1})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"id\": 1}".to_string(),
+            start_line: 6,
+            end_line: 7,
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Asserts,
+            content: SectionContent::Assertions(vec![".code == 5".to_string()]),
+            inline_options: InlineOptions::default(),
+            raw_content: ".code == 5".to_string(),
+            start_line: 8,
+            end_line: 8,
+        });
+
+        let errors = validate_document_diagnostics(&doc);
+        assert!(!errors.iter().any(|e| {
+            e.message
+                .contains("Empty ERROR with with_asserts is redundant")
+        }));
     }
 
     #[test]

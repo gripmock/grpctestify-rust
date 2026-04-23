@@ -1,7 +1,7 @@
 // Explain output tests - compare semantic output against expected fixtures
 
 use grpctestify::execution::ExecutionPlan;
-use grpctestify::parser::parse_gctf;
+use grpctestify::parser::{parse_gctf, parse_gctf_from_str};
 use std::fs;
 use std::path::Path;
 
@@ -259,4 +259,39 @@ fn test_explain_summary_accuracy() {
             path
         );
     }
+}
+
+#[test]
+fn test_explain_error_partial_and_with_asserts_via_ast() {
+    let content = r#"--- ENDPOINT ---
+tasktracker.TaskService/CompleteTask
+
+--- REQUEST ---
+{
+  "task_id": "task-42"
+}
+
+--- ERROR partial=true with_asserts=true ---
+{
+  "code": 5
+}
+
+--- ASSERTS ---
+.message contains "Can't find stub"
+"#;
+
+    let doc = parse_gctf_from_str(content, "issue-40-error-options.gctf").unwrap();
+    let plan = ExecutionPlan::from_document(&doc);
+
+    assert_eq!(plan.summary.total_errors, 1);
+    assert!(plan.summary.error_expected);
+    assert_eq!(plan.assertions.len(), 1);
+
+    let error = plan
+        .expectations
+        .iter()
+        .find(|e| e.expectation_type == "error")
+        .expect("error expectation");
+    assert!(error.comparison_options.partial);
+    assert!(error.comparison_options.with_asserts);
 }

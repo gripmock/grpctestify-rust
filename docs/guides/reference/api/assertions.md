@@ -82,6 +82,6 @@ Preferred canonical operators:
 
 ## Notes
 
-- `ASSERTS` can be used alone or together with `RESPONSE with_asserts`
+- `ASSERTS` can be used alone or together with `RESPONSE with_asserts` / `ERROR with_asserts`
 - For unary tests, use one style per test: strict `RESPONSE` or `ASSERTS`
 - For a full plugin catalog, see [Plugin System](../../plugins/)

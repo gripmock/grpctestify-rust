@@ -17,3 +17,27 @@ fn test_build_semantic_tokens_section_headers() {
     }
     // If AST parsing failed, tokens will be empty - that's acceptable for this test
 }
+
+#[test]
+fn test_build_semantic_tokens_error_with_inline_options() {
+    let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- ERROR partial=true with_asserts=true ---
+{
+  "code": 5
+}
+
+--- ASSERTS ---
+.code == 5
+"#;
+    let tokens = lsp::build_semantic_tokens(content);
+
+    assert!(
+        !tokens.data.is_empty(),
+        "Expected semantic tokens for ERROR with inline options"
+    );
+}

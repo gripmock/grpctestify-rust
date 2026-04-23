@@ -323,6 +323,12 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
                         println!("    {}", line);
                     }
                 }
+                if section.inline_options.with_asserts {
+                    println!("    [with_asserts]");
+                }
+                if section.inline_options.partial {
+                    println!("    [partial]");
+                }
             }
             _ => {}
         }
@@ -585,6 +591,18 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
                     for line in json_str.lines() {
                         println!("    {}", line);
                     }
+                } else if matches!(section.content, SectionContent::Empty) {
+                    println!("  Expected error (no body, assertions-only)");
+                }
+                let mut opts = Vec::new();
+                if section.inline_options.with_asserts {
+                    opts.push("with_asserts");
+                }
+                if section.inline_options.partial {
+                    opts.push("partial");
+                }
+                if !opts.is_empty() {
+                    println!("  Options: {}", opts.join(", "));
                 }
                 step += 1;
             }

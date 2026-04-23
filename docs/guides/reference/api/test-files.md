@@ -62,7 +62,13 @@ Supported options for `RESPONSE`:
 - `redact=["field1","field2"]`
 - `unordered_arrays` or `unordered_arrays=true|false`
 
-`ERROR` supports only `with_asserts` (or `with_asserts=true|false`).
+`ERROR` supports:
+
+- `with_asserts` or `with_asserts=true|false`
+- `partial` or `partial=true|false`
+
+Default `ERROR` matching is strict for top-level fields (`code`, `message`, `details`).
+If `details` is not returned by the server, it can be omitted from expected `ERROR`.
 
 ## Quick links by section
 
