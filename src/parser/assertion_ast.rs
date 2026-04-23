@@ -846,9 +846,12 @@ pub fn remove_redundant_parens(expr: &AssertionExpr) -> AssertionExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(miri))]
     use std::hint::black_box;
+    #[cfg(not(miri))]
     use std::time::Instant;
 
+    #[cfg(not(miri))]
     fn bench_phase(name: &str, iterations: u32, mut f: impl FnMut()) {
         let start = Instant::now();
         for _ in 0..iterations {
