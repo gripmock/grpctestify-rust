@@ -1,7 +1,7 @@
 #![cfg(not(miri))]
 
-use std::process::{Command, Output};
 use std::path::Path;
+use std::process::{Command, Output};
 
 fn get_binary() -> String {
     env!("CARGO_BIN_EXE_grpctestify").to_string()
