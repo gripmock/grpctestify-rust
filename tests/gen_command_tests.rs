@@ -14,6 +14,7 @@ fn run_cli(args: &[&str]) -> Output {
         .expect("failed to run command")
 }
 
+#[cfg(unix)]
 fn run_cli_with_path(args: &[&str], path: &std::path::Path) -> Output {
     let current_path = std::env::var("PATH").unwrap_or_default();
     let merged_path = format!("{}:{}", path.display(), current_path);

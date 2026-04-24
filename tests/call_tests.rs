@@ -117,9 +117,12 @@ fn call_silent_suppresses_verbose_stderr() {
     let f = fixture("tests/data/call/unreachable.gctf");
     let out = run(&["call", "-v", "-s", &f]);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    // -s must suppress all verbose lines; only the hard process error may remain
+    // -s must suppress all curl-style verbose lines; hard process errors may remain.
+    let has_verbose_line = stderr
+        .lines()
+        .any(|line| line.starts_with("* ") || line.starts_with("> ") || line.starts_with("< "));
     assert!(
-        !stderr.contains("* Trying") && !stderr.contains("> ") && !stderr.contains("< "),
+        !has_verbose_line,
         "verbose output leaked through silent mode:\n{}",
         stderr
     );
