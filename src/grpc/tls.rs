@@ -34,6 +34,15 @@ pub struct TlsConfig {
 }
 
 impl TlsConfig {
+    /// Check if TLS config is empty
+    pub fn is_empty(&self) -> bool {
+        self.ca_cert_path.is_none()
+            && self.client_cert_path.is_none()
+            && self.client_key_path.is_none()
+            && self.server_name.is_none()
+            && !self.insecure_skip_verify
+    }
+
     /// Set the CA certificate path
     pub fn with_ca_cert(mut self, path: impl Into<String>) -> Self {
         self.ca_cert_path = Some(path.into());

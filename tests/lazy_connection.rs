@@ -3,16 +3,10 @@ use std::path::PathBuf;
 
 #[tokio::test]
 async fn test_local_proto_files_are_rejected_in_native_mode() {
-    // 1. Pick a random port that nothing is listening on.
-    // We can rely on the OS to likely not have anything on 59123.
     let address = "http://localhost:59123";
-
-    // 2. Configure client with local proto files.
-    // We assume the test runs from the workspace root.
     let proto_path = PathBuf::from("tests/e2e/examples/helloworld/helloworld.proto");
     let import_path = PathBuf::from("tests/e2e/examples/helloworld");
 
-    // Verify file exists to avoid spurious test failures
     assert!(
         proto_path.exists(),
         "proto file not found at {:?}",
@@ -33,8 +27,6 @@ async fn test_local_proto_files_are_rejected_in_native_mode() {
         compression: CompressionMode::None,
     };
 
-    // 3. In native mode, local proto files are intentionally not supported to avoid
-    // runtime dependency on protoc.
     let result = GrpcClient::new(config).await;
     assert!(
         result.is_err(),

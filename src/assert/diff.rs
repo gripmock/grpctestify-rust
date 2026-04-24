@@ -18,15 +18,15 @@ pub fn get_json_diff(expected: &Value, actual: &Value) -> String {
         match chunk {
             Chunk::Equal(text) => {
                 let style = Style::new().dim();
-                write!(output, "{}", style.apply_to(text)).unwrap();
+                let _ = write!(output, "{}", style.apply_to(text));
             }
             Chunk::Delete(text) => {
                 let style = Style::new().red();
-                write!(output, "{}", style.apply_to(text)).unwrap();
+                let _ = write!(output, "{}", style.apply_to(text));
             }
             Chunk::Insert(text) => {
                 let style = Style::new().green();
-                write!(output, "{}", style.apply_to(text)).unwrap();
+                let _ = write!(output, "{}", style.apply_to(text));
             }
         }
     }

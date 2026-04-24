@@ -1169,9 +1169,8 @@ impl LanguageServer for GrpctestifyLsp {
         if let Some(loc) =
             variable_definition::find_variable_definition(content, position, uri.as_str())
         {
-            Ok(Some(GotoDefinitionResponse::Scalar(
-                variable_definition::variable_location_to_lsp(&loc),
-            )))
+            Ok(variable_definition::variable_location_to_lsp(&loc)
+                .map(GotoDefinitionResponse::Scalar))
         } else {
             Ok(None)
         }

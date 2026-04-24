@@ -184,7 +184,7 @@ impl AssertionEngine {
 
         if let Some(cached) = JAQ_FILTER_CACHE
             .lock()
-            .expect("JQ filter cache poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .get(expr)
             .cloned()
         {
@@ -212,10 +212,24 @@ impl AssertionEngine {
         let filter = Arc::new(filter);
         JAQ_FILTER_CACHE
             .lock()
-            .expect("JQ filter cache poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .insert(expr.to_string(), Arc::clone(&filter));
 
         Ok(filter)
+    }
+
+    /// Evaluate a JQ expression against `input`, returning the first output value.
+    /// Uses `JAQ_FILTER_CACHE` to avoid recompilation on repeated calls.
+    pub(super) fn eval_jaq_one(expr: &str, input: &Value) -> anyhow::Result<Value> {
+        let filter = Self::get_or_compile_jaq_filter(expr)?;
+        let jaq_input = json_to_jaq(input);
+        let ctx = Ctx::<data::JustLut<JaqVal>>::new(&filter.lut, Vars::new([]));
+        let mut out = filter.id.run((ctx, jaq_input)).map(unwrap_valr);
+        if let Some(Ok(val)) = out.next() {
+            Ok(jaq_to_json(&val))
+        } else {
+            Err(anyhow::anyhow!("JQ produced no output for: {}", expr))
+        }
     }
 
     // Check if any assertion failed (re-exported wrapper)
@@ -929,5 +943,38 @@ mod tests {
     fn test_json_to_jaq_object() {
         let result = json_to_jaq(&json!({"key": "value"}));
         assert!(matches!(result, JaqVal::Obj(_)));
+    }
+
+    #[test]
+    fn test_jaq_filter_cache_returns_same_arc() {
+        let expr = ".__cache_test_sentinel__";
+        let first = AssertionEngine::get_or_compile_jaq_filter(expr).unwrap();
+        let second = AssertionEngine::get_or_compile_jaq_filter(expr).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn test_operators_resolve_path_populates_cache() {
+        use super::operators;
+        use crate::plugins::{AssertionTiming, PluginManager};
+
+        let unique_expr = ".cache_probe_field_xyz";
+        assert!(!JAQ_FILTER_CACHE.lock().unwrap().contains_key(unique_expr));
+
+        let response = serde_json::json!({"cache_probe_field_xyz": 42});
+        let timing = AssertionTiming {
+            elapsed_ms: 0,
+            total_elapsed_ms: 0,
+            scope_message_count: 0,
+            scope_index: 1,
+        };
+        let pm = PluginManager::new();
+        let _ =
+            operators::evaluate_assertion(&pm, unique_expr, &response, None, None, Some(&timing));
+
+        assert!(
+            JAQ_FILTER_CACHE.lock().unwrap().contains_key(unique_expr),
+            "eval_jaq_one in operators should populate JAQ_FILTER_CACHE"
+        );
     }
 }

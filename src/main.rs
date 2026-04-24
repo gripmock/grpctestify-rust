@@ -4,9 +4,9 @@ use anyhow::Result;
 use clap::Parser;
 use tracing::{info, warn};
 
-// Import from commands module
 use grpctestify::cli;
 use grpctestify::commands;
+use grpctestify::config::Config;
 
 use cli::{Cli, Commands};
 
@@ -15,7 +15,15 @@ async fn main() -> Result<()> {
     // Install the default crypto provider (ring) to avoid panics with rustls 0.23+
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    // Handle --version manually for backward compatibility
+    // Honour NO_COLOR (https://no-color.org/) before any output, including clap --help.
+    // Config file progress.color = false is a secondary opt-out; NO_COLOR env var takes precedence.
+    let disable_color = std::env::var_os("NO_COLOR").is_some()
+        || Config::load().is_some_and(|cfg| !cfg.progress.color);
+    if disable_color {
+        console::set_colors_enabled(false);
+        console::set_colors_enabled_stderr(false);
+    }
+
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("v{}", env!("CARGO_PKG_VERSION"));
@@ -24,7 +32,6 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Setup tracing
     let filter = if cli.verbose {
         "grpctestify=debug,warn"
     } else {
@@ -59,6 +66,8 @@ async fn main() -> Result<()> {
         Some(Commands::Inspect(args)) => commands::handle_inspect(args).await,
         Some(Commands::List(args)) => commands::handle_list(args),
         Some(Commands::Run(args)) => commands::run_tests(&cli, args).await,
+        Some(Commands::Call(args)) => commands::handle_call(args).await,
+        Some(Commands::Gen(args)) => commands::handle_gen(args).await,
         Some(Commands::Lsp(args)) => commands::handle_lsp(args).await,
         None => {
             // Implicit Run

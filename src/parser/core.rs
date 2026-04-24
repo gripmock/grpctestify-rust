@@ -57,8 +57,10 @@ fn extract_doc_source_from_lines(sections: &[Section], lines: &[&str]) -> String
         return String::new();
     }
 
-    let start = sections.first().unwrap().start_line;
-    let end = sections.last().unwrap().end_line;
+    let (start, end) = match (sections.first(), sections.last()) {
+        (Some(first), Some(last)) => (first.start_line, last.end_line),
+        _ => return String::new(),
+    };
     lines.get(start..end).unwrap_or(&[]).join("\n")
 }
 

@@ -12,6 +12,7 @@
 pub mod assertion_ast;
 pub(crate) mod assertions;
 pub mod ast;
+pub mod builder;
 pub mod content_parser;
 pub mod core;
 pub mod document_splitter;
@@ -42,6 +43,7 @@ pub use gctf_tokenizer::{
 pub use document_splitter::split_sections_by_boundary;
 
 pub use ast::{DocumentChainIter, GctfDocument};
+pub use builder::GctfDocumentBuilder;
 pub use core::{ParseDiagnostics, parse_gctf, parse_gctf_from_str, parse_gctf_with_diagnostics};
 pub use error_recovery::{ErrorRecoveryResult, parse_content_with_recovery, parse_with_recovery};
 pub use ternary::{process_extract_value, ternary_to_jq};

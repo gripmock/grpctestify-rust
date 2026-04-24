@@ -213,7 +213,10 @@ fn print_json_report(
         optimization_hints,
         inferred_rpc_mode: Some(plan.summary.rpc_mode_name.clone()),
     };
-    println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    match serde_json::to_string_pretty(&report) {
+        Ok(json) => println!("{}", json),
+        Err(e) => eprintln!("Failed to serialize inspect report: {}", e),
+    }
 }
 
 fn section_to_info(section: &parser::ast::Section) -> SectionInfo {

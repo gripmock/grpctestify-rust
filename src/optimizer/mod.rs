@@ -749,7 +749,10 @@ fn parse_if_then_else(expr: &str) -> Option<(&str, &str, &str)> {
     while i < bytes.len() {
         // Handle string literals
         if in_string {
-            if bytes[i] == string_char.unwrap() && (i == 0 || bytes[i - 1] != b'\\') {
+            if let Some(quote) = string_char
+                && bytes[i] == quote
+                && (i == 0 || bytes[i - 1] != b'\\')
+            {
                 in_string = false;
             }
             i += 1;
@@ -799,7 +802,10 @@ fn parse_if_then_else(expr: &str) -> Option<(&str, &str, &str)> {
     i = 0;
     while i < bytes.len() {
         if in_string {
-            if bytes[i] == string_char.unwrap() && (i == 0 || bytes[i - 1] != b'\\') {
+            if let Some(quote) = string_char
+                && bytes[i] == quote
+                && (i == 0 || bytes[i - 1] != b'\\')
+            {
                 in_string = false;
             }
             i += 1;

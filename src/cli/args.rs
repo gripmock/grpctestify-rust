@@ -53,10 +53,6 @@ pub struct Cli {
     #[arg(short = 'v', long, global = true, default_value_t = false)]
     pub verbose: bool,
 
-    /// Disable colored output
-    #[arg(short = 'c', long, global = true, default_value_t = false)]
-    pub no_color: bool,
-
     /// Install shell completion (bash, zsh, fish, elvish, powershell)
     #[arg(long, value_name = "SHELL_TYPE", value_parser = ["bash", "zsh", "fish", "elvish", "powershell"])]
     pub completion: Option<String>,
@@ -66,6 +62,10 @@ pub struct Cli {
 pub enum Commands {
     /// Run tests (default)
     Run(Box<RunArgs>),
+    /// Call gRPC endpoint without assertions
+    Call(CallArgs),
+    /// Generate .gctf file from external invocations
+    Gen(GenArgs),
     /// Reflect gRPC service and list methods
     Reflect(ReflectArgs),
     /// Format files
@@ -264,6 +264,81 @@ pub struct FmtArgs {
     pub write: bool,
 }
 
+#[derive(Args, Debug, Clone)]
+pub struct CallArgs {
+    /// File to call
+    #[arg(required = true)]
+    pub file: PathBuf,
+
+    /// Document index for multi-document .gctf files (1-based)
+    #[arg(long)]
+    pub doc_index: Option<usize>,
+
+    /// Include response headers in output, printed before body (-i)
+    #[arg(short = 'i', long, default_value_t = false)]
+    pub include: bool,
+
+    /// Verbose mode: show request/response metadata (-v)
+    #[arg(short = 'v', long, default_value_t = false)]
+    pub verbose: bool,
+
+    /// Extra verbose mode: verbose output plus timing (-vv)
+    #[arg(long = "vv", default_value_t = false)]
+    pub very_verbose: bool,
+
+    /// Output to file instead of stdout (-o)
+    #[arg(short = 'o', long)]
+    pub output: Option<PathBuf>,
+
+    /// Dump response headers to file (-D)
+    #[arg(short = 'D', long)]
+    pub dump_header: Option<PathBuf>,
+
+    /// Silent mode (-s)
+    #[arg(short = 's', long, default_value_t = false)]
+    pub silent: bool,
+
+    /// Show errors (-S)
+    #[arg(short = 'S', long, default_value_t = false)]
+    pub show_error: bool,
+
+    /// Connection timeout in seconds
+    #[arg(long, default_value_t = 30)]
+    pub connect_timeout: u64,
+
+    /// Request timeout in seconds
+    #[arg(long, default_value_t = 60)]
+    pub max_time: u64,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct GenArgs {
+    /// Output file for generated gctf (stdout if omitted)
+    #[arg(short = 'o', long)]
+    pub output: Option<PathBuf>,
+
+    #[command(subcommand)]
+    pub source: GenSource,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum GenSource {
+    /// Generate from grpcurl invocation
+    Grpcurl(GenGrpcurlArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+#[command(trailing_var_arg = true)]
+pub struct GenGrpcurlArgs {
+    /// Execute invocation and append RESPONSE/ERROR
+    #[arg(short = 'e', long, default_value_t = false)]
+    pub execute: bool,
+
+    /// grpcurl command arguments after `gen grpcurl`
+    #[arg(required = true, allow_hyphen_values = true)]
+    pub grpcurl_args: Vec<String>,
+}
+
 impl Cli {
     /// Get parallel job count (auto-detect if set to "auto")
     pub fn parallel_jobs(&self) -> usize {
@@ -375,5 +450,120 @@ impl HasFormat for CheckArgs {
 impl RunArgs {
     pub fn is_json_coverage(&self) -> bool {
         is_json_format(&self.coverage_format)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn parse_call_defaults() {
+        let cli = Cli::parse_from(["grpctestify", "call", "test.gctf"]);
+        let Some(Commands::Call(call)) = cli.command else {
+            panic!("expected call command");
+        };
+
+        assert_eq!(call.file, PathBuf::from("test.gctf"));
+        assert_eq!(call.doc_index, None);
+        assert!(!call.include);
+        assert!(!call.verbose);
+        assert!(!call.very_verbose);
+        assert!(!call.silent);
+        assert!(!call.show_error);
+        assert_eq!(call.connect_timeout, 30);
+        assert_eq!(call.max_time, 60);
+    }
+
+    #[test]
+    fn parse_call_verbose_flags() {
+        let cli = Cli::parse_from(["grpctestify", "call", "-v", "test.gctf"]);
+        let Some(Commands::Call(call)) = cli.command else {
+            panic!()
+        };
+        assert!(call.verbose);
+        assert!(!call.very_verbose);
+
+        let cli = Cli::parse_from(["grpctestify", "call", "--vv", "test.gctf"]);
+        let Some(Commands::Call(call)) = cli.command else {
+            panic!()
+        };
+        assert!(!call.verbose);
+        assert!(call.very_verbose);
+    }
+
+    #[test]
+    fn parse_call_include_and_dump_header() {
+        let cli = Cli::parse_from(["grpctestify", "call", "-i", "-D", "/tmp/h.txt", "test.gctf"]);
+        let Some(Commands::Call(call)) = cli.command else {
+            panic!()
+        };
+        assert!(call.include);
+        assert_eq!(call.dump_header, Some(PathBuf::from("/tmp/h.txt")));
+    }
+
+    #[test]
+    fn parse_call_silent_and_show_error() {
+        let cli = Cli::parse_from(["grpctestify", "call", "-s", "-S", "test.gctf"]);
+        let Some(Commands::Call(call)) = cli.command else {
+            panic!()
+        };
+        assert!(call.silent);
+        assert!(call.show_error);
+    }
+
+    #[test]
+    fn parse_gen_with_output_before_source() {
+        let cli = Cli::parse_from([
+            "grpctestify",
+            "gen",
+            "-o",
+            "out.gctf",
+            "grpcurl",
+            "-plaintext",
+            "localhost:4770",
+            "svc.Method/Call",
+        ]);
+
+        let Some(Commands::Gen(gen_args)) = cli.command else {
+            panic!("expected gen command");
+        };
+        assert_eq!(gen_args.output, Some(PathBuf::from("out.gctf")));
+
+        let GenSource::Grpcurl(grpcurl) = gen_args.source;
+        assert_eq!(
+            grpcurl.grpcurl_args,
+            vec![
+                "-plaintext".to_string(),
+                "localhost:4770".to_string(),
+                "svc.Method/Call".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_gen_grpcurl_preserves_hyphen_args() {
+        let cli = Cli::parse_from([
+            "grpctestify",
+            "gen",
+            "grpcurl",
+            "-H",
+            "x-api-key: abc",
+            "-d",
+            "{}",
+            "localhost:4770",
+            "svc.Method/Call",
+        ]);
+
+        let Some(Commands::Gen(gen_args)) = cli.command else {
+            panic!("expected gen command");
+        };
+
+        let GenSource::Grpcurl(grpcurl) = gen_args.source;
+        assert_eq!(grpcurl.grpcurl_args[0], "-H");
+        assert_eq!(grpcurl.grpcurl_args[2], "-d");
+        assert_eq!(grpcurl.grpcurl_args[3], "{}");
+        assert_eq!(grpcurl.grpcurl_args[4], "localhost:4770");
     }
 }

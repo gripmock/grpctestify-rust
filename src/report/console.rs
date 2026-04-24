@@ -31,7 +31,9 @@ impl ConsoleReporter {
     pub fn new(mode: ProgressMode, total_tests: u64, env_info: EnvironmentInfo) -> Self {
         let progress_bar = if matches!(mode, ProgressMode::Dots) {
             let pb = ProgressBar::new(total_tests);
-            pb.set_style(ProgressStyle::default_bar().template("{msg}").unwrap());
+            if let Ok(style) = ProgressStyle::default_bar().template("{msg}") {
+                pb.set_style(style);
+            }
             pb
         } else {
             ProgressBar::hidden()
@@ -198,10 +200,10 @@ impl super::Reporter for ConsoleReporter {
                 TestStatus::Skip => "S",
             };
 
-            let _guard = self.dots_lock.lock().unwrap();
+            let _guard = self.dots_lock.lock().unwrap_or_else(|e| e.into_inner());
             print!("{}", char);
             use std::io::Write;
-            std::io::stdout().flush().unwrap();
+            let _ = std::io::stdout().flush();
 
             let count = self.dots_count.fetch_add(1, Ordering::Relaxed) + 1;
             if count >= 80 {
