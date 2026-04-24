@@ -63,7 +63,7 @@ impl CoverageCollector {
     }
 
     pub fn record_call(&self, service: &str, method: &str) {
-        let mut calls = self.calls.lock().expect("CoverageCollector lock poisoned");
+        let mut calls = self.calls.lock().unwrap_or_else(|e| e.into_inner());
         let service_calls = calls.entry(service.to_string()).or_default();
         *service_calls.entry(method.to_string()).or_insert(0) += 1;
     }
@@ -72,7 +72,7 @@ impl CoverageCollector {
         let mut fields = self
             .fields_covered
             .lock()
-            .expect("CoverageCollector lock poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         let message_fields = fields.entry(message_type.to_string()).or_default();
         Self::extract_fields_from_json(json, message_fields, "");
     }
@@ -100,7 +100,7 @@ impl CoverageCollector {
     }
 
     pub fn register_pool(&self, other: &DescriptorPool) {
-        let mut pool = self.pool.lock().expect("CoverageCollector lock poisoned");
+        let mut pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
         for file in other.files() {
             let _ = pool.add_file_descriptor_proto(file.file_descriptor_proto().clone());
         }
@@ -119,12 +119,12 @@ impl CoverageCollector {
     }
 
     pub fn generate_json_report(&self) -> CoverageReport {
-        let calls = self.calls.lock().expect("CoverageCollector lock poisoned");
-        let pool = self.pool.lock().expect("CoverageCollector lock poisoned");
+        let calls = self.calls.lock().unwrap_or_else(|e| e.into_inner());
+        let pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
         let fields_covered = self
             .fields_covered
             .lock()
-            .expect("CoverageCollector lock poisoned");
+            .unwrap_or_else(|e| e.into_inner());
 
         let mut files = Vec::new();
         let mut messages = Vec::new();
@@ -218,12 +218,12 @@ impl CoverageCollector {
     }
 
     pub fn generate_text_report(&self) -> String {
-        let calls = self.calls.lock().expect("CoverageCollector lock poisoned");
-        let pool = self.pool.lock().expect("CoverageCollector lock poisoned");
+        let calls = self.calls.lock().unwrap_or_else(|e| e.into_inner());
+        let pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
         let fields_covered = self
             .fields_covered
             .lock()
-            .expect("CoverageCollector lock poisoned");
+            .unwrap_or_else(|e| e.into_inner());
 
         let mut report = String::new();
         report.push_str("--- gRPC API Coverage Report ---\n\n");

@@ -99,7 +99,9 @@ impl GrpcClient {
 
         // Construct path for generic client
         let path_str = format!("/{}/{}", service_name, method_name);
-        let path_uri: Uri = path_str.parse().unwrap();
+        let path_uri: Uri = path_str
+            .parse()
+            .with_context(|| format!("Invalid gRPC path: {}", path_str))?;
         let path = path_uri
             .path_and_query()
             .ok_or_else(|| anyhow!("Invalid path"))?
@@ -455,7 +457,7 @@ async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<DescriptorPoo
     };
 
     {
-        let cache = DESCRIPTOR_CACHE.read().unwrap();
+        let cache = DESCRIPTOR_CACHE.read().unwrap_or_else(|e| e.into_inner());
         if let Some(pool) = cache.get(&cache_key) {
             tracing::debug!("Cache hit for descriptors from {}", cache_key);
             return Ok(pool.clone());
@@ -465,7 +467,7 @@ async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<DescriptorPoo
     let _load_guard = DESCRIPTOR_LOAD_MUTEX.lock().await;
 
     {
-        let cache = DESCRIPTOR_CACHE.read().unwrap();
+        let cache = DESCRIPTOR_CACHE.read().unwrap_or_else(|e| e.into_inner());
         if let Some(pool) = cache.get(&cache_key) {
             tracing::debug!("Cache hit for descriptors from {}", cache_key);
             return Ok(pool.clone());
@@ -486,7 +488,7 @@ async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<DescriptorPoo
     let pool_arc = Arc::new(pool);
 
     {
-        let mut cache = DESCRIPTOR_CACHE.write().unwrap();
+        let mut cache = DESCRIPTOR_CACHE.write().unwrap_or_else(|e| e.into_inner());
         cache.insert(cache_key, pool_arc.clone());
     }
 

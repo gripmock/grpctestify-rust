@@ -1,14 +1,18 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::{LazyLock, RwLock};
+use std::sync::{LazyLock, OnceLock, RwLock};
 use std::time::Duration;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
+use crate::grpc::proxy::ProxyEnv;
 use crate::grpc::tls::{ChannelCacheKey, GrpcClientConfig, TlsConfig};
 
 static CHANNEL_CACHE: LazyLock<RwLock<HashMap<ChannelCacheKey, Channel>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Ensures proxy warnings are emitted at most once per process lifetime.
+static PROXY_WARNED: OnceLock<()> = OnceLock::new();
 
 pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
     if config.address.is_empty() {
@@ -32,7 +36,7 @@ pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
     };
 
     {
-        let cache = CHANNEL_CACHE.read().unwrap();
+        let cache = CHANNEL_CACHE.read().unwrap_or_else(|e| e.into_inner());
         if let Some(channel) = cache.get(&cache_key) {
             tracing::debug!("Cache hit for channel to {}", config.address);
             return Ok(channel.clone());
@@ -44,6 +48,7 @@ pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
         config.address
     );
 
+    PROXY_WARNED.get_or_init(|| ProxyEnv::from_env().warn_if_set());
     let channel = if let Some(tls_config) = &config.tls_config {
         create_tls_channel(config, tls_config).await?
     } else {
@@ -51,7 +56,7 @@ pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
     };
 
     {
-        let mut cache = CHANNEL_CACHE.write().unwrap();
+        let mut cache = CHANNEL_CACHE.write().unwrap_or_else(|e| e.into_inner());
         cache.insert(cache_key, channel.clone());
     }
 
@@ -81,10 +86,9 @@ async fn create_tls_channel(config: &GrpcClientConfig, tls_config: &TlsConfig) -
 
     if tls_config.insecure_skip_verify {
         tracing::warn!(
-            "⚠️  SECURITY WARNING: TLS certificate verification is disabled (insecure_skip_verify=true). \
+            "SECURITY WARNING: TLS certificate verification is disabled (insecure_skip_verify=true). \
             This is insecure and should only be used for testing or development."
         );
-        eprintln!("⚠️  WARNING: TLS verification disabled - this is insecure!");
     }
 
     let addr = if !config.address.contains("://") {

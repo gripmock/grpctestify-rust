@@ -21,11 +21,6 @@ use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 
-/// Buffer size for the request message channel.
-/// Controls back-pressure for client streaming: larger values allow more
-/// buffered requests but consume more memory.
-const REQUEST_CHANNEL_BUFFER: usize = 100;
-
 /// Execution plan for inspect workflow visualization
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionPlan {
@@ -727,7 +722,7 @@ impl TestRunner {
             .map(|m| m.output().full_name().to_string());
 
         // Setup Streaming
-        let (tx, rx) = mpsc::channel::<Value>(REQUEST_CHANNEL_BUFFER);
+        let (tx, rx) = mpsc::channel::<Value>(runner_helpers::REQUEST_CHANNEL_BUFFER);
         let request_stream = ReceiverStream::new(rx);
         let mut tx = Some(tx);
 
@@ -883,8 +878,16 @@ impl TestRunner {
                     let mut received_messages_for_section: Vec<Value> = Vec::new();
                     let expected_values = Self::expected_values_for_response_section(section);
 
+                    let Some(stream) = response_stream.as_mut() else {
+                        failure_reasons.push(format!(
+                            "No response stream available for RESPONSE section at line {}",
+                            section.start_line
+                        ));
+                        break;
+                    };
+
                     for expected_template in expected_values {
-                        match response_stream.as_mut().unwrap().next().await {
+                        match stream.next().await {
                             Some(Ok(item)) => {
                                 match item {
                                     crate::grpc::client::StreamItem::Message(msg) => {
@@ -1396,7 +1399,14 @@ impl TestRunner {
                     }
 
                     // Expect an error from the stream
-                    match response_stream.as_mut().unwrap().next().await {
+                    let Some(error_stream) = response_stream.as_mut() else {
+                        failure_reasons.push(format!(
+                            "No response stream available for ERROR section at line {}",
+                            section.start_line
+                        ));
+                        break;
+                    };
+                    match error_stream.next().await {
                         Some(Err(status)) => {
                             let scope_start_ms =
                                 assertion_timing.last_message_elapsed_ms.unwrap_or(0);
@@ -1913,11 +1923,11 @@ impl TestRunner {
         if let Some(proto_config) = document.get_proto_config() {
             println!();
             println!("📄 Proto Configuration:");
-            if proto_config.contains_key("descriptor") {
-                println!("   Descriptor: {}", proto_config.get("descriptor").unwrap());
+            if let Some(descriptor) = proto_config.get("descriptor") {
+                println!("   Descriptor: {}", descriptor);
             }
-            if proto_config.contains_key("files") {
-                println!("   Proto Files: {}", proto_config.get("files").unwrap());
+            if let Some(files) = proto_config.get("files") {
+                println!("   Proto Files: {}", files);
             }
         }
 

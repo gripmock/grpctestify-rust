@@ -1,0 +1,8 @@
+--- ADDRESS ---
+localhost:19999
+
+--- ENDPOINT ---
+echo.EchoService/SayHello
+
+--- REQUEST ---
+{"message": "World"}

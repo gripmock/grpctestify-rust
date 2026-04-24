@@ -46,7 +46,11 @@ pub fn split_sections_by_boundary_owned(sections: Vec<Section>) -> Vec<Vec<Secti
             let mut preamble: Vec<Section> = Vec::new();
             while let Some(last) = current.last() {
                 if is_preamble(&last.section_type) {
-                    preamble.push(current.pop().unwrap());
+                    if let Some(section) = current.pop() {
+                        preamble.push(section);
+                    } else {
+                        break;
+                    }
                 } else {
                     break;
                 }

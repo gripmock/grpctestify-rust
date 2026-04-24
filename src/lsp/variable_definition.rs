@@ -104,9 +104,10 @@ fn find_variable_in_extract(content: &str, var_name: &str, uri: &str) -> Option<
 }
 
 /// Convert VariableLocation to LSP Location
-pub fn variable_location_to_lsp(loc: &VariableLocation) -> Location {
-    Location {
-        uri: Url::parse(&loc.uri).unwrap_or_else(|_| Url::parse("file:///unknown").unwrap()),
+pub fn variable_location_to_lsp(loc: &VariableLocation) -> Option<Location> {
+    let uri = Url::parse(&loc.uri).ok()?;
+    Some(Location {
+        uri,
         range: Range {
             start: Position {
                 line: loc.line,
@@ -117,12 +118,15 @@ pub fn variable_location_to_lsp(loc: &VariableLocation) -> Location {
                 character: loc.character + loc.name.len() as u32,
             },
         },
-    }
+    })
 }
 
 /// Find all variable references in document
 pub fn find_variable_references(content: &str, var_name: &str, uri: &str) -> Vec<Location> {
     let mut references = Vec::new();
+    let Some(parsed_uri) = Url::parse(uri).ok() else {
+        return references;
+    };
 
     if let Ok(doc) = parser::parse_gctf_from_str(content, "lsp-document.gctf") {
         for section in &doc.sections {
@@ -135,8 +139,7 @@ pub fn find_variable_references(content: &str, var_name: &str, uri: &str) -> Vec
                         let var_content = line[abs_start + 2..abs_start + var_end].trim();
                         if var_content == var_name {
                             references.push(Location {
-                                uri: Url::parse(uri)
-                                    .unwrap_or_else(|_| Url::parse("file:///unknown").unwrap()),
+                                uri: parsed_uri.clone(),
                                 range: Range {
                                     start: Position {
                                         line: section.start_line as u32 + idx as u32 + 1,
@@ -168,8 +171,7 @@ pub fn find_variable_references(content: &str, var_name: &str, uri: &str) -> Vec
                 let var_content = line[abs_start + 2..abs_start + var_end].trim();
                 if var_content == var_name {
                     references.push(Location {
-                        uri: Url::parse(uri)
-                            .unwrap_or_else(|_| Url::parse("file:///unknown").unwrap()),
+                        uri: parsed_uri.clone(),
                         range: Range {
                             start: Position {
                                 line: line_idx as u32,
@@ -333,7 +335,7 @@ token = .token
             uri: "file:///test.gctf".to_string(),
         };
 
-        let lsp_loc = variable_location_to_lsp(&var_loc);
+        let lsp_loc = variable_location_to_lsp(&var_loc).expect("valid file URI");
         assert_eq!(lsp_loc.range.start.line, 10);
         assert_eq!(lsp_loc.range.start.character, 5);
     }
