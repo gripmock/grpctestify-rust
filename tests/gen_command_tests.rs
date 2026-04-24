@@ -1,30 +1,47 @@
 #![cfg(not(miri))]
 
 use std::process::{Command, Output};
+use std::path::Path;
 
 fn get_binary() -> String {
     env!("CARGO_BIN_EXE_grpctestify").to_string()
 }
 
 fn run_cli(args: &[&str]) -> Output {
-    Command::new(get_binary())
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
+    run_cli_internal(args, None)
+}
+
+fn run_cli_internal(args: &[&str], path_override: Option<&Path>) -> Output {
+    let binary = get_binary();
+    let runner = std::env::var("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER")
+        .ok()
+        .or_else(|| std::env::var("CROSS_RUNNER").ok());
+
+    let mut cmd = if let Some(runner) = runner {
+        let mut parts = runner.split_whitespace();
+        let prog = parts.next().expect("runner must not be empty");
+        let mut c = Command::new(prog);
+        c.args(parts).arg(&binary);
+        c
+    } else {
+        Command::new(&binary)
+    };
+
+    if let Some(path) = path_override {
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        let merged_path = format!("{}:{}", path.display(), current_path);
+        cmd.env("PATH", merged_path);
+    }
+
+    cmd.current_dir(env!("CARGO_MANIFEST_DIR"))
         .args(args)
         .output()
         .expect("failed to run command")
 }
 
 #[cfg(unix)]
-fn run_cli_with_path(args: &[&str], path: &std::path::Path) -> Output {
-    let current_path = std::env::var("PATH").unwrap_or_default();
-    let merged_path = format!("{}:{}", path.display(), current_path);
-
-    Command::new(get_binary())
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .env("PATH", merged_path)
-        .args(args)
-        .output()
-        .expect("failed to run command")
+fn run_cli_with_path(args: &[&str], path: &Path) -> Output {
+    run_cli_internal(args, Some(path))
 }
 
 #[cfg(unix)]
