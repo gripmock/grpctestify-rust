@@ -6,13 +6,11 @@ use super::super::parser::GctfDocument;
 use super::runner_helpers;
 use super::{AssertionHandler, RequestHandler, ResponseHandler};
 use crate::assert::{AssertionEngine, JsonComparator, get_json_diff};
-use crate::grpc::{CompressionMode, GrpcClient, GrpcClientConfig, ProtoConfig, TlsConfig};
+use crate::grpc::{GrpcClient, GrpcClientConfig};
 use crate::optimizer;
 use crate::parser::ast::{SectionContent, SectionType};
 use crate::plugins::AssertionTiming;
-use crate::polyfill::runtime;
 use crate::report::CoverageCollector;
-use crate::utils::file::FileUtils;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -517,72 +515,6 @@ pub struct TestRunner {
     assertion_handler: AssertionHandler,
 }
 
-fn parse_bool_flag(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "true" | "1" | "yes" | "on"
-    )
-}
-
-fn parse_compression_option(options: &HashMap<String, String>) -> CompressionMode {
-    options
-        .get("compression")
-        .map(|v| v.trim().to_ascii_lowercase())
-        .and_then(|v| match v.as_str() {
-            "gzip" => Some(CompressionMode::Gzip),
-            "none" | "" => Some(CompressionMode::None),
-            _ => None,
-        })
-        .unwrap_or_else(CompressionMode::from_env)
-}
-
-fn tls_env_defaults() -> HashMap<String, String> {
-    let mut defaults = HashMap::new();
-
-    if let Ok(value) = std::env::var(crate::config::ENV_GRPCTESTIFY_TLS_CA_FILE)
-        && !value.trim().is_empty()
-    {
-        defaults.insert("ca_cert".to_string(), value);
-    }
-    if let Ok(value) = std::env::var(crate::config::ENV_GRPCTESTIFY_TLS_CERT_FILE)
-        && !value.trim().is_empty()
-    {
-        defaults.insert("client_cert".to_string(), value);
-    }
-    if let Ok(value) = std::env::var(crate::config::ENV_GRPCTESTIFY_TLS_KEY_FILE)
-        && !value.trim().is_empty()
-    {
-        defaults.insert("client_key".to_string(), value);
-    }
-    if let Ok(value) = std::env::var(crate::config::ENV_GRPCTESTIFY_TLS_SERVER_NAME)
-        && !value.trim().is_empty()
-    {
-        defaults.insert("server_name".to_string(), value);
-    }
-
-    defaults
-}
-
-fn resolve_tls_path(value: &str, from_env: bool, document_path: &Path) -> String {
-    let path = Path::new(value);
-    if path.is_absolute() {
-        return path.to_string_lossy().to_string();
-    }
-
-    if from_env {
-        if runtime::supports(runtime::Capability::IsolatedFsIo)
-            && let Ok(cwd) = std::env::current_dir()
-        {
-            return cwd.join(path).to_string_lossy().to_string();
-        }
-        return path.to_string_lossy().to_string();
-    }
-
-    FileUtils::resolve_relative_path(document_path, value)
-        .to_string_lossy()
-        .to_string()
-}
-
 impl TestRunner {
     /// Create expected values from a response section.
     pub fn expected_values_for_response_section(
@@ -711,7 +643,7 @@ impl TestRunner {
             None => self.timeout_seconds,
         };
 
-        let compression = parse_compression_option(&options);
+        let compression = runner_helpers::parse_compression_option(&options);
 
         // Validate file path in update mode
         if effective_write_mode {
@@ -734,17 +666,7 @@ impl TestRunner {
         }
 
         // Extract address
-        let address = match document.get_address(
-            std::env::var(crate::config::ENV_GRPCTESTIFY_ADDRESS)
-                .ok()
-                .as_deref(),
-        ) {
-            Some(a) => a,
-            None => {
-                // Default to localhost:4770 if no address is specified anywhere
-                crate::config::default_address()
-            }
-        };
+        let address = runner_helpers::effective_address(document);
 
         // Extract endpoint
         let (package, service, method) = match document.parse_endpoint() {
@@ -773,99 +695,10 @@ impl TestRunner {
         // Configure Client
         let document_path = Path::new(&document.file_path);
 
-        let tls_defaults = tls_env_defaults();
-        let tls_section = document.get_tls_config();
-
-        let pick_tls_value = |keys: &[&str]| -> Option<(String, bool)> {
-            if let Some(section_map) = tls_section.as_ref() {
-                for key in keys {
-                    if let Some(value) = section_map.get(*key) {
-                        return Some((value.clone(), false));
-                    }
-                }
-            }
-
-            for key in keys {
-                if let Some(value) = tls_defaults.get(*key) {
-                    return Some((value.clone(), true));
-                }
-            }
-
-            None
-        };
-
-        let ca_cert_path = pick_tls_value(&["ca_cert", "ca_file"])
-            .map(|(v, from_env)| resolve_tls_path(&v, from_env, document_path));
-        let client_cert_path = pick_tls_value(&["client_cert", "cert", "cert_file"])
-            .map(|(v, from_env)| resolve_tls_path(&v, from_env, document_path));
-        let client_key_path = pick_tls_value(&["client_key", "key", "key_file"])
-            .map(|(v, from_env)| resolve_tls_path(&v, from_env, document_path));
-        let server_name = pick_tls_value(&["server_name"]).map(|(v, _)| v);
-        let insecure_skip_verify = tls_section
-            .as_ref()
-            .and_then(|m| m.get("insecure"))
-            .map(|s| parse_bool_flag(s))
-            .unwrap_or(false);
-
-        let tls_config = if ca_cert_path.is_some()
-            || client_cert_path.is_some()
-            || client_key_path.is_some()
-            || server_name.is_some()
-            || insecure_skip_verify
-        {
-            Some(TlsConfig {
-                ca_cert_path,
-                client_cert_path,
-                client_key_path,
-                server_name,
-                insecure_skip_verify,
-            })
-        } else {
-            None
-        };
+        let tls_config = runner_helpers::build_tls_config(document, document_path);
 
         // Check for Proto config in document
-        let proto_config = if let Some(proto_map) = document.get_proto_config() {
-            let files = proto_map
-                .get("files")
-                .map(|s| {
-                    s.split(',')
-                        .map(|p| {
-                            FileUtils::resolve_relative_path(document_path, p.trim())
-                                .to_string_lossy()
-                                .to_string()
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            let import_paths = proto_map
-                .get("import_paths")
-                .map(|s| {
-                    s.split(',')
-                        .map(|p| {
-                            FileUtils::resolve_relative_path(document_path, p.trim())
-                                .to_string_lossy()
-                                .to_string()
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            let descriptor = proto_map.get("descriptor").map(|p| {
-                FileUtils::resolve_relative_path(document_path, p)
-                    .to_string_lossy()
-                    .to_string()
-            });
-
-            Some(ProtoConfig {
-                files,
-                import_paths,
-                descriptor,
-            })
-        } else {
-            None
-        };
+        let proto_config = runner_helpers::build_proto_config(document, document_path);
 
         let full_service = runner_helpers::full_service_name(&package, &service);
 
@@ -2043,7 +1876,7 @@ impl TestRunner {
         }
 
         // Show TLS config if present (including environment defaults)
-        let tls_defaults = tls_env_defaults();
+        let tls_defaults = runner_helpers::tls_env_defaults();
         if let Some(tls_config) = document.get_tls_config_with_defaults(&tls_defaults) {
             println!();
             println!("🔒 TLS Configuration:");
@@ -2069,7 +1902,7 @@ impl TestRunner {
             }
             if tls_config
                 .get("insecure")
-                .map(|s| parse_bool_flag(s))
+                .map(|s| runner_helpers::parse_bool_flag(s))
                 .unwrap_or(false)
             {
                 println!("   Insecure Skip Verify: true");
@@ -2097,6 +1930,7 @@ impl TestRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::polyfill::runtime;
     use serde_json::json;
     use std::sync::Mutex;
 
@@ -2138,18 +1972,18 @@ mod tests {
 
     #[test]
     fn test_parse_bool_flag_truthy_values() {
-        assert!(parse_bool_flag("true"));
-        assert!(parse_bool_flag("1"));
-        assert!(parse_bool_flag("YES"));
-        assert!(parse_bool_flag("on"));
+        assert!(runner_helpers::parse_bool_flag("true"));
+        assert!(runner_helpers::parse_bool_flag("1"));
+        assert!(runner_helpers::parse_bool_flag("YES"));
+        assert!(runner_helpers::parse_bool_flag("on"));
     }
 
     #[test]
     fn test_parse_bool_flag_falsy_values() {
-        assert!(!parse_bool_flag("false"));
-        assert!(!parse_bool_flag("0"));
-        assert!(!parse_bool_flag("off"));
-        assert!(!parse_bool_flag(""));
+        assert!(!runner_helpers::parse_bool_flag("false"));
+        assert!(!runner_helpers::parse_bool_flag("0"));
+        assert!(!runner_helpers::parse_bool_flag("off"));
+        assert!(!runner_helpers::parse_bool_flag(""));
     }
 
     #[test]
@@ -2157,7 +1991,10 @@ mod tests {
         let mut options = HashMap::new();
         options.insert("compression".to_string(), "gzip".to_string());
 
-        assert_eq!(parse_compression_option(&options), CompressionMode::Gzip);
+        assert_eq!(
+            runner_helpers::parse_compression_option(&options),
+            crate::grpc::CompressionMode::Gzip
+        );
     }
 
     #[test]
@@ -2165,7 +2002,10 @@ mod tests {
         let mut options = HashMap::new();
         options.insert("compression".to_string(), "none".to_string());
 
-        assert_eq!(parse_compression_option(&options), CompressionMode::None);
+        assert_eq!(
+            runner_helpers::parse_compression_option(&options),
+            crate::grpc::CompressionMode::None
+        );
     }
 
     #[test]
@@ -2177,7 +2017,10 @@ mod tests {
 
         let mut options = HashMap::new();
         options.insert("compression".to_string(), "invalid".to_string());
-        assert_eq!(parse_compression_option(&options), CompressionMode::Gzip);
+        assert_eq!(
+            runner_helpers::parse_compression_option(&options),
+            crate::grpc::CompressionMode::Gzip
+        );
 
         unsafe {
             std::env::remove_var(crate::config::ENV_GRPCTESTIFY_COMPRESSION);
@@ -2192,7 +2035,7 @@ mod tests {
 
         let cwd = std::env::current_dir().unwrap();
         let document_path = Path::new("tests/fixtures/sample.gctf");
-        let resolved = resolve_tls_path("certs/ca.crt", true, document_path);
+        let resolved = runner_helpers::resolve_tls_path("certs/ca.crt", true, document_path);
         assert_eq!(Path::new(&resolved), cwd.join("certs/ca.crt"));
     }
 
@@ -2203,14 +2046,14 @@ mod tests {
         }
 
         let document_path = Path::new("tests/fixtures/sample.gctf");
-        let resolved = resolve_tls_path("certs/ca.crt", true, document_path);
+        let resolved = runner_helpers::resolve_tls_path("certs/ca.crt", true, document_path);
         assert_eq!(resolved, "certs/ca.crt");
     }
 
     #[test]
     fn test_resolve_tls_path_from_document_uses_document_dir() {
         let document_path = Path::new("tests/fixtures/sample.gctf");
-        let resolved = resolve_tls_path("certs/ca.crt", false, document_path);
+        let resolved = runner_helpers::resolve_tls_path("certs/ca.crt", false, document_path);
         assert_eq!(
             Path::new(&resolved),
             Path::new("tests/fixtures").join("certs").join("ca.crt")
@@ -2231,7 +2074,7 @@ mod tests {
             std::env::set_var(crate::config::ENV_GRPCTESTIFY_TLS_SERVER_NAME, "localhost");
         }
 
-        let defaults = tls_env_defaults();
+        let defaults = runner_helpers::tls_env_defaults();
         assert_eq!(defaults.get("ca_cert"), Some(&"/tmp/ca.pem".to_string()));
         assert_eq!(
             defaults.get("client_cert"),
@@ -2262,7 +2105,7 @@ mod tests {
             std::env::set_var(crate::config::ENV_GRPCTESTIFY_TLS_SERVER_NAME, " ");
         }
 
-        let defaults = tls_env_defaults();
+        let defaults = runner_helpers::tls_env_defaults();
         assert!(defaults.is_empty());
 
         unsafe {

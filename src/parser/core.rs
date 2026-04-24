@@ -4,7 +4,6 @@
 use super::ast::*;
 use super::content_parser;
 use super::gctf_tokenizer::{GctfTokenKind, tokenize_gctf};
-use super::split_sections_by_boundary;
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -23,9 +22,10 @@ pub fn parse_gctf(file_path: &Path) -> Result<GctfDocument> {
 /// or ENDPOINT/ADDRESS starts a new document.
 pub fn parse_gctf_from_str(content: &str, file_path: &str) -> Result<GctfDocument> {
     let (all_sections, _) = parse_sections_from_str(content)?;
+    let source_lines: Vec<&str> = content.lines().collect();
 
     // Split sections into documents based on implicit boundaries
-    let documents = split_sections_by_boundary(&all_sections);
+    let documents = super::document_splitter::split_sections_by_boundary_owned(all_sections);
 
     if documents.is_empty() {
         // Return empty single document for backward compatibility
@@ -39,7 +39,8 @@ pub fn parse_gctf_from_str(content: &str, file_path: &str) -> Result<GctfDocumen
 
     for doc_sections in documents.into_iter().rev() {
         let mut document = GctfDocument::new(file_path.to_string());
-        document.metadata.source = Some(extract_doc_source(&doc_sections, content));
+        document.metadata.source =
+            Some(extract_doc_source_from_lines(&doc_sections, &source_lines));
         document.sections = doc_sections;
         document.next_document = head.map(Box::new);
         head = Some(document);
@@ -51,18 +52,14 @@ pub fn parse_gctf_from_str(content: &str, file_path: &str) -> Result<GctfDocumen
 /// Split sections into documents based on implicit boundaries.
 ///
 /// Extract source lines for a document from the original content.
-fn extract_doc_source(sections: &[Section], original: &str) -> String {
+fn extract_doc_source_from_lines(sections: &[Section], lines: &[&str]) -> String {
     if sections.is_empty() {
         return String::new();
     }
+
     let start = sections.first().unwrap().start_line;
     let end = sections.last().unwrap().end_line;
-    original
-        .lines()
-        .skip(start)
-        .take(end.saturating_sub(start))
-        .collect::<Vec<_>>()
-        .join("\n")
+    lines.get(start..end).unwrap_or(&[]).join("\n")
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -98,7 +95,7 @@ pub fn parse_gctf_with_diagnostics(file_path: &Path) -> Result<(GctfDocument, Pa
     let parse_sections_ms = parse_sections_start.elapsed().as_secs_f64() * 1000.0;
 
     // Split into documents using implicit boundaries
-    let documents = split_sections_by_boundary(&sections);
+    let documents = super::document_splitter::split_sections_by_boundary_owned(sections);
 
     let build_start = Instant::now();
     // Build chain — return head document
@@ -151,8 +148,8 @@ fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
     let mut section_headers = 0;
     let mut current_section: Option<(SectionType, usize, Vec<String>, InlineOptions)> = None;
 
-    for token in &tokens {
-        match &token.kind {
+    for token in tokens {
+        match token.kind {
             GctfTokenKind::SectionHeader { name, raw_options } => {
                 if let Some((section_type, start_line, content, options)) = current_section.take() {
                     let section = content_parser::build_section(
@@ -167,10 +164,10 @@ fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
 
                 section_headers += 1;
 
-                if let Some(section_type) = SectionType::from_keyword(name) {
+                if let Some(section_type) = SectionType::from_keyword(&name) {
                     let inline_options =
                         if section_type.supports_inline_options() && !raw_options.is_empty() {
-                            content_parser::parse_inline_options(raw_options)?
+                            content_parser::parse_inline_options(&raw_options)?
                         } else {
                             InlineOptions::default()
                         };
@@ -181,7 +178,7 @@ fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
             }
             GctfTokenKind::Comment(text) | GctfTokenKind::Content(text) => {
                 if let Some((_, _, ref mut content, _)) = current_section {
-                    content.push(text.clone());
+                    content.push(text);
                 }
             }
             GctfTokenKind::Blank => {
@@ -394,6 +391,7 @@ test.Service/Method
     #[test]
     fn test_extract_doc_source() {
         let source = "line0\nline1\nline2\nline3\nline4";
+        let lines: Vec<&str> = source.lines().collect();
         let sections = vec![Section {
             section_type: SectionType::Endpoint,
             content: SectionContent::Single("line1".into()),
@@ -402,13 +400,13 @@ test.Service/Method
             start_line: 1,
             end_line: 2,
         }];
-        let result = extract_doc_source(&sections, source);
+        let result = extract_doc_source_from_lines(&sections, &lines);
         assert_eq!(result, "line1");
     }
 
     #[test]
     fn test_extract_doc_source_empty() {
-        let result = extract_doc_source(&[], "anything");
+        let result = extract_doc_source_from_lines(&[], &[]);
         assert!(result.is_empty());
     }
 }

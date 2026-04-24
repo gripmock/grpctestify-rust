@@ -76,10 +76,27 @@ pub enum Commands {
     Inspect(InspectArgs),
     /// Explain test execution flow
     Explain(ExplainArgs),
+    /// Generate grpcurl invocation from a .gctf file
+    Grpcurl(GrpcurlArgs),
     /// List discovered .gctf test files
     List(ListArgs),
     /// LSP server
     Lsp(LspArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct GrpcurlArgs {
+    /// File to convert into grpcurl command
+    #[arg(required = true)]
+    pub file: PathBuf,
+
+    /// Document index for multi-document .gctf files (1-based)
+    #[arg(long)]
+    pub doc_index: Option<usize>,
+
+    /// Output format (text, json)
+    #[arg(long, default_value = "text")]
+    pub format: String,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -338,6 +355,12 @@ impl HasFormat for InspectArgs {
 }
 
 impl HasFormat for ExplainArgs {
+    fn format(&self) -> &str {
+        &self.format
+    }
+}
+
+impl HasFormat for GrpcurlArgs {
     fn format(&self) -> &str {
         &self.format
     }

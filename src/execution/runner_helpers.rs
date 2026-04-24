@@ -4,6 +4,8 @@
 //! that don't require `self` access: variable substitution, TLS defaults,
 //! JSON formatting, and metadata conversion.
 
+use crate::grpc::{CompressionMode, ProtoConfig, TlsConfig};
+use crate::parser::ast::GctfDocument;
 use crate::polyfill::runtime;
 use crate::utils::file::FileUtils;
 use serde_json::Value;
@@ -43,6 +45,38 @@ pub fn tls_env_defaults() -> HashMap<String, String> {
     defaults
 }
 
+/// Parse truthy values from config-style strings.
+pub fn parse_bool_flag(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "true" | "1" | "yes" | "on"
+    )
+}
+
+/// Resolve effective address using ADDRESS section, env var, then default.
+pub fn effective_address(document: &GctfDocument) -> String {
+    document
+        .get_address(
+            std::env::var(crate::config::ENV_GRPCTESTIFY_ADDRESS)
+                .ok()
+                .as_deref(),
+        )
+        .unwrap_or_else(crate::config::default_address)
+}
+
+/// Resolve compression setting from OPTIONS section with env fallback.
+pub fn parse_compression_option(options: &HashMap<String, String>) -> CompressionMode {
+    options
+        .get("compression")
+        .map(|v| v.trim().to_ascii_lowercase())
+        .and_then(|v| match v.as_str() {
+            "gzip" => Some(CompressionMode::Gzip),
+            "none" | "" => Some(CompressionMode::None),
+            _ => None,
+        })
+        .unwrap_or_else(CompressionMode::from_env)
+}
+
 /// Resolve a TLS file path relative to document or CWD.
 pub fn resolve_tls_path(value: &str, from_env: bool, document_path: &Path) -> String {
     let path = Path::new(value);
@@ -62,6 +96,103 @@ pub fn resolve_tls_path(value: &str, from_env: bool, document_path: &Path) -> St
     FileUtils::resolve_relative_path(document_path, value)
         .to_string_lossy()
         .to_string()
+}
+
+/// Build TLS config using TLS section and env defaults, matching run behavior.
+pub fn build_tls_config(document: &GctfDocument, document_path: &Path) -> Option<TlsConfig> {
+    let tls_defaults = tls_env_defaults();
+    let tls_section = document.get_tls_config();
+
+    let pick_tls_value = |keys: &[&str]| -> Option<(String, bool)> {
+        if let Some(section_map) = tls_section.as_ref() {
+            for key in keys {
+                if let Some(value) = section_map.get(*key) {
+                    return Some((value.clone(), false));
+                }
+            }
+        }
+
+        for key in keys {
+            if let Some(value) = tls_defaults.get(*key) {
+                return Some((value.clone(), true));
+            }
+        }
+
+        None
+    };
+
+    let ca_cert_path = pick_tls_value(&["ca_cert", "ca_file"])
+        .map(|(v, from_env)| resolve_tls_path(&v, from_env, document_path));
+    let client_cert_path = pick_tls_value(&["client_cert", "cert", "cert_file"])
+        .map(|(v, from_env)| resolve_tls_path(&v, from_env, document_path));
+    let client_key_path = pick_tls_value(&["client_key", "key", "key_file"])
+        .map(|(v, from_env)| resolve_tls_path(&v, from_env, document_path));
+    let server_name = pick_tls_value(&["server_name"]).map(|(v, _)| v);
+    let insecure_skip_verify = tls_section
+        .as_ref()
+        .and_then(|m| m.get("insecure"))
+        .map(|s| parse_bool_flag(s))
+        .unwrap_or(false);
+
+    if ca_cert_path.is_some()
+        || client_cert_path.is_some()
+        || client_key_path.is_some()
+        || server_name.is_some()
+        || insecure_skip_verify
+    {
+        Some(TlsConfig {
+            ca_cert_path,
+            client_cert_path,
+            client_key_path,
+            server_name,
+            insecure_skip_verify,
+        })
+    } else {
+        None
+    }
+}
+
+/// Build proto config with document-relative path resolution, matching run behavior.
+pub fn build_proto_config(document: &GctfDocument, document_path: &Path) -> Option<ProtoConfig> {
+    document.get_proto_config().map(|proto_map| {
+        let files = proto_map
+            .get("files")
+            .map(|s| {
+                s.split(',')
+                    .map(|p| {
+                        FileUtils::resolve_relative_path(document_path, p.trim())
+                            .to_string_lossy()
+                            .to_string()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let import_paths = proto_map
+            .get("import_paths")
+            .map(|s| {
+                s.split(',')
+                    .map(|p| {
+                        FileUtils::resolve_relative_path(document_path, p.trim())
+                            .to_string_lossy()
+                            .to_string()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let descriptor = proto_map.get("descriptor").map(|p| {
+            FileUtils::resolve_relative_path(document_path, p)
+                .to_string_lossy()
+                .to_string()
+        });
+
+        ProtoConfig {
+            files,
+            import_paths,
+            descriptor,
+        }
+    })
 }
 
 /// Build full service name from package and service.

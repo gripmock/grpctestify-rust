@@ -8,38 +8,28 @@ pub struct SystemClock;
 
 impl Clock for SystemClock {
     fn timestamp() -> i64 {
-        #[cfg(miri)]
-        {
-            0
-        }
-        #[cfg(not(miri))]
-        {
-            chrono::Utc::now().timestamp()
+        std::cfg_select! {
+            miri => 0,
+            _ => chrono::Utc::now().timestamp(),
         }
     }
 
     fn rfc3339() -> String {
-        #[cfg(miri)]
-        {
-            "1970-01-01T00:00:00+00:00".to_string()
-        }
-        #[cfg(not(miri))]
-        {
-            chrono::Utc::now().to_rfc3339()
+        std::cfg_select! {
+            miri => "1970-01-01T00:00:00+00:00".to_string(),
+            _ => chrono::Utc::now().to_rfc3339(),
         }
     }
 
     fn unix_millis() -> u128 {
-        #[cfg(miri)]
-        {
-            0
-        }
-        #[cfg(not(miri))]
-        {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
+        std::cfg_select! {
+            miri => 0,
+            _ => {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+            },
         }
     }
 }
@@ -64,5 +54,8 @@ pub enum Capability {
 }
 
 pub const fn supports(_capability: Capability) -> bool {
-    !cfg!(miri)
+    std::cfg_select! {
+        miri => false,
+        _ => true,
+    }
 }

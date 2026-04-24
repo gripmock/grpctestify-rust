@@ -555,7 +555,7 @@ impl Workflow {
             .into_iter()
             .map(|h| OptimizationHint {
                 line: h.line,
-                rule_id: h.rule_id,
+                rule_id: h.rule_id.as_str().to_string(),
                 before: h.before,
                 after: h.after,
             })

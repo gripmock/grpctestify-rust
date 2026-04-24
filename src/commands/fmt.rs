@@ -67,11 +67,8 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
 
         if in_block_comment {
             out.push(ch);
-            if ch == '*'
-                && let Some('/') = chars.peek()
-            {
+            if ch == '*' && chars.next_if_eq(&'/').is_some() {
                 out.push('/');
-                chars.next();
                 in_block_comment = false;
             }
             continue;
@@ -99,7 +96,16 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
             continue;
         }
 
-        if ch == '#' || (ch == '/' && matches!(chars.peek(), Some('/') | Some('*'))) {
+        let slash_comment_kind = if ch == '/' {
+            chars.next_if_map(|next| match next {
+                '/' | '*' => Ok(next),
+                _ => Err(next),
+            })
+        } else {
+            None
+        };
+
+        if ch == '#' || slash_comment_kind.is_some() {
             if saw_newline_gap {
                 if !out.ends_with('\n') {
                     out.push('\n');
@@ -110,17 +116,15 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
             }
 
             if ch == '/' {
-                match chars.peek() {
+                match slash_comment_kind {
                     Some('/') => {
                         out.push('/');
                         out.push('/');
-                        chars.next();
                         in_line_comment = true;
                     }
                     Some('*') => {
                         out.push('/');
                         out.push('*');
-                        chars.next();
                         in_block_comment = true;
                     }
                     _ => out.push('/'),
@@ -211,19 +215,10 @@ fn has_json_style_comments(raw: &str) -> bool {
                 continue;
             }
 
-            if ch == '#' {
-                return true;
-            }
-
-            if ch == '/'
-                && let Some('/') = chars.peek()
-            {
-                return true;
-            }
-            if ch == '/'
-                && let Some('*') = chars.peek()
-            {
-                return true;
+            match ch {
+                '#' => return true,
+                '/' if let Some('/') | Some('*') = chars.peek() => return true,
+                _ => {}
             }
         }
     }

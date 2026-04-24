@@ -150,10 +150,10 @@ impl Plugin for HasTrailerPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use once_cell::sync::Lazy;
     use std::collections::HashMap;
+    use std::sync::LazyLock;
 
-    static TRAILERS: Lazy<HashMap<String, String>> = Lazy::new(|| {
+    static TRAILERS: LazyLock<HashMap<String, String>> = LazyLock::new(|| {
         let mut t = HashMap::new();
         t.insert("x-status".to_string(), "success".to_string());
         t.insert("x-checksum".to_string(), "abc123".to_string());

@@ -8,7 +8,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::str::FromStr;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 use tokio::sync::Mutex as TokioMutex;
 use tonic::codec::CompressionEncoding;
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
@@ -29,10 +29,9 @@ pub use crate::grpc::tls::{
 
 // Global cache for descriptors to avoid race conditions in parallel tests
 // Using RwLock for better concurrent read performance
-lazy_static::lazy_static! {
-    static ref DESCRIPTOR_CACHE: RwLock<HashMap<String, Arc<DescriptorPool>>> = RwLock::new(HashMap::new());
-    static ref DESCRIPTOR_LOAD_MUTEX: TokioMutex<()> = TokioMutex::new(());
-}
+static DESCRIPTOR_CACHE: LazyLock<RwLock<HashMap<String, Arc<DescriptorPool>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+static DESCRIPTOR_LOAD_MUTEX: LazyLock<TokioMutex<()>> = LazyLock::new(|| TokioMutex::new(()));
 
 /// gRPC client
 pub struct GrpcClient {
@@ -596,39 +595,41 @@ async fn load_descriptors_via_reflection(config: &GrpcClientConfig) -> Result<De
             }
         };
 
-        if let Some(response_result) = response_stream.next().await {
-            let msg = match response_result {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::warn!(
-                        "Error receiving descriptor response for {}: {}",
-                        symbol_or_filename,
-                        e
-                    );
-                    continue;
-                }
-            };
+        match response_stream.next().await {
+            Some(Ok(msg)) => {
+                if let Some(
+                    tonic_reflection::pb::v1::server_reflection_response::MessageResponse::FileDescriptorResponse(resp),
+                ) = msg.message_response
+                {
+                    for fd_bytes in resp.file_descriptor_proto {
+                        if let Ok(fd) = FileDescriptorProto::decode(fd_bytes.as_slice())
+                            && let Some(name) = &fd.name
+                            && !processed_files.contains(name)
+                        {
+                            tracing::debug!("Loaded descriptor for file: {}", name);
+                            processed_files.insert(name.clone());
+                            file_descriptors_bytes.insert(name.clone(), fd.clone());
 
-            if let Some(tonic_reflection::pb::v1::server_reflection_response::MessageResponse::FileDescriptorResponse(resp)) = msg.message_response {
-                for fd_bytes in resp.file_descriptor_proto {
-                    if let Ok(fd) = FileDescriptorProto::decode(fd_bytes.as_slice())
-                        && let Some(name) = &fd.name
-                        && !processed_files.contains(name)
-                    {
-                        tracing::debug!("Loaded descriptor for file: {}", name);
-                        processed_files.insert(name.clone());
-                        file_descriptors_bytes.insert(name.clone(), fd.clone());
-
-                        // Enqueue dependencies
-                        for dep in fd.dependency {
-                            if !processed_files.contains(&dep) {
-                                 tracing::debug!("Found dependency: {}", dep);
-                                 files_to_process.push(dep);
+                            // Enqueue dependencies
+                            for dep in fd.dependency {
+                                if !processed_files.contains(&dep) {
+                                    tracing::debug!("Found dependency: {}", dep);
+                                    files_to_process.push(dep);
+                                }
                             }
                         }
                     }
                 }
             }
+            Some(Err(e)) => {
+                tracing::warn!(
+                    "Error receiving descriptor response for {}: {}",
+                    symbol_or_filename,
+                    e
+                );
+                continue;
+            }
+            None => {}
         }
     }
 

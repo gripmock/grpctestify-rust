@@ -11,6 +11,28 @@ use crate::parser;
 use crate::parser::ast::{SectionContent, SectionType};
 use crate::report::{AstOverview, InspectReport, SectionInfo};
 
+fn workflow_validation_errors(workflow: &Workflow) -> Vec<String> {
+    for event in workflow.validation_results() {
+        if let crate::execution::WorkflowEvent::ValidationResult { passed, errors } = event
+            && !passed
+        {
+            return errors.clone();
+        }
+    }
+    Vec::new()
+}
+
+fn workflow_optimizer_hints(
+    workflow: &Workflow,
+) -> Vec<crate::execution::workflow_events::OptimizationHint> {
+    for event in workflow.optimization_hints() {
+        if let crate::execution::WorkflowEvent::OptimizationFound { hints } = event {
+            return hints.clone();
+        }
+    }
+    Vec::new()
+}
+
 fn sort_report_diagnostics(diags: &mut [crate::report::Diagnostic]) {
     diags.sort_by(|a, b| {
         (a.range.start.line, a.code.as_str(), a.message.as_str()).cmp(&(
@@ -53,7 +75,7 @@ pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
 
     let validation_start = std::time::Instant::now();
     let workflow = Workflow::from_document_with_analysis(&doc);
-    let validation_result = parser::validate_document(&doc);
+    let validation_errors = workflow_validation_errors(&workflow);
     let validation_ms = validation_start.elapsed().as_secs_f64() * 1000.0;
 
     if args.is_json() {
@@ -66,7 +88,7 @@ pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
             &parse_diagnostics,
             parse_ms,
             validation_ms,
-            validation_result.err().map(|e| e.to_string()).as_deref(),
+            validation_errors.first().map(String::as_str),
         );
     }
 
@@ -85,11 +107,12 @@ fn print_json_report(
     let file_str = file_path.to_string_lossy().to_string();
 
     for (doc_idx, d) in doc.iter_chain().enumerate() {
-        if let Err(e) = parser::validate_document(d) {
+        let w = Workflow::from_document_with_analysis(d);
+        for err in workflow_validation_errors(&w) {
             let msg = if doc.is_single_document() {
-                e.to_string()
+                err
             } else {
-                format!("Document {}: {}", doc_idx + 1, e)
+                format!("Document {}: {}", doc_idx + 1, err)
             };
             inspect_diagnostics.push(crate::report::Diagnostic::error(
                 &file_str,
@@ -111,7 +134,6 @@ fn print_json_report(
                 );
             }
         }
-        let w = Workflow::from_document_with_analysis(d);
         for event in w.semantic_analysis() {
             if let crate::execution::WorkflowEvent::SemanticAnalysis {
                 type_mismatches,
@@ -154,7 +176,7 @@ fn print_json_report(
                 }
             }
         }
-        for hint in crate::optimizer::collect_assertion_optimizations(d) {
+        for hint in workflow_optimizer_hints(&w) {
             optimization_hints.push(
                 crate::report::Diagnostic::hint(
                     &file_str,
@@ -220,7 +242,7 @@ fn section_to_info(section: &parser::ast::Section) -> SectionInfo {
 
 fn print_detailed_analysis(
     doc: &parser::GctfDocument,
-    _workflow: &Workflow,
+    workflow: &Workflow,
     file_path: &Path,
     parse_diagnostics: &parser::ParseDiagnostics,
     parse_ms: f64,
@@ -283,7 +305,8 @@ fn print_detailed_analysis(
             println!();
             print_variables(d);
             println!();
-            print_logic_flow(d);
+            let w = Workflow::from_document_with_analysis(d);
+            print_logic_flow(d, &w);
             println!();
         }
 
@@ -320,7 +343,7 @@ fn print_detailed_analysis(
 
     println!("LOGIC FLOW");
     println!("----------");
-    print_logic_flow(doc);
+    print_logic_flow(doc, workflow);
     println!();
 
     println!("WARNINGS & HINTS");
@@ -490,56 +513,51 @@ fn sorted_kv(map: &HashMap<String, String>) -> Vec<(&str, &str)> {
     pairs
 }
 
-fn print_logic_flow(doc: &parser::GctfDocument) {
-    use crate::execution::{get_call_type, get_workflow_summary};
+fn print_logic_flow(doc: &parser::GctfDocument, workflow: &Workflow) {
+    let total_errors = doc
+        .sections
+        .iter()
+        .filter(|s| s.section_type == SectionType::Error)
+        .count();
+    let total_requests = workflow.summary.total_requests;
+    let total_responses = workflow.summary.total_responses;
+    let total_extractions = workflow.summary.total_extractions;
+    let total_assertions = workflow.summary.total_assertions;
 
-    let summary = get_workflow_summary(&doc.sections);
-    let call_type = get_call_type(&summary);
-    println!("  {}", call_type);
+    println!("  {}", workflow.rpc_mode_name());
 
-    if summary.total_errors > 0 && summary.total_requests == 1 {
+    if total_errors > 0 && total_requests == 1 {
         println!("  Pattern: Single request -> gRPC error response");
-    } else if summary.total_requests == 1 && summary.total_responses == 1 {
+    } else if total_requests == 1 && total_responses == 1 {
         println!("  Pattern: Single request -> Single response");
-    } else if summary.total_requests == 1 && summary.total_responses > 1 {
-        println!(
-            "  Pattern: Single request -> {} responses",
-            summary.total_responses
-        );
-    } else if summary.total_requests > 1 && summary.total_responses == 1 {
-        println!(
-            "  Pattern: {} requests -> Single response",
-            summary.total_requests
-        );
-    } else if summary.total_requests > 1 && summary.total_responses > 1 {
+    } else if total_requests == 1 && total_responses > 1 {
+        println!("  Pattern: Single request -> {} responses", total_responses);
+    } else if total_requests > 1 && total_responses == 1 {
+        println!("  Pattern: {} requests -> Single response", total_requests);
+    } else if total_requests > 1 && total_responses > 1 {
         println!(
             "  Pattern: {} requests, {} responses (full duplex)",
-            summary.total_requests, summary.total_responses
+            total_requests, total_responses
         );
-    } else if summary.total_requests > 1 && summary.total_errors > 0 {
+    } else if total_requests > 1 && total_errors > 0 {
         println!(
             "  Pattern: {} requests with {} error(s)",
-            summary.total_requests, summary.total_errors
+            total_requests, total_errors
         );
     }
 
     println!(
         "  Steps: {}",
-        summary.total_requests
-            + summary.total_responses
-            + summary.total_errors
-            + summary.total_extractions
-            + summary.total_assertions
-            + 1
+        total_requests + total_responses + total_errors + total_extractions + total_assertions + 1
     );
 
-    if summary.total_extractions > 0 {
-        println!("  Variables: {} extraction(s)", summary.total_extractions);
+    if total_extractions > 0 {
+        println!("  Variables: {} extraction(s)", total_extractions);
     }
-    if summary.total_assertions > 0 {
-        println!("  Assertions: {} block(s)", summary.total_assertions);
+    if total_assertions > 0 {
+        println!("  Assertions: {} block(s)", total_assertions);
     }
-    if summary.has_streaming {
+    if workflow.has_streaming() {
         println!("  Streaming: enabled");
     }
 
@@ -650,7 +668,7 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
         }
     }
 
-    for hint in crate::optimizer::collect_assertion_optimizations(doc) {
+    for hint in workflow_optimizer_hints(&workflow) {
         println!(
             "  [HINT] Line {}: [{}] {} -> {}",
             hint.line, hint.rule_id, hint.before, hint.after
