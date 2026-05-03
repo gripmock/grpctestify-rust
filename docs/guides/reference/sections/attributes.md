@@ -1,7 +1,10 @@
 # Attributes
 
 ::: warning Experimental
-Attributes are an **experimental feature**. The syntax, behavior, and available attributes may change in future releases without a migration path. This feature may be removed entirely in a future version.
+Attributes are an **experimental feature**.
+The syntax, behavior, and available attributes may change in future releases
+without a migration path.
+This feature may be removed entirely in a future version.
 :::
 
 Per-section execution modifiers using `#[name(value)]` syntax.
@@ -39,7 +42,7 @@ Multiple attributes can be applied to one section:
 ## Supported attributes
 
 | Attribute | Value | Description |
-|-----------|-------|-------------|
+| --------- | ----- | ----------- |
 | `#[skip]` | flag (or `#[skip(true)]`) | Skip this section during execution |
 | `#[timeout(N)]` | seconds | Per-section timeout for gRPC request |
 | `#[retry(N)]` | count | Retry section on failure with 100ms × attempt delay |
@@ -69,6 +72,7 @@ Attributes inherit between sections. A child section can override a parent's att
 ```
 
 In this example:
+
 - First `REQUEST` inherits `timeout(30)`
 - Second `REQUEST` overrides with `timeout(5)`
 
