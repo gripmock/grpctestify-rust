@@ -1237,4 +1237,214 @@ mod tests {
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].file_path, "test.gctf");
     }
+
+    #[test]
+    fn test_gctf_attribute_parse_u64() {
+        assert_eq!(GctfAttribute::new("timeout", "30").parse_u64(), Some(30));
+        assert_eq!(
+            GctfAttribute::new("timeout", "  30  ").parse_u64(),
+            Some(30)
+        );
+        assert_eq!(GctfAttribute::new("timeout", "0").parse_u64(), Some(0));
+        assert_eq!(GctfAttribute::new("timeout", "abc").parse_u64(), None);
+        assert_eq!(GctfAttribute::new("timeout", "-1").parse_u64(), None);
+    }
+
+    #[test]
+    fn test_gctf_attribute_parse_u32() {
+        assert_eq!(GctfAttribute::new("retry", "3").parse_u32(), Some(3));
+        assert_eq!(GctfAttribute::new("retry", "  5  ").parse_u32(), Some(5));
+        assert_eq!(GctfAttribute::new("retry", "0").parse_u32(), Some(0));
+        assert_eq!(GctfAttribute::new("retry", "abc").parse_u32(), None);
+    }
+
+    #[test]
+    fn test_gctf_attribute_parse_f64() {
+        assert_eq!(
+            GctfAttribute::new("tolerance", "0.1").parse_f64(),
+            Some(0.1)
+        );
+        assert_eq!(
+            GctfAttribute::new("tolerance", "  1.5  ").parse_f64(),
+            Some(1.5)
+        );
+        assert_eq!(GctfAttribute::new("tolerance", "abc").parse_f64(), None);
+    }
+
+    #[test]
+    fn test_gctf_attribute_parse_bool() {
+        let cases_true = vec!["true", "1", "yes", "on", "True", "TRUE", "YES"];
+        for v in cases_true {
+            assert_eq!(
+                GctfAttribute::new("skip", v).parse_bool(),
+                Some(true),
+                "failed for {}",
+                v
+            );
+        }
+        let cases_false = vec!["false", "0", "no", "off", "", "False", "FALSE"];
+        for v in cases_false {
+            assert_eq!(
+                GctfAttribute::new("skip", v).parse_bool(),
+                Some(false),
+                "failed for {}",
+                v
+            );
+        }
+        assert_eq!(GctfAttribute::new("skip", "maybe").parse_bool(), None);
+    }
+
+    #[test]
+    fn test_gctf_attribute_as_str() {
+        assert_eq!(GctfAttribute::new("name", "hello").as_str(), "hello");
+        assert_eq!(GctfAttribute::flag("skip").as_str(), "true");
+    }
+
+    #[test]
+    fn test_section_get_attribute() {
+        let section = Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: vec![
+                GctfAttribute::new("timeout", "30"),
+                GctfAttribute::new("retry", "2"),
+            ],
+        };
+        assert!(section.get_attribute("timeout").is_some());
+        assert!(section.get_attribute("retry").is_some());
+        assert!(section.get_attribute("skip").is_none());
+        assert_eq!(
+            section.get_attribute("timeout").unwrap().parse_u64(),
+            Some(30)
+        );
+    }
+
+    #[test]
+    fn test_section_get_timeout() {
+        let section = Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: vec![GctfAttribute::new("timeout", "10")],
+        };
+        assert_eq!(section.get_timeout(), Some(10));
+    }
+
+    #[test]
+    fn test_section_get_timeout_zero() {
+        let section = Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: vec![GctfAttribute::new("timeout", "0")],
+        };
+        assert_eq!(section.get_timeout(), None);
+    }
+
+    #[test]
+    fn test_section_get_timeout_missing() {
+        let section = Section::default();
+        assert_eq!(section.get_timeout(), None);
+    }
+
+    #[test]
+    fn test_section_get_retry() {
+        let section = Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: vec![GctfAttribute::new("retry", "3")],
+        };
+        assert_eq!(section.get_retry(), Some(3));
+    }
+
+    #[test]
+    fn test_section_get_retry_missing() {
+        let section = Section::default();
+        assert_eq!(section.get_retry(), None);
+    }
+
+    #[test]
+    fn test_section_get_skip() {
+        let section = Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: vec![GctfAttribute::flag("skip")],
+        };
+        assert!(section.get_skip());
+    }
+
+    #[test]
+    fn test_section_get_skip_explicit() {
+        let section = Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: vec![GctfAttribute::new("skip", "true")],
+        };
+        assert!(section.get_skip());
+    }
+
+    #[test]
+    fn test_section_get_skip_false() {
+        let section = Section::default();
+        assert!(!section.get_skip());
+    }
+
+    #[test]
+    fn test_section_has_tag() {
+        let section = Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: vec![GctfAttribute::new("tag", "smoke,slow")],
+        };
+        assert!(section.has_tag("smoke"));
+        assert!(section.has_tag("slow"));
+        assert!(!section.has_tag("integration"));
+    }
+
+    #[test]
+    fn test_section_has_tag_single() {
+        let section = Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: vec![GctfAttribute::new("tag", "smoke")],
+        };
+        assert!(section.has_tag("smoke"));
+        assert!(!section.has_tag("slow"));
+    }
+
+    #[test]
+    fn test_section_has_tag_missing() {
+        let section = Section::default();
+        assert!(!section.has_tag("smoke"));
+    }
 }

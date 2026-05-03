@@ -440,3 +440,72 @@ fn test_coverage_text_report_empty() {
     let text = collector.generate_text_report();
     assert!(text.contains("No services found"));
 }
+
+#[test]
+fn test_junit_reporter_tags_in_properties() {
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let path = temp_dir.path().join("junit.xml");
+    let reporter = grpctestify::report::junit::JunitReporter::new(path.clone());
+
+    let mut results = grpctestify::state::TestResults::new();
+    let meta = TestMeta {
+        tags: vec!["smoke".to_string(), "integration".to_string()],
+        ..TestMeta::default()
+    };
+    results.add(TestResult {
+        name: "test_tagged.gctf".to_string(),
+        status: TestStatus::Pass,
+        duration_ms: 10,
+        grpc_duration_ms: Some(5),
+        error_message: None,
+        execution_time: 1700000000,
+        meta,
+    });
+
+    let result = reporter.on_suite_end(&results);
+    assert!(result.is_ok());
+
+    let content = std::fs::read_to_string(&path).expect("Failed to read JUnit file");
+    assert!(content.contains(r#"property name="tag" value="smoke""#));
+    assert!(content.contains(r#"property name="tag" value="integration""#));
+    assert!(content.contains("<properties>"));
+}
+
+#[test]
+fn test_json_reporter_includes_meta() {
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let path = temp_dir.path().join("results.json");
+    let reporter = JsonReporter::new(path.clone());
+
+    let mut results = TestResults::new();
+    let meta = TestMeta {
+        name: Some("my test suite".to_string()),
+        tags: vec!["smoke".to_string()],
+        owner: Some("backend-qa".to_string()),
+        ..TestMeta::default()
+    };
+    results.add(TestResult {
+        name: "test.gctf".to_string(),
+        status: TestStatus::Pass,
+        duration_ms: 10,
+        grpc_duration_ms: Some(5),
+        error_message: None,
+        execution_time: 1700000000,
+        meta,
+    });
+
+    let result = reporter.on_suite_end(&results);
+    assert!(result.is_ok());
+
+    let content = std::fs::read_to_string(&path).expect("Failed to read JSON file");
+    let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let result_meta = &json["results"][0]["meta"];
+    assert_eq!(result_meta["name"], "my test suite");
+    assert_eq!(result_meta["owner"], "backend-qa");
+    assert!(
+        result_meta["tags"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("smoke"))
+    );
+}
