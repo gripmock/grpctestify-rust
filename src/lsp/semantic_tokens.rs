@@ -47,7 +47,8 @@ pub fn build_semantic_tokens(content: &str) -> SemanticTokens {
                 let line = gctf_token.line as u32;
                 tokenize_line_as_assertion(text, line, &mut tokens);
             }
-            GctfTokenKind::Comment(_) | GctfTokenKind::Blank => {}
+            GctfTokenKind::Comment(_) | GctfTokenKind::Blank | GctfTokenKind::AttributeBlock(_) => {
+            }
         }
     }
 

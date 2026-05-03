@@ -2,7 +2,7 @@
 
 use grpctestify::cli::args::ProgressMode;
 use grpctestify::report::{Reporter, console::ConsoleReporter, json::JsonReporter};
-use grpctestify::state::{TestResult, TestResults, TestStatus};
+use grpctestify::state::{TestMeta, TestResult, TestResults, TestStatus};
 
 #[test]
 fn test_progress_mode_from_str_dots() {
@@ -133,6 +133,7 @@ fn test_junit_reporter_skipped_test() {
         grpc_duration_ms: None,
         error_message: Some("Skipped due to condition".to_string()),
         execution_time: chrono::Utc::now().timestamp(),
+        meta: grpctestify::state::TestMeta::default(),
     };
     results.add(skip_result);
 
@@ -160,6 +161,7 @@ fn test_json_reporter_on_suite_end() {
         grpc_duration_ms: Some(30),
         error_message: None,
         execution_time: chrono::Utc::now().timestamp(),
+        meta: TestMeta::default(),
     };
     results.add(pass_result);
 
@@ -222,6 +224,7 @@ fn test_json_reporter_round_trip() {
         grpc_duration_ms: Some(5),
         error_message: None,
         execution_time: 1700000000,
+        meta: TestMeta::default(),
     });
     results.add(TestResult {
         name: "test_b.gctf".to_string(),
@@ -230,6 +233,7 @@ fn test_json_reporter_round_trip() {
         grpc_duration_ms: Some(150),
         error_message: Some("Expected 200, got 500".to_string()),
         execution_time: 1700000001,
+        meta: TestMeta::default(),
     });
 
     // Act
@@ -262,6 +266,7 @@ fn test_console_reporter_verbose_mode() {
         grpc_duration_ms: None,
         error_message: None,
         execution_time: chrono::Utc::now().timestamp(),
+        meta: TestMeta::default(),
     };
     reporter.on_test_end("test_verbose.gctf", &result);
 }
@@ -285,6 +290,7 @@ fn test_console_reporter_dots_mode() {
         grpc_duration_ms: None,
         error_message: None,
         execution_time: chrono::Utc::now().timestamp(),
+        meta: TestMeta::default(),
     };
     let fail1 = TestResult::fail("test2.gctf", "error".to_string(), 20, None);
     reporter.on_test_end("test1.gctf", &pass1);
@@ -333,6 +339,7 @@ fn test_console_reporter_print_slowest_tests() {
             grpc_duration_ms: None,
             error_message: None,
             execution_time: chrono::Utc::now().timestamp(),
+            meta: TestMeta::default(),
         },
         TestResult {
             name: "slow.gctf".to_string(),
@@ -341,6 +348,7 @@ fn test_console_reporter_print_slowest_tests() {
             grpc_duration_ms: None,
             error_message: None,
             execution_time: chrono::Utc::now().timestamp(),
+            meta: TestMeta::default(),
         },
     ];
 

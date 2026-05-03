@@ -5,9 +5,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Complete .gctf document
-/// Documents linked by `--- NEW ---` form a singly-linked list.
-/// When `next_document` is `None` this is either a single-document file
-/// or the last document in a chain.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GctfDocument {
     /// File path (absolute or relative)
@@ -19,9 +16,23 @@ pub struct GctfDocument {
     /// Document metadata
     pub metadata: DocumentMetadata,
 
-    /// Next document in chain (linked by `--- NEW ---`), `None` if single/last
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Next document in chain (for multi-document files)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub next_document: Option<Box<GctfDocument>>,
+}
+
+pub struct DocumentChainIter<'a> {
+    current: Option<&'a GctfDocument>,
+}
+
+impl<'a> Iterator for DocumentChainIter<'a> {
+    type Item = &'a GctfDocument;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let current = self.current?;
+        self.current = current.next_document.as_deref();
+        Some(current)
+    }
 }
 
 /// Document metadata
@@ -35,6 +46,16 @@ pub struct DocumentMetadata {
 
     /// Parsed at timestamp
     pub parsed_at: i64,
+}
+
+impl Default for DocumentMetadata {
+    fn default() -> Self {
+        Self {
+            source: None,
+            mtime: None,
+            parsed_at: crate::time::now_timestamp(),
+        }
+    }
 }
 
 /// File-level metadata (META section)
@@ -69,6 +90,81 @@ impl FileMeta {
     }
 }
 
+/// GCTF attribute (#[name(value)] syntax)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GctfAttribute {
+    pub name: String,
+    pub value: String,
+}
+
+impl GctfAttribute {
+    pub fn new(name: &str, value: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    pub fn flag(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            value: "true".to_string(),
+        }
+    }
+
+    pub fn parse_u64(&self) -> Option<u64> {
+        self.value.trim().parse::<u64>().ok()
+    }
+
+    pub fn parse_u32(&self) -> Option<u32> {
+        self.value.trim().parse::<u32>().ok()
+    }
+
+    pub fn parse_f64(&self) -> Option<f64> {
+        self.value.trim().parse::<f64>().ok()
+    }
+
+    pub fn parse_bool(&self) -> Option<bool> {
+        match self.value.trim().to_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Some(true),
+            "false" | "0" | "no" | "off" | "" => Some(false),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.value
+    }
+}
+
+impl Section {
+    pub fn get_attribute(&self, name: &str) -> Option<&GctfAttribute> {
+        self.attributes.iter().find(|a| a.name == name)
+    }
+
+    pub fn get_timeout(&self) -> Option<u64> {
+        self.get_attribute("timeout")
+            .and_then(|a| a.parse_u64())
+            .filter(|&v| v > 0)
+    }
+
+    pub fn get_retry(&self) -> Option<u32> {
+        self.get_attribute("retry").and_then(|a| a.parse_u32())
+    }
+
+    pub fn get_skip(&self) -> bool {
+        self.get_attribute("skip")
+            .and_then(|a| a.parse_bool())
+            .unwrap_or(false)
+    }
+
+    pub fn has_tag(&self, tag: &str) -> bool {
+        self.get_attribute("tag")
+            .map(|a| a.value.split(',').any(|t| t.trim() == tag))
+            .unwrap_or(false)
+    }
+}
+
 /// A section in the .gctf file
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Section {
@@ -89,6 +185,24 @@ pub struct Section {
 
     /// Line number where section ends
     pub end_line: usize,
+
+    /// Local attributes for this section
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes: Vec<GctfAttribute>,
+}
+
+impl Default for Section {
+    fn default() -> Self {
+        Self {
+            section_type: SectionType::Address,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: Vec::new(),
+        }
+    }
 }
 
 /// Section content
@@ -322,56 +436,40 @@ pub struct SectionHeader {
     pub options: HashMap<String, String>,
 }
 
-/// Iterator over a linked document chain
-pub struct DocumentChainIter<'a> {
-    current: Option<&'a GctfDocument>,
-}
-
-impl<'a> Iterator for DocumentChainIter<'a> {
-    type Item = &'a GctfDocument;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.current.take().inspect(|doc| {
-            self.current = doc.next_document.as_deref();
-        })
-    }
-}
-
 impl GctfDocument {
     /// Create a new empty document
     pub fn new(file_path: String) -> Self {
         Self {
             file_path,
             sections: Vec::new(),
-            metadata: DocumentMetadata {
-                source: None,
-                mtime: None,
-                parsed_at: crate::time::now_timestamp(),
-            },
+            metadata: DocumentMetadata::default(),
             next_document: None,
         }
     }
 
-    /// Iterate over the document chain (single or `--- NEW ---` linked)
+    /// Get document by index (0-based) from the chain
+    pub fn get_document(&self, index: usize) -> Option<&GctfDocument> {
+        self.iter_chain().nth(index)
+    }
+
     pub fn iter_chain(&self) -> DocumentChainIter<'_> {
         DocumentChainIter {
             current: Some(self),
         }
     }
 
-    /// Count documents in the chain
     pub fn document_count(&self) -> usize {
-        self.iter_chain().count()
+        let mut count = 1;
+        let mut current = &self.next_document;
+        while let Some(doc) = current {
+            count += 1;
+            current = &doc.next_document;
+        }
+        count
     }
 
-    /// Check if this is a single-document file
     pub fn is_single_document(&self) -> bool {
         self.next_document.is_none()
-    }
-
-    /// Get document by index (0-based) from the chain
-    pub fn get_document(&self, index: usize) -> Option<&GctfDocument> {
-        self.iter_chain().nth(index)
     }
 
     /// Get all sections of a specific type
@@ -642,6 +740,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -650,6 +749,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 3,
             end_line: 4,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -658,6 +758,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 5,
             end_line: 6,
+            attributes: Vec::new(),
         });
 
         let requests = doc.sections_by_type(SectionType::Request);
@@ -680,6 +781,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
 
         let first_request = doc.first_section(SectionType::Request);
@@ -699,6 +801,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 1,
+            attributes: Vec::new(),
         });
 
         assert_eq!(doc.get_address(None), Some("localhost:4770".to_string()));
@@ -725,6 +828,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 1,
+            attributes: Vec::new(),
         });
 
         assert_eq!(doc.get_endpoint(), Some("my.Service/Method".to_string()));
@@ -743,6 +847,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 1,
+            attributes: Vec::new(),
         });
 
         let (package, service, method) = doc.parse_endpoint().unwrap();
@@ -761,6 +866,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 1,
+            attributes: Vec::new(),
         });
 
         let (package, service, method) = doc.parse_endpoint().unwrap();
@@ -779,6 +885,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 1,
+            attributes: Vec::new(),
         });
 
         assert!(doc.parse_endpoint().is_none());
@@ -794,6 +901,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -802,6 +910,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 3,
             end_line: 4,
+            attributes: Vec::new(),
         });
 
         let requests = doc.get_requests();
@@ -820,6 +929,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Asserts,
@@ -828,6 +938,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 3,
             end_line: 4,
+            attributes: Vec::new(),
         });
 
         let assertions = doc.get_assertions();
@@ -848,6 +959,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
 
         let result = doc.get_request_headers().unwrap();
@@ -869,6 +981,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
 
         let result = doc.get_tls_config().unwrap();
@@ -888,6 +1001,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
 
         let result = doc.get_options().unwrap();
@@ -917,6 +1031,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
 
         let mut defaults = HashMap::new();
@@ -940,6 +1055,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
 
         let result = doc.get_proto_config().unwrap();
@@ -958,6 +1074,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
         assert!(!doc.has_response_error_conflict());
 
@@ -968,6 +1085,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 3,
             end_line: 4,
+            attributes: Vec::new(),
         });
         assert!(doc.has_response_error_conflict());
     }
@@ -997,6 +1115,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 0,
             end_line: 0,
+            attributes: Vec::new(),
         };
 
         let header = section.format_header();
@@ -1022,6 +1141,7 @@ mod tests {
             raw_content: "{\"ok\":true}".to_string(),
             start_line: 0,
             end_line: 2,
+            attributes: Vec::new(),
         };
 
         let source = "--- RESPONSE with_asserts=true ---\n{\"ok\":true}\n";
@@ -1042,6 +1162,7 @@ mod tests {
             raw_content: "Authorization: Bearer t".to_string(),
             start_line: 0,
             end_line: 2,
+            attributes: Vec::new(),
         });
 
         assert!(doc.section_uses_deprecated_headers_alias(&doc.sections[0]));

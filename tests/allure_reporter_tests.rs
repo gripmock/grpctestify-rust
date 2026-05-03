@@ -1,7 +1,7 @@
 // Allure reporter integration tests — exercise the real AllureReporter
 
 use grpctestify::report::{AllureReporter, Reporter};
-use grpctestify::state::{TestResult, TestStatus};
+use grpctestify::state::{TestMeta, TestResult, TestStatus};
 
 #[test]
 fn test_allure_reporter_passing_test() {
@@ -15,6 +15,7 @@ fn test_allure_reporter_passing_test() {
         grpc_duration_ms: Some(80),
         error_message: None,
         execution_time: 1700000000,
+        meta: TestMeta::default(),
     };
 
     // Allure writes files in on_test_end, not on_suite_end
@@ -101,6 +102,7 @@ fn test_allure_reporter_mixed_results() {
             grpc_duration_ms: Some(5),
             error_message: None,
             execution_time: 1700000000,
+            meta: TestMeta::default(),
         },
     );
     reporter.on_test_end(
@@ -116,6 +118,7 @@ fn test_allure_reporter_mixed_results() {
             grpc_duration_ms: None,
             error_message: Some("Skipped".to_string()),
             execution_time: 1700000001,
+            meta: TestMeta::default(),
         },
     );
 
@@ -148,6 +151,7 @@ fn test_allure_reporter_labels_present() {
             grpc_duration_ms: None,
             error_message: None,
             execution_time: 1700000000,
+            meta: TestMeta::default(),
         },
     );
 
@@ -189,6 +193,7 @@ fn test_allure_reporter_test_name_from_path() {
             grpc_duration_ms: Some(40),
             error_message: None,
             execution_time: 1700000000,
+            meta: TestMeta::default(),
         },
     );
 
@@ -222,6 +227,7 @@ fn test_allure_reporter_timestamps() {
             grpc_duration_ms: Some(80),
             error_message: None,
             execution_time: 1700000000,
+            meta: TestMeta::default(),
         },
     );
 

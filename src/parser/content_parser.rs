@@ -4,7 +4,9 @@
 
 use anyhow::Result;
 
-use crate::parser::ast::{FileMeta, InlineOptions, Section, SectionContent, SectionType};
+use crate::parser::ast::{
+    FileMeta, GctfAttribute, InlineOptions, Section, SectionContent, SectionType,
+};
 use crate::parser::gctf_tokenizer::{
     tokenize_extract_line, tokenize_inline_options, tokenize_kv_line,
 };
@@ -91,6 +93,7 @@ pub fn build_section(
     end_line: usize,
     content: &[String],
     inline_options: InlineOptions,
+    attributes: Vec<GctfAttribute>,
 ) -> Result<Section> {
     let raw_content = content.join("\n");
     let section_content = parse_section_content(section_type, &raw_content)?;
@@ -102,6 +105,7 @@ pub fn build_section(
         raw_content,
         start_line,
         end_line,
+        attributes,
     })
 }
 
@@ -139,6 +143,131 @@ pub fn parse_inline_options(s: &str) -> Result<InlineOptions> {
     }
 
     Ok(inline_options)
+}
+
+/// Parse a GCTF attribute from `#[name(value)]` content string.
+/// Returns `None` if content is empty or invalid.
+pub fn parse_attribute(content: &str) -> Option<GctfAttribute> {
+    let content = content.trim();
+    if content.is_empty() {
+        return None;
+    }
+
+    let bytes = content.as_bytes();
+    let len = bytes.len();
+    let mut pos = 0;
+
+    while pos < len && is_attr_name_char(bytes[pos]) {
+        pos += 1;
+    }
+
+    if pos == 0 {
+        return None;
+    }
+
+    let name = content[..pos].to_string();
+
+    while pos < len && is_ws(bytes[pos]) {
+        pos += 1;
+    }
+
+    if pos == len {
+        return Some(GctfAttribute::flag(&name));
+    }
+
+    if bytes[pos] != b'(' {
+        return None;
+    }
+
+    pos += 1;
+
+    let value_start = pos;
+    let mut paren_depth = 1;
+    let mut escaped = false;
+
+    while pos < len && paren_depth > 0 {
+        if escaped {
+            escaped = false;
+            pos += 1;
+            continue;
+        }
+        match bytes[pos] {
+            b'\\' => {
+                escaped = true;
+                pos += 1;
+            }
+            b'"' | b'\'' => {
+                let quote = bytes[pos];
+                pos += 1;
+                while pos < len {
+                    if escaped {
+                        escaped = false;
+                        pos += 1;
+                        continue;
+                    }
+                    if bytes[pos] == b'\\' {
+                        escaped = true;
+                        pos += 1;
+                        continue;
+                    }
+                    if bytes[pos] == quote {
+                        pos += 1;
+                        break;
+                    }
+                    pos += 1;
+                }
+            }
+            b'(' => {
+                paren_depth += 1;
+                pos += 1;
+            }
+            b')' => {
+                paren_depth -= 1;
+                pos += 1;
+            }
+            _ => pos += 1,
+        }
+    }
+
+    if paren_depth != 0 {
+        return None;
+    }
+
+    let value = content[value_start..pos - 1].to_string();
+    Some(GctfAttribute::new(&name, &value))
+}
+
+fn is_attr_name_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+}
+
+fn is_ws(b: u8) -> bool {
+    b == b' ' || b == b'\t'
+}
+
+/// Resolve attributes for a section, applying inheritance rules:
+/// - Attributes from parent sections apply to child sections
+/// - Child section attributes override parent attributes
+/// - Attributes with the same name are overridden (not merged)
+pub fn resolve_attributes(
+    section_attrs: &[GctfAttribute],
+    inherited_attrs: &[GctfAttribute],
+) -> Vec<GctfAttribute> {
+    let mut resolved: Vec<GctfAttribute> = inherited_attrs.to_vec();
+    let mut seen: std::collections::HashSet<String> =
+        inherited_attrs.iter().map(|a| a.name.clone()).collect();
+
+    for attr in section_attrs {
+        if seen.contains(&attr.name) {
+            let idx = resolved.iter().position(|a| a.name == attr.name).unwrap();
+            resolved[idx] = attr.clone();
+        } else {
+            resolved.push(attr.clone());
+            seen.insert(attr.name.clone());
+        }
+    }
+
+    resolved
 }
 
 /// Parse key-value section (one per line: key: value).
@@ -321,6 +450,7 @@ mod tests {
             6,
             &content,
             InlineOptions::default(),
+            Vec::new(),
         )
         .unwrap();
         assert_eq!(section.section_type, SectionType::Address);
@@ -422,5 +552,82 @@ tags: [a]
         };
         assert_eq!(m.name.as_deref(), Some("Test"));
         assert_eq!(m.tags, ["a"]);
+    }
+
+    #[test]
+    fn test_parse_attribute_with_value() {
+        let attr = parse_attribute("timeout(30)").unwrap();
+        assert_eq!(attr.name, "timeout");
+        assert_eq!(attr.value, "30");
+        assert_eq!(attr.parse_u64(), Some(30));
+    }
+
+    #[test]
+    fn test_parse_attribute_flag() {
+        let attr = parse_attribute("skip").unwrap();
+        assert_eq!(attr.name, "skip");
+        assert_eq!(attr.value, "true");
+        assert_eq!(attr.parse_bool(), Some(true));
+    }
+
+    #[test]
+    fn test_parse_attribute_quoted_value() {
+        let attr = parse_attribute(r#"tag("smoke, slow")"#).unwrap();
+        assert_eq!(attr.name, "tag");
+        assert_eq!(attr.value, r#""smoke, slow""#);
+    }
+
+    #[test]
+    fn test_parse_attribute_with_spaces() {
+        let attr = parse_attribute("  retry(3)  ").unwrap();
+        assert_eq!(attr.name, "retry");
+        assert_eq!(attr.value, "3");
+    }
+
+    #[test]
+    fn test_parse_attribute_empty() {
+        assert!(parse_attribute("").is_none());
+        assert!(parse_attribute("   ").is_none());
+    }
+
+    #[test]
+    fn test_parse_attribute_no_paren() {
+        let attr = parse_attribute("just_a_name").unwrap();
+        assert_eq!(attr.name, "just_a_name");
+        assert_eq!(attr.value, "true");
+    }
+
+    #[test]
+    fn test_resolve_attributes_inheritance() {
+        let parent = vec![GctfAttribute::new("timeout", "10")];
+        let child = vec![GctfAttribute::new("retry", "3")];
+        let resolved = resolve_attributes(&child, &parent);
+
+        let timeout = resolved.iter().find(|a| a.name == "timeout");
+        let retry = resolved.iter().find(|a| a.name == "retry");
+
+        assert_eq!(timeout.map(|a| a.value.as_str()), Some("10"));
+        assert_eq!(retry.map(|a| a.value.as_str()), Some("3"));
+    }
+
+    #[test]
+    fn test_resolve_attributes_override() {
+        let parent = vec![GctfAttribute::new("timeout", "10")];
+        let child = vec![GctfAttribute::new("timeout", "30")];
+        let resolved = resolve_attributes(&child, &parent);
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].value, "30");
+    }
+
+    #[test]
+    fn test_resolve_attributes_empty() {
+        let resolved = resolve_attributes(&[], &[]);
+        assert!(resolved.is_empty());
+
+        let parent = vec![GctfAttribute::new("timeout", "10")];
+        let resolved = resolve_attributes(&[], &parent);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].value, "10");
     }
 }

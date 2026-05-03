@@ -195,6 +195,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 0,
             end_line: 0,
+            attributes: Vec::new(),
         }];
 
         let target = json!({"id": 123, "name": "test"});
@@ -216,6 +217,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 0,
             end_line: 0,
+            attributes: Vec::new(),
         }];
 
         let target = json!({"id": 123, "name": "test"});
@@ -237,6 +239,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 0,
             end_line: 0,
+            attributes: Vec::new(),
         };
 
         let other_section = Section {
@@ -246,6 +249,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 0,
             end_line: 0,
+            attributes: Vec::new(),
         };
 
         assert!(handler.has_assertions(&asserts_section));
@@ -265,6 +269,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 0,
             end_line: 0,
+            attributes: Vec::new(),
         };
 
         let lines = handler.get_assertion_lines(&section);
@@ -297,6 +302,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 0,
             end_line: 0,
+            attributes: Vec::new(),
         };
 
         let target = json!({"id": 123});

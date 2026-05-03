@@ -43,6 +43,21 @@ For section details, use [Section Reference](../sections/).
 - `ADDRESS` may be omitted if `GRPCTESTIFY_ADDRESS` is set
 - `META` is optional, but only one is allowed and it must be the first section
 
+## Attributes
+
+Per-section modifiers using `#[name(value)]` syntax:
+
+```gctf
+#[timeout(10)]
+#[retry(2)]
+--- REQUEST ---
+{
+  "query": "slow search"
+}
+```
+
+See [Attributes](../sections/attributes) for full reference.
+
 ## RESPONSE Inline Options
 
 Inline options use section-header flags and `key=value` pairs:
@@ -84,5 +99,6 @@ If `details` is not returned by the server, it can be omitted from expected `ERR
 - [TLS](../sections/tls)
 - [PROTO](../sections/proto)
 - [OPTIONS](../sections/options)
+- [Attributes](../sections/attributes)
 
 Related: [Assertions](./assertions), [Plugin System](../../plugins/).

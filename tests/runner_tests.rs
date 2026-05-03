@@ -26,6 +26,7 @@ fn create_response_section(expected: serde_json::Value, options: InlineOptions) 
         raw_content: "".to_string(),
         start_line: 0,
         end_line: 0,
+        attributes: Vec::new(),
     }
 }
 
@@ -57,6 +58,7 @@ fn create_asserts_section(assertions: Vec<String>) -> Section {
         raw_content: "".to_string(),
         start_line: 0,
         end_line: 0,
+        attributes: Vec::new(),
     }
 }
 
@@ -356,6 +358,7 @@ fn create_extract_section(extractions: Vec<(String, String)>) -> Section {
         raw_content: "".to_string(),
         start_line: 0,
         end_line: 0,
+        attributes: Vec::new(),
     }
 }
 

@@ -470,6 +470,35 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
         }
     }
 
+    // ATTRIBUTES section (if any)
+    let mut has_attrs = false;
+    for section in &doc.sections {
+        if !section.attributes.is_empty() {
+            if !has_attrs {
+                println!("ATTRIBUTES");
+                println!("----------");
+                has_attrs = true;
+            }
+            print!("  [{}] ", section.section_type.as_str());
+            let mut first = true;
+            for attr in &section.attributes {
+                if !first {
+                    print!(" ");
+                }
+                first = false;
+                if attr.value == "true" {
+                    print!("#[{}]", attr.name);
+                } else {
+                    print!("#[{}({})]", attr.name, attr.value);
+                }
+            }
+            println!();
+        }
+    }
+    if has_attrs {
+        println!();
+    }
+
     // Connection info
     println!("CONNECTION");
     println!("----------");

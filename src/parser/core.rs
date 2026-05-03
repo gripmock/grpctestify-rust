@@ -2,7 +2,7 @@
 // Handles section extraction, comment removal, and inline option parsing
 
 use super::ast::*;
-use super::content_parser;
+use super::content_parser::{self, parse_attribute};
 use super::gctf_tokenizer::{GctfTokenKind, tokenize_gctf};
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -144,24 +144,39 @@ pub fn parse_gctf_with_diagnostics(file_path: &Path) -> Result<(GctfDocument, Pa
     Ok((document, diagnostics))
 }
 
+#[allow(clippy::type_complexity)]
 fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
     let tokens = tokenize_gctf(source);
     let mut sections = Vec::new();
     let mut section_headers = 0;
-    let mut current_section: Option<(SectionType, usize, Vec<String>, InlineOptions)> = None;
+    let mut current_section: Option<(
+        SectionType,
+        usize,
+        Vec<String>,
+        InlineOptions,
+        Vec<GctfAttribute>,
+    )> = None;
+    let mut pending_attributes: Vec<GctfAttribute> = Vec::new();
+    let mut inherited_attributes: Vec<GctfAttribute> = Vec::new();
 
     for token in tokens {
         match token.kind {
             GctfTokenKind::SectionHeader { name, raw_options } => {
-                if let Some((section_type, start_line, content, options)) = current_section.take() {
+                if let Some((section_type, start_line, content, options, raw_attrs)) =
+                    current_section.take()
+                {
+                    let resolved =
+                        content_parser::resolve_attributes(&raw_attrs, &inherited_attributes);
                     let section = content_parser::build_section(
                         section_type,
                         start_line,
                         token.line,
                         &content,
                         options,
+                        resolved.clone(),
                     )?;
                     sections.push(section);
+                    inherited_attributes = resolved;
                 }
 
                 section_headers += 1;
@@ -173,28 +188,52 @@ fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
                         } else {
                             InlineOptions::default()
                         };
-                    current_section = Some((section_type, token.line, Vec::new(), inline_options));
+                    current_section = Some((
+                        section_type,
+                        token.line,
+                        Vec::new(),
+                        inline_options,
+                        std::mem::take(&mut pending_attributes),
+                    ));
                 } else {
                     return Err(anyhow::anyhow!("Unknown section type: {}", name));
                 }
             }
+            GctfTokenKind::AttributeBlock(attr_content) => {
+                if let Some((_, _, _, _, ref mut pending)) = current_section {
+                    if let Some(attr) = parse_attribute(&attr_content) {
+                        pending.push(attr);
+                    }
+                } else {
+                    if let Some(attr) = parse_attribute(&attr_content) {
+                        pending_attributes.push(attr);
+                    }
+                }
+            }
             GctfTokenKind::Comment(text) | GctfTokenKind::Content(text) => {
-                if let Some((_, _, ref mut content, _)) = current_section {
+                if let Some((_, _, ref mut content, _, _)) = current_section {
                     content.push(text);
                 }
             }
             GctfTokenKind::Blank => {
-                if let Some((_, _, ref mut content, _)) = current_section {
+                if let Some((_, _, ref mut content, _, _)) = current_section {
                     content.push(String::new());
                 }
             }
         }
     }
 
-    if let Some((section_type, start_line, content, options)) = current_section {
+    if let Some((section_type, start_line, content, options, raw_attrs)) = current_section {
         let end_line = source.lines().count();
-        let section =
-            content_parser::build_section(section_type, start_line, end_line, &content, options)?;
+        let resolved = content_parser::resolve_attributes(&raw_attrs, &inherited_attributes);
+        let section = content_parser::build_section(
+            section_type,
+            start_line,
+            end_line,
+            &content,
+            options,
+            resolved.clone(),
+        )?;
         sections.push(section);
     }
 
@@ -401,6 +440,7 @@ test.Service/Method
             raw_content: "line1".into(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         }];
         let result = extract_doc_source_from_lines(&sections, &lines);
         assert_eq!(result, "line1");

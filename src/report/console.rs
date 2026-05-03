@@ -24,6 +24,7 @@ pub struct ConsoleReporter {
     env_info: EnvironmentInfo,
     dots_lock: Mutex<()>,
     dots_count: AtomicUsize,
+    results: Mutex<Vec<TestResult>>,
 }
 
 impl ConsoleReporter {
@@ -45,6 +46,7 @@ impl ConsoleReporter {
             env_info,
             dots_lock: Mutex::new(()),
             dots_count: AtomicUsize::new(0),
+            results: Mutex::new(Vec::new()),
         }
     }
 
@@ -193,6 +195,11 @@ impl super::Reporter for ConsoleReporter {
     }
 
     fn on_test_end(&self, _test_name: &str, result: &TestResult) {
+        // Store result for later use in summary
+        if let Ok(mut results) = self.results.lock() {
+            results.push(result.clone());
+        }
+
         if matches!(self.mode, ProgressMode::Dots) {
             let char = match result.status {
                 TestStatus::Pass => ".",
@@ -228,32 +235,48 @@ impl super::Reporter for ConsoleReporter {
             println!();
         }
 
-        let metrics = results.metrics();
+        let results_guard = results.all();
+        let total = results_guard.len();
+        let passed = results_guard
+            .iter()
+            .filter(|r| r.status == TestStatus::Pass)
+            .count();
+        let failed = results_guard
+            .iter()
+            .filter(|r| r.status == TestStatus::Fail)
+            .count();
+        let skipped = results_guard
+            .iter()
+            .filter(|r| r.status == TestStatus::Skip)
+            .count();
 
         let mut errors = Vec::new();
-        for result in results.all() {
+        for result in results_guard {
             if result.status == TestStatus::Fail {
-                // Format: "test_name.gctf (duration)" with error details
-                let mut error_line = format!("{} ({}ms)", result.name, result.duration_ms);
+                let display_name = result.meta.name.as_ref().unwrap_or(&result.name);
+                let mut error_line = format!("{} ({}ms)", display_name, result.duration_ms);
                 if let Some(ref error_msg) = result.error_message {
                     error_line.push_str(&format!("\n      Error: {}", error_msg));
+                }
+                if !result.meta.tags.is_empty() {
+                    error_line.push_str(&format!(" [{}]", result.meta.tags.join(", ")));
                 }
                 errors.push(error_line);
             }
         }
 
+        let metrics = &results.metrics;
         self.print_summary(
-            results.total(),
-            results.passed(),
-            results.failed(),
-            results.skipped(),
+            total,
+            passed,
+            failed,
+            skipped,
             metrics.total_duration_ms,
             &errors,
             metrics,
         );
 
-        // Print slowest tests (top 5) - Only in verbose now
-        self.print_slowest_tests(results.all(), 5);
+        self.print_slowest_tests(results_guard, 5);
 
         Ok(())
     }

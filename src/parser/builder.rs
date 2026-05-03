@@ -119,6 +119,7 @@ impl GctfDocumentBuilder {
             raw_content: String::new(),
             start_line: 0,
             end_line: 0,
+            attributes: Vec::new(),
         });
     }
 }

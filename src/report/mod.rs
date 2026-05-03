@@ -1,15 +1,6 @@
 //! Output reporters for test results.
 //!
-//! This module provides multiple output formats for test execution results:
-//!
-//! | Reporter | Purpose |
-//! |----------|---------|
-//! | [`ConsoleReporter`] | Pytest-style terminal output with progress bars |
-//! | [`JsonReporter`] | Machine-readable JSON results |
-//! | [`JunitReporter`] | JUnit XML for CI/CD integration |
-//! | [`AllureReporter`] | Allure TestOps compatible reports |
-//! | [`StreamingJsonReporter`] | NDJSON stream for real-time consumption |
-//! | [`CoverageCollector`] | gRPC method and protobuf field coverage |
+//! Each reporter maintains its own state and is responsible for formatting its output.
 
 pub mod allure;
 pub mod console;
@@ -32,14 +23,16 @@ pub use json::JsonReporter;
 pub use junit::JunitReporter;
 pub use streaming::StreamingJsonReporter;
 
-/// Reporter trait
+/// Reporter that accumulates test results and produces formatted output.
+/// Each reporter is responsible for its own state management and formatting logic.
 pub trait Reporter: Send + Sync {
     /// Called when a test starts
     fn on_test_start(&self, _test_name: &str) {}
 
-    /// Called when a test finishes
+    /// Called when a test finishes - reporter accumulates the result
     fn on_test_end(&self, _test_name: &str, _result: &TestResult) {}
 
-    /// Called when the entire suite finishes
+    /// Called when the entire suite finishes - produces the final report.
+    /// Reporters should use their accumulated state to format output.
     fn on_suite_end(&self, results: &TestResults) -> Result<()>;
 }

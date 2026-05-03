@@ -113,6 +113,7 @@ mod tests {
                     raw_content: "test.Service/Method".to_string(),
                     start_line: 1,
                     end_line: 2,
+                    attributes: Vec::new(),
                 },
                 Section {
                     section_type: SectionType::Request,
@@ -121,6 +122,7 @@ mod tests {
                     raw_content: r#"{"id": 123}"#.to_string(),
                     start_line: 3,
                     end_line: 5,
+                    attributes: Vec::new(),
                 },
             ],
             metadata: crate::parser::ast::DocumentMetadata {
@@ -169,6 +171,7 @@ mod tests {
             raw_content: r#"{"result": "ok"}"#.to_string(),
             start_line: 6,
             end_line: 8,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Error,
@@ -177,6 +180,7 @@ mod tests {
             raw_content: r#"{"code": 5}"#.to_string(),
             start_line: 9,
             end_line: 11,
+            attributes: Vec::new(),
         });
         let result = TestValidator::validate(&doc);
         assert!(result.is_err());

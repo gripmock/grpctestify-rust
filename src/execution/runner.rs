@@ -4,7 +4,7 @@
 
 use super::super::parser::GctfDocument;
 use super::runner_helpers;
-use super::{AssertionHandler, RequestHandler, ResponseHandler};
+use super::{AssertionHandler, RequestHandler, RequestSendResult, ResponseHandler};
 use crate::assert::{AssertionEngine, JsonComparator, get_json_diff};
 use crate::grpc::{GrpcClient, GrpcClientConfig};
 use crate::optimizer;
@@ -431,12 +431,12 @@ pub enum TestExecutionStatus {
 }
 
 /// Test execution result
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TestExecutionResult {
     pub status: TestExecutionStatus,
     pub grpc_duration_ms: Option<u64>,
-    // Optional: captured response for updating the test file
     pub captured_response: Option<crate::grpc::GrpcResponse>,
+    pub meta: crate::state::TestMeta,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -478,6 +478,7 @@ impl TestExecutionResult {
             status: TestExecutionStatus::Pass,
             grpc_duration_ms,
             captured_response: None,
+            meta: crate::state::TestMeta::default(),
         }
     }
 
@@ -486,11 +487,17 @@ impl TestExecutionResult {
             status: TestExecutionStatus::Fail(message),
             grpc_duration_ms,
             captured_response: None,
+            meta: crate::state::TestMeta::default(),
         }
     }
 
     pub fn with_response(mut self, response: crate::grpc::GrpcResponse) -> Self {
         self.captured_response = Some(response);
+        self
+    }
+
+    pub fn with_meta(mut self, meta: crate::state::TestMeta) -> Self {
+        self.meta = meta;
         self
     }
 }
@@ -608,6 +615,7 @@ impl TestRunner {
             status: overall_status,
             grpc_duration_ms: Some(total_duration_ms as u64),
             captured_response: None,
+            meta: crate::state::TestMeta::default(),
         })
     }
 
@@ -825,6 +833,10 @@ impl TestRunner {
                 continue;
             }
 
+            if section.get_skip() {
+                continue;
+            }
+
             match section.section_type {
                 SectionType::Request => {
                     // Build request using RequestHandler
@@ -854,10 +866,59 @@ impl TestRunner {
                         break;
                     };
 
-                    let result = self
-                        .request_handler
-                        .send_request(tx_ref, request_value, section.start_line, None)
-                        .await;
+                    let section_timeout = section.get_timeout();
+                    let effective_timeout = section_timeout.unwrap_or(effective_timeout_seconds);
+                    let max_retries = section.get_retry().unwrap_or(0);
+                    let mut attempt = 0;
+
+                    let send_with_timeout = || async {
+                        if effective_timeout > 0 {
+                            let send_fut = self.request_handler.send_request(
+                                tx_ref,
+                                request_value.clone(),
+                                section.start_line,
+                                None,
+                            );
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(effective_timeout),
+                                send_fut,
+                            )
+                            .await
+                            {
+                                Ok(r) => r,
+                                Err(_) => RequestSendResult {
+                                    success: false,
+                                    error_message: Some(format!(
+                                        "Request timed out after {}s (section timeout)",
+                                        effective_timeout
+                                    )),
+                                },
+                            }
+                        } else {
+                            self.request_handler
+                                .send_request(
+                                    tx_ref,
+                                    request_value.clone(),
+                                    section.start_line,
+                                    None,
+                                )
+                                .await
+                        }
+                    };
+
+                    let result = loop {
+                        if attempt > 0 {
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                100 * attempt as u64,
+                            ))
+                            .await;
+                        }
+                        let r = send_with_timeout().await;
+                        if r.success || attempt >= max_retries {
+                            break r;
+                        }
+                        attempt += 1;
+                    };
                     if !result.success
                         && let Some(error) = result.error_message
                     {
@@ -2242,6 +2303,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         };
 
         let values = TestRunner::expected_values_for_response_section(&section);
@@ -2263,6 +2325,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 3,
+            attributes: Vec::new(),
         };
 
         let values = TestRunner::expected_values_for_response_section(&section);
@@ -2282,6 +2345,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         };
 
         let values = TestRunner::expected_values_for_response_section(&section);
@@ -2360,6 +2424,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 12,
             end_line: 12,
+            attributes: Vec::new(),
         };
         let sections = vec![error.clone()];
         let mut failures = Vec::new();
@@ -2386,6 +2451,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 20,
             end_line: 20,
+            attributes: Vec::new(),
         };
         let asserts = Section {
             section_type: SectionType::Asserts,
@@ -2394,6 +2460,7 @@ mod tests {
             raw_content: ".code == 5".to_string(),
             start_line: 21,
             end_line: 21,
+            attributes: Vec::new(),
         };
         let sections = vec![error.clone(), asserts];
         let mut failures = Vec::new();
