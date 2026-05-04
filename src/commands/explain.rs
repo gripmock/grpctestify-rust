@@ -486,11 +486,7 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
                     print!(" ");
                 }
                 first = false;
-                if attr.value == "true" {
-                    print!("#[{}]", attr.name);
-                } else {
-                    print!("#[{}({})]", attr.name, attr.value);
-                }
+                print!("{}", attr.format_directive());
             }
             println!();
         }

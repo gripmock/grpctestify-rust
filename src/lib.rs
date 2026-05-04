@@ -26,6 +26,10 @@ pub fn serialize_gctf(doc: &parser::GctfDocument) -> String {
     let mut output = String::new();
 
     for section in &doc.sections {
+        for attr in &section.attributes {
+            let _ = writeln!(output, "{}", attr.format_directive());
+        }
+
         let _ = write!(output, "--- {} ---", section.section_type.as_str());
         output.push('\n');
 

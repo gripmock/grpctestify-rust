@@ -827,13 +827,36 @@ impl TestRunner {
             };
         }
 
+        let mut inherited_attrs: Vec<crate::parser::ast::GctfAttribute> = Vec::new();
+
         for (i, section) in sections.iter().enumerate() {
+            let resolved_attrs = crate::parser::content_parser::resolve_attributes(
+                &section.attributes,
+                &inherited_attrs,
+            );
+            inherited_attrs = resolved_attrs.clone();
+
+            let get_attr = |name: &str| -> Option<&crate::parser::ast::GctfAttribute> {
+                resolved_attrs.iter().find(|a| a.name == name)
+            };
+            let get_timeout = || -> Option<u64> {
+                get_attr("timeout")
+                    .and_then(|a| a.parse_u64())
+                    .filter(|&v| v > 0)
+            };
+            let get_retry = || -> Option<u32> { get_attr("retry").and_then(|a| a.parse_u32()) };
+            let get_skip = || -> bool {
+                get_attr("skip")
+                    .and_then(|a| a.parse_bool())
+                    .unwrap_or(false)
+            };
+
             if skip_next_section {
                 skip_next_section = false;
                 continue;
             }
 
-            if section.get_skip() {
+            if get_skip() {
                 continue;
             }
 
@@ -866,9 +889,9 @@ impl TestRunner {
                         break;
                     };
 
-                    let section_timeout = section.get_timeout();
+                    let section_timeout = get_timeout();
                     let effective_timeout = section_timeout.unwrap_or(effective_timeout_seconds);
-                    let max_retries = section.get_retry().unwrap_or(0);
+                    let max_retries = get_retry().unwrap_or(0);
                     let mut attempt = 0;
 
                     let send_with_timeout = || async {

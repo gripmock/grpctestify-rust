@@ -157,7 +157,6 @@ fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
         Vec<GctfAttribute>,
     )> = None;
     let mut pending_attributes: Vec<GctfAttribute> = Vec::new();
-    let mut inherited_attributes: Vec<GctfAttribute> = Vec::new();
 
     for token in tokens {
         match token.kind {
@@ -165,18 +164,15 @@ fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
                 if let Some((section_type, start_line, content, options, raw_attrs)) =
                     current_section.take()
                 {
-                    let resolved =
-                        content_parser::resolve_attributes(&raw_attrs, &inherited_attributes);
                     let section = content_parser::build_section(
                         section_type,
                         start_line,
                         token.line,
                         &content,
                         options,
-                        resolved.clone(),
+                        raw_attrs,
                     )?;
                     sections.push(section);
-                    inherited_attributes = resolved;
                 }
 
                 section_headers += 1;
@@ -200,14 +196,8 @@ fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
                 }
             }
             GctfTokenKind::AttributeBlock(attr_content) => {
-                if let Some((_, _, _, _, ref mut pending)) = current_section {
-                    if let Some(attr) = parse_attribute(&attr_content) {
-                        pending.push(attr);
-                    }
-                } else {
-                    if let Some(attr) = parse_attribute(&attr_content) {
-                        pending_attributes.push(attr);
-                    }
+                if let Some(attr) = parse_attribute(&attr_content) {
+                    pending_attributes.push(attr);
                 }
             }
             GctfTokenKind::Comment(text) | GctfTokenKind::Content(text) => {
@@ -225,18 +215,16 @@ fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
 
     if let Some((section_type, start_line, content, options, raw_attrs)) = current_section {
         let end_line = source.lines().count();
-        let resolved = content_parser::resolve_attributes(&raw_attrs, &inherited_attributes);
         let section = content_parser::build_section(
             section_type,
             start_line,
             end_line,
             &content,
             options,
-            resolved.clone(),
+            raw_attrs,
         )?;
         sections.push(section);
     }
-
     Ok((sections, section_headers))
 }
 
@@ -450,5 +438,48 @@ test.Service/Method
     fn test_extract_doc_source_empty() {
         let result = extract_doc_source_from_lines(&[], &[]);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_attribute_before_section_attaches_to_following_section() {
+        let input = "\
+--- ENDPOINT ---
+test.Service/Method
+
+#[name(test)]
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+";
+
+        let (sections, _) = parse_sections_from_str(input).unwrap();
+        assert_eq!(sections.len(), 3);
+
+        let endpoint = &sections[0];
+        let request = &sections[1];
+
+        assert!(endpoint.attributes.is_empty());
+        assert_eq!(request.attributes.len(), 1);
+        assert_eq!(request.attributes[0].name, "name");
+        assert_eq!(request.attributes[0].value, "test");
+    }
+
+    #[test]
+    fn test_attribute_between_sections_not_attached_to_previous_section() {
+        let input = "\
+--- ENDPOINT ---
+test.Service/Method
+#[timeout(10)]
+--- REQUEST ---
+{}
+";
+
+        let (sections, _) = parse_sections_from_str(input).unwrap();
+        assert_eq!(sections.len(), 2);
+        assert!(sections[0].attributes.is_empty());
+        assert_eq!(sections[1].attributes.len(), 1);
+        assert_eq!(sections[1].attributes[0].name, "timeout");
     }
 }

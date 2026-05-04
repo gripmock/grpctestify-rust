@@ -135,6 +135,14 @@ impl GctfAttribute {
     pub fn as_str(&self) -> &str {
         &self.value
     }
+
+    pub fn format_directive(&self) -> String {
+        if self.value == "true" {
+            format!("#[{}]", self.name)
+        } else {
+            format!("#[{}({})]", self.name, self.value)
+        }
+    }
 }
 
 impl Section {
@@ -186,7 +194,7 @@ pub struct Section {
     /// Line number where section ends
     pub end_line: usize,
 
-    /// Local attributes for this section
+    /// Attributes declared on this section
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attributes: Vec<GctfAttribute>,
 }
