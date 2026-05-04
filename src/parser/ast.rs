@@ -5,9 +5,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Complete .gctf document
-/// Documents linked by `--- NEW ---` form a singly-linked list.
-/// When `next_document` is `None` this is either a single-document file
-/// or the last document in a chain.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GctfDocument {
     /// File path (absolute or relative)
@@ -19,9 +16,23 @@ pub struct GctfDocument {
     /// Document metadata
     pub metadata: DocumentMetadata,
 
-    /// Next document in chain (linked by `--- NEW ---`), `None` if single/last
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Next document in chain (for multi-document files)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub next_document: Option<Box<GctfDocument>>,
+}
+
+pub struct DocumentChainIter<'a> {
+    current: Option<&'a GctfDocument>,
+}
+
+impl<'a> Iterator for DocumentChainIter<'a> {
+    type Item = &'a GctfDocument;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let current = self.current?;
+        self.current = current.next_document.as_deref();
+        Some(current)
+    }
 }
 
 /// Document metadata
@@ -35,6 +46,16 @@ pub struct DocumentMetadata {
 
     /// Parsed at timestamp
     pub parsed_at: i64,
+}
+
+impl Default for DocumentMetadata {
+    fn default() -> Self {
+        Self {
+            source: None,
+            mtime: None,
+            parsed_at: crate::time::now_timestamp(),
+        }
+    }
 }
 
 /// File-level metadata (META section)
@@ -69,6 +90,89 @@ impl FileMeta {
     }
 }
 
+/// GCTF attribute (#[name(value)] syntax)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GctfAttribute {
+    pub name: String,
+    pub value: String,
+}
+
+impl GctfAttribute {
+    pub fn new(name: &str, value: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    pub fn flag(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            value: "true".to_string(),
+        }
+    }
+
+    pub fn parse_u64(&self) -> Option<u64> {
+        self.value.trim().parse::<u64>().ok()
+    }
+
+    pub fn parse_u32(&self) -> Option<u32> {
+        self.value.trim().parse::<u32>().ok()
+    }
+
+    pub fn parse_f64(&self) -> Option<f64> {
+        self.value.trim().parse::<f64>().ok()
+    }
+
+    pub fn parse_bool(&self) -> Option<bool> {
+        match self.value.trim().to_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Some(true),
+            "false" | "0" | "no" | "off" | "" => Some(false),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.value
+    }
+
+    pub fn format_directive(&self) -> String {
+        if self.value == "true" {
+            format!("#[{}]", self.name)
+        } else {
+            format!("#[{}({})]", self.name, self.value)
+        }
+    }
+}
+
+impl Section {
+    pub fn get_attribute(&self, name: &str) -> Option<&GctfAttribute> {
+        self.attributes.iter().find(|a| a.name == name)
+    }
+
+    pub fn get_timeout(&self) -> Option<u64> {
+        self.get_attribute("timeout")
+            .and_then(|a| a.parse_u64())
+            .filter(|&v| v > 0)
+    }
+
+    pub fn get_retry(&self) -> Option<u32> {
+        self.get_attribute("retry").and_then(|a| a.parse_u32())
+    }
+
+    pub fn get_skip(&self) -> bool {
+        self.get_attribute("skip")
+            .and_then(|a| a.parse_bool())
+            .unwrap_or(false)
+    }
+
+    pub fn has_tag(&self, tag: &str) -> bool {
+        self.get_attribute("tag")
+            .map(|a| a.value.split(',').any(|t| t.trim() == tag))
+            .unwrap_or(false)
+    }
+}
+
 /// A section in the .gctf file
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Section {
@@ -89,6 +193,24 @@ pub struct Section {
 
     /// Line number where section ends
     pub end_line: usize,
+
+    /// Attributes declared on this section
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes: Vec<GctfAttribute>,
+}
+
+impl Default for Section {
+    fn default() -> Self {
+        Self {
+            section_type: SectionType::Address,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: Vec::new(),
+        }
+    }
 }
 
 /// Section content
@@ -322,56 +444,40 @@ pub struct SectionHeader {
     pub options: HashMap<String, String>,
 }
 
-/// Iterator over a linked document chain
-pub struct DocumentChainIter<'a> {
-    current: Option<&'a GctfDocument>,
-}
-
-impl<'a> Iterator for DocumentChainIter<'a> {
-    type Item = &'a GctfDocument;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.current.take().inspect(|doc| {
-            self.current = doc.next_document.as_deref();
-        })
-    }
-}
-
 impl GctfDocument {
     /// Create a new empty document
     pub fn new(file_path: String) -> Self {
         Self {
             file_path,
             sections: Vec::new(),
-            metadata: DocumentMetadata {
-                source: None,
-                mtime: None,
-                parsed_at: crate::time::now_timestamp(),
-            },
+            metadata: DocumentMetadata::default(),
             next_document: None,
         }
     }
 
-    /// Iterate over the document chain (single or `--- NEW ---` linked)
+    /// Get document by index (0-based) from the chain
+    pub fn get_document(&self, index: usize) -> Option<&GctfDocument> {
+        self.iter_chain().nth(index)
+    }
+
     pub fn iter_chain(&self) -> DocumentChainIter<'_> {
         DocumentChainIter {
             current: Some(self),
         }
     }
 
-    /// Count documents in the chain
     pub fn document_count(&self) -> usize {
-        self.iter_chain().count()
+        let mut count = 1;
+        let mut current = &self.next_document;
+        while let Some(doc) = current {
+            count += 1;
+            current = &doc.next_document;
+        }
+        count
     }
 
-    /// Check if this is a single-document file
     pub fn is_single_document(&self) -> bool {
         self.next_document.is_none()
-    }
-
-    /// Get document by index (0-based) from the chain
-    pub fn get_document(&self, index: usize) -> Option<&GctfDocument> {
-        self.iter_chain().nth(index)
     }
 
     /// Get all sections of a specific type
@@ -642,6 +748,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -650,6 +757,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 3,
             end_line: 4,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -658,6 +766,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 5,
             end_line: 6,
+            attributes: Vec::new(),
         });
 
         let requests = doc.sections_by_type(SectionType::Request);
@@ -680,6 +789,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
 
         let first_request = doc.first_section(SectionType::Request);
@@ -699,6 +809,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 1,
+            attributes: Vec::new(),
         });
 
         assert_eq!(doc.get_address(None), Some("localhost:4770".to_string()));
@@ -725,6 +836,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 1,
+            attributes: Vec::new(),
         });
 
         assert_eq!(doc.get_endpoint(), Some("my.Service/Method".to_string()));
@@ -743,6 +855,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 1,
+            attributes: Vec::new(),
         });
 
         let (package, service, method) = doc.parse_endpoint().unwrap();
@@ -761,6 +874,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 1,
+            attributes: Vec::new(),
         });
 
         let (package, service, method) = doc.parse_endpoint().unwrap();
@@ -779,6 +893,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 1,
+            attributes: Vec::new(),
         });
 
         assert!(doc.parse_endpoint().is_none());
@@ -794,6 +909,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -802,6 +918,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 3,
             end_line: 4,
+            attributes: Vec::new(),
         });
 
         let requests = doc.get_requests();
@@ -820,6 +937,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Asserts,
@@ -828,6 +946,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 3,
             end_line: 4,
+            attributes: Vec::new(),
         });
 
         let assertions = doc.get_assertions();
@@ -848,6 +967,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
 
         let result = doc.get_request_headers().unwrap();
@@ -869,6 +989,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
 
         let result = doc.get_tls_config().unwrap();
@@ -888,6 +1009,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
 
         let result = doc.get_options().unwrap();
@@ -917,6 +1039,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
 
         let mut defaults = HashMap::new();
@@ -940,6 +1063,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
 
         let result = doc.get_proto_config().unwrap();
@@ -958,6 +1082,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 1,
             end_line: 2,
+            attributes: Vec::new(),
         });
         assert!(!doc.has_response_error_conflict());
 
@@ -968,6 +1093,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 3,
             end_line: 4,
+            attributes: Vec::new(),
         });
         assert!(doc.has_response_error_conflict());
     }
@@ -997,6 +1123,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 0,
             end_line: 0,
+            attributes: Vec::new(),
         };
 
         let header = section.format_header();
@@ -1022,6 +1149,7 @@ mod tests {
             raw_content: "{\"ok\":true}".to_string(),
             start_line: 0,
             end_line: 2,
+            attributes: Vec::new(),
         };
 
         let source = "--- RESPONSE with_asserts=true ---\n{\"ok\":true}\n";
@@ -1042,6 +1170,7 @@ mod tests {
             raw_content: "Authorization: Bearer t".to_string(),
             start_line: 0,
             end_line: 2,
+            attributes: Vec::new(),
         });
 
         assert!(doc.section_uses_deprecated_headers_alias(&doc.sections[0]));
@@ -1115,5 +1244,215 @@ mod tests {
         let docs: Vec<_> = doc.iter_chain().collect();
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].file_path, "test.gctf");
+    }
+
+    #[test]
+    fn test_gctf_attribute_parse_u64() {
+        assert_eq!(GctfAttribute::new("timeout", "30").parse_u64(), Some(30));
+        assert_eq!(
+            GctfAttribute::new("timeout", "  30  ").parse_u64(),
+            Some(30)
+        );
+        assert_eq!(GctfAttribute::new("timeout", "0").parse_u64(), Some(0));
+        assert_eq!(GctfAttribute::new("timeout", "abc").parse_u64(), None);
+        assert_eq!(GctfAttribute::new("timeout", "-1").parse_u64(), None);
+    }
+
+    #[test]
+    fn test_gctf_attribute_parse_u32() {
+        assert_eq!(GctfAttribute::new("retry", "3").parse_u32(), Some(3));
+        assert_eq!(GctfAttribute::new("retry", "  5  ").parse_u32(), Some(5));
+        assert_eq!(GctfAttribute::new("retry", "0").parse_u32(), Some(0));
+        assert_eq!(GctfAttribute::new("retry", "abc").parse_u32(), None);
+    }
+
+    #[test]
+    fn test_gctf_attribute_parse_f64() {
+        assert_eq!(
+            GctfAttribute::new("tolerance", "0.1").parse_f64(),
+            Some(0.1)
+        );
+        assert_eq!(
+            GctfAttribute::new("tolerance", "  1.5  ").parse_f64(),
+            Some(1.5)
+        );
+        assert_eq!(GctfAttribute::new("tolerance", "abc").parse_f64(), None);
+    }
+
+    #[test]
+    fn test_gctf_attribute_parse_bool() {
+        let cases_true = vec!["true", "1", "yes", "on", "True", "TRUE", "YES"];
+        for v in cases_true {
+            assert_eq!(
+                GctfAttribute::new("skip", v).parse_bool(),
+                Some(true),
+                "failed for {}",
+                v
+            );
+        }
+        let cases_false = vec!["false", "0", "no", "off", "", "False", "FALSE"];
+        for v in cases_false {
+            assert_eq!(
+                GctfAttribute::new("skip", v).parse_bool(),
+                Some(false),
+                "failed for {}",
+                v
+            );
+        }
+        assert_eq!(GctfAttribute::new("skip", "maybe").parse_bool(), None);
+    }
+
+    #[test]
+    fn test_gctf_attribute_as_str() {
+        assert_eq!(GctfAttribute::new("name", "hello").as_str(), "hello");
+        assert_eq!(GctfAttribute::flag("skip").as_str(), "true");
+    }
+
+    #[test]
+    fn test_section_get_attribute() {
+        let section = Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: vec![
+                GctfAttribute::new("timeout", "30"),
+                GctfAttribute::new("retry", "2"),
+            ],
+        };
+        assert!(section.get_attribute("timeout").is_some());
+        assert!(section.get_attribute("retry").is_some());
+        assert!(section.get_attribute("skip").is_none());
+        assert_eq!(
+            section.get_attribute("timeout").unwrap().parse_u64(),
+            Some(30)
+        );
+    }
+
+    #[test]
+    fn test_section_get_timeout() {
+        let section = Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: vec![GctfAttribute::new("timeout", "10")],
+        };
+        assert_eq!(section.get_timeout(), Some(10));
+    }
+
+    #[test]
+    fn test_section_get_timeout_zero() {
+        let section = Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: vec![GctfAttribute::new("timeout", "0")],
+        };
+        assert_eq!(section.get_timeout(), None);
+    }
+
+    #[test]
+    fn test_section_get_timeout_missing() {
+        let section = Section::default();
+        assert_eq!(section.get_timeout(), None);
+    }
+
+    #[test]
+    fn test_section_get_retry() {
+        let section = Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: vec![GctfAttribute::new("retry", "3")],
+        };
+        assert_eq!(section.get_retry(), Some(3));
+    }
+
+    #[test]
+    fn test_section_get_retry_missing() {
+        let section = Section::default();
+        assert_eq!(section.get_retry(), None);
+    }
+
+    #[test]
+    fn test_section_get_skip() {
+        let section = Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: vec![GctfAttribute::flag("skip")],
+        };
+        assert!(section.get_skip());
+    }
+
+    #[test]
+    fn test_section_get_skip_explicit() {
+        let section = Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: vec![GctfAttribute::new("skip", "true")],
+        };
+        assert!(section.get_skip());
+    }
+
+    #[test]
+    fn test_section_get_skip_false() {
+        let section = Section::default();
+        assert!(!section.get_skip());
+    }
+
+    #[test]
+    fn test_section_has_tag() {
+        let section = Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: vec![GctfAttribute::new("tag", "smoke,slow")],
+        };
+        assert!(section.has_tag("smoke"));
+        assert!(section.has_tag("slow"));
+        assert!(!section.has_tag("integration"));
+    }
+
+    #[test]
+    fn test_section_has_tag_single() {
+        let section = Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: vec![GctfAttribute::new("tag", "smoke")],
+        };
+        assert!(section.has_tag("smoke"));
+        assert!(!section.has_tag("slow"));
+    }
+
+    #[test]
+    fn test_section_has_tag_missing() {
+        let section = Section::default();
+        assert!(!section.has_tag("smoke"));
     }
 }

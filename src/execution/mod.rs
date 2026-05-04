@@ -12,7 +12,7 @@ pub mod workflow_graph;
 
 pub use assertion_handler::AssertionHandler;
 pub use error_handler::ErrorHandler;
-pub use request_handler::RequestHandler;
+pub use request_handler::{RequestHandler, RequestSendResult};
 pub use response_handler::ResponseHandler;
 pub use runner::{
     AssertionInfo, ComparisonOptions, ConnectionInfo, ExecutionPlan, ExecutionSummary,

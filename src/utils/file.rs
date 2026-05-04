@@ -586,6 +586,7 @@ mod tests {
             raw_content: "Service/Method".to_string(),
             start_line: 1,
             end_line: 1,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -594,6 +595,7 @@ mod tests {
             raw_content: "{\"result\": \"old\"}".to_string(),
             start_line: 2,
             end_line: 3,
+            attributes: Vec::new(),
         });
 
         let response = crate::grpc::GrpcResponse {

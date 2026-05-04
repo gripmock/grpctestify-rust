@@ -2,7 +2,7 @@
 
 use grpctestify::cli::args::ProgressMode;
 use grpctestify::report::{Reporter, console::ConsoleReporter, json::JsonReporter};
-use grpctestify::state::{TestResult, TestResults, TestStatus};
+use grpctestify::state::{TestMeta, TestResult, TestResults, TestStatus};
 
 #[test]
 fn test_progress_mode_from_str_dots() {
@@ -133,6 +133,7 @@ fn test_junit_reporter_skipped_test() {
         grpc_duration_ms: None,
         error_message: Some("Skipped due to condition".to_string()),
         execution_time: chrono::Utc::now().timestamp(),
+        meta: grpctestify::state::TestMeta::default(),
     };
     results.add(skip_result);
 
@@ -160,6 +161,7 @@ fn test_json_reporter_on_suite_end() {
         grpc_duration_ms: Some(30),
         error_message: None,
         execution_time: chrono::Utc::now().timestamp(),
+        meta: TestMeta::default(),
     };
     results.add(pass_result);
 
@@ -222,6 +224,7 @@ fn test_json_reporter_round_trip() {
         grpc_duration_ms: Some(5),
         error_message: None,
         execution_time: 1700000000,
+        meta: TestMeta::default(),
     });
     results.add(TestResult {
         name: "test_b.gctf".to_string(),
@@ -230,6 +233,7 @@ fn test_json_reporter_round_trip() {
         grpc_duration_ms: Some(150),
         error_message: Some("Expected 200, got 500".to_string()),
         execution_time: 1700000001,
+        meta: TestMeta::default(),
     });
 
     // Act
@@ -262,6 +266,7 @@ fn test_console_reporter_verbose_mode() {
         grpc_duration_ms: None,
         error_message: None,
         execution_time: chrono::Utc::now().timestamp(),
+        meta: TestMeta::default(),
     };
     reporter.on_test_end("test_verbose.gctf", &result);
 }
@@ -285,6 +290,7 @@ fn test_console_reporter_dots_mode() {
         grpc_duration_ms: None,
         error_message: None,
         execution_time: chrono::Utc::now().timestamp(),
+        meta: TestMeta::default(),
     };
     let fail1 = TestResult::fail("test2.gctf", "error".to_string(), 20, None);
     reporter.on_test_end("test1.gctf", &pass1);
@@ -333,6 +339,7 @@ fn test_console_reporter_print_slowest_tests() {
             grpc_duration_ms: None,
             error_message: None,
             execution_time: chrono::Utc::now().timestamp(),
+            meta: TestMeta::default(),
         },
         TestResult {
             name: "slow.gctf".to_string(),
@@ -341,6 +348,7 @@ fn test_console_reporter_print_slowest_tests() {
             grpc_duration_ms: None,
             error_message: None,
             execution_time: chrono::Utc::now().timestamp(),
+            meta: TestMeta::default(),
         },
     ];
 
@@ -431,4 +439,73 @@ fn test_coverage_text_report_empty() {
     let collector = grpctestify::report::coverage::CoverageCollector::new();
     let text = collector.generate_text_report();
     assert!(text.contains("No services found"));
+}
+
+#[test]
+fn test_junit_reporter_tags_in_properties() {
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let path = temp_dir.path().join("junit.xml");
+    let reporter = grpctestify::report::junit::JunitReporter::new(path.clone());
+
+    let mut results = grpctestify::state::TestResults::new();
+    let meta = TestMeta {
+        tags: vec!["smoke".to_string(), "integration".to_string()],
+        ..TestMeta::default()
+    };
+    results.add(TestResult {
+        name: "test_tagged.gctf".to_string(),
+        status: TestStatus::Pass,
+        duration_ms: 10,
+        grpc_duration_ms: Some(5),
+        error_message: None,
+        execution_time: 1700000000,
+        meta,
+    });
+
+    let result = reporter.on_suite_end(&results);
+    assert!(result.is_ok());
+
+    let content = std::fs::read_to_string(&path).expect("Failed to read JUnit file");
+    assert!(content.contains(r#"property name="tag" value="smoke""#));
+    assert!(content.contains(r#"property name="tag" value="integration""#));
+    assert!(content.contains("<properties>"));
+}
+
+#[test]
+fn test_json_reporter_includes_meta() {
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let path = temp_dir.path().join("results.json");
+    let reporter = JsonReporter::new(path.clone());
+
+    let mut results = TestResults::new();
+    let meta = TestMeta {
+        name: Some("my test suite".to_string()),
+        tags: vec!["smoke".to_string()],
+        owner: Some("backend-qa".to_string()),
+        ..TestMeta::default()
+    };
+    results.add(TestResult {
+        name: "test.gctf".to_string(),
+        status: TestStatus::Pass,
+        duration_ms: 10,
+        grpc_duration_ms: Some(5),
+        error_message: None,
+        execution_time: 1700000000,
+        meta,
+    });
+
+    let result = reporter.on_suite_end(&results);
+    assert!(result.is_ok());
+
+    let content = std::fs::read_to_string(&path).expect("Failed to read JSON file");
+    let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let result_meta = &json["results"][0]["meta"];
+    assert_eq!(result_meta["name"], "my test suite");
+    assert_eq!(result_meta["owner"], "backend-qa");
+    assert!(
+        result_meta["tags"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("smoke"))
+    );
 }

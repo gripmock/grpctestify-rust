@@ -26,6 +26,10 @@ Section examples are intentionally partial. Combine them into one complete `.gct
 - [PROTO](./proto)
 - [OPTIONS](./options)
 
+## Modifiers
+
+- [Attributes](./attributes) — per-section execution modifiers (`#[skip]`, `#[timeout]`, `#[retry]`, `#[name]`)
+
 ## Related
 
 - [Test File Format](../api/test-files)

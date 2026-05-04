@@ -272,6 +272,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 0,
             end_line: 0,
+            attributes: Vec::new(),
         };
         let variables = std::collections::HashMap::new();
 
@@ -304,6 +305,7 @@ mod tests {
                 raw_content: "".to_string(),
                 start_line: 0,
                 end_line: 0,
+                attributes: Vec::new(),
             },
             Section {
                 section_type: SectionType::Response,
@@ -312,6 +314,7 @@ mod tests {
                 raw_content: "".to_string(),
                 start_line: 0,
                 end_line: 0,
+                attributes: Vec::new(),
             },
         ];
 
@@ -329,6 +332,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 0,
             end_line: 0,
+            attributes: Vec::new(),
         };
         let mut variables = std::collections::HashMap::new();
         variables.insert("user_id".to_string(), json!("456"));

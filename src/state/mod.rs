@@ -5,7 +5,7 @@ pub mod metrics;
 pub mod result;
 
 pub use metrics::ExecutionMetrics;
-pub use result::TestResult;
+pub use result::{TestMeta, TestResult};
 
 use serde::Serialize;
 

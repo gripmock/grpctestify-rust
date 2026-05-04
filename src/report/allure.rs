@@ -4,7 +4,7 @@
 //! Each file contains test metadata, status, timing, and gRPC call steps.
 
 use crate::report::Reporter;
-use crate::state::{TestResult, TestResults};
+use crate::state::TestResult;
 use anyhow::Result;
 use serde::Serialize;
 use std::fs;
@@ -135,7 +135,9 @@ impl Reporter for AllureReporter {
         let duration = result.duration_ms as u128;
         let start = now.saturating_sub(duration);
 
-        let test_name_short = extract_test_name(test_name);
+        // Use META name if available, otherwise file path
+        let display_name = result.meta.name.as_deref().unwrap_or(test_name);
+        let test_name_short = extract_test_name(display_name);
         let suite_name = extract_suite_name(test_name);
 
         let grpc_step = if result.grpc_duration_ms.is_some() {
@@ -157,34 +159,53 @@ impl Reporter for AllureReporter {
 
         let steps = grpc_step.map(|s| vec![s]);
 
+        // Build labels from META
+        let mut labels = vec![
+            Label {
+                name: "language".to_string(),
+                value: "rust".to_string(),
+            },
+            Label {
+                name: "framework".to_string(),
+                value: "grpctestify".to_string(),
+            },
+            Label {
+                name: "suite".to_string(),
+                value: suite_name,
+            },
+            Label {
+                name: "feature".to_string(),
+                value: "gRPC Test".to_string(),
+            },
+        ];
+
+        // Add owner label if present
+        if let Some(ref owner) = result.meta.owner {
+            labels.push(Label {
+                name: "owner".to_string(),
+                value: owner.clone(),
+            });
+        }
+
+        // Add tags as labels
+        for tag in &result.meta.tags {
+            labels.push(Label {
+                name: "tag".to_string(),
+                value: tag.clone(),
+            });
+        }
+
         let report = AllureResult {
             uuid: uuid.clone(),
             history_id,
-            full_name: test_name.to_string(),
+            full_name: display_name.to_string(),
             name: test_name_short,
             status: status.to_string(),
             status_details,
             start,
             stop: now,
             stage: "finished".to_string(),
-            labels: vec![
-                Label {
-                    name: "language".to_string(),
-                    value: "rust".to_string(),
-                },
-                Label {
-                    name: "framework".to_string(),
-                    value: "grpctestify".to_string(),
-                },
-                Label {
-                    name: "suite".to_string(),
-                    value: suite_name,
-                },
-                Label {
-                    name: "feature".to_string(),
-                    value: "gRPC Test".to_string(),
-                },
-            ],
+            labels,
             steps,
             attachments: None,
         };
@@ -204,7 +225,7 @@ impl Reporter for AllureReporter {
         }
     }
 
-    fn on_suite_end(&self, _results: &TestResults) -> Result<()> {
+    fn on_suite_end(&self, _results: &crate::state::TestResults) -> Result<()> {
         Ok(())
     }
 }

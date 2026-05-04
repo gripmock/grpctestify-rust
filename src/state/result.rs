@@ -3,15 +3,53 @@
 use crate::state::TestStatus;
 use serde::Serialize;
 
+/// Metadata extracted from META section for test reports
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+#[serde(default)]
+pub struct TestMeta {
+    /// Display name (from META.name, falls back to filename)
+    pub name: Option<String>,
+    /// Test summary
+    pub summary: Option<String>,
+    /// Test tags
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Test owner
+    pub owner: Option<String>,
+    /// Related links
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<String>,
+}
+
+impl TestMeta {
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none() && self.summary.is_none() && self.tags.is_empty()
+    }
+
+    pub fn from_file_meta(file_meta: &crate::parser::ast::FileMeta) -> Self {
+        Self {
+            name: file_meta.name.clone(),
+            summary: file_meta.summary.clone(),
+            tags: file_meta.tags.clone(),
+            owner: file_meta.owner.clone(),
+            links: file_meta.links.clone(),
+        }
+    }
+}
+
 /// Test result
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TestResult {
+    /// File path (used as fallback name)
     pub name: String,
     pub status: TestStatus,
     pub duration_ms: u64,
     pub grpc_duration_ms: Option<u64>,
     pub error_message: Option<String>,
     pub execution_time: i64,
+    /// Test metadata from META section
+    #[serde(default, skip_serializing_if = "TestMeta::is_empty")]
+    pub meta: TestMeta,
 }
 
 impl TestResult {
@@ -24,6 +62,25 @@ impl TestResult {
             grpc_duration_ms,
             error_message: None,
             execution_time: crate::time::now_timestamp(),
+            meta: TestMeta::default(),
+        }
+    }
+
+    /// Create a pass result with metadata
+    pub fn pass_with_meta(
+        name: impl Into<String>,
+        duration_ms: u64,
+        grpc_duration_ms: Option<u64>,
+        meta: TestMeta,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            status: TestStatus::Pass,
+            duration_ms,
+            grpc_duration_ms,
+            error_message: None,
+            execution_time: crate::time::now_timestamp(),
+            meta,
         }
     }
 
@@ -41,6 +98,26 @@ impl TestResult {
             grpc_duration_ms,
             error_message: Some(error_message),
             execution_time: crate::time::now_timestamp(),
+            meta: TestMeta::default(),
+        }
+    }
+
+    /// Create a fail result with metadata
+    pub fn fail_with_meta(
+        name: impl Into<String>,
+        error_message: String,
+        duration_ms: u64,
+        grpc_duration_ms: Option<u64>,
+        meta: TestMeta,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            status: TestStatus::Fail,
+            duration_ms,
+            grpc_duration_ms,
+            error_message: Some(error_message),
+            execution_time: crate::time::now_timestamp(),
+            meta,
         }
     }
 }

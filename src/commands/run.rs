@@ -13,20 +13,64 @@ use crate::execution;
 use crate::parser;
 use crate::parser::ast::{SectionContent, SectionType};
 use crate::report;
-use crate::state::{TestResult, TestResults};
+use crate::state::{TestMeta, TestResult, TestResults};
 use crate::utils::FileUtils;
+
+fn extract_test_meta(doc: &parser::ast::GctfDocument) -> TestMeta {
+    let mut meta = doc
+        .sections
+        .iter()
+        .find_map(|s: &parser::ast::Section| {
+            if let SectionContent::Meta(m) = &s.content
+                && s.section_type == SectionType::Meta
+            {
+                return Some(TestMeta::from_file_meta(m));
+            }
+            None
+        })
+        .unwrap_or_default();
+
+    if meta.tags.is_empty() {
+        for section in &doc.sections {
+            if let Some(tag_attr) = section.get_attribute("tag") {
+                for t in tag_attr.value.split(',') {
+                    let trimmed = t.trim();
+                    if !trimmed.is_empty() && !meta.tags.contains(&trimmed.to_string()) {
+                        meta.tags.push(trimmed.to_string());
+                    }
+                }
+            }
+        }
+    }
+    if meta.owner.is_none() {
+        for section in &doc.sections {
+            if let Some(owner_attr) = section.get_attribute("owner") {
+                meta.owner = Some(owner_attr.value.clone());
+                break;
+            }
+        }
+    }
+    if meta.summary.is_none() {
+        for section in &doc.sections {
+            if let Some(summary_attr) = section.get_attribute("summary") {
+                meta.summary = Some(summary_attr.value.clone());
+                break;
+            }
+        }
+    }
+
+    meta
+}
 
 fn file_matches_meta(path: &Path, tags_include: &[String], skip_tags: &[String]) -> bool {
     let parse_result = parser::parse_with_recovery(path);
     let doc = parse_result.document;
 
-    let meta = doc.sections.iter().find_map(|s| {
-        if s.section_type == SectionType::Meta {
-            if let SectionContent::Meta(m) = &s.content {
-                Some(m)
-            } else {
-                None
-            }
+    let meta = doc.sections.iter().find_map(|s: &parser::ast::Section| {
+        if let SectionContent::Meta(m) = &s.content
+            && s.section_type == SectionType::Meta
+        {
+            Some(m)
         } else {
             None
         }
@@ -250,12 +294,22 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
                 {
                     Ok(res) => {
                         let grpc_duration = res.grpc_duration_ms;
+                        let meta = res.meta;
                         match res.status {
-                            execution::TestExecutionStatus::Pass => {
-                                TestResult::pass(file_path_str.clone(), 0, grpc_duration)
-                            }
+                            execution::TestExecutionStatus::Pass => TestResult::pass_with_meta(
+                                file_path_str.clone(),
+                                0,
+                                grpc_duration,
+                                meta,
+                            ),
                             execution::TestExecutionStatus::Fail(msg) => {
-                                TestResult::fail(file_path_str.clone(), msg, 0, grpc_duration)
+                                TestResult::fail_with_meta(
+                                    file_path_str.clone(),
+                                    msg,
+                                    0,
+                                    grpc_duration,
+                                    meta,
+                                )
                             }
                         }
                     }
@@ -334,12 +388,15 @@ async fn run_single_test(
         }
     };
 
+    // Extract META for reports
+    let test_meta = extract_test_meta(&doc);
+
     // Validate document
     if let Err(e) = parser::validate_document(&doc) {
-        return Ok(execution::TestExecutionResult::fail(
-            format!("Validation error: {}", e),
-            None,
-        ));
+        return Ok(
+            execution::TestExecutionResult::fail(format!("Validation error: {}", e), None)
+                .with_meta(test_meta),
+        );
     }
 
     let options = doc.get_options().unwrap_or_default();
@@ -351,7 +408,8 @@ async fn run_single_test(
                 return Ok(execution::TestExecutionResult::fail(
                     format!("OPTIONS.no_retry must be a boolean, got '{}'", value),
                     None,
-                ));
+                )
+                .with_meta(test_meta));
             }
         },
         None => no_retry,
@@ -367,7 +425,8 @@ async fn run_single_test(
                         value
                     ),
                     None,
-                ));
+                )
+                .with_meta(test_meta));
             }
         },
         None => retry,
@@ -386,7 +445,8 @@ async fn run_single_test(
                         value
                     ),
                     None,
-                ));
+                )
+                .with_meta(test_meta));
             }
         },
         None => retry_delay,
@@ -424,8 +484,159 @@ async fn run_single_test(
         return Ok(execution::TestExecutionResult::fail(
             format!("Failed to update test file: {}", e),
             result.grpc_duration_ms,
-        ));
+        )
+        .with_meta(test_meta));
     }
 
-    Ok(result)
+    Ok(result.with_meta(test_meta))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::ast::{GctfAttribute, GctfDocument, Section, SectionContent, SectionType};
+
+    #[test]
+    fn test_extract_test_meta_from_file_meta() {
+        let mut doc = GctfDocument::new("test.gctf".to_string());
+        let file_meta = crate::parser::ast::FileMeta {
+            name: Some("suite name".to_string()),
+            tags: vec!["smoke".to_string()],
+            owner: Some("team-a".to_string()),
+            summary: Some("test summary".to_string()),
+            links: vec![],
+        };
+        doc.sections.push(Section {
+            section_type: SectionType::Meta,
+            content: SectionContent::Meta(file_meta),
+            inline_options: Default::default(),
+            raw_content: String::new(),
+            start_line: 1,
+            end_line: 5,
+            attributes: vec![],
+        });
+
+        let meta = extract_test_meta(&doc);
+        assert_eq!(meta.name, Some("suite name".to_string()));
+        assert_eq!(meta.tags, vec!["smoke".to_string()]);
+        assert_eq!(meta.owner, Some("team-a".to_string()));
+        assert_eq!(meta.summary, Some("test summary".to_string()));
+    }
+
+    #[test]
+    fn test_extract_test_meta_fallback_tags_from_attributes() {
+        let mut doc = GctfDocument::new("test.gctf".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: Default::default(),
+            raw_content: String::new(),
+            start_line: 1,
+            end_line: 2,
+            attributes: vec![GctfAttribute::new("tag", "smoke,integration")],
+        });
+
+        let meta = extract_test_meta(&doc);
+        assert_eq!(
+            meta.tags,
+            vec!["smoke".to_string(), "integration".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_extract_test_meta_no_fallback_when_meta_has_tags() {
+        let file_meta = crate::parser::ast::FileMeta {
+            tags: vec!["smoke".to_string()],
+            ..Default::default()
+        };
+        let mut doc = GctfDocument::new("test.gctf".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Meta,
+            content: SectionContent::Meta(file_meta),
+            inline_options: Default::default(),
+            raw_content: String::new(),
+            start_line: 1,
+            end_line: 2,
+            attributes: vec![],
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: Default::default(),
+            raw_content: String::new(),
+            start_line: 3,
+            end_line: 4,
+            attributes: vec![GctfAttribute::new("tag", "integration")],
+        });
+
+        let meta = extract_test_meta(&doc);
+        assert_eq!(meta.tags, vec!["smoke".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_test_meta_fallback_owner_from_attributes() {
+        let mut doc = GctfDocument::new("test.gctf".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: Default::default(),
+            raw_content: String::new(),
+            start_line: 1,
+            end_line: 2,
+            attributes: vec![GctfAttribute::new("owner", "team-b")],
+        });
+
+        let meta = extract_test_meta(&doc);
+        assert_eq!(meta.owner, Some("team-b".to_string()));
+    }
+
+    #[test]
+    fn test_extract_test_meta_fallback_summary_from_attributes() {
+        let mut doc = GctfDocument::new("test.gctf".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: Default::default(),
+            raw_content: String::new(),
+            start_line: 1,
+            end_line: 2,
+            attributes: vec![GctfAttribute::new("summary", "quick test")],
+        });
+
+        let meta = extract_test_meta(&doc);
+        assert_eq!(meta.summary, Some("quick test".to_string()));
+    }
+
+    #[test]
+    fn test_extract_test_meta_dedup_tags() {
+        let mut doc = GctfDocument::new("test.gctf".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Empty,
+            inline_options: Default::default(),
+            raw_content: String::new(),
+            start_line: 1,
+            end_line: 2,
+            attributes: vec![GctfAttribute::new("tag", "smoke")],
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Empty,
+            inline_options: Default::default(),
+            raw_content: String::new(),
+            start_line: 3,
+            end_line: 4,
+            attributes: vec![GctfAttribute::new("tag", "smoke")],
+        });
+
+        let meta = extract_test_meta(&doc);
+        assert_eq!(meta.tags, vec!["smoke".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_test_meta_empty() {
+        let doc = GctfDocument::new("test.gctf".to_string());
+        let meta = extract_test_meta(&doc);
+        assert!(meta.is_empty());
+    }
 }

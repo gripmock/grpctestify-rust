@@ -352,13 +352,21 @@ fn format_gctf_chain(head: &crate::parser::GctfDocument, source: &str) -> String
     // Walk every section across all documents in the chain
     for doc in head.iter_chain() {
         for section in &doc.sections {
-            // Interleave comments between previous section end and current section start
-            while current_line < section.start_line && current_line < lines.len() {
+            let attr_count = section.attributes.len();
+            let attr_line_start = section.start_line.saturating_sub(attr_count);
+
+            // Interleave comments/blank lines between previous section end and attribute lines
+            while current_line < attr_line_start && current_line < lines.len() {
                 output.push(
                     normalize_hash_comment_line(lines[current_line])
                         .unwrap_or_else(|| lines[current_line].to_string()),
                 );
                 current_line += 1;
+            }
+
+            // Emit attributes before section header
+            for attr in &section.attributes {
+                output.push(attr.format_directive());
             }
 
             // Normal section

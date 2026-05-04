@@ -133,6 +133,40 @@ fn print_json_report(
                     .with_hint("Replace --- HEADERS --- with --- REQUEST_HEADERS ---"),
                 );
             }
+
+            if !section.attributes.is_empty() {
+                for attr in &section.attributes {
+                    if attr.name == "skip" && attr.value == "true" {
+                        inspect_diagnostics.push(
+                            crate::report::Diagnostic::info(
+                                &file_str,
+                                "ATTRIBUTE_SKIP",
+                                &format!(
+                                    "{} section at line {} is skipped via #[skip]",
+                                    section.section_type.as_str(),
+                                    section.start_line + 1
+                                ),
+                                section.start_line + 1,
+                            )
+                            .with_hint("Remove #[skip] attribute to enable this section"),
+                        );
+                    } else if attr.name == "timeout"
+                        && let Ok(secs) = attr.value.parse::<u64>()
+                        && secs == 0
+                    {
+                        inspect_diagnostics.push(crate::report::Diagnostic::warning(
+                            &file_str,
+                            "ATTRIBUTE_TIMEOUT_ZERO",
+                            &format!(
+                                "{} section at line {} has timeout=0 (no timeout)",
+                                section.section_type.as_str(),
+                                section.start_line + 1
+                            ),
+                            section.start_line + 1,
+                        ));
+                    }
+                }
+            }
         }
         for event in w.semantic_analysis() {
             if let crate::execution::WorkflowEvent::SemanticAnalysis {

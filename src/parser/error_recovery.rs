@@ -153,6 +153,7 @@ fn parse_section(
         raw_content: content.join("\n"),
         start_line,
         end_line: content_end,
+        attributes: Vec::new(),
     };
 
     Ok((section, content_end + 1))

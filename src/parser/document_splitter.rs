@@ -94,6 +94,7 @@ mod tests {
             raw_content: String::new(),
             start_line: line,
             end_line: line,
+            attributes: Vec::new(),
         }
     }
 

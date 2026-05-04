@@ -73,7 +73,8 @@ export default defineConfig({
             { text: 'REQUEST_HEADERS', link: '/guides/reference/sections/request-headers' },
             { text: 'TLS', link: '/guides/reference/sections/tls' },
             { text: 'PROTO', link: '/guides/reference/sections/proto' },
-            { text: 'OPTIONS', link: '/guides/reference/sections/options' }
+            { text: 'OPTIONS', link: '/guides/reference/sections/options' },
+            { text: 'Attributes', link: '/guides/reference/sections/attributes' }
           ]
         }
       ]

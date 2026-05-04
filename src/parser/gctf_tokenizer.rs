@@ -27,6 +27,7 @@ pub enum GctfTokenKind {
     Comment(String),
     Blank,
     Content(String),
+    AttributeBlock(String),
 }
 
 pub fn tokenize_gctf(source: &str) -> Vec<GctfToken> {
@@ -54,6 +55,10 @@ fn classify_line(line_idx: usize, line: &str) -> GctfToken {
         };
     }
 
+    if pos + 1 < len && bytes[pos] == b'#' && bytes[pos + 1] == b'[' {
+        return scan_attribute_block(line_idx, line, bytes, len);
+    }
+
     if bytes[pos] == b'#' {
         return GctfToken {
             kind: GctfTokenKind::Comment(line.to_string()),
@@ -76,6 +81,44 @@ fn classify_line(line_idx: usize, line: &str) -> GctfToken {
 
     GctfToken {
         kind: GctfTokenKind::Content(line.to_string()),
+        line: line_idx,
+        span: Span { start: 0, end: len },
+    }
+}
+
+fn scan_attribute_block(line_idx: usize, line: &str, bytes: &[u8], len: usize) -> GctfToken {
+    let mut pos = 0;
+
+    while pos < len && is_ws(bytes[pos]) {
+        pos += 1;
+    }
+
+    if pos + 1 >= len || bytes[pos] != b'#' || bytes[pos + 1] != b'[' {
+        return GctfToken {
+            kind: GctfTokenKind::Content(line.to_string()),
+            line: line_idx,
+            span: Span { start: 0, end: len },
+        };
+    }
+
+    pos += 2;
+
+    let content_start = pos;
+
+    while pos < len && bytes[pos] != b']' {
+        pos += 1;
+    }
+
+    let content_end = pos;
+
+    let content = if content_end > content_start {
+        slice_str(line, content_start, content_end)
+    } else {
+        String::new()
+    };
+
+    GctfToken {
+        kind: GctfTokenKind::AttributeBlock(content),
         line: line_idx,
         span: Span { start: 0, end: len },
     }
@@ -432,6 +475,7 @@ test.Service/Method
                 GctfTokenKind::Comment(_) => kinds.push("C"),
                 GctfTokenKind::Blank => kinds.push("_"),
                 GctfTokenKind::Content(_) => kinds.push("T"),
+                GctfTokenKind::AttributeBlock(_) => kinds.push("A"),
             }
         }
         assert_eq!(kinds, vec!["H", "T", "_", "H", "T", "_", "H", "T"]);
@@ -796,5 +840,101 @@ test.Service/Method
             span: Span { start: 0, end: 0 },
         };
         assert_ne!(t1, t2); // different line
+    }
+
+    #[test]
+    fn test_tokenize_attribute_block() {
+        let tokens = tokenize_gctf("#[timeout(30)]");
+        assert_eq!(tokens.len(), 1);
+        match &tokens[0].kind {
+            GctfTokenKind::AttributeBlock(content) => {
+                assert_eq!(content, "timeout(30)");
+            }
+            _ => panic!("expected AttributeBlock"),
+        }
+    }
+
+    #[test]
+    fn test_tokenize_attribute_block_with_spaces() {
+        let tokens = tokenize_gctf("#[  retry(3)  ]");
+        assert_eq!(tokens.len(), 1);
+        match &tokens[0].kind {
+            GctfTokenKind::AttributeBlock(content) => {
+                assert_eq!(content, "  retry(3)  ");
+            }
+            _ => panic!("expected AttributeBlock"),
+        }
+    }
+
+    #[test]
+    fn test_tokenize_attribute_block_flag() {
+        let tokens = tokenize_gctf("#[skip]");
+        assert_eq!(tokens.len(), 1);
+        match &tokens[0].kind {
+            GctfTokenKind::AttributeBlock(content) => {
+                assert_eq!(content, "skip");
+            }
+            _ => panic!("expected AttributeBlock"),
+        }
+    }
+
+    #[test]
+    fn test_tokenize_attribute_block_empty() {
+        let tokens = tokenize_gctf("#[]");
+        assert_eq!(tokens.len(), 1);
+        match &tokens[0].kind {
+            GctfTokenKind::AttributeBlock(content) => {
+                assert_eq!(content, "");
+            }
+            _ => panic!("expected AttributeBlock"),
+        }
+    }
+
+    #[test]
+    fn test_tokenize_attribute_block_quoted_value() {
+        let tokens = tokenize_gctf(r#"#[tag("smoke, slow")]"#);
+        assert_eq!(tokens.len(), 1);
+        match &tokens[0].kind {
+            GctfTokenKind::AttributeBlock(content) => {
+                assert_eq!(content, r#"tag("smoke, slow")"#);
+            }
+            _ => panic!("expected AttributeBlock"),
+        }
+    }
+
+    #[test]
+    fn test_tokenize_attribute_before_section() {
+        let tokens = tokenize_gctf("#[timeout(30)]\n--- REQUEST ---");
+        assert_eq!(tokens.len(), 2);
+        match &tokens[0].kind {
+            GctfTokenKind::AttributeBlock(content) => {
+                assert_eq!(content, "timeout(30)");
+            }
+            _ => panic!("expected AttributeBlock"),
+        }
+        match &tokens[1].kind {
+            GctfTokenKind::SectionHeader { name, .. } => {
+                assert_eq!(name, "REQUEST");
+            }
+            _ => panic!("expected SectionHeader"),
+        }
+    }
+
+    #[test]
+    fn test_tokenize_attribute_after_section() {
+        let tokens = tokenize_gctf("--- REQUEST ---\n{}\n#[skip]");
+        assert_eq!(tokens.len(), 3);
+        match &tokens[0].kind {
+            GctfTokenKind::SectionHeader { name, .. } => {
+                assert_eq!(name, "REQUEST");
+            }
+            _ => panic!("expected SectionHeader"),
+        }
+        match &tokens[2].kind {
+            GctfTokenKind::AttributeBlock(content) => {
+                assert_eq!(content, "skip");
+            }
+            _ => panic!("expected AttributeBlock"),
+        }
     }
 }

@@ -34,3 +34,14 @@ grpctestify tests/ --log-format allure --log-output allure-results
 - If `--log-output` is omitted, run continues and report file is skipped with a warning
 - Use `--no-color` in CI logs if needed
 - Reports can be combined with `--stream` for live integrations
+
+## Metadata in reports
+
+Reports include metadata from the `META` section:
+
+- **JUnit**: `<property>` elements for tags, display name from `META.name`
+- **Allure**: labels for tags, owner, suite name from `META.name`
+- **Console**: tags shown in error output
+- **JSON**: full `meta` object in each test result
+
+See [META](../sections/meta) and [Attributes](../sections/attributes) for details.

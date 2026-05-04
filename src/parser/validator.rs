@@ -501,6 +501,7 @@ mod tests {
                 raw_content: "localhost:4770".to_string(),
                 start_line: 1,
                 end_line: 1,
+                attributes: Vec::new(),
             },
             Section {
                 section_type: SectionType::Endpoint,
@@ -509,6 +510,7 @@ mod tests {
                 raw_content: "my.Service/Method".to_string(),
                 start_line: 3,
                 end_line: 3,
+                attributes: Vec::new(),
             },
         ];
 
@@ -595,6 +597,7 @@ mod tests {
             raw_content: "{\"result\": \"ok\"}".to_string(),
             start_line: 5,
             end_line: 6,
+            attributes: Vec::new(),
         });
 
         let result = validate_document(&doc);
@@ -612,6 +615,7 @@ mod tests {
             raw_content: "{\"code\": 5}".to_string(),
             start_line: 5,
             end_line: 6,
+            attributes: Vec::new(),
         });
 
         let result = validate_document(&doc);
@@ -632,6 +636,7 @@ mod tests {
             raw_content: "{\"code\": 5}".to_string(),
             start_line: 5,
             end_line: 6,
+            attributes: Vec::new(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -654,6 +659,7 @@ mod tests {
             raw_content: "{\"code\": 5}".to_string(),
             start_line: 5,
             end_line: 6,
+            attributes: Vec::new(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -676,6 +682,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 5,
             end_line: 5,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Asserts,
@@ -684,6 +691,7 @@ mod tests {
             raw_content: ".code == 5".to_string(),
             start_line: 6,
             end_line: 6,
+            attributes: Vec::new(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -707,6 +715,7 @@ mod tests {
             raw_content: "{\"code\": 5}".to_string(),
             start_line: 5,
             end_line: 6,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Asserts,
@@ -715,6 +724,7 @@ mod tests {
             raw_content: ".code == 5".to_string(),
             start_line: 7,
             end_line: 7,
+            attributes: Vec::new(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -734,6 +744,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 5,
             end_line: 5,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Asserts,
@@ -742,6 +753,7 @@ mod tests {
             raw_content: ".code == 5".to_string(),
             start_line: 6,
             end_line: 6,
+            attributes: Vec::new(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -764,6 +776,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 5,
             end_line: 5,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -772,6 +785,7 @@ mod tests {
             raw_content: "{\"id\": 1}".to_string(),
             start_line: 6,
             end_line: 7,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Asserts,
@@ -780,6 +794,7 @@ mod tests {
             raw_content: ".code == 5".to_string(),
             start_line: 8,
             end_line: 8,
+            attributes: Vec::new(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -799,6 +814,7 @@ mod tests {
             raw_content: ".id == 1".to_string(),
             start_line: 5,
             end_line: 5,
+            attributes: Vec::new(),
         });
 
         let result = validate_document(&doc);
@@ -826,6 +842,7 @@ mod tests {
             raw_content: "{\"result\": \"ok\"}".to_string(),
             start_line: 5,
             end_line: 6,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Error,
@@ -834,6 +851,7 @@ mod tests {
             raw_content: "{\"code\": 5}".to_string(),
             start_line: 7,
             end_line: 8,
+            attributes: Vec::new(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -853,6 +871,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 5,
             end_line: 5,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -861,6 +880,7 @@ mod tests {
             raw_content: "{\"result\": \"ok\"}".to_string(),
             start_line: 6,
             end_line: 7,
+            attributes: Vec::new(),
         });
 
         let result = validate_document(&doc);
@@ -878,6 +898,7 @@ mod tests {
             raw_content: "{\"key\": \"value\"}".to_string(),
             start_line: 5,
             end_line: 6,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -886,6 +907,7 @@ mod tests {
             raw_content: "{\"result\": \"ok\"}".to_string(),
             start_line: 7,
             end_line: 8,
+            attributes: Vec::new(),
         });
 
         let result = validate_document(&doc);
@@ -903,6 +925,7 @@ mod tests {
             raw_content: "{\"key\": \"value\"}".to_string(),
             start_line: 5,
             end_line: 6,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -911,6 +934,7 @@ mod tests {
             raw_content: "{\"result\": \"ok\"}".to_string(),
             start_line: 7,
             end_line: 8,
+            attributes: Vec::new(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -932,6 +956,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 5,
             end_line: 8,
+            attributes: Vec::new(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -955,6 +980,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 5,
             end_line: 8,
+            attributes: Vec::new(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -980,6 +1006,7 @@ mod tests {
             raw_content: "Service/Method".to_string(),
             start_line: 1,
             end_line: 1,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -988,6 +1015,7 @@ mod tests {
             raw_content: "{\"result\": \"ok\"}".to_string(),
             start_line: 2,
             end_line: 3,
+            attributes: Vec::new(),
         });
 
         let result = validate_document(&doc);
@@ -1012,6 +1040,7 @@ mod tests {
             raw_content: "unknown: value".to_string(),
             start_line: 5,
             end_line: 6,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -1020,6 +1049,7 @@ mod tests {
             raw_content: "{\"result\": \"ok\"}".to_string(),
             start_line: 7,
             end_line: 8,
+            attributes: Vec::new(),
         });
 
         let diagnostics = validate_document_diagnostics(&doc);
@@ -1040,6 +1070,7 @@ mod tests {
             raw_content: "dry_run: true".to_string(),
             start_line: 5,
             end_line: 6,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -1048,6 +1079,7 @@ mod tests {
             raw_content: "{\"result\": \"ok\"}".to_string(),
             start_line: 7,
             end_line: 8,
+            attributes: Vec::new(),
         });
 
         let diagnostics = validate_document_diagnostics(&doc);
@@ -1070,6 +1102,7 @@ mod tests {
             raw_content: "timeout: 0".to_string(),
             start_line: 5,
             end_line: 6,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -1078,6 +1111,7 @@ mod tests {
             raw_content: "{\"result\": \"ok\"}".to_string(),
             start_line: 7,
             end_line: 8,
+            attributes: Vec::new(),
         });
 
         let diagnostics = validate_document_diagnostics(&doc);
@@ -1104,6 +1138,7 @@ mod tests {
             raw_content: "".to_string(),
             start_line: 5,
             end_line: 8,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -1112,6 +1147,7 @@ mod tests {
             raw_content: "{\"result\": \"ok\"}".to_string(),
             start_line: 9,
             end_line: 10,
+            attributes: Vec::new(),
         });
 
         let diagnostics = validate_document_diagnostics(&doc);
@@ -1139,6 +1175,7 @@ mod tests {
             raw_content: "compression: brotli".to_string(),
             start_line: 5,
             end_line: 6,
+            attributes: Vec::new(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -1147,6 +1184,7 @@ mod tests {
             raw_content: "{\"result\": \"ok\"}".to_string(),
             start_line: 7,
             end_line: 8,
+            attributes: Vec::new(),
         });
 
         let diagnostics = validate_document_diagnostics(&doc);

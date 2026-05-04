@@ -1,7 +1,7 @@
 // Allure reporter integration tests — exercise the real AllureReporter
 
 use grpctestify::report::{AllureReporter, Reporter};
-use grpctestify::state::{TestResult, TestStatus};
+use grpctestify::state::{TestMeta, TestResult, TestStatus};
 
 #[test]
 fn test_allure_reporter_passing_test() {
@@ -15,6 +15,7 @@ fn test_allure_reporter_passing_test() {
         grpc_duration_ms: Some(80),
         error_message: None,
         execution_time: 1700000000,
+        meta: TestMeta::default(),
     };
 
     // Allure writes files in on_test_end, not on_suite_end
@@ -101,6 +102,7 @@ fn test_allure_reporter_mixed_results() {
             grpc_duration_ms: Some(5),
             error_message: None,
             execution_time: 1700000000,
+            meta: TestMeta::default(),
         },
     );
     reporter.on_test_end(
@@ -116,6 +118,7 @@ fn test_allure_reporter_mixed_results() {
             grpc_duration_ms: None,
             error_message: Some("Skipped".to_string()),
             execution_time: 1700000001,
+            meta: TestMeta::default(),
         },
     );
 
@@ -148,6 +151,7 @@ fn test_allure_reporter_labels_present() {
             grpc_duration_ms: None,
             error_message: None,
             execution_time: 1700000000,
+            meta: TestMeta::default(),
         },
     );
 
@@ -189,6 +193,7 @@ fn test_allure_reporter_test_name_from_path() {
             grpc_duration_ms: Some(40),
             error_message: None,
             execution_time: 1700000000,
+            meta: TestMeta::default(),
         },
     );
 
@@ -222,6 +227,7 @@ fn test_allure_reporter_timestamps() {
             grpc_duration_ms: Some(80),
             error_message: None,
             execution_time: 1700000000,
+            meta: TestMeta::default(),
         },
     );
 
@@ -234,6 +240,80 @@ fn test_allure_reporter_timestamps() {
             let start = json["start"].as_u64().expect("start should be u64");
             let stop = json["stop"].as_u64().expect("stop should be u64");
             assert!(stop >= start, "stop should be >= start");
+        }
+    }
+}
+
+#[test]
+fn test_allure_reporter_tags_and_owner_labels() {
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
+
+    let meta = TestMeta {
+        tags: vec!["smoke".to_string(), "fast".to_string()],
+        owner: Some("backend-qa".to_string()),
+        ..TestMeta::default()
+    };
+
+    reporter.on_test_end(
+        "test_labels.gctf",
+        &TestResult {
+            name: "test_labels.gctf".to_string(),
+            status: TestStatus::Pass,
+            duration_ms: 10,
+            grpc_duration_ms: None,
+            error_message: None,
+            execution_time: 1700000000,
+            meta,
+        },
+    );
+
+    for entry in std::fs::read_dir(temp_dir.path()).unwrap() {
+        let entry = entry.unwrap();
+        if entry.path().extension().is_some_and(|ext| ext == "json") {
+            let content = std::fs::read_to_string(entry.path()).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+            let labels = json["labels"].as_array().expect("labels should be array");
+            let label_pairs: Vec<(&str, &str)> = labels
+                .iter()
+                .filter_map(|l| Some((l["name"].as_str()?, l["value"].as_str()?)))
+                .collect();
+            assert!(label_pairs.contains(&("tag", "smoke")));
+            assert!(label_pairs.contains(&("tag", "fast")));
+            assert!(label_pairs.contains(&("owner", "backend-qa")));
+        }
+    }
+}
+
+#[test]
+fn test_allure_reporter_display_name_from_meta() {
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
+
+    let meta = TestMeta {
+        name: Some("Custom Test Name".to_string()),
+        ..TestMeta::default()
+    };
+
+    reporter.on_test_end(
+        "test.gctf",
+        &TestResult {
+            name: "test.gctf".to_string(),
+            status: TestStatus::Pass,
+            duration_ms: 10,
+            grpc_duration_ms: None,
+            error_message: None,
+            execution_time: 1700000000,
+            meta,
+        },
+    );
+
+    for entry in std::fs::read_dir(temp_dir.path()).unwrap() {
+        let entry = entry.unwrap();
+        if entry.path().extension().is_some_and(|ext| ext == "json") {
+            let content = std::fs::read_to_string(entry.path()).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+            assert_eq!(json["name"].as_str(), Some("Custom Test Name"));
         }
     }
 }
