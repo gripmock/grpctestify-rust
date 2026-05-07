@@ -19,7 +19,6 @@ pub fn generate_multi_doc_content(num_docs: usize) -> String {
     out
 }
 
-#[allow(dead_code)]
 pub fn single_doc_content() -> &'static str {
     r#"--- ENDPOINT ---
 svc.Method

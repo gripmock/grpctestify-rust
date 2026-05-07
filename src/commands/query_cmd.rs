@@ -747,7 +747,7 @@ impl QuerySource for IndexedSource {
 
 struct StreamingSource {
     path: PathBuf,
-    #[allow(dead_code)]
+
     def: SourceDefinition,
 }
 
@@ -783,7 +783,7 @@ impl QuerySource for StreamingSource {
 
 struct DirectFileSource {
     path: PathBuf,
-    #[allow(dead_code)]
+
     index_col: Option<String>,
 }
 

@@ -5,6 +5,7 @@ Load test parameterization from external data files (CSV, TSV, NDJSON). Each row
 ## When to Use
 
 Use data sources when you need to:
+
 - Test with thousands of different input combinations
 - Load test with realistic data variations
 - Parameterize requests from external databases or generated data
@@ -38,7 +39,7 @@ sources:
 ```
 
 | Field | Description |
-|-------|-------------|
+| ----- | ----------- |
 | `name` | Source name for templates like `{{name.column}}` |
 | `file` | Path to data file (relative to `.gctf`) |
 | `format` | `csv`, `tsv`, `ndjson` (auto-detected from extension) |
@@ -47,7 +48,7 @@ sources:
 ## Supported File Formats
 
 | Format | Extension | Example |
-|--------|----------|---------|
+| ------ | --------- | ------- |
 | CSV | `.csv` | `id,name,age\n1,alice,25` |
 | TSV | `.tsv` | `id\tname\tage` |
 | NDJSON | `.ndjson`, `.jsonl` | `{"id":1,"name":"alice"}` |

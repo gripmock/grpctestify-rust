@@ -74,16 +74,15 @@ pub struct Query {
 }
 
 pub struct Lexer<'a> {
-    #[allow(dead_code)]
-    input: &'a str,
+    _marker: std::marker::PhantomData<&'a ()>,
     chars: Vec<char>,
     pos: usize,
 }
 
-impl<'a> Lexer<'a> {
-    pub fn new(input: &'a str) -> Self {
+impl Lexer<'_> {
+    pub fn new(input: &str) -> Self {
         Self {
-            input,
+            _marker: std::marker::PhantomData,
             chars: input.chars().collect(),
             pos: 0,
         }

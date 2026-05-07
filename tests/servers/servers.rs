@@ -29,7 +29,7 @@ impl Default for TestServerConfig {
 /// Running test server handle
 pub struct TestServerHandle {
     pub handle: JoinHandle<Result<(), tonic::transport::Error>>,
-    #[allow(dead_code)]
+
     pub address: SocketAddr,
 }
 
@@ -62,7 +62,7 @@ pub async fn start_all_test_servers(
 }
 
 /// Start a single test server on given port
-#[allow(dead_code)]
+
 pub async fn start_test_server(
     server_type: &str,
     port: u16,

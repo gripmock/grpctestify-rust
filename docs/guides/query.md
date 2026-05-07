@@ -20,11 +20,12 @@ grpctestify query -q "users status=active" data/users.csv --output active_users.
 
 ## Query Syntax
 
-```
+```text
 <source> [col<op>value]...
 ```
 
 Where:
+
 - `<source>` — file name without extension, or `stdin`
 - `col<op>value` — filter expression
 
@@ -128,7 +129,7 @@ grpctestify query users.csv another.tsv
 
 ### Shell Example
 
-```
+```text
 $ grpctestify query users.csv
 grpctestify query shell
 Type '.help' for available commands
@@ -161,7 +162,7 @@ query> .quit
 ## Supported Formats
 
 | Format | Extensions | Auto-detect |
-|--------|------------|-------------|
+|--------|-----------|-------------|
 | CSV | `.csv` | By content (comma-separated, no tabs) |
 | TSV | `.tsv` | By content (tab-separated) |
 | NDJSON | `.ndjson`, `.jsonl` | By content (lines starting with `{`) |
@@ -170,6 +171,7 @@ query> .quit
 ### Format Detection
 
 When reading from stdin (`-`), format is auto-detected:
+
 - Lines contain tabs but no commas → TSV
 - Lines start with `{` → NDJSON
 - Lines contain commas → CSV
@@ -177,6 +179,7 @@ When reading from stdin (`-`), format is auto-detected:
 ## File Loading
 
 Files are loaded by extension:
+
 - `.gctf` — parsed as gRPC test file, sources extracted
 - `.csv`, `.tsv`, `.ndjson`, `.json` — data file, source name = file stem
 

@@ -131,10 +131,8 @@ pub fn bench_key_detail(key: &str) -> String {
     }
 }
 
-pub fn bench_aliases(key: &str) -> &'static [&'static str] {
-    match key {
-        _ => &[],
-    }
+pub fn bench_aliases(_key: &str) -> &'static [&'static str] {
+    &[]
 }
 
 pub fn canonical_bench_key(key: &str) -> Option<&'static str> {
