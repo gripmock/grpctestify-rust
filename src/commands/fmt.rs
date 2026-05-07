@@ -290,6 +290,32 @@ fn format_key_values_section(raw: &str, sort_keys: bool) -> Vec<String> {
     items.into_iter().map(|(_, _, v)| v).collect()
 }
 
+fn format_options_section(raw: &str) -> Vec<String> {
+    let lines = normalize_lines(raw);
+    let mut items: Vec<(String, String)> = Vec::new();
+
+    for line in &lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") || trimmed.is_empty() {
+            continue;
+        }
+        if let Some((key, value)) = trimmed.split_once(':') {
+            let normalized_key = match key.trim() {
+                "retry-delay" => "retry_delay",
+                "no-retry" => "no_retry",
+                other => other,
+            };
+            items.push((
+                normalized_key.to_ascii_lowercase(),
+                format!("{}: {}", normalized_key, value.trim()),
+            ));
+        }
+    }
+
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+    items.into_iter().map(|(_, v)| v).collect()
+}
+
 fn trim_trailing_blank_lines(lines: &mut Vec<String>) {
     while lines.last().is_some_and(|line| line.trim().is_empty()) {
         lines.pop();
@@ -328,6 +354,10 @@ fn format_section_lines(section: &crate::parser::ast::Section) -> Vec<String> {
         (crate::parser::ast::SectionType::Asserts, _) => {
             return normalize_lines(&section.raw_content);
         }
+        (
+            crate::parser::ast::SectionType::Options,
+            crate::parser::ast::SectionContent::KeyValues(_),
+        ) => format_options_section(&section.raw_content),
         (_, crate::parser::ast::SectionContent::KeyValues(_)) => {
             format_key_values_section(&section.raw_content, true)
         }

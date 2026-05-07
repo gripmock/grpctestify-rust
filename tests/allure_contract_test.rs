@@ -11,7 +11,7 @@ fn test_allure_passed_test_structure() {
         "stop": 1700000001000_u64,
         "stage": "finished",
         "labels": [
-            {"name": "language", "value": "rust"},
+            {"name": "language", "value": "grpctestify"},
             {"name": "framework", "value": "grpctestify"},
             {"name": "suite", "value": "test-suite"},
             {"name": "feature", "value": "gRPC Test"}
@@ -46,7 +46,7 @@ fn test_allure_json_has_required_fields() {
         "stop": 1700000001000_u64,
         "stage": "finished",
         "labels": [
-            {"name": "language", "value": "rust"},
+            {"name": "language", "value": "grpctestify"},
             {"name": "framework", "value": "grpctestify"},
             {"name": "suite", "value": "test-suite"},
             {"name": "feature", "value": "gRPC Test"}
@@ -108,7 +108,7 @@ fn test_allure_failed_test_structure() {
         "stop": 1700000001000_u64,
         "stage": "finished",
         "labels": [
-            {"name": "language", "value": "rust"},
+            {"name": "language", "value": "grpctestify"},
             {"name": "framework", "value": "grpctestify"}
         ]
     });
@@ -128,7 +128,7 @@ fn test_allure_labels_required() {
 
     let allure_result = serde_json::json!({
         "labels": [
-            {"name": "language", "value": "rust"},
+            {"name": "language", "value": "grpctestify"},
             {"name": "framework", "value": "grpctestify"},
             {"name": "suite", "value": "test-suite"},
             {"name": "feature", "value": "gRPC Test"}

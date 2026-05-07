@@ -3,11 +3,13 @@
 //! Each reporter maintains its own state and is responsible for formatting its output.
 
 pub mod allure;
+pub mod bench;
 pub mod console;
 pub mod coverage;
 pub mod diagnostics;
 pub mod json;
 pub mod junit;
+pub mod kernel;
 pub mod streaming;
 
 use crate::state::{TestResult, TestResults};
@@ -16,8 +18,8 @@ use anyhow::Result;
 pub use console::ConsoleReporter;
 pub use coverage::CoverageCollector;
 pub use diagnostics::{
-    AstOverview, CheckReport, CheckSummary, Diagnostic, DiagnosticSeverity, InspectReport,
-    SectionInfo,
+    AstOverview, BenchResolvedOption, CheckReport, CheckSummary, Diagnostic, DiagnosticSeverity,
+    InspectReport, SectionInfo,
 };
 pub use json::JsonReporter;
 pub use junit::JunitReporter;

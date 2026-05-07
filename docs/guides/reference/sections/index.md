@@ -25,6 +25,7 @@ Section examples are intentionally partial. Combine them into one complete `.gct
 - [TLS](./tls)
 - [PROTO](./proto)
 - [OPTIONS](./options)
+- [BENCH](./bench)
 
 ## Modifiers
 

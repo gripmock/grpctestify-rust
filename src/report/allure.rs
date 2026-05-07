@@ -4,6 +4,7 @@
 //! Each file contains test metadata, status, timing, and gRPC call steps.
 
 use crate::report::Reporter;
+use crate::report::kernel;
 use crate::state::TestResult;
 use anyhow::Result;
 use serde::Serialize;
@@ -41,6 +42,8 @@ struct AllureResult {
     stage: String,
     labels: Vec<Label>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    parameters: Option<Vec<Parameter>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     steps: Option<Vec<Step>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     attachments: Option<Vec<Attachment>>,
@@ -67,6 +70,12 @@ struct Label {
 }
 
 #[derive(Serialize)]
+struct Parameter {
+    name: String,
+    value: String,
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Step {
     name: String,
@@ -77,6 +86,8 @@ struct Step {
     stop: Option<u128>,
     #[serde(skip_serializing_if = "Option::is_none")]
     attachments: Option<Vec<Attachment>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    steps: Option<Vec<Step>>,
 }
 
 #[derive(Serialize)]
@@ -103,6 +114,84 @@ fn extract_suite_name(path: &str) -> String {
         .and_then(|n| n.to_str())
         .unwrap_or("gRPC Tests")
         .to_string()
+}
+
+fn build_grpc_steps(
+    test_name: &str,
+    result: &TestResult,
+    start: u128,
+    stop: u128,
+) -> Option<Vec<Step>> {
+    let calls = kernel::build_kernel_calls(test_name, result)?;
+    if calls.is_empty() {
+        return None;
+    }
+    let total_docs = calls.len();
+
+    let total_span = stop.saturating_sub(start);
+    let per_step = total_span / total_docs as u128;
+
+    let mut steps = Vec::with_capacity(calls.len());
+    let failed_index = if result.status == crate::state::TestStatus::Fail {
+        Some(total_docs.saturating_sub(1))
+    } else {
+        None
+    };
+
+    for (idx, call) in calls.iter().enumerate() {
+        let status = if failed_index == Some(idx) {
+            "failed"
+        } else {
+            "passed"
+        };
+
+        let step_start = start + per_step.saturating_mul(idx as u128);
+        let step_stop = if idx + 1 == total_docs {
+            stop
+        } else {
+            start + per_step.saturating_mul((idx + 1) as u128)
+        };
+
+        let name = format!(
+            "{} [{}] (requests: {}, expect: {})",
+            call.display_name, call.rpc_mode, call.request_count, call.expectation_kind
+        );
+
+        let child_steps: Vec<Step> = call
+            .phases
+            .iter()
+            .map(|phase| Step {
+                name: format!("{} ({})", phase.kind.to_uppercase(), phase.details),
+                status: phase.status.clone(),
+                start: None,
+                stop: None,
+                attachments: None,
+                steps: None,
+            })
+            .collect();
+
+        steps.push(Step {
+            name,
+            status: status.to_string(),
+            start: Some(step_start),
+            stop: Some(step_stop),
+            attachments: None,
+            steps: if child_steps.is_empty() {
+                None
+            } else {
+                Some(child_steps)
+            },
+        });
+    }
+
+    if steps.is_empty() { None } else { Some(steps) }
+}
+
+fn collect_parameters(test_name: &str) -> Vec<Parameter> {
+    kernel::runtime_properties(test_name)
+        .into_iter()
+        .map(|(name, value)| Parameter { name, value })
+        .collect()
 }
 
 impl Reporter for AllureReporter {
@@ -140,8 +229,8 @@ impl Reporter for AllureReporter {
         let test_name_short = extract_test_name(display_name);
         let suite_name = extract_suite_name(test_name);
 
-        let grpc_step = if result.grpc_duration_ms.is_some() {
-            Some(Step {
+        let fallback_step = if result.grpc_duration_ms.is_some() {
+            Some(vec![Step {
                 name: "gRPC call".to_string(),
                 status: if result.status == crate::state::TestStatus::Pass {
                     "passed"
@@ -152,22 +241,27 @@ impl Reporter for AllureReporter {
                 start: Some(start),
                 stop: Some(now),
                 attachments: None,
-            })
+                steps: None,
+            }])
         } else {
             None
         };
 
-        let steps = grpc_step.map(|s| vec![s]);
+        let steps = build_grpc_steps(test_name, result, start, now).or(fallback_step);
 
         // Build labels from META
         let mut labels = vec![
             Label {
                 name: "language".to_string(),
-                value: "rust".to_string(),
+                value: "gctf".to_string(),
             },
             Label {
                 name: "framework".to_string(),
                 value: "grpctestify".to_string(),
+            },
+            Label {
+                name: "grpctestify_version".to_string(),
+                value: env!("CARGO_PKG_VERSION").to_string(),
             },
             Label {
                 name: "suite".to_string(),
@@ -195,6 +289,33 @@ impl Reporter for AllureReporter {
             });
         }
 
+        // Add gRPC endpoint/service/method labels for fast filtering in Allure UI
+        let grpc_labels = kernel::collect_grpc_labels(test_name);
+        for endpoint in grpc_labels.endpoints {
+            labels.push(Label {
+                name: "grpc_endpoint".to_string(),
+                value: endpoint,
+            });
+        }
+        for service in grpc_labels.services {
+            labels.push(Label {
+                name: "grpc_service".to_string(),
+                value: service,
+            });
+        }
+        for method in grpc_labels.methods {
+            labels.push(Label {
+                name: "grpc_method".to_string(),
+                value: method,
+            });
+        }
+        for package in grpc_labels.packages {
+            labels.push(Label {
+                name: "grpc_package".to_string(),
+                value: package,
+            });
+        }
+
         let report = AllureResult {
             uuid: uuid.clone(),
             history_id,
@@ -206,6 +327,7 @@ impl Reporter for AllureReporter {
             stop: now,
             stage: "finished".to_string(),
             labels,
+            parameters: Some(collect_parameters(test_name)),
             steps,
             attachments: None,
         };

@@ -34,7 +34,7 @@ package.Service/Method
 - `TLS` - TLS/mTLS parameters
 - `PROTO` - descriptor/reflection configuration
 - `OPTIONS` - parsed, validated, and used for per-test runtime overrides
-  (`timeout`, `retry`, `retry-delay`, `no-retry`, `compression`)
+  (`timeout`, `retry`, `retry_delay`, `no_retry`, `compression`)
 
 Use [Section Reference](../reference/sections/) for exact syntax and section rules.
 

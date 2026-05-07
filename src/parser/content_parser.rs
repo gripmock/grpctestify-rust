@@ -52,7 +52,8 @@ pub fn parse_section_content(section_type: SectionType, content: &str) -> Result
         SectionType::RequestHeaders
         | SectionType::Tls
         | SectionType::Proto
-        | SectionType::Options => {
+        | SectionType::Options
+        | SectionType::Bench => {
             let key_values = parse_key_value_section(content)?;
             Ok(SectionContent::KeyValues(key_values))
         }

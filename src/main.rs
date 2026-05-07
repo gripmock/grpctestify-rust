@@ -6,7 +6,6 @@ use tracing::{info, warn};
 
 use grpctestify::cli;
 use grpctestify::commands;
-use grpctestify::config::Config;
 
 use cli::{Cli, Commands};
 
@@ -16,9 +15,7 @@ async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Honour NO_COLOR (https://no-color.org/) before any output, including clap --help.
-    // Config file progress.color = false is a secondary opt-out; NO_COLOR env var takes precedence.
-    let disable_color = std::env::var_os("NO_COLOR").is_some()
-        || Config::load().is_some_and(|cfg| !cfg.progress.color);
+    let disable_color = std::env::var_os("NO_COLOR").is_some();
     if disable_color {
         console::set_colors_enabled(false);
         console::set_colors_enabled_stderr(false);
@@ -64,11 +61,14 @@ async fn main() -> Result<()> {
         Some(Commands::Explain(args)) => commands::handle_explain(args).await,
         Some(Commands::Grpcurl(args)) => commands::handle_grpcurl(args).await,
         Some(Commands::Inspect(args)) => commands::handle_inspect(args).await,
+        Some(Commands::Index(args)) => commands::handle_index(args),
         Some(Commands::List(args)) => commands::handle_list(args),
         Some(Commands::Run(args)) => commands::run_tests(&cli, args).await,
         Some(Commands::Call(args)) => commands::handle_call(args).await,
         Some(Commands::Gen(args)) => commands::handle_gen(args).await,
         Some(Commands::Lsp(args)) => commands::handle_lsp(args).await,
+        Some(Commands::Bench(args)) => commands::handle_bench(args).await,
+        Some(Commands::Query(args)) => commands::handle_query(args),
         None => {
             // Implicit Run
             let args = cli.run_args.clone();

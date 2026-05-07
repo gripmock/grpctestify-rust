@@ -25,7 +25,7 @@ package.Service/Method
 ## Supported Sections
 
 - Core: `META`, `ADDRESS`, `ENDPOINT`, `REQUEST`, `RESPONSE`, `ERROR`, `ASSERTS`
-- Supporting: `EXTRACT`, `REQUEST_HEADERS`, `TLS`, `PROTO`, `OPTIONS`
+- Supporting: `EXTRACT`, `REQUEST_HEADERS`, `TLS`, `PROTO`, `OPTIONS`, `BENCH`
 
 For section details, use [Section Reference](../sections/).
 
@@ -42,6 +42,7 @@ For section details, use [Section Reference](../sections/).
 - `RESPONSE` and `ERROR` cannot be used together in one file
 - `ADDRESS` may be omitted if `GRPCTESTIFY_ADDRESS` is set
 - `META` is optional, but only one is allowed and it must be the first section
+- `BENCH` is optional, but only one is allowed and it should be first or immediately after `META`
 
 ## Attributes
 
@@ -99,6 +100,7 @@ If `details` is not returned by the server, it can be omitted from expected `ERR
 - [TLS](../sections/tls)
 - [PROTO](../sections/proto)
 - [OPTIONS](../sections/options)
+- [BENCH](../sections/bench)
 - [Attributes](../sections/attributes)
 
 Related: [Assertions](./assertions), [Plugin System](../../plugins/).

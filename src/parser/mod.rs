@@ -20,6 +20,7 @@ pub mod error_recovery;
 pub mod gctf_tokenizer;
 pub mod json_mod;
 pub mod json_stream_parser;
+pub mod query_ast;
 pub mod ternary;
 pub mod ternary_ast;
 pub mod tokenizer;

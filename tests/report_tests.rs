@@ -178,6 +178,8 @@ fn test_json_reporter_on_suite_end() {
     // Verify structure
     assert!(json.get("total").is_some());
     assert!(json.get("passed").is_some());
+    assert!(json.get("report_context").is_some());
+    assert_eq!(json["report_context"]["tool"], "grpctestify");
     assert_eq!(json["total"], 1);
     assert_eq!(json["passed"], 1);
 }

@@ -1,0 +1,24 @@
+--- META ---
+name: TLS connection example
+tags: [tls]
+
+--- TLS ---
+ca_cert: /path/to/ca.crt
+client_cert: /path/to/client.crt
+client_key: /path/to/client.key
+
+--- ADDRESS ---
+localhost:443
+
+--- ENDPOINT ---
+helloworld.Greeter/SayHello
+
+--- REQUEST ---
+{
+  "name": "TLS World"
+}
+
+--- RESPONSE ---
+{
+  "message": "Hello, TLS World!"
+}

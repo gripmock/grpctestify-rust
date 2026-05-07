@@ -1,0 +1,47 @@
+--- META ---
+name: Attribute usage examples
+tags: [attributes]
+
+#[retry(2)]
+#[retry_delay(1.0)]
+--- ENDPOINT ---
+helloworld.Greeter/SayHello
+
+--- REQUEST ---
+{
+  "name": "World"
+}
+
+--- RESPONSE ---
+{
+  "message": "Hello, World!"
+}
+
+#[skip]
+--- ENDPOINT ---
+helloworld.Greeter/SayHello
+
+--- REQUEST ---
+{
+  "name": "Skipped"
+}
+
+--- RESPONSE ---
+{
+  "message": "This test is skipped"
+}
+
+#[timeout(5)]
+#[name("Custom call name")]
+--- ENDPOINT ---
+helloworld.Greeter/SayHello
+
+--- REQUEST ---
+{
+  "name": "With timeout"
+}
+
+--- RESPONSE ---
+{
+  "message": "Hello, With timeout!"
+}

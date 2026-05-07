@@ -16,7 +16,7 @@ pub use request_handler::{RequestHandler, RequestSendResult};
 pub use response_handler::ResponseHandler;
 pub use runner::{
     AssertionInfo, ComparisonOptions, ConnectionInfo, ExecutionPlan, ExecutionSummary,
-    ExpectationInfo, ExtractionInfo, HeadersInfo, RequestInfo, RpcMode, TargetInfo,
+    ExpectationInfo, ExtractionInfo, HeadersInfo, RequestInfo, RpcMode, RpcModeInfo, TargetInfo,
     TestExecutionResult, TestExecutionStatus, TestRunner,
 };
 #[cfg(test)]

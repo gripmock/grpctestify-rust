@@ -69,6 +69,17 @@ pub struct InspectReport {
     pub semantic_diagnostics: Vec<Diagnostic>,
     pub optimization_hints: Vec<Diagnostic>,
     pub inferred_rpc_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_runtime: Option<crate::execution::runner_helpers::EffectiveRuntimeOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bench_resolved: Option<Vec<BenchResolvedOption>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchResolvedOption {
+    pub key: String,
+    pub value: String,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

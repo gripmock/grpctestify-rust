@@ -7,11 +7,11 @@ auth.AuthService/Register
   "password": "secret123"
 }
 
---- RESPONSE redact=password,token ---
+--- RESPONSE redact=["password","token"] ---
 {
   "user_id": 123,
   "token": "abc123"
 }
 
 --- ASSERTS ---
-@uuid(.user_id)
+@uuid(.token)

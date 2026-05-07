@@ -171,6 +171,18 @@ impl Section {
             .map(|a| a.value.split(',').any(|t| t.trim() == tag))
             .unwrap_or(false)
     }
+
+    pub fn get_compression(&self) -> Option<String> {
+        self.get_attribute("compression")
+            .map(|a| a.value.trim().to_lowercase())
+            .filter(|v| v == "gzip" || v == "none")
+    }
+
+    pub fn get_repeat(&self) -> Option<u32> {
+        self.get_attribute("repeat")
+            .and_then(|a| a.parse_u32())
+            .filter(|&v| v >= 1)
+    }
 }
 
 /// A section in the .gctf file
@@ -279,6 +291,9 @@ pub enum SectionType {
 
     /// File-level metadata (suite, tags)
     Meta,
+
+    /// File-level benchmark profile/options
+    Bench,
 }
 
 impl SectionType {
@@ -305,6 +320,7 @@ impl SectionType {
             SectionType::Options => "OPTIONS",
             SectionType::Extract => "EXTRACT",
             SectionType::Meta => "META",
+            SectionType::Bench => "BENCH",
         }
     }
 
@@ -323,6 +339,7 @@ impl SectionType {
             "OPTIONS" => Some(SectionType::Options),
             "EXTRACT" => Some(SectionType::Extract),
             "META" => Some(SectionType::Meta),
+            "BENCH" => Some(SectionType::Bench),
             _ => None,
         }
     }
@@ -340,12 +357,24 @@ impl SectionType {
 
     /// Check if section is file-level (not inside documents)
     pub fn is_file_level(&self) -> bool {
-        matches!(self, SectionType::Meta)
+        matches!(self, SectionType::Meta | SectionType::Bench)
     }
 
-    /// Check if section supports inline options
     pub fn supports_inline_options(&self) -> bool {
         matches!(self, SectionType::Response | SectionType::Error)
+    }
+
+    pub fn preamble_rank(&self) -> Option<usize> {
+        match self {
+            SectionType::Meta => Some(0),
+            SectionType::Bench => Some(1),
+            SectionType::Address => Some(2),
+            SectionType::Endpoint => Some(3),
+            SectionType::Tls => Some(4),
+            SectionType::Proto => Some(5),
+            SectionType::Options => Some(6),
+            _ => None,
+        }
     }
 }
 
@@ -694,6 +723,8 @@ mod tests {
         assert_eq!(SectionType::Tls.as_str(), "TLS");
         assert_eq!(SectionType::Options.as_str(), "OPTIONS");
         assert_eq!(SectionType::Extract.as_str(), "EXTRACT");
+        assert_eq!(SectionType::Meta.as_str(), "META");
+        assert_eq!(SectionType::Bench.as_str(), "BENCH");
     }
 
     #[test]
@@ -706,6 +737,7 @@ mod tests {
             SectionType::from_keyword("REQUEST_HEADERS"),
             Some(SectionType::RequestHeaders)
         );
+        assert_eq!(SectionType::from_keyword("BENCH"), Some(SectionType::Bench));
     }
 
     #[test]

@@ -6,7 +6,7 @@ users.UserService/GetUser
   "id": 123
 }
 
---- RESPONSE with_asserts=true ---
+--- RESPONSE with_asserts ---
 {
   "id": 123,
   "name": "John Doe",

@@ -31,6 +31,23 @@ For unstable endpoints, run with reduced parallelism to isolate load-related fai
 grpctestify tests/ --parallel 1 --verbose
 ```
 
+If behavior is unexpected because of merged runtime settings, inspect effective values:
+
+```bash
+grpctestify inspect test.gctf --format json
+grpctestify explain test.gctf
+```
+
+Runtime precedence quick map:
+
+- `run`: section attributes > `OPTIONS` > CLI runtime baseline/defaults
+- `bench`: CLI bench flags > `BENCH` section > bench defaults
+
+If behavior differs between `run` and `bench`, verify you are reading the correct precedence model:
+
+- `run`: `section attributes > OPTIONS > CLI runtime baseline/defaults`
+- `bench`: `CLI bench flags > BENCH section > bench defaults`
+
 ## Test file problems
 
 ### JSON parse errors
@@ -92,3 +109,9 @@ grpctestify explain test.gctf
 - `GRPCTESTIFY_TLS_CERT_FILE`
 - `GRPCTESTIFY_TLS_KEY_FILE`
 - `GRPCTESTIFY_TLS_SERVER_NAME`
+
+## Related
+
+- [OPTIONS](./reference/sections/options)
+- [ATTRIBUTES](./reference/sections/attributes)
+- [BENCH](./reference/sections/bench)

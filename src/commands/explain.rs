@@ -1,15 +1,20 @@
 // Explain command - show detailed execution plan via Workflow
 
+use crate::bench::sources::index_builder::index_path_for_source;
 use crate::cli::args::HasFormat;
+use crate::utils::file::FileUtils;
 use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
 
+use crate::bench::schema::bench_key_rank;
 use crate::cli::args::ExplainArgs;
+use crate::commands::bench::{BenchConfigResolved, BenchOptionSource};
+use crate::execution::runner_helpers::{CliRuntimeDefaults, resolve_effective_runtime_options};
 use crate::execution::{ExecutionPlan, Workflow};
 use crate::optimizer;
 use crate::parser;
-use crate::parser::ast::{SectionContent, SectionType};
+use crate::parser::ast::{GctfDocument, SectionContent, SectionType};
 
 fn optimization_hints_from_workflow(workflow: &Workflow) -> Vec<optimizer::OptimizationHint> {
     let mut hints = Vec::new();
@@ -48,12 +53,24 @@ fn sorted_key_values(map: &std::collections::HashMap<String, String>) -> Vec<(&s
     pairs
 }
 
+fn sorted_bench_key_values(map: &std::collections::HashMap<String, String>) -> Vec<(&str, &str)> {
+    let mut pairs: Vec<(&str, &str)> = map.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    pairs.sort_by(|(ka, _), (kb, _)| {
+        bench_key_rank(ka)
+            .cmp(&bench_key_rank(kb))
+            .then_with(|| ka.cmp(kb))
+    });
+    pairs
+}
+
 #[derive(Serialize)]
 struct ExplainJsonOutput {
     semantic_plan: ExecutionPlan,
     optimization_trace: Vec<optimizer::OptimizationHint>,
     optimized_plan: ExecutionPlan,
     execution_plan: ExecutionPlan,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bench_resolved: Option<Vec<crate::report::BenchResolvedOption>>,
 }
 
 #[derive(Serialize)]
@@ -71,6 +88,80 @@ struct DocumentPlan {
     variable_extractions: Vec<(String, String)>,
     has_streaming: bool,
     rpc_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bench_resolved: Option<Vec<crate::report::BenchResolvedOption>>,
+}
+
+fn bench_section_map(
+    doc: &parser::GctfDocument,
+) -> Option<&std::collections::HashMap<String, String>> {
+    doc.sections.iter().find_map(|section| {
+        if section.section_type == SectionType::Bench
+            && let SectionContent::KeyValues(bench) = &section.content
+        {
+            return Some(bench);
+        }
+        None
+    })
+}
+
+fn bench_resolved_options(
+    doc: &parser::GctfDocument,
+) -> Option<Vec<crate::report::BenchResolvedOption>> {
+    let bench_section = bench_section_map(doc)?;
+    let config = BenchConfigResolved::from_bench_section(Some(bench_section)).ok()?;
+
+    let mut out = Vec::new();
+    for (internal_key, output_key) in [
+        ("concurrency", "concurrency"),
+        ("load_schedule", "load_schedule"),
+        ("load_start", "load_start"),
+        ("load_step", "load_step"),
+        ("load_end", "load_end"),
+        ("load_step_duration", "load_step_duration"),
+        ("load_max_duration", "load_max_duration"),
+        ("progress_interval", "progress_interval"),
+    ] {
+        let source = config
+            .option_sources
+            .get(internal_key)
+            .copied()
+            .unwrap_or(BenchOptionSource::Default)
+            .as_str()
+            .to_string();
+        let value = match internal_key {
+            "concurrency" => config.concurrency.to_string(),
+            "load_schedule" => config.load_schedule.clone(),
+            "load_start" => config
+                .load_start
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            "load_step" => config
+                .load_step
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            "load_end" => config
+                .load_end
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            "load_step_duration" => config
+                .load_step_duration
+                .map(|v| format!("{}ms", v.as_millis()))
+                .unwrap_or_else(|| "<none>".to_string()),
+            "load_max_duration" => config
+                .load_max_duration
+                .map(|v| format!("{}ms", v.as_millis()))
+                .unwrap_or_else(|| "<none>".to_string()),
+            "progress_interval" => format!("{}ms", config.progress_interval.as_millis()),
+            _ => "<n/a>".to_string(),
+        };
+        out.push(crate::report::BenchResolvedOption {
+            key: output_key.to_string(),
+            value,
+            source,
+        });
+    }
+    Some(out)
 }
 
 pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
@@ -113,6 +204,7 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
                 optimization_trace,
                 optimized_plan,
                 execution_plan,
+                bench_resolved: bench_resolved_options(&doc),
             };
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
@@ -146,6 +238,7 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
                     variable_extractions: extractions,
                     has_streaming: workflow.has_streaming(),
                     rpc_mode: workflow.rpc_mode_name().to_string(),
+                    bench_resolved: bench_resolved_options(d),
                 });
             }
 
@@ -273,6 +366,31 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
         for (key, value) in sorted_key_values(&options) {
             println!("    {}: {}", key, value);
         }
+    }
+
+    if let Ok(effective) = resolve_effective_runtime_options(
+        doc,
+        CliRuntimeDefaults {
+            timeout_seconds: 30,
+            retry: 0,
+            retry_delay_seconds: 1.0,
+            no_retry: false,
+        },
+    ) {
+        println!("  -> Effective runtime:");
+        println!(
+            "    timeout={}s ({:?}), retry={} ({:?}), retry_delay={}s ({:?}), no_retry={} ({:?}), compression={} ({:?})",
+            effective.timeout_seconds.value,
+            effective.timeout_seconds.source,
+            effective.retry.value,
+            effective.retry.source,
+            effective.retry_delay_seconds.value,
+            effective.retry_delay_seconds.source,
+            effective.no_retry.value,
+            effective.no_retry.source,
+            effective.compression.value,
+            effective.compression.source,
+        );
     }
 
     // TLS
@@ -502,6 +620,29 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
         println!("  Address: {}", addr);
     } else {
         println!("  Address: (from GRPCTESTIFY_ADDRESS env or default)");
+    }
+    if let Ok(effective) = resolve_effective_runtime_options(
+        doc,
+        CliRuntimeDefaults {
+            timeout_seconds: 30,
+            retry: 0,
+            retry_delay_seconds: 1.0,
+            no_retry: false,
+        },
+    ) {
+        println!(
+            "  Runtime: timeout={}s ({:?}), retry={} ({:?}), retry_delay={}s ({:?}), no_retry={} ({:?}), compression={} ({:?})",
+            effective.timeout_seconds.value,
+            effective.timeout_seconds.source,
+            effective.retry.value,
+            effective.retry.source,
+            effective.retry_delay_seconds.value,
+            effective.retry_delay_seconds.source,
+            effective.no_retry.value,
+            effective.no_retry.source,
+            effective.compression.value,
+            effective.compression.source,
+        );
     }
     println!();
 
@@ -735,6 +876,81 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
                 step += 1;
             }
             SectionType::Meta => {}
+            SectionType::Bench => {
+                println!();
+                println!(
+                    "Step {}: BENCH [lines {}-{}]",
+                    step,
+                    section.start_line + 1,
+                    section.end_line + 1
+                );
+                if let SectionContent::KeyValues(bench) = &section.content {
+                    if bench.is_empty() {
+                        println!("  (no benchmark options)");
+                    } else {
+                        println!("  Benchmark profile:");
+                        for (key, value) in sorted_bench_key_values(bench) {
+                            println!("    {}: {}", key, value);
+                        }
+
+                        match BenchConfigResolved::from_bench_section(Some(bench)) {
+                            Ok(config) => {
+                                println!("  Resolved schedule/runtime (value + source):");
+                                for key in [
+                                    "concurrency",
+                                    "load_schedule",
+                                    "load_start",
+                                    "load_step",
+                                    "load_end",
+                                    "load_step_duration",
+                                    "load_max_duration",
+                                    "progress_interval",
+                                ] {
+                                    let source = config
+                                        .option_sources
+                                        .get(key)
+                                        .copied()
+                                        .unwrap_or(BenchOptionSource::Default)
+                                        .as_str();
+                                    let value = match key {
+                                        "concurrency" => config.concurrency.to_string(),
+                                        "load_schedule" => config.load_schedule.clone(),
+                                        "load_start" => config
+                                            .load_start
+                                            .map(|v| v.to_string())
+                                            .unwrap_or_else(|| "<none>".to_string()),
+                                        "load_step" => config
+                                            .load_step
+                                            .map(|v| v.to_string())
+                                            .unwrap_or_else(|| "<none>".to_string()),
+                                        "load_end" => config
+                                            .load_end
+                                            .map(|v| v.to_string())
+                                            .unwrap_or_else(|| "<none>".to_string()),
+                                        "load_step_duration" => config
+                                            .load_step_duration
+                                            .map(|v| format!("{}ms", v.as_millis()))
+                                            .unwrap_or_else(|| "<none>".to_string()),
+                                        "load_max_duration" => config
+                                            .load_max_duration
+                                            .map(|v| format!("{}ms", v.as_millis()))
+                                            .unwrap_or_else(|| "<none>".to_string()),
+                                        "progress_interval" => {
+                                            format!("{}ms", config.progress_interval.as_millis())
+                                        }
+                                        _ => "<n/a>".to_string(),
+                                    };
+                                    println!("    {}: {} (source: {})", key, value, source);
+                                }
+                            }
+                            Err(err) => {
+                                println!("  [warn] unresolved BENCH config: {}", err);
+                            }
+                        }
+                    }
+                }
+                step += 1;
+            }
         }
     }
 
@@ -745,5 +961,232 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
     println!("  RPC Mode: {}", workflow.rpc_mode_name());
     if workflow.has_streaming() {
         println!("  Streaming: enabled");
+    }
+
+    print_source_hints(doc, file_path);
+    print_type_optimization_hints(doc, file_path);
+}
+
+fn print_type_optimization_hints(doc: &GctfDocument, file_path: &Path) {
+    use crate::bench::sources::SourceDefinition;
+    use crate::bench::sources::index::infer_key_type_from_stream;
+
+    let bench_section = match doc
+        .sections
+        .iter()
+        .find(|s| s.section_type == SectionType::Bench)
+    {
+        Some(s) => s,
+        None => return,
+    };
+
+    let bench = match &bench_section.content {
+        SectionContent::KeyValues(kv) => kv,
+        _ => return,
+    };
+
+    let raw = match bench.get("sources") {
+        Some(r) if !r.trim().is_empty() => r,
+        _ => return,
+    };
+
+    let sources: Vec<SourceDefinition> = match serde_yaml_ng::from_str(raw) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let mut hints_printed = false;
+
+    for def in &sources {
+        let source_path = FileUtils::resolve_relative_path(file_path, &def.file);
+        if !source_path.exists() {
+            continue;
+        }
+
+        for key_col in def.indexed_columns() {
+            let file = match std::fs::File::open(&source_path) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            let mut reader = std::io::BufReader::new(file);
+
+            let key_column_idx =
+                match crate::bench::sources::index_builder::find_column_index(&mut reader, key_col)
+                {
+                    Ok(idx) => idx,
+                    Err(_) => continue,
+                };
+
+            let file_size = source_path.metadata().map(|m| m.len()).unwrap_or(0);
+            let max_bytes_scan = file_size.min(1024 * 1024);
+
+            let (inferred_type, stats) =
+                match infer_key_type_from_stream(&mut reader, key_column_idx, 1000, max_bytes_scan)
+                {
+                    Ok((t, s)) => (t, s),
+                    Err(_) => continue,
+                };
+
+            let suggested_type = match inferred_type {
+                crate::bench::sources::index::KeyType::String => None,
+                crate::bench::sources::index::KeyType::U64 => Some("u64"),
+                crate::bench::sources::index::KeyType::I64 => Some("i64"),
+                crate::bench::sources::index::KeyType::U32 => Some("u32"),
+                crate::bench::sources::index::KeyType::I32 => Some("i32"),
+                crate::bench::sources::index::KeyType::UnixTimestampSec => Some("timestamp"),
+                crate::bench::sources::index::KeyType::UnixTimestampMillis => Some("timestamp_ms"),
+                crate::bench::sources::index::KeyType::DatePacked => Some("date"),
+                crate::bench::sources::index::KeyType::TimePacked => Some("time"),
+                crate::bench::sources::index::KeyType::UUID => Some("uuid"),
+                crate::bench::sources::index::KeyType::ULID => Some("ulid"),
+            };
+
+            if let Some(suggested) = suggested_type {
+                if !hints_printed {
+                    println!();
+                    println!("TYPE OPTIMIZATION HINTS");
+                    println!("------------------------");
+                    hints_printed = true;
+                }
+
+                println!(
+                    "  {} {}: consider `indexed_by: {}: {}` (inferred from {} samples, {}% confidence)",
+                    if stats.confidence >= 0.9 {
+                        "✓"
+                    } else {
+                        "⚠"
+                    },
+                    format!("{}.{}", def.name.as_deref().unwrap_or(&def.file), key_col),
+                    key_col,
+                    suggested,
+                    stats.samples_taken,
+                    (stats.confidence * 100.0) as i32
+                );
+            }
+        }
+    }
+
+    if hints_printed {
+        println!();
+        println!("  Explicit type annotations improve lookup performance for non-String keys.");
+    }
+}
+
+fn print_source_hints(doc: &GctfDocument, file_path: &Path) {
+    use crate::bench::sources::SourceDefinition;
+    use crate::bench::sources::analyzer::SourceUsageAnalyzer;
+
+    let bench_section = match doc
+        .sections
+        .iter()
+        .find(|s| s.section_type == SectionType::Bench)
+    {
+        Some(s) => s,
+        None => return,
+    };
+
+    let bench = match &bench_section.content {
+        SectionContent::KeyValues(kv) => kv,
+        _ => return,
+    };
+
+    let raw = match bench.get("sources") {
+        Some(r) if !r.trim().is_empty() => r,
+        _ => return,
+    };
+
+    let sources: Vec<SourceDefinition> = match serde_yaml_ng::from_str(raw) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let plan = SourceUsageAnalyzer::analyze(doc, &sources);
+
+    if plan.required_indexes.is_empty() {
+        return;
+    }
+
+    let mut hints_printed = false;
+    for req in &plan.required_indexes {
+        let source_def = sources.iter().find(|s| {
+            let from_name = s.name.as_deref() == Some(&req.source);
+            let from_file_stem = std::path::Path::new(&s.file)
+                .file_stem()
+                .map(|stem| stem.to_string_lossy())
+                .map(|stem| stem.as_ref() == &req.source)
+                .unwrap_or(false);
+            from_name || from_file_stem
+        });
+
+        let (source_file_path, key_columns): (&str, Vec<&str>) = match source_def {
+            Some(s) => (s.file.as_str(), s.indexed_columns()),
+            None => (&req.source, vec![]),
+        };
+
+        let resolved_path = FileUtils::resolve_relative_path(file_path, source_file_path);
+        let key_column = key_columns
+            .first()
+            .map(|s| *s)
+            .unwrap_or_else(|| req.column.as_str());
+        let idx_path = index_path_for_source(&resolved_path, key_column);
+
+        let idx_exists = idx_path.exists();
+        let (idx_fresh, idx_corrupted) = if idx_exists {
+            let idx_meta = std::fs::metadata(&idx_path).ok();
+            let src_meta = std::fs::metadata(&resolved_path).ok();
+            let fresh = match (idx_meta, src_meta) {
+                (Some(i), Some(s)) => i
+                    .modified()
+                    .ok()
+                    .zip(s.modified().ok())
+                    .map(|(it, st)| it >= st)
+                    .unwrap_or(false),
+                _ => false,
+            };
+            let corrupted = !crate::bench::sources::index::is_index_valid(&idx_path);
+            (fresh, corrupted)
+        } else {
+            (false, false)
+        };
+
+        if !hints_printed {
+            println!();
+            println!("SOURCE INDEX ANALYSIS");
+            println!("---------------------");
+            hints_printed = true;
+        }
+
+        let status = if idx_corrupted {
+            "✗ corrupted"
+        } else if idx_fresh {
+            "✓ fresh"
+        } else if idx_exists {
+            "⚠ stale"
+        } else {
+            "✗ missing"
+        };
+
+        let cmd_hint = if idx_corrupted {
+            " (run `grpctestify index --force` to rebuild)"
+        } else if idx_exists {
+            ""
+        } else {
+            ""
+        };
+
+        println!(
+            "  {} {}{}",
+            status,
+            format!("{}.{}", req.source, req.column),
+            cmd_hint
+        );
+    }
+
+    if hints_printed {
+        println!();
+        println!(
+            "  → Run `grpctestify index {}` to build/update indexes",
+            file_path.display()
+        );
     }
 }

@@ -1,4 +1,5 @@
 pub mod assert;
+pub mod bench;
 pub mod cli;
 pub mod commands;
 pub mod config;
@@ -25,7 +26,9 @@ pub fn serialize_gctf(doc: &parser::GctfDocument) -> String {
     use std::fmt::Write;
     let mut output = String::new();
 
-    for section in &doc.sections {
+    let sections = sort_sections_for_fmt(&doc.sections);
+
+    for section in &sections {
         for attr in &section.attributes {
             let _ = writeln!(output, "{}", attr.format_directive());
         }
@@ -38,17 +41,14 @@ pub fn serialize_gctf(doc: &parser::GctfDocument) -> String {
                 let _ = writeln!(output, "{}", s.trim());
             }
             parser::ast::SectionContent::Json(val) => {
-                // Try to format as pretty JSON, fall back to raw if it fails (JSON5/comments)
                 if let Ok(pretty) = serde_json::to_string_pretty(val) {
                     let _ = writeln!(output, "{}", pretty);
                 } else {
-                    // Preserve raw content for JSON5 with comments
                     let raw = section.raw_content.trim();
                     let _ = writeln!(output, "{}", raw);
                 }
             }
             parser::ast::SectionContent::JsonLines(lines) => {
-                // Each line is a separate JSON object - keep on single line for idempotency
                 for val in lines {
                     if let Ok(compact) = serde_json::to_string(val) {
                         let _ = writeln!(output, "{}", compact);
@@ -56,9 +56,16 @@ pub fn serialize_gctf(doc: &parser::GctfDocument) -> String {
                 }
             }
             parser::ast::SectionContent::KeyValues(kv) => {
-                // Sort keys for deterministic output
                 let mut sorted: Vec<_> = kv.iter().collect();
-                sorted.sort_by(|a, b| a.0.cmp(b.0));
+                if section.section_type == parser::ast::SectionType::Bench {
+                    sorted.sort_by(|a, b| {
+                        crate::bench::schema::bench_key_rank(a.0)
+                            .cmp(&crate::bench::schema::bench_key_rank(b.0))
+                            .then_with(|| a.0.cmp(b.0))
+                    });
+                } else {
+                    sorted.sort_by(|a, b| a.0.cmp(b.0));
+                }
                 for (k, v) in sorted {
                     let _ = writeln!(output, "{}: {}", k, v);
                 }
@@ -86,4 +93,27 @@ pub fn serialize_gctf(doc: &parser::GctfDocument) -> String {
     }
 
     output.trim_end().to_string() + "\n"
+}
+
+fn sort_sections_for_fmt(sections: &[parser::ast::Section]) -> Vec<parser::ast::Section> {
+    if sections.len() <= 1 {
+        return sections.to_vec();
+    }
+
+    let first_body_idx = sections
+        .iter()
+        .position(|s| s.section_type.preamble_rank().is_none())
+        .unwrap_or(sections.len());
+
+    let mut preamble: Vec<&parser::ast::Section> = sections[..first_body_idx].iter().collect();
+    preamble.sort_by_key(|s| s.section_type.preamble_rank().unwrap());
+
+    let mut result = Vec::with_capacity(sections.len());
+    for s in &preamble {
+        result.push((*s).clone());
+    }
+    for s in &sections[first_body_idx..] {
+        result.push((*s).clone());
+    }
+    result
 }

@@ -642,6 +642,15 @@ impl GrpctestifyLsp {
                     for diag in opt_diags {
                         lsp_diags.push(diag);
                     }
+
+                    // Sources diagnostics
+                    let sources_diags = handlers::collect_sources_diagnostics(d, content);
+                    for mut diag in sources_diags {
+                        if let Some(n) = doc_label {
+                            diag.message = format!("Document {}: {}", n, diag.message);
+                        }
+                        lsp_diags.push(diag);
+                    }
                 }
 
                 // Unused variable diagnostics (EXTRACT vars not used in subsequent docs)
@@ -1127,6 +1136,24 @@ impl LanguageServer for GrpctestifyLsp {
                     replacement,
                     code,
                 );
+                actions.push(CodeActionOrCommand::CodeAction(action));
+            }
+
+            if diagnostic.code == Some(NumberOrString::String("BENCH_UNKNOWN_KEY".to_string()))
+                && let Some(data) = &diagnostic.data
+                && let (Some(unknown_key), Some(suggested_key)) = (
+                    data.get("unknown_key").and_then(|v| v.as_str()),
+                    data.get("suggested_key").and_then(|v| v.as_str()),
+                )
+                && let Some(content) = self.documents.read().await.get(&uri.to_string())
+                && let Some(action) = handlers::create_bench_key_fix_action(
+                    &params.text_document.uri,
+                    diagnostic.range,
+                    unknown_key,
+                    suggested_key,
+                    content,
+                )
+            {
                 actions.push(CodeActionOrCommand::CodeAction(action));
             }
         }

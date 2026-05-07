@@ -2,6 +2,11 @@
 // Checks for required sections, conflicts, and data integrity
 
 use super::ast::*;
+use crate::bench::schema::{
+    BENCH_ASSERT_MODE_VALUES, BENCH_CACHE_VALUES, BENCH_DURATION_KEYS, BENCH_DURATION_STOP_VALUES,
+    BENCH_LOAD_SCHEDULE_VALUES, BENCH_MODE_VALUES, BENCH_NUMERIC_KEYS, allowed_values_message,
+    canonical_bench_key, is_allowed_value, suggest_bench_key, supported_bench_keys,
+};
 use anyhow::{Result, bail};
 use serde::Serialize;
 
@@ -249,6 +254,7 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
         SectionType::Tls,
         SectionType::Proto,
         SectionType::Options,
+        SectionType::Bench,
     ] {
         for section in document.sections_by_type(section_type) {
             if let SectionContent::KeyValues(kv) = &section.content {
@@ -264,6 +270,8 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                 }
 
                 if section_type == SectionType::Options {
+                    let mut parsed_no_retry: Option<bool> = None;
+                    let mut parsed_retry: Option<u32> = None;
                     for (key, value) in kv {
                         match key.as_str() {
                             "timeout" => {
@@ -278,7 +286,7 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                                     });
                                 }
                             }
-                            "no-retry" | "no_retry" => {
+                            "no_retry" | "no-retry" => {
                                 let normalized = value.trim().to_ascii_lowercase();
                                 let is_bool = matches!(
                                     normalized.as_str(),
@@ -293,6 +301,21 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                                         line: Some(section.start_line),
                                         severity: ErrorSeverity::Error,
                                     });
+                                } else {
+                                    parsed_no_retry = Some(matches!(
+                                        normalized.as_str(),
+                                        "true" | "1" | "yes" | "on"
+                                    ));
+                                }
+
+                                if key == "no-retry" {
+                                    errors.push(ValidationError {
+                                        message:
+                                            "OPTIONS.no-retry is deprecated; prefer OPTIONS.no_retry"
+                                                .to_string(),
+                                        line: Some(section.start_line),
+                                        severity: ErrorSeverity::Warning,
+                                    });
                                 }
                             }
                             "retry" => {
@@ -305,17 +328,29 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                                         line: Some(section.start_line),
                                         severity: ErrorSeverity::Error,
                                     });
+                                } else {
+                                    parsed_retry = value.trim().parse::<u32>().ok();
                                 }
                             }
-                            "retry-delay" | "retry_delay" => {
+                            "retry_delay" | "retry-delay" => {
                                 if value.trim().parse::<f64>().ok().is_none_or(|v| v < 0.0) {
                                     errors.push(ValidationError {
                                         message: format!(
-                                            "OPTIONS.retry-delay must be a non-negative number, got '{}'",
+                                            "OPTIONS.retry_delay must be a non-negative number, got '{}'",
                                             value
                                         ),
                                         line: Some(section.start_line),
                                         severity: ErrorSeverity::Error,
+                                    });
+                                }
+
+                                if key == "retry-delay" {
+                                    errors.push(ValidationError {
+                                        message:
+                                            "OPTIONS.retry-delay is deprecated; prefer OPTIONS.retry_delay"
+                                                .to_string(),
+                                        line: Some(section.start_line),
+                                        severity: ErrorSeverity::Warning,
                                     });
                                 }
                             }
@@ -335,7 +370,7 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                             _ => {
                                 errors.push(ValidationError {
                                     message: format!(
-                                        "Unknown OPTIONS key '{}'. Supported keys: timeout, retry, retry-delay, no-retry, compression",
+                                        "Unknown OPTIONS key '{}'. Supported keys: timeout, retry, retry_delay, no_retry, compression",
                                         key
                                     ),
                                     line: Some(section.start_line),
@@ -344,8 +379,137 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                             }
                         }
                     }
+
+                    if parsed_no_retry == Some(true) && parsed_retry.is_some_and(|r| r > 0) {
+                        errors.push(ValidationError {
+                            message:
+                                "OPTIONS.no_retry=true conflicts with OPTIONS.retry>0; retry value will be ignored"
+                                    .to_string(),
+                            line: Some(section.start_line),
+                            severity: ErrorSeverity::Warning,
+                        });
+                    }
+                } else if section_type == SectionType::Bench {
+                    validate_bench_key_values(kv, section.start_line, errors);
                 }
             }
+        }
+    }
+
+    for section in &document.sections {
+        for attr in &section.attributes {
+            match attr.name.as_str() {
+                "skip" => {
+                    if attr.parse_bool().is_none() {
+                        errors.push(ValidationError {
+                            message: format!(
+                                "Attribute #[skip] must be boolean-compatible, got '{}'",
+                                attr.value
+                            ),
+                            line: Some(section.start_line),
+                            severity: ErrorSeverity::Error,
+                        });
+                    }
+                }
+                "timeout" => {
+                    if attr.parse_u64().is_none_or(|v| v == 0) {
+                        errors.push(ValidationError {
+                            message: format!(
+                                "Attribute #[timeout] must be a positive integer, got '{}'",
+                                attr.value
+                            ),
+                            line: Some(section.start_line),
+                            severity: ErrorSeverity::Error,
+                        });
+                    }
+                }
+                "retry" => {
+                    if attr.parse_u32().is_none() {
+                        errors.push(ValidationError {
+                            message: format!(
+                                "Attribute #[retry] must be a non-negative integer, got '{}'",
+                                attr.value
+                            ),
+                            line: Some(section.start_line),
+                            severity: ErrorSeverity::Error,
+                        });
+                    }
+                }
+                "retry_delay" | "retry-delay" => {
+                    if attr.parse_f64().is_none_or(|v| v < 0.0) {
+                        errors.push(ValidationError {
+                            message: format!(
+                                "Attribute #[{}] must be a non-negative number, got '{}'",
+                                attr.name, attr.value
+                            ),
+                            line: Some(section.start_line),
+                            severity: ErrorSeverity::Error,
+                        });
+                    }
+
+                    if attr.name == "retry-delay" {
+                        errors.push(ValidationError {
+                            message:
+                                "Attribute #[retry-delay] is deprecated; prefer #[retry_delay]"
+                                    .to_string(),
+                            line: Some(section.start_line),
+                            severity: ErrorSeverity::Warning,
+                        });
+                    }
+                }
+                "no_retry" | "no-retry" => {
+                    if attr.parse_bool().is_none() {
+                        errors.push(ValidationError {
+                            message: format!(
+                                "Attribute #[{}] must be boolean-compatible, got '{}'",
+                                attr.name, attr.value
+                            ),
+                            line: Some(section.start_line),
+                            severity: ErrorSeverity::Error,
+                        });
+                    }
+
+                    if attr.name == "no-retry" {
+                        errors.push(ValidationError {
+                            message: "Attribute #[no-retry] is deprecated; prefer #[no_retry]"
+                                .to_string(),
+                            line: Some(section.start_line),
+                            severity: ErrorSeverity::Warning,
+                        });
+                    }
+                }
+                "name" | "tag" | "owner" | "summary" => {}
+                _ => {
+                    errors.push(ValidationError {
+                        message: format!(
+                            "Unknown attribute '#[{}]'. Supported attributes: skip, timeout, retry, retry_delay, no_retry, name, tag, owner, summary",
+                            attr.name
+                        ),
+                        line: Some(section.start_line),
+                        severity: ErrorSeverity::Warning,
+                    });
+                }
+            }
+        }
+
+        let no_retry_attr = section
+            .attributes
+            .iter()
+            .find(|a| a.name == "no_retry" || a.name == "no-retry")
+            .and_then(|a| a.parse_bool());
+        let retry_attr = section
+            .attributes
+            .iter()
+            .find(|a| a.name == "retry")
+            .and_then(|a| a.parse_u32());
+        if no_retry_attr == Some(true) && retry_attr.is_some_and(|r| r > 0) {
+            errors.push(ValidationError {
+                message:
+                    "Attribute conflict: #[no_retry] with #[retry(N>0)] on same section; retry value will be ignored"
+                        .to_string(),
+                line: Some(section.start_line),
+                severity: ErrorSeverity::Warning,
+            });
         }
     }
 
@@ -365,18 +529,330 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
     }
 }
 
+fn validate_bench_key_values(
+    kv: &std::collections::HashMap<String, String>,
+    start_line: usize,
+    errors: &mut Vec<ValidationError>,
+) {
+    let supported_keys_message = bench_supported_keys_message();
+    for (key, value) in kv {
+        let key_norm = canonical_bench_key(key.as_str()).unwrap_or(key.as_str());
+        match key_norm {
+            "mode" => {
+                if !is_allowed_value(value, BENCH_MODE_VALUES) {
+                    errors.push(ValidationError {
+                        message: format!(
+                            "BENCH.mode must be one of: {} (got '{}')",
+                            allowed_values_message(BENCH_MODE_VALUES),
+                            value
+                        ),
+                        line: Some(start_line),
+                        severity: ErrorSeverity::Error,
+                    });
+                }
+            }
+            "load_schedule" => {
+                if !is_allowed_value(value, BENCH_LOAD_SCHEDULE_VALUES) {
+                    errors.push(ValidationError {
+                        message: format!(
+                            "BENCH.load_schedule must be one of: {} (got '{}')",
+                            allowed_values_message(BENCH_LOAD_SCHEDULE_VALUES),
+                            value
+                        ),
+                        line: Some(start_line),
+                        severity: ErrorSeverity::Error,
+                    });
+                }
+            }
+            k if BENCH_NUMERIC_KEYS.contains(&k) => {
+                if value.trim().parse::<u64>().is_err() {
+                    errors.push(ValidationError {
+                        message: format!(
+                            "BENCH.{} must be a non-negative integer, got '{}'",
+                            key, value
+                        ),
+                        line: Some(start_line),
+                        severity: ErrorSeverity::Error,
+                    });
+                }
+            }
+            k if BENCH_DURATION_KEYS.contains(&k) => {
+                validate_bench_duration(key, value, start_line, errors);
+            }
+            "no_assert" | "count_errors_in_latency" => {
+                let normalized = value.trim().to_ascii_lowercase();
+                if !matches!(normalized.as_str(), "true" | "false" | "1" | "0") {
+                    errors.push(ValidationError {
+                        message: format!(
+                            "BENCH.{} must be a boolean (true/false/1/0), got '{}'",
+                            key, value
+                        ),
+                        line: Some(start_line),
+                        severity: ErrorSeverity::Error,
+                    });
+                }
+            }
+            "duration_stop" => {
+                if !is_allowed_value(value, BENCH_DURATION_STOP_VALUES) {
+                    errors.push(ValidationError {
+                        message: format!(
+                            "BENCH.duration_stop must be one of: {} (got '{}')",
+                            allowed_values_message(BENCH_DURATION_STOP_VALUES),
+                            value
+                        ),
+                        line: Some(start_line),
+                        severity: ErrorSeverity::Error,
+                    });
+                }
+            }
+            "latency_percentiles" => {
+                validate_latency_percentiles(value, start_line, errors);
+            }
+            "sample_rate" => {
+                if value
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+                    .is_none_or(|v| !(0.0..=1.0).contains(&v))
+                {
+                    errors.push(ValidationError {
+                        message: format!("BENCH.sample_rate must be in [0,1], got '{}'", value),
+                        line: Some(start_line),
+                        severity: ErrorSeverity::Error,
+                    });
+                }
+            }
+            "assert_mode" => {
+                if !is_allowed_value(value, BENCH_ASSERT_MODE_VALUES) {
+                    errors.push(ValidationError {
+                        message: format!(
+                            "BENCH.assert_mode must be one of: {} (got '{}')",
+                            allowed_values_message(BENCH_ASSERT_MODE_VALUES),
+                            value
+                        ),
+                        line: Some(start_line),
+                        severity: ErrorSeverity::Error,
+                    });
+                }
+            }
+            "cache" => {
+                if !is_allowed_value(value, BENCH_CACHE_VALUES) {
+                    errors.push(ValidationError {
+                        message: format!(
+                            "BENCH.cache must be one of: {} (got '{}')",
+                            allowed_values_message(BENCH_CACHE_VALUES),
+                            value
+                        ),
+                        line: Some(start_line),
+                        severity: ErrorSeverity::Error,
+                    });
+                }
+            }
+            _ => {
+                if key == "thresholds" || key.starts_with("thresholds.") {
+                    validate_bench_threshold_key(key, value, start_line, errors);
+                } else {
+                    let hint = canonical_bench_key(key)
+                        .filter(|canonical| *canonical != key)
+                        .map(|canonical| format!(" Hint: use canonical key '{}'.", canonical))
+                        .or_else(|| {
+                            suggest_bench_key(key)
+                                .map(|suggested| format!(" Hint: did you mean '{}' ?", suggested))
+                        })
+                        .unwrap_or_default();
+                    errors.push(ValidationError {
+                        message: format!(
+                            "Unknown BENCH key '{}'. Supported keys: {}{}",
+                            key, supported_keys_message, hint
+                        ),
+                        line: Some(start_line),
+                        severity: ErrorSeverity::Warning,
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn bench_supported_keys_message() -> String {
+    supported_bench_keys().join(", ")
+}
+
+fn validate_bench_duration(
+    key: &str,
+    value: &str,
+    start_line: usize,
+    errors: &mut Vec<ValidationError>,
+) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        errors.push(ValidationError {
+            message: format!("BENCH.{} must not be empty", key),
+            line: Some(start_line),
+            severity: ErrorSeverity::Error,
+        });
+        return;
+    }
+    let unit = if trimmed.ends_with("ms") {
+        &trimmed[..trimmed.len() - 2]
+    } else if trimmed.ends_with('s') {
+        &trimmed[..trimmed.len() - 1]
+    } else if trimmed.ends_with('m') {
+        &trimmed[..trimmed.len() - 1]
+    } else if trimmed.ends_with('h') {
+        &trimmed[..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+    if unit.parse::<f64>().is_err() {
+        errors.push(ValidationError {
+            message: format!(
+                "BENCH.{} has invalid duration format '{}'; expected e.g. 30s, 5m, 1h, 500ms",
+                key, value
+            ),
+            line: Some(start_line),
+            severity: ErrorSeverity::Error,
+        });
+    }
+}
+
+fn validate_latency_percentiles(value: &str, start_line: usize, errors: &mut Vec<ValidationError>) {
+    for token in value.split(',') {
+        let t = token.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if !t.starts_with('p') {
+            errors.push(ValidationError {
+                message: format!(
+                    "Invalid percentile '{}' in latency_percentiles; expected p50, p90, p95, p99, p99.9, etc.",
+                    t
+                ),
+                line: Some(start_line),
+                severity: ErrorSeverity::Error,
+            });
+            continue;
+        }
+        let num_str = t[1..].trim();
+        if num_str.parse::<f64>().is_err() {
+            errors.push(ValidationError {
+                message: format!(
+                    "Invalid percentile value in '{}'; expected number after 'p'",
+                    t
+                ),
+                line: Some(start_line),
+                severity: ErrorSeverity::Error,
+            });
+        }
+    }
+}
+
+fn validate_bench_threshold_key(
+    key: &str,
+    value: &str,
+    start_line: usize,
+    errors: &mut Vec<ValidationError>,
+) {
+    if !is_valid_threshold_expr(value) {
+        errors.push(ValidationError {
+            message: format!(
+                "BENCH threshold '{}' has invalid expression '{}'; expected one of: <N, <=N, >N, >=N",
+                key, value
+            ),
+            line: Some(start_line),
+            severity: ErrorSeverity::Error,
+        });
+    }
+
+    if let Some(inner) = key.strip_prefix("thresholds.") {
+        validate_percentile_metric_key(inner, start_line, errors);
+    }
+}
+
+fn validate_percentile_metric_key(key: &str, start_line: usize, errors: &mut Vec<ValidationError>) {
+    let p_metric = if key.starts_with("latency_ms.p(") {
+        key.strip_prefix("latency_ms.p(")
+    } else if key.starts_with("p(") {
+        key.strip_prefix("p(")
+    } else {
+        None
+    };
+
+    let Some(rest) = p_metric else {
+        return;
+    };
+
+    let Some(percentile_str) = rest.strip_suffix(')') else {
+        errors.push(ValidationError {
+            message: format!(
+                "Invalid percentile key '{}'; expected syntax p(<value>) or latency_ms.p(<value>)",
+                key
+            ),
+            line: Some(start_line),
+            severity: ErrorSeverity::Error,
+        });
+        return;
+    };
+
+    let Ok(percentile) = percentile_str.parse::<f64>() else {
+        errors.push(ValidationError {
+            message: format!(
+                "Invalid percentile value in key '{}'; expected numeric value",
+                key
+            ),
+            line: Some(start_line),
+            severity: ErrorSeverity::Error,
+        });
+        return;
+    };
+
+    if !(percentile > 0.0 && percentile < 100.0) {
+        errors.push(ValidationError {
+            message: format!("Percentile in key '{}' must be in range (0,100)", key),
+            line: Some(start_line),
+            severity: ErrorSeverity::Error,
+        });
+    }
+}
+
+fn is_valid_threshold_expr(raw: &str) -> bool {
+    let value = raw.trim();
+    let (op, rhs) = if let Some(rest) = value.strip_prefix("<=") {
+        ("<=", rest)
+    } else if let Some(rest) = value.strip_prefix(">=") {
+        (">=", rest)
+    } else if let Some(rest) = value.strip_prefix('<') {
+        ("<", rest)
+    } else if let Some(rest) = value.strip_prefix('>') {
+        (">", rest)
+    } else {
+        return false;
+    };
+
+    let _ = op;
+    rhs.trim().parse::<f64>().is_ok()
+}
+
 /// Validate structure
 fn validate_structure(document: &GctfDocument, errors: &mut Vec<ValidationError>) {
     // Check for duplicate non-multiple sections
     let mut seen_sections = std::collections::HashSet::new();
     let mut meta_count = 0;
     let mut meta_first_line = None;
+    let mut bench_count = 0;
+    let mut bench_first_line = None;
 
     for section in &document.sections {
         if section.section_type == SectionType::Meta {
             meta_count += 1;
             if meta_first_line.is_none() {
                 meta_first_line = Some(section.start_line);
+            }
+        }
+        if section.section_type == SectionType::Bench {
+            bench_count += 1;
+            if bench_first_line.is_none() {
+                bench_first_line = Some(section.start_line);
             }
         }
 
@@ -411,6 +887,39 @@ fn validate_structure(document: &GctfDocument, errors: &mut Vec<ValidationError>
             line: meta_first_line,
             severity: ErrorSeverity::Error,
         });
+    }
+
+    // Validate BENCH section: only 0 or 1 per file, should be file-level near top
+    if bench_count > 1 {
+        errors.push(ValidationError {
+            message: "Only one BENCH section is allowed per file".to_string(),
+            line: bench_first_line,
+            severity: ErrorSeverity::Error,
+        });
+    }
+
+    if bench_count == 1
+        && let Some(bench_idx) = document
+            .sections
+            .iter()
+            .position(|s| s.section_type == SectionType::Bench)
+    {
+        let bench_is_valid_position = match bench_idx {
+            0 => true,
+            1 => document
+                .sections
+                .first()
+                .is_some_and(|s| s.section_type == SectionType::Meta),
+            _ => false,
+        };
+
+        if !bench_is_valid_position {
+            errors.push(ValidationError {
+                message: "BENCH section must be first, or immediately after META".to_string(),
+                line: bench_first_line,
+                severity: ErrorSeverity::Warning,
+            });
+        }
     }
 
     // Validate section order (optional, but good for readability)
@@ -1086,7 +1595,7 @@ mod tests {
         assert!(diagnostics.iter().any(|d| {
             d.severity == ErrorSeverity::Warning
                 && d.message
-                    .contains("Unknown OPTIONS key 'dry_run'. Supported keys: timeout, retry, retry-delay, no-retry, compression")
+                    .contains("Unknown OPTIONS key 'dry_run'. Supported keys: timeout, retry, retry_delay, no_retry, compression")
         }));
     }
 
@@ -1123,13 +1632,13 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_options_kebab_case_keys_are_supported() {
+    fn test_validate_options_snake_case_keys_are_supported() {
         let mut doc = create_test_document();
         let mut options = std::collections::HashMap::new();
         options.insert("timeout".to_string(), "5".to_string());
         options.insert("retry".to_string(), "2".to_string());
-        options.insert("retry-delay".to_string(), "0.5".to_string());
-        options.insert("no-retry".to_string(), "false".to_string());
+        options.insert("retry_delay".to_string(), "0.5".to_string());
+        options.insert("no_retry".to_string(), "false".to_string());
         options.insert("compression".to_string(), "gzip".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Options,
@@ -1192,6 +1701,296 @@ mod tests {
             d.severity == ErrorSeverity::Error
                 && d.message
                     .contains("OPTIONS.compression must be one of: none, gzip")
+        }));
+    }
+
+    #[test]
+    fn test_validate_options_kebab_case_keys_deprecated_warning() {
+        let mut doc = create_test_document();
+        let mut options = std::collections::HashMap::new();
+        options.insert("retry-delay".to_string(), "0.3".to_string());
+        options.insert("no-retry".to_string(), "false".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Options,
+            content: SectionContent::KeyValues(options),
+            inline_options: InlineOptions::default(),
+            raw_content: "retry-delay: 0.3\nno-retry: false".to_string(),
+            start_line: 5,
+            end_line: 7,
+            attributes: Vec::new(),
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 8,
+            end_line: 9,
+            attributes: Vec::new(),
+        });
+
+        let diagnostics = validate_document_diagnostics(&doc);
+        assert!(diagnostics.iter().any(|d| {
+            d.severity == ErrorSeverity::Warning
+                && d.message.contains("OPTIONS.retry-delay is deprecated")
+        }));
+        assert!(diagnostics.iter().any(|d| {
+            d.severity == ErrorSeverity::Warning
+                && d.message.contains("OPTIONS.no-retry is deprecated")
+        }));
+    }
+
+    #[test]
+    fn test_validate_options_no_retry_retry_conflict_warning() {
+        let mut doc = create_test_document();
+        let mut options = std::collections::HashMap::new();
+        options.insert("retry".to_string(), "3".to_string());
+        options.insert("no_retry".to_string(), "true".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Options,
+            content: SectionContent::KeyValues(options),
+            inline_options: InlineOptions::default(),
+            raw_content: "retry: 3\nno_retry: true".to_string(),
+            start_line: 5,
+            end_line: 7,
+            attributes: Vec::new(),
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 8,
+            end_line: 9,
+            attributes: Vec::new(),
+        });
+
+        let diagnostics = validate_document_diagnostics(&doc);
+        assert!(diagnostics.iter().any(|d| {
+            d.severity == ErrorSeverity::Warning
+                && d.message
+                    .contains("OPTIONS.no_retry=true conflicts with OPTIONS.retry>0")
+        }));
+    }
+
+    #[test]
+    fn test_validate_attribute_retry_delay_kebab_case_deprecated_warning() {
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Json(serde_json::json!({"id": 1})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"id\":1}".to_string(),
+            start_line: 5,
+            end_line: 6,
+            attributes: vec![GctfAttribute::new("retry-delay", "0.2")],
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 7,
+            end_line: 8,
+            attributes: Vec::new(),
+        });
+
+        let diagnostics = validate_document_diagnostics(&doc);
+        assert!(diagnostics.iter().any(|d| {
+            d.severity == ErrorSeverity::Warning
+                && d.message.contains("Attribute #[retry-delay] is deprecated")
+        }));
+    }
+
+    #[test]
+    fn test_validate_bench_dynamic_percentile_key_ok() {
+        let mut doc = create_test_document();
+        let mut bench = std::collections::HashMap::new();
+        bench.insert(
+            "thresholds.latency_ms.p(99.9)".to_string(),
+            "<300".to_string(),
+        );
+        bench.insert("thresholds.p(95)".to_string(), "<120".to_string());
+        doc.sections.insert(
+            0,
+            Section {
+                section_type: SectionType::Bench,
+                content: SectionContent::KeyValues(bench),
+                inline_options: InlineOptions::default(),
+                raw_content: String::new(),
+                start_line: 0,
+                end_line: 2,
+                attributes: Vec::new(),
+            },
+        );
+
+        let diagnostics = validate_document_diagnostics(&doc);
+        assert!(!diagnostics.iter().any(
+            |d| d.message.contains("Invalid percentile") || d.message.contains("range (0,100)")
+        ));
+    }
+
+    #[test]
+    fn test_validate_bench_dynamic_percentile_key_invalid_range() {
+        let mut doc = create_test_document();
+        let mut bench = std::collections::HashMap::new();
+        bench.insert("thresholds.p(120)".to_string(), "<300".to_string());
+        doc.sections.insert(
+            0,
+            Section {
+                section_type: SectionType::Bench,
+                content: SectionContent::KeyValues(bench),
+                inline_options: InlineOptions::default(),
+                raw_content: String::new(),
+                start_line: 0,
+                end_line: 2,
+                attributes: Vec::new(),
+            },
+        );
+
+        let diagnostics = validate_document_diagnostics(&doc);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("must be in range (0,100)"))
+        );
+    }
+
+    #[test]
+    fn test_validate_bench_threshold_expression_invalid() {
+        let mut doc = create_test_document();
+        let mut bench = std::collections::HashMap::new();
+        bench.insert("thresholds.p(95)".to_string(), "~120".to_string());
+        doc.sections.insert(
+            0,
+            Section {
+                section_type: SectionType::Bench,
+                content: SectionContent::KeyValues(bench),
+                inline_options: InlineOptions::default(),
+                raw_content: String::new(),
+                start_line: 0,
+                end_line: 2,
+                attributes: Vec::new(),
+            },
+        );
+
+        let diagnostics = validate_document_diagnostics(&doc);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("invalid expression"))
+        );
+    }
+
+    #[test]
+    fn test_validate_bench_load_schedule_and_progress_keys() {
+        let mut doc = create_test_document();
+        let mut bench = std::collections::HashMap::new();
+        bench.insert("load_schedule".to_string(), "step".to_string());
+        bench.insert("load_start".to_string(), "10".to_string());
+        bench.insert("load_step".to_string(), "5".to_string());
+        bench.insert("load_end".to_string(), "40".to_string());
+        bench.insert("load_step_duration".to_string(), "3s".to_string());
+        bench.insert("load_max_duration".to_string(), "30s".to_string());
+        bench.insert("progress_interval".to_string(), "2s".to_string());
+        doc.sections.insert(
+            0,
+            Section {
+                section_type: SectionType::Bench,
+                content: SectionContent::KeyValues(bench),
+                inline_options: InlineOptions::default(),
+                raw_content: String::new(),
+                start_line: 0,
+                end_line: 2,
+                attributes: Vec::new(),
+            },
+        );
+
+        let diagnostics = validate_document_diagnostics(&doc);
+        assert!(!diagnostics.iter().any(|d| {
+            d.message.contains("Unknown BENCH key")
+                || d.message.contains("BENCH.load_schedule must be one of")
+        }));
+    }
+
+    #[test]
+    fn test_validate_bench_hyphenated_keys_are_unknown() {
+        let mut doc = create_test_document();
+        let mut bench = std::collections::HashMap::new();
+        bench.insert("load-schedule".to_string(), "line".to_string());
+        bench.insert("load-step-duration".to_string(), "2s".to_string());
+        bench.insert("progress-interval".to_string(), "1s".to_string());
+        bench.insert("assert-mode".to_string(), "sampled".to_string());
+        bench.insert("duration-stop".to_string(), "wait".to_string());
+        doc.sections.insert(
+            0,
+            Section {
+                section_type: SectionType::Bench,
+                content: SectionContent::KeyValues(bench),
+                inline_options: InlineOptions::default(),
+                raw_content: String::new(),
+                start_line: 0,
+                end_line: 2,
+                attributes: Vec::new(),
+            },
+        );
+
+        let diagnostics = validate_document_diagnostics(&doc);
+        assert!(diagnostics.iter().any(|d| {
+            d.message.contains("Unknown BENCH key 'load-schedule'")
+                && d.message.contains("did you mean 'load_schedule'")
+        }));
+    }
+
+    #[test]
+    fn test_validate_bench_snake_case_keys_no_deprecation_warning() {
+        let mut doc = create_test_document();
+        let mut bench = std::collections::HashMap::new();
+        bench.insert("load_schedule".to_string(), "line".to_string());
+        bench.insert("progress_interval".to_string(), "1s".to_string());
+        doc.sections.insert(
+            0,
+            Section {
+                section_type: SectionType::Bench,
+                content: SectionContent::KeyValues(bench),
+                inline_options: InlineOptions::default(),
+                raw_content: String::new(),
+                start_line: 0,
+                end_line: 2,
+                attributes: Vec::new(),
+            },
+        );
+
+        let diagnostics = validate_document_diagnostics(&doc);
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("is deprecated"))
+        );
+    }
+
+    #[test]
+    fn test_validate_bench_unknown_key_typo_suggestion() {
+        let mut doc = create_test_document();
+        let mut bench = std::collections::HashMap::new();
+        bench.insert("load_shedule".to_string(), "step".to_string());
+        doc.sections.insert(
+            0,
+            Section {
+                section_type: SectionType::Bench,
+                content: SectionContent::KeyValues(bench),
+                inline_options: InlineOptions::default(),
+                raw_content: String::new(),
+                start_line: 0,
+                end_line: 2,
+                attributes: Vec::new(),
+            },
+        );
+
+        let diagnostics = validate_document_diagnostics(&doc);
+        assert!(diagnostics.iter().any(|d| {
+            d.message.contains("Unknown BENCH key 'load_shedule'")
+                && d.message.contains("did you mean 'load_schedule'")
         }));
     }
 

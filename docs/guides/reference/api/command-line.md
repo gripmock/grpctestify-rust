@@ -15,9 +15,20 @@ grpctestify [OPTIONS] [TEST_PATHS]... [COMMAND]
 - Global flags apply to commands (`-v`, `-c`, `--completion`)
 - Typical flow: `check` -> `run` -> report flags in CI
 
+## Precedence quick map
+
+- `run` mode runtime keys: `section attributes > OPTIONS > CLI runtime baseline/defaults`
+- `bench` mode profile keys: `CLI bench flags > BENCH section > bench defaults`
+- Address/TLS/compression also involve env fallbacks; see [OPTIONS](../sections/options) and [BENCH](../sections/bench).
+
+## Naming migration note
+
+- Runtime option/attribute canonical naming is snake_case (`retry_delay`, `no_retry`, `#[retry_delay]`, `#[no_retry]`).
+
 ## Commands
 
 - `run [TEST_PATHS]...` - run tests (default command)
+- `bench [TEST_PATHS]...` - run load benchmark mode for `.gctf` scenarios
 - `check <FILES...>` - validate `.gctf` syntax and semantic rules
 - `fmt <FILES...>` - format `.gctf` files
 - `inspect <FILE>` - inspect parsed file structure (`text` or `json`)
@@ -64,6 +75,32 @@ Note: if `--log-format` is set without `--log-output`, the run continues and fil
 - `list`: `--format <text|json>`, `--with-range`
 - `reflect`: `--address <ADDR>`, `--plaintext`
 - `lsp`: `--stdio`
+- `bench` (selected):
+  - stop conditions: `-n, --requests`, `-d, --duration`, `--max-duration`
+  - load profile: `--max-rps`, `--load-schedule`, `--load-start`, `--load-step`, `--load-end`, `--load-step-duration`, `--load-max-duration`
+  - methodology: `--warmup`, `--ramp-up`, `--duration-stop`, `--skip-first`, `--count-errors-in-latency`, `--latency-percentiles`
+  - runtime/transport: `-c, --concurrency`, `--connections`, `--connect-timeout`, `--keepalive`, `--cpus`
+  - validation/progress: `--assert-mode`, `--no-assert`, `--sample-rate`, `--progress-interval`
+  - metadata/output: `--name`, `--log-format`, `--log-output`
+
+## Bench examples
+
+```bash
+# Constant profile for 60 seconds
+grpctestify bench tests/ --duration 60s --concurrency 16 --max-rps 200
+
+# Step profile (ghz-style)
+grpctestify bench tests/ \
+  --duration 40s \
+  --load-schedule step \
+  --load-start 50 \
+  --load-step 10 \
+  --load-end 150 \
+  --load-step-duration 5s
+
+# Use BENCH section defaults, override progress heartbeat
+grpctestify bench tests/ --progress-interval 2s
+```
 
 `reflect --plaintext` expects `http://...` or `host:port` addresses. It is rejected for explicit `https://...` addresses.
 

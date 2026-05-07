@@ -1,15 +1,82 @@
 // Inspect command - show detailed AST analysis and structure
 
 use crate::cli::args::HasFormat;
+use crate::utils::file::FileUtils;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::bench::schema::bench_key_rank;
 use crate::cli::args::InspectArgs;
+use crate::commands::bench::BenchConfigResolved;
+use crate::execution::runner_helpers::{
+    CliRuntimeDefaults, EffectiveRuntimeOptions, resolve_effective_runtime_options,
+};
 use crate::execution::{ExecutionPlan, Workflow};
 use crate::parser;
 use crate::parser::ast::{SectionContent, SectionType};
 use crate::report::{AstOverview, InspectReport, SectionInfo};
+
+fn bench_resolved_options(
+    doc: &parser::GctfDocument,
+) -> Option<Vec<crate::report::BenchResolvedOption>> {
+    let bench_section = bench_section_map(doc)?;
+    let config = BenchConfigResolved::from_bench_section(Some(bench_section)).ok()?;
+
+    let mut out = Vec::new();
+    for (internal_key, output_key) in [
+        ("concurrency", "concurrency"),
+        ("load_schedule", "load_schedule"),
+        ("load_start", "load_start"),
+        ("load_step", "load_step"),
+        ("load_end", "load_end"),
+        ("load_step_duration", "load_step_duration"),
+        ("load_max_duration", "load_max_duration"),
+        ("progress_interval", "progress_interval"),
+    ] {
+        let source = config
+            .option_sources
+            .get(internal_key)
+            .copied()
+            .unwrap_or(crate::commands::bench::BenchOptionSource::Default)
+            .as_str()
+            .to_string();
+        let value = match internal_key {
+            "concurrency" => config.concurrency.to_string(),
+            "load_schedule" => config.load_schedule.clone(),
+            "load_start" => config
+                .load_start
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            "load_step" => config
+                .load_step
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            "load_end" => config
+                .load_end
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            "load_step_duration" => config
+                .load_step_duration
+                .map(|v| format!("{}ms", v.as_millis()))
+                .unwrap_or_else(|| "<none>".to_string()),
+            "load_max_duration" => config
+                .load_max_duration
+                .map(|v| format!("{}ms", v.as_millis()))
+                .unwrap_or_else(|| "<none>".to_string()),
+            "progress_interval" => format!("{}ms", config.progress_interval.as_millis()),
+            _ => "<n/a>".to_string(),
+        };
+
+        out.push(crate::report::BenchResolvedOption {
+            key: output_key.to_string(),
+            value,
+            source,
+        });
+    }
+
+    Some(out)
+}
 
 fn workflow_validation_errors(workflow: &Workflow) -> Vec<String> {
     for event in workflow.validation_results() {
@@ -235,6 +302,16 @@ fn print_json_report(
     }
 
     let plan = ExecutionPlan::from_document(doc);
+    let effective_runtime = resolve_effective_runtime_options(
+        doc,
+        CliRuntimeDefaults {
+            timeout_seconds: 30,
+            retry: 0,
+            retry_delay_seconds: 1.0,
+            no_retry: false,
+        },
+    )
+    .ok();
     let report = InspectReport {
         file: file_str,
         parse_time_ms: parse_ms,
@@ -246,6 +323,8 @@ fn print_json_report(
         semantic_diagnostics,
         optimization_hints,
         inferred_rpc_mode: Some(plan.summary.rpc_mode_name.clone()),
+        effective_runtime,
+        bench_resolved: bench_resolved_options(doc),
     };
     match serde_json::to_string_pretty(&report) {
         Ok(json) => println!("{}", json),
@@ -286,6 +365,17 @@ fn print_detailed_analysis(
     validation_ms: f64,
     validation_error: Option<&str>,
 ) {
+    let effective_runtime = resolve_effective_runtime_options(
+        doc,
+        CliRuntimeDefaults {
+            timeout_seconds: 30,
+            retry: 0,
+            retry_delay_seconds: 1.0,
+            no_retry: false,
+        },
+    )
+    .ok();
+
     println!();
     println!("ANALYSIS REPORT");
     println!("===============");
@@ -373,6 +463,9 @@ fn print_detailed_analysis(
     print_structure(doc);
     println!();
 
+    print_effective_runtime(effective_runtime.as_ref());
+    println!();
+
     println!("VARIABLES");
     println!("---------");
     print_variables(doc);
@@ -381,6 +474,11 @@ fn print_detailed_analysis(
     println!("LOGIC FLOW");
     println!("----------");
     print_logic_flow(doc, workflow);
+    println!();
+
+    println!("SOURCE CONFIGURATION");
+    println!("--------------------");
+    print_source_info(doc, file_path);
     println!();
 
     println!("WARNINGS & HINTS");
@@ -393,6 +491,32 @@ fn print_detailed_analysis(
     match validation_error {
         Some(e) => println!("  FAILED: {}", e),
         None => println!("  OK - No issues found. Test appears structurally valid."),
+    }
+}
+
+fn print_effective_runtime(effective: Option<&EffectiveRuntimeOptions>) {
+    println!("EFFECTIVE RUNTIME");
+    println!("-----------------");
+    match effective {
+        Some(v) => {
+            println!(
+                "  timeout: {}s ({:?})",
+                v.timeout_seconds.value, v.timeout_seconds.source
+            );
+            println!("  retry: {} ({:?})", v.retry.value, v.retry.source);
+            println!(
+                "  retry_delay: {}s ({:?})",
+                v.retry_delay_seconds.value, v.retry_delay_seconds.source
+            );
+            println!("  no_retry: {} ({:?})", v.no_retry.value, v.no_retry.source);
+            println!(
+                "  compression: {} ({:?})",
+                v.compression.value, v.compression.source
+            );
+        }
+        None => {
+            println!("  unavailable (runtime options failed to resolve)");
+        }
     }
 }
 
@@ -641,6 +765,25 @@ fn print_logic_flow(doc: &parser::GctfDocument, workflow: &Workflow) {
             println!("    - {}: {}", key, value);
         }
     }
+
+    for section in &doc.sections {
+        if section.section_type == SectionType::Bench
+            && let SectionContent::KeyValues(bench) = &section.content
+        {
+            let mut sorted: Vec<_> = bench.iter().collect();
+            sorted.sort_by(|a, b| {
+                bench_key_rank(a.0)
+                    .cmp(&bench_key_rank(b.0))
+                    .then_with(|| a.0.cmp(b.0))
+            });
+            println!("  BENCH Profile:");
+            for (key, value) in sorted {
+                println!("    - {}: {}", key, value);
+            }
+        }
+    }
+
+    print_bench_resolved(doc);
 }
 
 fn print_warnings(doc: &parser::GctfDocument) {
@@ -765,5 +908,168 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
 
     if !has_warnings {
         println!("  [OK] No structural warnings or hints.");
+    }
+}
+
+fn print_source_info(doc: &parser::GctfDocument, file_path: &Path) {
+    use crate::bench::sources::SourceDefinition;
+    use crate::bench::sources::analyzer::SourceUsageAnalyzer;
+    use crate::bench::sources::index::read_index_key_type;
+    use crate::bench::sources::index_builder::index_path_for_source;
+
+    let bench_section = match doc
+        .sections
+        .iter()
+        .find(|s| s.section_type == SectionType::Bench)
+    {
+        Some(s) => s,
+        None => return,
+    };
+
+    let bench = match &bench_section.content {
+        SectionContent::KeyValues(kv) => kv,
+        _ => return,
+    };
+
+    let raw = match bench.get("sources") {
+        Some(r) if !r.trim().is_empty() => r,
+        _ => return,
+    };
+
+    let sources: Vec<SourceDefinition> = match serde_yaml_ng::from_str(raw) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let plan = SourceUsageAnalyzer::analyze(doc, &sources);
+
+    if sources.is_empty() {
+        return;
+    }
+
+    println!("SOURCES");
+    println!("-------");
+    for s in &sources {
+        let source_file_path = s.file.as_str();
+        let resolved_path = FileUtils::resolve_relative_path(file_path, source_file_path);
+        let columns = s.indexed_columns();
+        let key_column = columns.first().map(|s| *s).unwrap_or("");
+
+        let idx_path = index_path_for_source(&resolved_path, key_column);
+        let idx_exists = idx_path.exists();
+        let (status, type_display) = if idx_exists {
+            let idx_meta = std::fs::metadata(&idx_path).ok();
+            let src_meta = std::fs::metadata(&resolved_path).ok();
+            let fresh = match (idx_meta, src_meta) {
+                (Some(i), Some(s)) => i
+                    .modified()
+                    .ok()
+                    .zip(s.modified().ok())
+                    .map(|(it, st)| it >= st)
+                    .unwrap_or(false),
+                _ => false,
+            };
+            let type_from_idx = std::fs::File::open(&idx_path)
+                .ok()
+                .and_then(|mut f| read_index_key_type(&mut f).ok())
+                .map(|t| format!("{:?}", t))
+                .unwrap_or_else(|| "?".to_string());
+            (if fresh { "✓ fresh" } else { "⚠ stale" }, type_from_idx)
+        } else {
+            ("✗ missing", "?".to_string())
+        };
+
+        let name_display = s.name.as_deref().unwrap_or("(unnamed)");
+        let indexed_by_display = if columns.is_empty() {
+            "(none)".to_string()
+        } else {
+            columns.iter().map(|s| *s).collect::<Vec<_>>().join(", ")
+        };
+        println!(
+            "  - {}: file={}, indexed_by=[{}], type={}, index={}",
+            name_display, s.file, indexed_by_display, type_display, status
+        );
+    }
+
+    if !plan.required_indexes.is_empty() {
+        println!();
+        println!("INDEX REQUIREMENTS (used by templates)");
+        println!("--------------------------------------");
+        for req in &plan.required_indexes {
+            println!(
+                "  - {}.{} (reason: {:?})",
+                req.source, req.column, req.reason
+            );
+        }
+    }
+}
+
+fn bench_section_map(doc: &parser::GctfDocument) -> Option<&HashMap<String, String>> {
+    doc.sections.iter().find_map(|section| {
+        if section.section_type == SectionType::Bench
+            && let SectionContent::KeyValues(bench) = &section.content
+        {
+            return Some(bench);
+        }
+        None
+    })
+}
+
+fn print_bench_resolved(doc: &parser::GctfDocument) {
+    let Some(bench_section) = bench_section_map(doc) else {
+        return;
+    };
+
+    match BenchConfigResolved::from_bench_section(Some(bench_section)) {
+        Ok(config) => {
+            println!("  BENCH Resolved (value + source):");
+            for (internal_key, output_key) in [
+                ("concurrency", "concurrency"),
+                ("load_schedule", "load_schedule"),
+                ("load_start", "load_start"),
+                ("load_step", "load_step"),
+                ("load_end", "load_end"),
+                ("load_step_duration", "load_step_duration"),
+                ("load_max_duration", "load_max_duration"),
+                ("progress_interval", "progress_interval"),
+            ] {
+                let source = config
+                    .option_sources
+                    .get(internal_key)
+                    .copied()
+                    .unwrap_or(crate::commands::bench::BenchOptionSource::Default)
+                    .as_str();
+                let value = match internal_key {
+                    "concurrency" => config.concurrency.to_string(),
+                    "load_schedule" => config.load_schedule.clone(),
+                    "load_start" => config
+                        .load_start
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    "load_step" => config
+                        .load_step
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    "load_end" => config
+                        .load_end
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    "load_step_duration" => config
+                        .load_step_duration
+                        .map(|v| format!("{}ms", v.as_millis()))
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    "load_max_duration" => config
+                        .load_max_duration
+                        .map(|v| format!("{}ms", v.as_millis()))
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    "progress_interval" => format!("{}ms", config.progress_interval.as_millis()),
+                    _ => "<n/a>".to_string(),
+                };
+                println!("    - {}: {} (source: {})", output_key, value, source);
+            }
+        }
+        Err(err) => {
+            println!("  [WARN] Unable to resolve BENCH defaults/sources: {}", err);
+        }
     }
 }

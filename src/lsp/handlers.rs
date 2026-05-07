@@ -7,6 +7,11 @@ use serde_json::json;
 use std::collections::HashMap;
 use tower_lsp::lsp_types::*;
 
+use crate::bench::schema::{
+    BENCH_ASSERT_MODE_VALUES, BENCH_CACHE_VALUES, BENCH_DURATION_STOP_VALUES,
+    BENCH_LOAD_SCHEDULE_VALUES, BENCH_MODE_VALUES, allowed_values_message, bench_key_detail,
+    bench_keys_canonical_order,
+};
 use crate::config;
 use crate::parser::{self, ast::SectionType};
 use crate::plugins::{PluginManager, PluginPurity};
@@ -26,7 +31,26 @@ pub fn get_section_hover(section_type: &SectionType) -> Option<String> {
         SectionType::Extract => Some("**EXTRACT**\n\nVariable extraction using JQ paths.\n\nExample:\n```\nuser_id: .id\ntoken: .auth.token\n```\n\nUse in REQUEST: `${user_id}`".to_string()),
         SectionType::Asserts => Some("**ASSERTS**\n\nAssertion expressions.\n\nOperators: `==`, `!=`, `>`, `<`, `contains`, `matches`\nPlugins: `@uuid`, `@email`, `@ip`, `@url`, `@timestamp`, `@elapsed_ms`, `@total_elapsed_ms`\nJQ: `select`, `length`, `startswith`".to_string()),
         SectionType::Meta => Some("**META**\n\nFile-level metadata (YAML).\n\nMust be first section in file.\n\nOnly 0 or 1 per file.".to_string()),
+        SectionType::Bench => Some(bench_hover_doc()),
     }
+}
+
+fn bench_hover_doc() -> String {
+    let keys_preview = bench_keys_canonical_order()
+        .into_iter()
+        .take(12)
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!(
+        "**BENCH**\n\nFile-level benchmark profile/options in `key: value` format.\n\nRecommended placement: first section, or immediately after META.\n\nOnly 0 or 1 per file.\n\nKey examples: `{}`\n\nCanonical values:\n- `mode`: {}\n- `load_schedule`: {}\n- `duration_stop`: {}\n- `assert_mode`: {}\n- `cache`: {}",
+        keys_preview,
+        allowed_values_message(BENCH_MODE_VALUES),
+        allowed_values_message(BENCH_LOAD_SCHEDULE_VALUES),
+        allowed_values_message(BENCH_DURATION_STOP_VALUES),
+        allowed_values_message(BENCH_ASSERT_MODE_VALUES),
+        allowed_values_message(BENCH_CACHE_VALUES),
+    )
 }
 
 /// Get completions for section headers
@@ -41,6 +65,7 @@ pub fn get_section_completions() -> Vec<CompletionItem> {
         "TLS",
         "PROTO",
         "OPTIONS",
+        "BENCH",
         "EXTRACT",
         "ASSERTS",
     ]
@@ -236,6 +261,19 @@ pub fn get_extract_completions() -> Vec<CompletionItem> {
 }
 
 pub fn get_section_key_completions(section_type: &SectionType) -> Vec<CompletionItem> {
+    if *section_type == SectionType::Bench {
+        return bench_keys_canonical_order()
+            .into_iter()
+            .map(|k| CompletionItem {
+                label: format!("{}:", k),
+                kind: Some(CompletionItemKind::PROPERTY),
+                detail: Some(bench_key_detail(k)),
+                insert_text: Some(format!("{}: ", k)),
+                ..CompletionItem::default()
+            })
+            .collect();
+    }
+
     let entries: Vec<(&str, &str)> = match section_type {
         SectionType::Proto => vec![
             ("descriptor", "Path to descriptor set (.desc/.binpb)"),
@@ -466,7 +504,7 @@ pub fn validation_error_to_diagnostic(
         .map(|l| l.len())
         .unwrap_or(0) as u32;
 
-    Diagnostic::new(
+    let mut diagnostic = Diagnostic::new(
         Range::new(
             Position::new(line_num, 0),
             Position::new(line_num, line_len),
@@ -477,7 +515,33 @@ pub fn validation_error_to_diagnostic(
         error.message.clone(),
         None,
         None,
-    )
+    );
+
+    if let Some((unknown_key, suggested_key)) = parse_unknown_bench_key_hint(&error.message) {
+        diagnostic.code = Some(NumberOrString::String("BENCH_UNKNOWN_KEY".to_string()));
+        diagnostic.data = Some(json!({
+            "unknown_key": unknown_key,
+            "suggested_key": suggested_key,
+        }));
+    }
+
+    diagnostic
+}
+
+fn parse_unknown_bench_key_hint(message: &str) -> Option<(String, String)> {
+    let prefix = "Unknown BENCH key '";
+    let start = message.find(prefix)? + prefix.len();
+    let tail = &message[start..];
+    let end = tail.find('\'')?;
+    let unknown = tail[..end].to_string();
+
+    let hint_prefix = "did you mean '";
+    let hint_start = message.find(hint_prefix)? + hint_prefix.len();
+    let hint_tail = &message[hint_start..];
+    let hint_end = hint_tail.find('\'')?;
+    let suggested = hint_tail[..hint_end].to_string();
+
+    Some((unknown, suggested))
 }
 
 /// Create code action for deprecated HEADERS section
@@ -496,6 +560,42 @@ pub fn create_headers_deprecated_action(uri: &Url, range: Range) -> CodeAction {
         is_preferred: Some(true),
         ..CodeAction::default()
     }
+}
+
+pub fn create_bench_key_fix_action(
+    uri: &Url,
+    range: Range,
+    unknown_key: &str,
+    suggested_key: &str,
+    content: &str,
+) -> Option<CodeAction> {
+    let line_idx = range.start.line as usize;
+    let line = content.lines().nth(line_idx)?;
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with(unknown_key) {
+        return None;
+    }
+    let leading_ws = line.len().saturating_sub(trimmed.len()) as u32;
+    let start = Position::new(range.start.line, leading_ws);
+    let end = Position::new(range.start.line, leading_ws + unknown_key.len() as u32);
+
+    Some(CodeAction {
+        title: format!("Replace '{}' with '{}'", unknown_key, suggested_key),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: None,
+        edit: Some(WorkspaceEdit {
+            changes: Some(HashMap::from([(
+                uri.clone(),
+                vec![TextEdit::new(
+                    Range::new(start, end),
+                    suggested_key.to_string(),
+                )],
+            )])),
+            ..WorkspaceEdit::default()
+        }),
+        is_preferred: Some(true),
+        ..CodeAction::default()
+    })
 }
 
 pub fn collect_optimizer_diagnostics(
@@ -836,6 +936,88 @@ pub fn collect_semantic_diagnostics(
     diagnostics
 }
 
+pub fn collect_sources_diagnostics(
+    doc: &crate::parser::GctfDocument,
+    content: &str,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    let lines: Vec<&str> = content.lines().collect();
+
+    use crate::parser::ast::{SectionContent, SectionType};
+
+    for section in &doc.sections {
+        if section.section_type != SectionType::Bench {
+            continue;
+        }
+
+        let SectionContent::KeyValues(kv) = &section.content else {
+            continue;
+        };
+
+        let Some(sources_yaml) = kv.get("sources") else {
+            continue;
+        };
+
+        if sources_yaml.trim().is_empty() {
+            continue;
+        }
+
+        match serde_yaml_ng::from_str::<Vec<crate::bench::sources::SourceDefinition>>(sources_yaml)
+        {
+            Ok(defs) => {
+                for def in &defs {
+                    if def.file.is_empty() {
+                        if let Some(line_idx) =
+                            find_line_with_key("sources", &lines, section.start_line)
+                        {
+                            diagnostics.push(Diagnostic {
+                                range: Range::new(
+                                    Position::new(line_idx as u32, 0),
+                                    Position::new(line_idx as u32, sources_yaml.len() as u32),
+                                ),
+                                severity: Some(DiagnosticSeverity::ERROR),
+                                code: Some(NumberOrString::String("SRC001".to_string())),
+                                source: Some("grpctestify-sources".to_string()),
+                                message: "source 'file' is required".to_string(),
+                                ..Diagnostic::default()
+                            });
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                if let Some(line_idx) = find_line_with_key("sources", &lines, section.start_line) {
+                    diagnostics.push(Diagnostic {
+                        range: Range::new(
+                            Position::new(line_idx as u32, 0),
+                            Position::new(line_idx as u32, sources_yaml.len().min(100) as u32),
+                        ),
+                        severity: Some(DiagnosticSeverity::ERROR),
+                        code: Some(NumberOrString::String("SRC000".to_string())),
+                        source: Some("grpctestify-sources".to_string()),
+                        message: format!("invalid sources: {}", e),
+                        ..Diagnostic::default()
+                    });
+                }
+            }
+        }
+    }
+
+    diagnostics
+}
+
+fn find_line_with_key(key: &str, lines: &[&str], start_line: usize) -> Option<usize> {
+    for (i, line) in lines.iter().enumerate().skip(start_line.saturating_sub(1)) {
+        if line.contains(key) && line.contains(':') {
+            return Some(i);
+        }
+        if i > start_line + 20 {
+            break;
+        }
+    }
+    None
+}
+
 pub fn create_optimizer_rewrite_action(
     uri: &Url,
     range: Range,
@@ -909,12 +1091,16 @@ mod tests {
         let hover = get_section_hover(&SectionType::Request).unwrap();
         assert!(hover.contains("JSON/JSON5"));
         assert!(hover.contains("Comments"));
+
+        let hover = get_section_hover(&SectionType::Bench).unwrap();
+        assert!(hover.contains("load_schedule"));
+        assert!(hover.contains("fixed, stepping, adaptive, closed, open"));
     }
 
     #[test]
     fn test_get_section_completions() {
         let completions = get_section_completions();
-        assert_eq!(completions.len(), 11); // 11 section types (no RESPONSE_HEADERS)
+        assert_eq!(completions.len(), 12); // 12 section types (including BENCH)
 
         let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"--- ADDRESS ---"));
@@ -1003,6 +1189,41 @@ test.Service/Method
         let edits = changes.get(&uri).unwrap();
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0].new_text, "--- REQUEST_HEADERS ---");
+    }
+
+    #[test]
+    fn test_create_bench_key_fix_action() {
+        let uri = Url::parse("file:///test.gctf").unwrap();
+        let content = "--- BENCH ---\nload-schdule: fixed\n";
+        let range = Range::new(Position::new(1, 0), Position::new(1, 21));
+
+        let action =
+            create_bench_key_fix_action(&uri, range, "load-schdule", "load_schedule", content)
+                .unwrap();
+
+        assert_eq!(action.title, "Replace 'load-schdule' with 'load_schedule'");
+        assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+        assert_eq!(action.is_preferred, Some(true));
+
+        let edit = action.edit.unwrap();
+        let changes = edit.changes.unwrap();
+        let edits = changes.get(&uri).unwrap();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "load_schedule");
+        assert_eq!(edits[0].range.start, Position::new(1, 0));
+        assert_eq!(edits[0].range.end, Position::new(1, 12));
+    }
+
+    #[test]
+    fn test_create_bench_key_fix_action_returns_none_when_prefix_mismatch() {
+        let uri = Url::parse("file:///test.gctf").unwrap();
+        let content = "--- BENCH ---\nretry: 2\n";
+        let range = Range::new(Position::new(1, 0), Position::new(1, 8));
+
+        let action =
+            create_bench_key_fix_action(&uri, range, "load-schdule", "load_schedule", content);
+
+        assert!(action.is_none());
     }
 
     #[test]
@@ -1316,6 +1537,24 @@ test.Service/Method
         let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"timeout:"));
         assert!(labels.contains(&"retries:"));
+    }
+
+    #[test]
+    fn test_get_section_key_completions_bench() {
+        let completions = get_section_key_completions(&SectionType::Bench);
+        assert!(!completions.is_empty());
+
+        let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"load_schedule:"));
+        assert!(labels.contains(&"progress_interval:"));
+        assert!(labels.contains(&"thresholds.*:"));
+
+        let mode_detail = completions
+            .iter()
+            .find(|c| c.label == "mode:")
+            .and_then(|c| c.detail.clone())
+            .unwrap_or_default();
+        assert!(mode_detail.contains("fixed, stepping, adaptive, closed, open"));
     }
 
     #[test]

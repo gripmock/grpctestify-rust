@@ -22,6 +22,7 @@ struct TestCaseBuilder {
     status: TestStatus,
     error_message: Option<String>,
     tags: Vec<String>,
+    extra_properties: Vec<(String, String)>,
 }
 
 impl TestCaseBuilder {
@@ -35,7 +36,7 @@ impl TestCaseBuilder {
             escaped_name, escaped_classname, duration
         );
 
-        if self.tags.is_empty() {
+        if self.tags.is_empty() && self.extra_properties.is_empty() {
             xml.push_str(">\n");
         } else {
             xml.push_str(">\n      <properties>\n");
@@ -43,6 +44,13 @@ impl TestCaseBuilder {
                 xml.push_str(&format!(
                     "        <property name=\"tag\" value=\"{}\"/>\n",
                     escape_xml(tag)
+                ));
+            }
+            for (key, value) in &self.extra_properties {
+                xml.push_str(&format!(
+                    "        <property name=\"{}\" value=\"{}\"/>\n",
+                    escape_xml(key),
+                    escape_xml(value)
                 ));
             }
             xml.push_str("      </properties>\n");
@@ -112,6 +120,7 @@ impl Reporter for JunitReporter {
                 status: result.status,
                 error_message: result.error_message.clone(),
                 tags: result.meta.tags.clone(),
+                extra_properties: crate::report::kernel::runtime_properties(&result.name),
             };
             xml.push_str(&tc.to_xml());
         }

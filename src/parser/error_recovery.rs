@@ -74,21 +74,26 @@ fn parse_single_with_recovery(content: &str, file_path: &str) -> ErrorRecoveryRe
     let mut diagnostics = DiagnosticCollection::new();
     let mut sections = Vec::new();
     let mut recovered_sections = 0;
-    let mut failed_sections = 0;
+    let failed_sections = 0;
 
     let lines: Vec<&str> = content.lines().collect();
     let mut current_line = 0;
 
-    // Parse sections one by one, collecting errors
+    let mut pending_attributes: Vec<crate::parser::ast::GctfAttribute> = Vec::new();
+
     while current_line < lines.len() {
-        match parse_section(&lines, current_line, &mut diagnostics) {
+        match parse_section(
+            &lines,
+            current_line,
+            &mut diagnostics,
+            &mut pending_attributes,
+        ) {
             Ok((section, end_line)) => {
                 sections.push(section);
                 recovered_sections += 1;
                 current_line = end_line;
             }
             Err(end_line) => {
-                failed_sections += 1;
                 current_line = end_line;
             }
         }
@@ -118,42 +123,46 @@ fn parse_section(
     lines: &[&str],
     start_line: usize,
     diagnostics: &mut DiagnosticCollection,
+    pending_attributes: &mut Vec<crate::parser::ast::GctfAttribute>,
 ) -> Result<(Section, usize), usize> {
     let line = lines.get(start_line).copied().unwrap_or("");
     let trimmed = line.trim();
 
-    // Skip empty lines and comments
-    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+    if trimmed.is_empty() || trimmed.starts_with("//") {
         return Err(start_line + 1);
     }
 
-    // Check for section header
+    if trimmed.starts_with("#[") && trimmed.ends_with(']') {
+        let inner = &trimmed[2..trimmed.len() - 1];
+        if let Some(attr) = super::content_parser::parse_attribute(inner) {
+            pending_attributes.push(attr);
+        }
+        return Err(start_line + 1);
+    }
+
     if !trimmed.starts_with("---") {
-        // Not a section header, skip line
         return Err(start_line + 1);
     }
 
-    // Parse section header
-    let section_type = match parse_section_header(trimmed, start_line, diagnostics) {
-        Some(t) => t,
-        None => return Err(start_line + 1),
-    };
+    let (section_type, inline_options) =
+        match parse_section_header(trimmed, start_line, diagnostics) {
+            Some(t) => t,
+            None => return Err(start_line + 1),
+        };
 
-    // Find section content
     let content_start = start_line + 1;
     let (content, content_end) = extract_section_content(lines, content_start, section_type);
 
-    // Parse section content with error isolation
     let content_result = parse_section_content(&content, content_start, section_type, diagnostics);
 
     let section = Section {
         section_type,
         content: content_result,
-        inline_options: Default::default(),
+        inline_options,
         raw_content: content.join("\n"),
         start_line,
         end_line: content_end,
-        attributes: Vec::new(),
+        attributes: std::mem::take(pending_attributes),
     };
 
     Ok((section, content_end + 1))
@@ -164,7 +173,7 @@ fn parse_section_header(
     line: &str,
     line_num: usize,
     diagnostics: &mut DiagnosticCollection,
-) -> Option<SectionType> {
+) -> Option<(SectionType, crate::parser::ast::InlineOptions)> {
     // Remove --- delimiters
     let without_delimiters = line.trim_start_matches('-').trim_end_matches('-').trim();
 
@@ -194,6 +203,7 @@ fn parse_section_header(
         "PROTO" => SectionType::Proto,
         "OPTIONS" => SectionType::Options,
         "META" => SectionType::Meta,
+        "BENCH" => SectionType::Bench,
         _ => {
             diagnostics.warning(
                 DiagnosticCode::UnknownSectionType,
@@ -205,11 +215,22 @@ fn parse_section_header(
     };
 
     // Parse inline options if present
-    if parts.len() > 1 {
-        parse_inline_options(parts[1], line_num, diagnostics);
-    }
+    let inline_options = if parts.len() > 1 && section_type.supports_inline_options() {
+        match super::content_parser::parse_inline_options(parts[1]) {
+            Ok(opts) => opts,
+            Err(_) => {
+                parse_inline_options_diagnostic(parts[1], line_num, diagnostics);
+                Default::default()
+            }
+        }
+    } else {
+        if parts.len() > 1 {
+            parse_inline_options_diagnostic(parts[1], line_num, diagnostics);
+        }
+        Default::default()
+    };
 
-    Some(section_type)
+    Some((section_type, inline_options))
 }
 
 /// Extract content lines for a section
@@ -227,6 +248,11 @@ fn extract_section_content(
         // Check for next section header
         if trimmed.starts_with("---") && trimmed.ends_with("---") {
             break;
+        }
+
+        // Skip attribute lines (they belong to the next section, not current)
+        if trimmed.starts_with("#[") && trimmed.ends_with(']') {
+            continue;
         }
 
         content.push(line.to_string());
@@ -303,7 +329,8 @@ fn parse_section_content(
         SectionType::RequestHeaders
         | SectionType::Tls
         | SectionType::Proto
-        | SectionType::Options => {
+        | SectionType::Options
+        | SectionType::Bench => {
             // Parse key-value pairs
             let mut key_values = std::collections::HashMap::new();
             for (i, line) in content.iter().enumerate() {
@@ -344,7 +371,7 @@ fn parse_section_content(
 }
 
 /// Parse inline options like "with_asserts=true"
-fn parse_inline_options(
+fn parse_inline_options_diagnostic(
     options_str: &str,
     line_num: usize,
     diagnostics: &mut DiagnosticCollection,
@@ -357,7 +384,6 @@ fn parse_inline_options(
 
             match key {
                 "with_asserts" | "unordered_arrays" | "partial" => {
-                    // Valid boolean options
                     if value != "true" && value != "false" {
                         diagnostics.warning(
                             DiagnosticCode::InvalidFieldValue,
@@ -367,7 +393,6 @@ fn parse_inline_options(
                     }
                 }
                 "tolerance" => {
-                    // Numeric option
                     if value.parse::<f64>().is_err() {
                         diagnostics.warning(
                             DiagnosticCode::InvalidFieldValue,
@@ -376,6 +401,7 @@ fn parse_inline_options(
                         );
                     }
                 }
+                "redact" => {}
                 _ => {
                     diagnostics.hint(
                         DiagnosticCode::InvalidFieldValue,

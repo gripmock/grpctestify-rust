@@ -6,7 +6,7 @@ helloworld.Greeter/SayHello
   "name": "World"
 }
 
---- RESPONSE partial=true ---
+--- RESPONSE partial ---
 {
   "message": "Hello, World!"
 }

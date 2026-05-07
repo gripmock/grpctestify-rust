@@ -47,7 +47,8 @@ export default defineConfig({
           items: [
             { text: 'API Overview', link: '/guides/reference/api/' },
             { text: 'Command Line', link: '/guides/reference/api/command-line' },
-            { text: 'Report Formats', link: '/guides/reference/api/report-formats' }
+            { text: 'Report Formats', link: '/guides/reference/api/report-formats' },
+            { text: 'Data Source Framework', link: '/guides/bench-sources' }
           ]
         },
         {
@@ -72,11 +73,12 @@ export default defineConfig({
             { text: 'EXTRACT', link: '/guides/reference/sections/extract' },
             { text: 'REQUEST_HEADERS', link: '/guides/reference/sections/request-headers' },
             { text: 'TLS', link: '/guides/reference/sections/tls' },
-            { text: 'PROTO', link: '/guides/reference/sections/proto' },
-            { text: 'OPTIONS', link: '/guides/reference/sections/options' },
-            { text: 'Attributes', link: '/guides/reference/sections/attributes' }
-          ]
-        }
+              { text: 'PROTO', link: '/guides/reference/sections/proto' },
+              { text: 'OPTIONS', link: '/guides/reference/sections/options' },
+              { text: 'BENCH', link: '/guides/reference/sections/bench' },
+              { text: 'Attributes', link: '/guides/reference/sections/attributes' }
+            ]
+          }
       ]
     },
 

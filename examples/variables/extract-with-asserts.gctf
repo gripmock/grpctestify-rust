@@ -19,6 +19,6 @@ access_token = .access_token
 refresh_token = .refresh_token
 
 --- ASSERTS ---
-@len({{ access_token }}) > 0
-@uuid({{ refresh_token }})
+@len($access_token) > 0
+@uuid($refresh_token)
 .expires_in == 3600
