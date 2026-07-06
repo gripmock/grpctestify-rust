@@ -227,6 +227,87 @@ fn parse_duration_sec(s: &str) -> Option<f64> {
     }
 }
 
+/// Macro-driven config resolution from BENCH section + CLI args.
+/// Each field is defined once with its parser and CLI accessor.
+/// Generates both BENCH section parsing and CLI override code.
+macro_rules! bench_config_fields {
+    (string, $config:expr, $bench:expr, $cli:expr, $field:ident, $key:literal) => {
+        // BENCH section
+        if let Some(v) = $bench.get($key) {
+            $config.$field = v.clone();
+        }
+        // CLI override
+        if let Some(v) = &$cli.$field {
+            $config.$field = v.clone();
+        }
+    };
+    (u32, $config:expr, $bench:expr, $cli:expr, $field:ident, $key:literal) => {
+        if let Some(v) = $bench.get($key) {
+            $config.$field = v.parse().unwrap_or(1);
+        }
+        if let Some(v) = $cli.$field {
+            $config.$field = v;
+        }
+    };
+    (f64_opt, $config:expr, $bench:expr, $cli:expr, $field:ident, $key:literal) => {
+        if let Some(v) = bench_value($bench, $key) {
+            $config.$field = v.parse::<f64>().ok();
+        }
+        if let Some(v) = $cli.$field {
+            $config.$field = Some(v);
+        }
+    };
+    (duration, $config:expr, $bench:expr, $cli:expr, $field:ident, $key:literal) => {
+        if let Some(v) = $bench.get($key) {
+            $config.$field = Some(parse_duration(v)?);
+        }
+        if let Some(v) = &$cli.$field {
+            $config.$field = Some(parse_duration(v)?);
+        }
+    };
+    (duration_val, $config:expr, $bench:expr, $cli:expr, $field:ident, $key:literal) => {
+        if let Some(v) = bench_value($bench, $key) {
+            $config.$field = Some(parse_duration(v)?);
+        }
+        if let Some(v) = &$cli.$field {
+            $config.$field = Some(parse_duration(v)?);
+        }
+    };
+    (bool, $config:expr, $bench:expr, $cli:expr, $field:ident, $key:literal) => {
+        if let Some(v) = $bench.get($key) {
+            $config.$field = v == "true" || v == "1";
+        }
+        if $cli.$field {
+            $config.$field = true;
+        }
+    };
+}
+
+/// Macro for CLI-only override (no BENCH section accessor).
+macro_rules! cli_config_field {
+    (string_clone, $config:expr, $cli:expr, $field:ident, $key:literal) => {
+        if let Some(v) = &$cli.$field {
+            $config.$field = v.clone();
+        }
+    };
+    (direct, $config:expr, $cli:expr, $field:ident, $key:literal) => {
+        if let Some(v) = $cli.$field {
+            $config.$field = v;
+            $config.option_sources.insert($key.to_string(), BenchOptionSource::Cli);
+        }
+    };
+    (duration, $config:expr, $cli:expr, $field:ident) => {
+        if let Some(v) = &$cli.$field {
+            $config.$field = Some(parse_duration(v)?);
+        }
+    };
+    (bool_flag, $config:expr, $cli:expr, $field:ident) => {
+        if $cli.$field {
+            $config.$field = true;
+        }
+    };
+}
+
 impl BenchConfigResolved {
     pub fn from_bench_section(bench_section: Option<&HashMap<String, String>>) -> Result<Self> {
         let mut config = Self::default();
@@ -524,18 +605,9 @@ impl BenchConfigResolved {
         }
 
         // Override with CLI args (highest priority)
-        if let Some(profile) = &cli.profile {
-            config.profile = profile.clone();
-        }
-        if let Some(mode) = &cli.mode {
-            config.mode = mode.clone();
-        }
-        if let Some(c) = cli.concurrency {
-            config.concurrency = c;
-            config
-                .option_sources
-                .insert("concurrency".to_string(), BenchOptionSource::Cli);
-        }
+        cli_config_field!(string_clone, config, cli, profile, "profile");
+        cli_config_field!(string_clone, config, cli, mode, "mode");
+        cli_config_field!(direct, config, cli, concurrency, "concurrency");
         if let Some(n) = cli.requests {
             config.requests = Some(n);
         }
