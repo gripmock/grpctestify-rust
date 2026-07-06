@@ -185,6 +185,6 @@ GRPCTESTIFY_DIMENSION_MEMORY_BUDGET=256mb grpctestify bench test.gctf
 
 ## Related
 
-- [BENCH Section](../sections/bench)
-- [Template Variables](../sections/extract)
+- [BENCH Section](reference/sections/bench)
+- [Template Variables](reference/sections/extract)
 - [Query Command](./query) — explore sources interactively
