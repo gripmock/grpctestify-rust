@@ -78,6 +78,9 @@ pub struct BenchConfigResolved {
     pub load_midpoint: Option<f64>,
     pub load_amplitude: Option<f64>,
     pub load_frequency: Option<f64>,
+    pub load_spike_target: Option<f64>,
+    pub load_spike_after: Option<f64>,
+    pub load_spike_duration: Option<f64>,
     pub connections: u32,
     pub connect_timeout: Duration,
     pub keepalive: Option<Duration>,
@@ -118,6 +121,9 @@ impl Default for BenchConfigResolved {
             load_midpoint: None,
             load_amplitude: None,
             load_frequency: None,
+            load_spike_target: None,
+            load_spike_after: None,
+            load_spike_duration: None,
             connections: 1,
             connect_timeout: Duration::from_secs(10),
             keepalive: None,
@@ -1134,6 +1140,18 @@ fn target_rps_at(config: &BenchConfigResolved, elapsed: Duration) -> f64 {
             let t = elapsed.as_secs_f64();
             let target = midpoint + amplitude * (frequency * t).sin();
             target.max(0.0)
+        }
+        "spike" => {
+            let baseline = start;
+            let target = config.load_spike_target.unwrap_or(fallback);
+            let spike_after = config.load_spike_after.unwrap_or(30.0);
+            let spike_dur = config.load_spike_duration.unwrap_or(10.0);
+            let t = elapsed.as_secs_f64();
+            if t >= spike_after && t < spike_after + spike_dur {
+                target.max(0.0)
+            } else {
+                baseline.max(0.0)
+            }
         }
         _ => {
             if config.max_rps.is_some() {
