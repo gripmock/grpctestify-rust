@@ -197,6 +197,9 @@ pub struct DimLoadStats {
     pub index_build_ms: u64,
 }
 
+/// Runtime statistics for dimension source lookups.
+/// All counters use `Relaxed` atomic ordering — values are approximate
+/// and intended for observability only, not for decision-making.
 #[derive(Debug)]
 pub struct SourceRuntimeStats {
     pub dimension_lookups: std::sync::atomic::AtomicU64,
