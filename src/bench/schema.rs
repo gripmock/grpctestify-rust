@@ -11,6 +11,12 @@ pub const BENCH_NUMERIC_KEYS: &[&str] = &[
     "load_start",
     "load_step",
     "load_end",
+    "load_midpoint",
+    "load_amplitude",
+    "load_frequency",
+    "load_spike_target",
+    "load_spike_after",
+    "load_spike_duration",
 ];
 
 pub const BENCH_DURATION_KEYS: &[&str] = &[
@@ -21,6 +27,7 @@ pub const BENCH_DURATION_KEYS: &[&str] = &[
     "warmup",
     "duration",
     "cache_ttl",
+    "cool_down",
     "load_step_duration",
     "load_max_duration",
     "progress_interval",
@@ -38,10 +45,12 @@ pub const BENCH_DIRECT_KEYS: &[&str] = &[
     "sample_rate",
     "cache",
     "latency_percentiles",
+    "warmup_mode",
+    "load_profile",
 ];
 
 pub const BENCH_MODE_VALUES: &[&str] = &["fixed", "stepping", "adaptive", "closed", "open"];
-pub const BENCH_LOAD_SCHEDULE_VALUES: &[&str] = &["const", "step", "line"];
+pub const BENCH_LOAD_SCHEDULE_VALUES: &[&str] = &["const", "step", "line", "sine", "spike", "custom"];
 pub const BENCH_DURATION_STOP_VALUES: &[&str] = &["close", "wait", "ignore"];
 pub const BENCH_ASSERT_MODE_VALUES: &[&str] =
     &["full", "sampled", "off", "fail_fast", "collect_all", "skip"];
@@ -130,6 +139,15 @@ pub fn bench_key_detail(key: &str) -> String {
         "sources" => "Data source definitions for bench (file, format, index)".to_string(),
         "cache_ttl" => "Cache TTL duration".to_string(),
         "thresholds.*" => "Threshold expressions map".to_string(),
+        "load_midpoint" => "Midpoint RPS for sine schedule".to_string(),
+        "load_amplitude" => "Amplitude for sine schedule".to_string(),
+        "load_frequency" => "Frequency (rad/s) for sine schedule".to_string(),
+        "load_spike_target" => "Target RPS during spike".to_string(),
+        "load_spike_after" => "Seconds before spike starts".to_string(),
+        "load_spike_duration" => "Spike duration in seconds".to_string(),
+        "cool_down" => "Cool-down duration after main test".to_string(),
+        "warmup_mode" => "Warmup mode: warmup (default) or dry_run".to_string(),
+        "load_profile" => "Custom RPS profile (time:rps,time:rps)".to_string(),
         _ => "BENCH option".to_string(),
     }
 }
@@ -244,6 +262,8 @@ pub fn bench_key_rank(key: &str) -> usize {
         "max_duration",
         "ramp_up",
         "warmup",
+        "warmup_mode",
+        "cool_down",
         "max_rps",
         "load_schedule",
         "load_start",
@@ -251,6 +271,13 @@ pub fn bench_key_rank(key: &str) -> usize {
         "load_end",
         "load_step_duration",
         "load_max_duration",
+        "load_midpoint",
+        "load_amplitude",
+        "load_frequency",
+        "load_spike_target",
+        "load_spike_after",
+        "load_spike_duration",
+        "load_profile",
         "progress_interval",
         "connections",
         "connect_timeout",
