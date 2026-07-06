@@ -1813,26 +1813,16 @@ fn build_report(
         details: vec![],
         tags: BTreeMap::new(),
         sources_runtime: source_config.map(|sc| {
-            let stats = sc.runtime_stats.clone();
+            let stats = sc.runtime_stats.snapshot();
             let mut source_stats = std::collections::BTreeMap::new();
             source_stats.insert(
                 "global".to_string(),
                 crate::report::bench::SourceRuntimeStats {
-                    dimension_lookups: stats
-                        .dimension_lookups
-                        .load(std::sync::atomic::Ordering::Relaxed),
-                    dimension_hits: stats
-                        .dimension_hits
-                        .load(std::sync::atomic::Ordering::Relaxed),
-                    dimension_misses: stats
-                        .dimension_misses
-                        .load(std::sync::atomic::Ordering::Relaxed),
-                    in_memory_lookups: stats
-                        .in_memory_lookups
-                        .load(std::sync::atomic::Ordering::Relaxed),
-                    indexed_lookups: stats
-                        .indexed_lookups
-                        .load(std::sync::atomic::Ordering::Relaxed),
+                    dimension_lookups: stats.dimension_lookups,
+                    dimension_hits: stats.dimension_hits,
+                    dimension_misses: stats.dimension_misses,
+                    in_memory_lookups: stats.in_memory_lookups,
+                    indexed_lookups: stats.indexed_lookups,
                     index_fallbacks: stats
                         .index_fallbacks
                         .load(std::sync::atomic::Ordering::Relaxed),

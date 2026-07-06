@@ -210,6 +210,32 @@ pub struct SourceRuntimeStats {
     pub index_fallbacks: std::sync::atomic::AtomicU64,
 }
 
+/// Consistent snapshot of runtime stats at a point in time.
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeStatsSnapshot {
+    pub dimension_lookups: u64,
+    pub dimension_hits: u64,
+    pub dimension_misses: u64,
+    pub in_memory_lookups: u64,
+    pub indexed_lookups: u64,
+    pub index_fallbacks: u64,
+}
+
+impl SourceRuntimeStats {
+    /// Take a consistent snapshot of all counters.
+    pub fn snapshot(&self) -> RuntimeStatsSnapshot {
+        use std::sync::atomic::Ordering::Relaxed;
+        RuntimeStatsSnapshot {
+            dimension_lookups: self.dimension_lookups.load(Relaxed),
+            dimension_hits: self.dimension_hits.load(Relaxed),
+            dimension_misses: self.dimension_misses.load(Relaxed),
+            in_memory_lookups: self.in_memory_lookups.load(Relaxed),
+            indexed_lookups: self.indexed_lookups.load(Relaxed),
+            index_fallbacks: self.index_fallbacks.load(Relaxed),
+        }
+    }
+}
+
 impl Default for SourceRuntimeStats {
     fn default() -> Self {
         Self {
