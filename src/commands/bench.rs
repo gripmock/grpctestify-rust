@@ -838,6 +838,15 @@ struct BenchMetrics {
     per_endpoint: BTreeMap<String, PerEndpointData>,
 }
 
+impl BenchMetrics {
+    fn with_capacity(hint: usize) -> Self {
+        Self {
+            latencies: Vec::with_capacity(hint),
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Default, Debug)]
 struct PerEndpointData {
     count: u64,
@@ -1140,7 +1149,7 @@ async fn run_benchmark(
             let progress_errors = Arc::clone(&progress_errors);
             let sc = source_config.clone();
             join_set.spawn(async move {
-                let mut local = BenchMetrics::default();
+                let mut local = BenchMetrics::with_capacity(1000);
                 let mut next_slot = Instant::now();
                 let deadline = Instant::now() + dur;
                 while Instant::now() < deadline {
@@ -1220,7 +1229,7 @@ async fn run_benchmark(
             let sc = source_config.clone();
 
             join_set.spawn(async move {
-                let mut local = BenchMetrics::default();
+                let mut local = BenchMetrics::with_capacity(worker_requests as usize);
                 let mut next_slot = Instant::now();
                 for _ in 0..worker_requests {
                     if let Some(deadline) = max_deadline
