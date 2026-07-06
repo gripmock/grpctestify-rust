@@ -2050,4 +2050,73 @@ mod tests {
         let json = serde_json::to_string(&warning).unwrap();
         assert_eq!(json, "\"warning\"");
     }
+
+    #[test]
+    fn test_section_order_response_before_request_warns() {
+        let mut doc = GctfDocument::new("test.gctf".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{}".to_string(),
+            start_line: 1,
+            end_line: 2,
+            attributes: Vec::new(),
+        });
+        let mut errors = Vec::new();
+        validate_section_order(&doc, &mut errors);
+        assert!(errors.iter().any(|e| e.message.contains("Response")));
+    }
+
+    #[test]
+    fn test_section_order_response_after_request_ok() {
+        let mut doc = GctfDocument::new("test.gctf".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Json(serde_json::json!({"x": 1})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"x\": 1}".to_string(),
+            start_line: 1,
+            end_line: 2,
+            attributes: Vec::new(),
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{}".to_string(),
+            start_line: 3,
+            end_line: 4,
+            attributes: Vec::new(),
+        });
+        let mut errors = Vec::new();
+        validate_section_order(&doc, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_section_order_extract_before_response_warns() {
+        let mut doc = GctfDocument::new("test.gctf".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Json(serde_json::json!({})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{}".to_string(),
+            start_line: 1,
+            end_line: 2,
+            attributes: Vec::new(),
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Extract,
+            content: SectionContent::Single("var = .value".to_string()),
+            inline_options: InlineOptions::default(),
+            raw_content: "var = .value".to_string(),
+            start_line: 3,
+            end_line: 4,
+            attributes: Vec::new(),
+        });
+        let mut errors = Vec::new();
+        validate_section_order(&doc, &mut errors);
+        assert!(errors.iter().any(|e| e.message.contains("EXTRACT")));
+    }
 }
