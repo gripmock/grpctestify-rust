@@ -1,23 +1,14 @@
-use std::collections::HashMap;
-
 #[derive(Debug, Clone)]
 pub struct SourceRow {
     columns: Vec<String>,
     values: Vec<String>,
-    index: HashMap<String, usize>,
 }
 
 impl SourceRow {
     pub fn new(headers: &[String], values: Vec<String>) -> Self {
-        let index: HashMap<String, usize> = headers
-            .iter()
-            .enumerate()
-            .map(|(i, h)| (h.clone(), i))
-            .collect();
         Self {
             columns: headers.to_vec(),
             values,
-            index,
         }
     }
 
@@ -31,39 +22,22 @@ impl SourceRow {
                 columns.push(format!("col_{}", columns.len()));
             }
         }
-        let index: HashMap<String, usize> = columns
-            .iter()
-            .enumerate()
-            .map(|(i, h)| (h.clone(), i))
-            .collect();
-        Self {
-            columns,
-            values,
-            index,
-        }
+        Self { columns, values }
     }
 
     pub fn from_pairs(pairs: Vec<(String, String)>) -> Self {
         let mut columns = Vec::with_capacity(pairs.len());
         let mut values = Vec::with_capacity(pairs.len());
-        let mut index = HashMap::new();
-        for (i, (k, v)) in pairs.into_iter().enumerate() {
-            index.insert(k.clone(), i);
+        for (k, v) in pairs {
             columns.push(k);
             values.push(v);
         }
-        Self {
-            columns,
-            values,
-            index,
-        }
+        Self { columns, values }
     }
 
     pub fn get(&self, column: &str) -> Option<&str> {
-        self.index
-            .get(column)
-            .map(|&i| self.values.get(i).map(|s| s.as_str()))
-            .flatten()
+        let idx = self.columns.iter().position(|c| c == column)?;
+        self.values.get(idx).map(|s| s.as_str())
     }
 
     pub fn get_or(&self, column: &str, default: &str) -> String {
@@ -80,8 +54,8 @@ impl SourceRow {
         &self.values
     }
 
-    pub fn to_map(&self) -> HashMap<String, String> {
-        let mut map = HashMap::with_capacity(self.columns.len());
+    pub fn to_map(&self) -> std::collections::HashMap<String, String> {
+        let mut map = std::collections::HashMap::with_capacity(self.columns.len());
         for (i, col) in self.columns.iter().enumerate() {
             if let Some(v) = self.values.get(i) {
                 map.insert(col.clone(), v.clone());
