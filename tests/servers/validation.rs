@@ -124,8 +124,5 @@ pub async fn start_validation_server(
             .await
     });
 
-    Ok(TestServerHandle {
-        handle: server,
-        address: addr,
-    })
+    Ok(TestServerHandle { handle: server })
 }

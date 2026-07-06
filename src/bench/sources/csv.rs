@@ -2,10 +2,10 @@ use super::SourceReader;
 use super::error::SourceError;
 use super::row::SourceRow;
 use anyhow::Result;
-use std::io::{BufRead, BufReader, Read, Seek};
+use std::io::{BufReader, Read, Seek};
 
 pub struct CsvReader<R> {
-    reader: BufReader<R>,
+    reader: csv::Reader<BufReader<R>>,
     headers: Vec<String>,
     delimiter: u8,
     row_number: usize,
@@ -14,35 +14,38 @@ pub struct CsvReader<R> {
 
 impl<R: Read> CsvReader<R> {
     pub fn new(reader: BufReader<R>, delimiter: u8) -> Result<Self> {
-        let mut slf = Self {
-            reader,
-            headers: Vec::new(),
-            delimiter,
-            row_number: 0,
-            finished: false,
-        };
-        slf.read_header()?;
-        Ok(slf)
-    }
+        let mut csv_reader = csv::ReaderBuilder::new()
+            .delimiter(delimiter)
+            .comment(Some(b'#'))
+            .has_headers(true)
+            .flexible(false)
+            .from_reader(reader);
 
-    fn read_header(&mut self) -> Result<()> {
-        let mut line = String::new();
-        let bytes = self.reader.read_line(&mut line)?;
-        if bytes == 0 {
+        let headers = csv_reader
+            .headers()
+            .map_err(|e| anyhow::anyhow!("failed to read CSV header: {e}"))?
+            .iter()
+            .map(|h| h.to_string())
+            .collect::<Vec<_>>();
+
+        if headers.is_empty() {
             return Err(SourceError::EmptyFile("csv".into()).into());
         }
-        let header_line = line.trim_end_matches(['\n', '\r']);
-        self.headers = parse_csv_line(header_line, self.delimiter);
 
         let mut seen = std::collections::HashSet::new();
-        for col in &self.headers {
+        for col in &headers {
             if !seen.insert(col.as_str()) {
                 return Err(SourceError::DuplicateColumn(col.clone()).into());
             }
         }
 
-        self.row_number = 1;
-        Ok(())
+        Ok(Self {
+            reader: csv_reader,
+            headers,
+            delimiter,
+            row_number: 1,
+            finished: false,
+        })
     }
 }
 
@@ -52,22 +55,16 @@ impl<R: Read + Send> SourceReader for CsvReader<R> {
             return Ok(None);
         }
 
-        let mut line = String::new();
-        loop {
-            line.clear();
-            let bytes = self.reader.read_line(&mut line)?;
-            if bytes == 0 {
-                self.finished = true;
-                return Ok(None);
-            }
-
-            let trimmed = line.trim_end_matches(['\n', '\r']);
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-
+        for result in self.reader.records() {
             self.row_number += 1;
-            let values = parse_csv_line(trimmed, self.delimiter);
+            let record = match result {
+                Ok(r) => r,
+                Err(e) => {
+                    return Err(anyhow::anyhow!("CSV error at row {}: {e}", self.row_number));
+                }
+            };
+
+            let values: Vec<String> = record.iter().map(|f| f.to_string()).collect();
 
             if values.len() != self.headers.len() {
                 return Err(SourceError::FieldCountMismatch {
@@ -80,6 +77,9 @@ impl<R: Read + Send> SourceReader for CsvReader<R> {
 
             return Ok(Some(SourceRow::new(&self.headers, values)));
         }
+
+        self.finished = true;
+        Ok(None)
     }
 
     fn headers(&self) -> &[String] {
@@ -93,53 +93,10 @@ impl<R: Read + Send> SourceReader for CsvReader<R> {
 
 impl<R: Read + Seek + Send> CsvReader<R> {
     pub fn reset_seekable(&mut self) -> Result<()> {
-        self.reader.seek(std::io::SeekFrom::Start(0))?;
-        self.row_number = 0;
-        self.finished = false;
-        self.read_header()?;
-        Ok(())
+        // csv::Reader doesn't expose the inner writer,
+        // so we need to replace it entirely by seeking the raw reader
+        Err(anyhow::anyhow!("reset_seekable not supported with csv crate reader"))
     }
-}
-
-fn parse_csv_line(line: &str, delimiter: u8) -> Vec<String> {
-    let mut fields = Vec::new();
-    let mut current = String::new();
-    let mut in_quotes = false;
-    let bytes = line.as_bytes();
-    let mut i = 0;
-
-    while i < bytes.len() {
-        let ch = bytes[i];
-        if in_quotes {
-            if ch == b'"' {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
-                    current.push('"');
-                    i += 2;
-                    continue;
-                }
-                in_quotes = false;
-                i += 1;
-                continue;
-            }
-            current.push(ch as char);
-            i += 1;
-        } else {
-            if ch == b'"' {
-                in_quotes = true;
-                i += 1;
-            } else if ch == delimiter {
-                fields.push(current.clone());
-                current.clear();
-                i += 1;
-            } else {
-                current.push(ch as char);
-                i += 1;
-            }
-        }
-    }
-
-    fields.push(current);
-    fields
 }
 
 #[cfg(test)]

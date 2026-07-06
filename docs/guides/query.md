@@ -32,7 +32,7 @@ Where:
 ### Filter Operators
 
 | Operator | Description | Example |
-|----------|-------------|---------|
+| ------- | ----------- | ------- |
 | `=` | Equals | `status=active` |
 | `!=` | Not equals | `status!=pending` |
 | `>=` | Greater or equal | `age>=18` |
@@ -65,7 +65,7 @@ grpctestify query -q "users status=active,pending,suspended" users.csv
 ## CLI Options
 
 | Option | Short | Description | Default |
-|--------|-------|-------------|---------|
+| ----- | ----- | ----------- | ------- |
 | `--query` | `-q` | Query expression | - |
 | `--shell` | `-s` | Force interactive shell | false |
 | `--indexed-by` | `-i` | Index column | - |
@@ -111,7 +111,7 @@ grpctestify query users.csv another.tsv
 ### Shell Commands
 
 | Command | Description |
-|---------|-------------|
+| ------ | ----------- |
 | `.help` | Show help |
 | `.quit` | Exit shell |
 | `.tables` | List loaded sources |
@@ -162,7 +162,7 @@ query> .quit
 ## Supported Formats
 
 | Format | Extensions | Auto-detect |
-|--------|-----------|-------------|
+| ----- | --------- | ----------- |
 | CSV | `.csv` | By content (comma-separated, no tabs) |
 | TSV | `.tsv` | By content (tab-separated) |
 | NDJSON | `.ndjson`, `.jsonl` | By content (lines starting with `{`) |

@@ -11,6 +11,11 @@ extend-ignore-re = [
   "[0-9a-f]{64}",
   # Ignore base64-like strings
   "[A-Za-z0-9+/]{40,}",
+  # Ignore intentional test typos in LSP handlers and validators
+  "load-schdule",
+  "load_shedule",
+  # Ignore fpr (false positive rate) variable name in benchmarks
+  "fpr",
 ]
 
 [default.extend-identifiers]

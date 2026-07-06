@@ -115,7 +115,7 @@ fn bench_index_lookup_density(c: &mut Criterion) {
     let mut idx = SourceIndex::new("zone_id");
     let rows = 500_000usize;
     for i in 0..rows {
-        idx.insert(format!("z{}", i % 1024), i as u64 * 16, 15);
+        let _ = idx.insert(format!("z{}", i % 1024), i as u64 * 16, 15);
     }
 
     group.throughput(Throughput::Elements(rows as u64));
@@ -228,7 +228,7 @@ fn bench_bloom_filter_index_integration(c: &mut Criterion) {
         let mut idx = SourceIndex::new("zone_id");
         let unique_keys = rows / 10;
         for i in 0..rows {
-            idx.insert(format!("z{}", i % unique_keys), i as u64 * 16, 15);
+            let _ = idx.insert(format!("z{}", i % unique_keys), i as u64 * 16, 15);
         }
 
         let mut bf = BloomFilter::new(unique_keys, 0.01);

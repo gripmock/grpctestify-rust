@@ -3,14 +3,21 @@ mod common;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
 
+const SINGLE_DOC: &str = r#"--- ENDPOINT ---
+svc.Method
+--- REQUEST ---
+{"id": 1}
+--- RESPONSE ---
+{"status": "ok"}
+"#;
+
 fn bench_parse(c: &mut Criterion) {
     let mut group = c.benchmark_group("parser/parse_gctf");
 
-    let single = common::single_doc_content();
-    group.throughput(Throughput::Bytes(single.len() as u64));
+    group.throughput(Throughput::Bytes(SINGLE_DOC.len() as u64));
     group.bench_function("single_doc", |b| {
         b.iter(|| {
-            let doc = grpctestify::parser::parse_gctf_from_str(black_box(single), "bench.gctf")
+            let doc = grpctestify::parser::parse_gctf_from_str(black_box(SINGLE_DOC), "bench.gctf")
                 .expect("parse single doc");
             black_box(doc.document_count());
         });

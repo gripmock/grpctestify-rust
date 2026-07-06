@@ -127,8 +127,5 @@ pub async fn start_echo_server(
             .await
     });
 
-    Ok(TestServerHandle {
-        handle: server,
-        address: addr,
-    })
+    Ok(TestServerHandle { handle: server })
 }

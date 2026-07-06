@@ -18,13 +18,3 @@ pub fn generate_multi_doc_content(num_docs: usize) -> String {
     }
     out
 }
-
-pub fn single_doc_content() -> &'static str {
-    r#"--- ENDPOINT ---
-svc.Method
---- REQUEST ---
-{"id": 1}
---- RESPONSE ---
-{"status": "ok"}
-"#
-}

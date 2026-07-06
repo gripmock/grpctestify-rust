@@ -96,8 +96,5 @@ pub async fn start_auth_server(
             .await
     });
 
-    Ok(TestServerHandle {
-        handle: server,
-        address: addr,
-    })
+    Ok(TestServerHandle { handle: server })
 }
