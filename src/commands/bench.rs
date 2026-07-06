@@ -2241,14 +2241,15 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::field_reassign_with_default)]
     fn test_target_rps_step_schedule() {
-        let mut cfg = BenchConfigResolved::default();
-        cfg.load_schedule = "step".to_string();
-        cfg.load_start = Some(50.0);
-        cfg.load_step = Some(10.0);
-        cfg.load_end = Some(150.0);
-        cfg.load_step_duration = Some(Duration::from_secs(5));
+        let cfg = BenchConfigResolved {
+            load_schedule: "step".to_string(),
+            load_start: Some(50.0),
+            load_step: Some(10.0),
+            load_end: Some(150.0),
+            load_step_duration: Some(Duration::from_secs(5)),
+            ..Default::default()
+        };
 
         assert!((target_rps_at(&cfg, Duration::from_secs(0)) - 50.0).abs() < f64::EPSILON);
         assert!((target_rps_at(&cfg, Duration::from_secs(5)) - 60.0).abs() < f64::EPSILON);
@@ -2256,13 +2257,14 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::field_reassign_with_default)]
     fn test_target_rps_line_schedule_down() {
-        let mut cfg = BenchConfigResolved::default();
-        cfg.load_schedule = "line".to_string();
-        cfg.load_start = Some(200.0);
-        cfg.load_step = Some(-2.0);
-        cfg.load_end = Some(100.0);
+        let cfg = BenchConfigResolved {
+            load_schedule: "line".to_string(),
+            load_start: Some(200.0),
+            load_step: Some(-2.0),
+            load_end: Some(100.0),
+            ..Default::default()
+        };
 
         assert!((target_rps_at(&cfg, Duration::from_secs(0)) - 200.0).abs() < f64::EPSILON);
         assert!((target_rps_at(&cfg, Duration::from_secs(10)) - 180.0).abs() < f64::EPSILON);
