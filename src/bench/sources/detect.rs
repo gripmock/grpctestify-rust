@@ -21,7 +21,7 @@ impl std::str::FromStr for SourceFormat {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.trim().to_ascii_lowercase().as_str() {
+        match s.trim_ascii().to_ascii_lowercase().as_str() {
             "csv" => Ok(SourceFormat::Csv),
             "tsv" => Ok(SourceFormat::Tsv),
             "ndjson" | "json" | "jsonl" => Ok(SourceFormat::Ndjson),

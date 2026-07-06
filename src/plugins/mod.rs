@@ -228,14 +228,14 @@ impl PluginManager {
     pub fn register(&mut self, plugin: Arc<dyn Plugin>) {
         self.plugins
             .write()
-            .unwrap_or_else(|e| e.into_inner())
+            .expect("lock poisoned")
             .insert(plugin.name().to_string(), plugin);
     }
 
     pub fn register_with_name(&mut self, name: &str, plugin: Arc<dyn Plugin>) {
         self.plugins
             .write()
-            .unwrap_or_else(|e| e.into_inner())
+            .expect("lock poisoned")
             .insert(name.to_string(), plugin);
     }
 
@@ -243,7 +243,7 @@ impl PluginManager {
         let normalized = normalize_plugin_name(name);
         self.plugins
             .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .expect("lock poisoned")
             .get(normalized)
             .cloned()
     }
@@ -251,7 +251,7 @@ impl PluginManager {
     pub fn list(&self) -> Vec<Arc<dyn Plugin>> {
         self.plugins
             .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .expect("lock poisoned")
             .values()
             .cloned()
             .collect()

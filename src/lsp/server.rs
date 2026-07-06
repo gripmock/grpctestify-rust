@@ -1025,7 +1025,7 @@ impl LanguageServer for GrpctestifyLsp {
         Ok(None)
     }
 
-    #[allow(deprecated)]
+    #[expect(deprecated)]
     async fn document_symbol(
         &self,
         params: DocumentSymbolParams,
@@ -1056,9 +1056,7 @@ impl LanguageServer for GrpctestifyLsp {
 
                     let section_children = crate::lsp::build_section_children_for_doc(d);
 
-                    #[allow(deprecated)]
                     let first_line = d.sections.first().map(|s| s.start_line).unwrap_or(0) as u32;
-                    #[allow(deprecated)]
                     let last_line = d.sections.last().map(|s| s.end_line).unwrap_or(0) as u32;
 
                     doc_symbols.push(DocumentSymbol {
@@ -1086,7 +1084,7 @@ impl LanguageServer for GrpctestifyLsp {
                 .sections
                 .iter()
                 .map(|s| {
-                    #[allow(deprecated)]
+                    #[expect(deprecated)]
                     DocumentSymbol {
                         name: format!("{:?}", s.section_type),
                         detail: Some(format!("Lines {}-{}", s.start_line, s.end_line)),

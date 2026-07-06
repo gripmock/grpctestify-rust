@@ -123,7 +123,7 @@ impl AssertionHandler {
     }
 
     /// Evaluate assertions for a section (convenience method for runner.rs)
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn evaluate_assertions_for_section(
         &self,
         lines: &[String],

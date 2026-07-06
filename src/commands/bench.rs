@@ -45,7 +45,7 @@ impl BenchOptionSource {
 
 impl DurationStopMode {
     fn parse(raw: &str) -> Result<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
+        match raw.trim_ascii().to_ascii_lowercase().as_str() {
             "close" => Ok(Self::Close),
             "wait" => Ok(Self::Wait),
             "ignore" => Ok(Self::Ignore),
@@ -571,7 +571,7 @@ impl BenchConfigResolved {
 
 /// Parse duration string (e.g., "30s", "5m", "1h")
 fn parse_duration(s: &str) -> Result<Duration> {
-    let s = s.trim();
+    let s = s.trim_ascii();
     if s.is_empty() {
         anyhow::bail!("empty duration string");
     }
@@ -681,9 +681,9 @@ impl BenchMetrics {
     fn to_percentiles(&self, requested: &[String]) -> Vec<BenchPercentile> {
         let mut result = Vec::new();
         for token in requested {
-            let t = token.trim();
+            let t = token.trim_ascii();
             if t.starts_with('p') {
-                if let Ok(pct) = t[1..].trim().parse::<f64>() {
+                if let Ok(pct) = t[1..].trim_ascii().parse::<f64>() {
                     result.push(BenchPercentile {
                         percentile: pct,
                         latency_ns: self.compute_percentile(pct),
@@ -1081,7 +1081,7 @@ async fn wait_for_rps_slot(
 }
 
 fn target_rps_at(config: &BenchConfigResolved, elapsed: Duration) -> f64 {
-    let schedule = config.load_schedule.trim().to_ascii_lowercase();
+    let schedule = config.load_schedule.trim_ascii().to_ascii_lowercase();
     let fallback = config.max_rps.unwrap_or(0.0);
     let start = config.load_start.unwrap_or(fallback);
 
@@ -1248,15 +1248,15 @@ fn evaluate_thresholds(
 }
 
 fn parse_threshold_expr(expr: &str) -> (&str, &str) {
-    let v = expr.trim();
+    let v = expr.trim_ascii();
     if let Some(rest) = v.strip_prefix("<=") {
-        ("<=", rest.trim())
+        ("<=", rest.trim_ascii())
     } else if let Some(rest) = v.strip_prefix(">=") {
-        (">=", rest.trim())
+        (">=", rest.trim_ascii())
     } else if let Some(rest) = v.strip_prefix('<') {
-        ("<", rest.trim())
+        ("<", rest.trim_ascii())
     } else if let Some(rest) = v.strip_prefix('>') {
-        (">", rest.trim())
+        (">", rest.trim_ascii())
     } else {
         ("", v)
     }
@@ -1273,7 +1273,7 @@ fn invert_op(op: &str) -> &str {
 }
 
 fn resolve_metric_value(metrics: &BenchMetrics, key: &str) -> Option<f64> {
-    let k = key.trim().to_ascii_lowercase();
+    let k = key.trim_ascii().to_ascii_lowercase();
     if k == "count" {
         return Some(metrics.count as f64);
     }
@@ -1343,7 +1343,7 @@ fn parse_percentile_key(key: &str) -> Option<String> {
 }
 
 fn format_metric_value(key: &str, value: f64) -> String {
-    let k = key.trim().to_ascii_lowercase();
+    let k = key.trim_ascii().to_ascii_lowercase();
     if k.contains("_ns") || k.starts_with("p(") || k.starts_with("latency_ns.p(") {
         return format_ns_value(value.max(0.0) as u64);
     }
@@ -2241,7 +2241,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::field_reassign_with_default)]
+    #[expect(clippy::field_reassign_with_default)]
     fn test_target_rps_step_schedule() {
         let mut cfg = BenchConfigResolved::default();
         cfg.load_schedule = "step".to_string();
@@ -2256,7 +2256,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::field_reassign_with_default)]
+    #[expect(clippy::field_reassign_with_default)]
     fn test_target_rps_line_schedule_down() {
         let mut cfg = BenchConfigResolved::default();
         cfg.load_schedule = "line".to_string();

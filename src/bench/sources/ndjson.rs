@@ -35,7 +35,7 @@ impl<R: Read> NdjsonReader<R> {
                 return Ok(());
             }
 
-            let trimmed = line.trim();
+            let trimmed = line.trim_ascii();
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
@@ -87,7 +87,7 @@ impl<R: Read + Send> SourceReader for NdjsonReader<R> {
                 return Ok(None);
             }
 
-            let trimmed = line.trim();
+            let trimmed = line.trim_ascii();
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }

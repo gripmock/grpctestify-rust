@@ -25,7 +25,7 @@ impl SourceRow {
         let mut columns = Vec::new();
         let mut values = Vec::new();
         for part in line.split(',') {
-            let part = part.trim();
+            let part = part.trim_ascii();
             values.push(part.to_string());
             if columns.len() < values.len() {
                 columns.push(format!("col_{}", columns.len()));

@@ -37,14 +37,14 @@ fn resolve_dimension_budget() -> u64 {
 }
 
 fn parse_bytes(s: &str) -> Result<u64> {
-    let s = s.trim().to_ascii_lowercase();
+    let s = s.trim_ascii().to_ascii_lowercase();
     let split_pos = s
         .char_indices()
         .find(|(_, c)| !c.is_ascii_digit() && *c != '.')
         .map(|(i, _)| i)
         .unwrap_or(s.len());
     let num_str = &s[..split_pos];
-    let unit = s[split_pos..].trim();
+    let unit = s[split_pos..].trim_ascii();
     let num: f64 = num_str
         .parse()
         .map_err(|_| anyhow::anyhow!("invalid number: {num_str}"))?;

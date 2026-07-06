@@ -36,7 +36,7 @@ pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
     };
 
     {
-        let cache = CHANNEL_CACHE.read().unwrap_or_else(|e| e.into_inner());
+        let cache = CHANNEL_CACHE.read().expect("lock poisoned");
         if let Some(channel) = cache.get(&cache_key) {
             tracing::debug!("Cache hit for channel to {}", config.address);
             return Ok(channel.clone());
@@ -56,7 +56,7 @@ pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
     };
 
     {
-        let mut cache = CHANNEL_CACHE.write().unwrap_or_else(|e| e.into_inner());
+        let mut cache = CHANNEL_CACHE.write().expect("lock poisoned");
         cache.insert(cache_key, channel.clone());
     }
 

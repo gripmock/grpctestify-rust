@@ -51,7 +51,7 @@ impl ConsoleReporter {
     }
 
     /// Print summary
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn print_summary(
         &self,
         total: usize,

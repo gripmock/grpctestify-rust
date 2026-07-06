@@ -192,7 +192,7 @@ fn infer_ndjson_column_index<R: std::io::BufRead>(
             Ok(_) => {}
             Err(e) => anyhow::bail!("failed to read NDJSON for column inference: {}", e),
         }
-        let trimmed = line.trim();
+        let trimmed = line.trim_ascii();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
@@ -217,7 +217,7 @@ pub fn find_column_index<R: std::io::BufRead + std::io::Seek>(
     reader.read_line(&mut header)?;
 
     let delimiter = if header.contains('\t') { b'\t' } else { b',' };
-    let columns: Vec<&str> = header.trim().split(delimiter as char).collect();
+    let columns: Vec<&str> = header.trim_ascii().split(delimiter as char).collect();
 
     let idx = columns
         .iter()
