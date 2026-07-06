@@ -277,6 +277,10 @@ pub struct IndexArgs {
     /// Force rebuild of all required indexes
     #[arg(long, default_value_t = false)]
     pub force: bool,
+
+    /// Show index file statistics
+    #[arg(long, default_value_t = false)]
+    pub stats: bool,
 }
 
 #[derive(Args, Debug, Clone)]

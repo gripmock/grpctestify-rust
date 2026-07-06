@@ -13,6 +13,32 @@ use std::sync::Arc;
 use std::time::Instant;
 
 pub fn handle_index(args: &IndexArgs) -> Result<()> {
+    // Stats mode: show index file metadata
+    if args.stats {
+        for path in &args.sources {
+            if !path.exists() {
+                eprintln!("File not found: {}", path.display());
+                continue;
+            }
+            match SourceIndex::read_from_file(path) {
+                Ok(index) => {
+                    let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                    println!("File: {}", path.display());
+                    println!("  Size: {} bytes", file_size);
+                    println!("  Key column: {}", index.key_column());
+                    println!("  Key type: {:?}", index.key_type());
+                    println!("  Index version: {}", index.index_version());
+                    println!("  Entry count: {}", index.entry_count());
+                    println!();
+                }
+                Err(e) => {
+                    eprintln!("Error reading {}: {e}", path.display());
+                }
+            }
+        }
+        return Ok(());
+    }
+
     let files = resolve_bench_files(&args.sources)?;
     if files.is_empty() {
         anyhow::bail!("no .gctf files found in provided paths");

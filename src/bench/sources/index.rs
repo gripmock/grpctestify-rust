@@ -1053,6 +1053,10 @@ impl SourceIndex {
         self.header.entry_count
     }
 
+    pub fn index_version(&self) -> u32 {
+        self.header.version
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&str, &IndexEntry)> {
         match &self.storage {
             KeyStorage::String(map) => Box::new(
