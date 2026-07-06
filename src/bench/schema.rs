@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
 pub const BENCH_NUMERIC_KEYS: &[&str] = &[
     "concurrency",
     "requests",
@@ -274,6 +277,73 @@ pub fn bench_key_rank(key: &str) -> usize {
     canonical_order.len() + 1
 }
 
+/// Built-in benchmark profiles.
+/// Each profile is a set of key-value pairs that override defaults.
+pub static BUILTIN_PROFILES: LazyLock<HashMap<&'static str, HashMap<&'static str, &'static str>>> =
+    LazyLock::new(|| {
+        let mut m: HashMap<&str, HashMap<&str, &str>> = HashMap::new();
+
+        let mut functional = HashMap::new();
+        functional.insert("mode", "fixed");
+        functional.insert("concurrency", "1");
+        functional.insert("requests", "100");
+        functional.insert("duration", "30s");
+        m.insert("functional", functional);
+
+        let mut load = HashMap::new();
+        load.insert("mode", "stepping");
+        load.insert("concurrency", "10");
+        load.insert("duration", "60s");
+        load.insert("load_schedule", "step");
+        load.insert("load_start", "50");
+        load.insert("load_step", "10");
+        load.insert("load_end", "200");
+        load.insert("load_step_duration", "10s");
+        m.insert("load", load);
+
+        let mut stress = HashMap::new();
+        stress.insert("mode", "stepping");
+        stress.insert("concurrency", "50");
+        stress.insert("duration", "120s");
+        stress.insert("load_schedule", "line");
+        stress.insert("load_start", "10");
+        stress.insert("load_step", "5");
+        stress.insert("load_end", "500");
+        m.insert("stress", stress);
+
+        let mut spike = HashMap::new();
+        spike.insert("mode", "fixed");
+        spike.insert("concurrency", "100");
+        spike.insert("duration", "60s");
+        spike.insert("load_schedule", "spike");
+        spike.insert("load_start", "10");
+        spike.insert("load_spike_target", "500");
+        spike.insert("load_spike_after", "30");
+        spike.insert("load_spike_duration", "10");
+        m.insert("spike", spike);
+
+        let mut soak = HashMap::new();
+        soak.insert("mode", "fixed");
+        soak.insert("concurrency", "5");
+        soak.insert("duration", "3600s");
+        soak.insert("load_schedule", "const");
+        soak.insert("load_start", "50");
+        m.insert("soak", soak);
+
+        m
+    });
+
+/// Apply a named profile to a BENCH section config.
+/// Returns the list of (key, value) pairs that the profile defines.
+pub fn apply_profile(
+    name: &str,
+) -> Vec<(&'static str, &'static str)> {
+    BUILTIN_PROFILES
+        .get(name)
+        .map(|profile| profile.iter().map(|(k, v)| (*k, *v)).collect())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,4 +406,3 @@ mod tests {
         assert_eq!(suggest_bench_key("thresholds"), None);
     }
 }
-use std::collections::HashMap;

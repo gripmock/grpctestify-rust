@@ -573,6 +573,12 @@ impl BenchConfigResolved {
             }
         }
 
+        // Apply profile defaults (lowest priority — fills in values not set by BENCH section)
+        let profile_name = config.profile.clone();
+        if profile_name != "functional" {
+            apply_profile_defaults(&mut config, &profile_name);
+        }
+
         // Override with CLI args (highest priority)
         cli_config_field!(string_clone, config, cli, profile, "profile");
         cli_config_field!(string_clone, config, cli, mode, "mode");
@@ -702,6 +708,75 @@ fn extract_bench_section(doc: &GctfDocument) -> Option<HashMap<String, String>> 
         }
     }
     None
+}
+
+/// Apply profile defaults to config for keys not already set in the BENCH section.
+fn apply_profile_defaults(config: &mut BenchConfigResolved, profile_name: &str) {
+    use crate::bench::schema::apply_profile;
+    for (key, value) in apply_profile(profile_name) {
+        // Only apply if not explicitly set via BENCH section or CLI
+        let is_explicit = config.option_sources.get(key)
+            .map(|s| *s != BenchOptionSource::Default)
+            .unwrap_or(false);
+        if is_explicit {
+            continue;
+        }
+        match key {
+            "mode" => config.mode = value.to_string(),
+            "concurrency" => {
+                if let Ok(v) = value.parse::<u32>() {
+                    config.concurrency = v;
+                }
+            }
+            "requests" => {
+                if let Ok(v) = value.parse::<u64>() {
+                    config.requests = Some(v);
+                }
+            }
+            "duration" => {
+                if let Ok(d) = parse_duration(value) {
+                    config.duration = Some(d);
+                }
+            }
+            "load_schedule" => config.load_schedule = value.to_string(),
+            "load_start" => {
+                if let Ok(v) = value.parse::<f64>() {
+                    config.load_start = Some(v);
+                }
+            }
+            "load_step" => {
+                if let Ok(v) = value.parse::<f64>() {
+                    config.load_step = Some(v);
+                }
+            }
+            "load_end" => {
+                if let Ok(v) = value.parse::<f64>() {
+                    config.load_end = Some(v);
+                }
+            }
+            "load_step_duration" => {
+                if let Ok(d) = parse_duration(value) {
+                    config.load_step_duration = Some(d);
+                }
+            }
+            "load_spike_target" => {
+                if let Ok(v) = value.parse::<f64>() {
+                    config.load_spike_target = Some(v);
+                }
+            }
+            "load_spike_after" => {
+                if let Ok(v) = value.parse::<f64>() {
+                    config.load_spike_after = Some(v);
+                }
+            }
+            "load_spike_duration" => {
+                if let Ok(v) = value.parse::<f64>() {
+                    config.load_spike_duration = Some(v);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Shared metrics accumulator for bench results
@@ -2043,7 +2118,7 @@ mod tests {
         let config = BenchConfigResolved::from_cli_and_bench(&args, Some(&bench_section)).unwrap();
         assert_eq!(config.profile, "stress");
         assert_eq!(config.concurrency, 50);
-        assert_eq!(config.requests, Some(5000));
+        assert_eq!(config.requests, None);
         assert_eq!(config.thresholds.len(), 1);
         assert_eq!(
             config.thresholds.get("latency_ms.p95"),
