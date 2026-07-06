@@ -366,8 +366,21 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                                         severity: ErrorSeverity::Error,
                                     });
                                 }
-                            }
-                            _ => {
+            }
+            "warmup_mode" => {
+                let normalized = value.trim().to_ascii_lowercase();
+                if normalized != "warmup" && normalized != "dry_run" {
+                    errors.push(ValidationError {
+                        message: format!(
+                            "BENCH.warmup_mode must be 'warmup' or 'dry_run', got '{}'",
+                            value
+                        ),
+                        line: Some(start_line),
+                        severity: ErrorSeverity::Error,
+                    });
+                }
+            }
+            _ => {
                                 errors.push(ValidationError {
                                     message: format!(
                                         "Unknown OPTIONS key '{}'. Supported keys: timeout, retry, retry_delay, no_retry, compression",
