@@ -938,6 +938,9 @@ fn validate_structure(document: &GctfDocument, errors: &mut Vec<ValidationError>
     // Validate section order (optional, but good for readability)
     validate_section_order(&document, errors);
 
+    // Validate BENCH data source files exist
+    validate_bench_sources_exist(document, errors);
+
     // Validate inline options are only on supported sections
     for section in &document.sections {
         let has_any_inline_options = section.inline_options.with_asserts
@@ -1039,6 +1042,46 @@ fn validate_section_order(document: &GctfDocument, errors: &mut Vec<ValidationEr
             });
         }
         seen.push(st.clone());
+    }
+}
+
+/// Validate that BENCH data source files referenced in the BENCH section exist.
+fn validate_bench_sources_exist(document: &GctfDocument, errors: &mut Vec<ValidationError>) {
+    for section in &document.sections {
+        if section.section_type != SectionType::Bench {
+            continue;
+        }
+        let bench_content = match &section.content {
+            SectionContent::KeyValues(kv) => kv,
+            _ => continue,
+        };
+        let Some(sources_yaml) = bench_content.get("sources") else {
+            continue;
+        };
+        match serde_yaml_ng::from_str::<Vec<crate::bench::sources::SourceDefinition>>(sources_yaml) {
+            Ok(defs) => {
+                for def in &defs {
+                    let resolved = std::path::Path::new(&document.file_path)
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .join(&def.file);
+                    if !resolved.exists() {
+                        errors.push(ValidationError {
+                            message: format!(
+                                "BENCH data source file not found: {} (resolved: {})",
+                                def.file,
+                                resolved.display()
+                            ),
+                            line: Some(section.start_line),
+                            severity: ErrorSeverity::Warning,
+                        });
+                    }
+                }
+            }
+            Err(_) => {
+                // Sources YAML parse error — already caught by YAML parser
+            }
+        }
     }
 }
 
