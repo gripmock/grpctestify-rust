@@ -721,6 +721,14 @@ struct BenchMetrics {
     grpc_status: BTreeMap<String, u64>,
     error_dist: BTreeMap<String, u64>,
     latencies: Vec<u64>,
+    per_endpoint: BTreeMap<String, PerEndpointData>,
+}
+
+#[derive(Default, Debug)]
+struct PerEndpointData {
+    count: u64,
+    errors: u64,
+    latencies: Vec<u64>,
 }
 
 impl BenchMetrics {
@@ -760,6 +768,14 @@ impl BenchMetrics {
         }
         let mut sorted = self.latencies.clone();
         sorted.sort();
+        let idx = ((p / 100.0) * (sorted.len() - 1) as f64).round() as usize;
+        sorted[idx.min(sorted.len() - 1)]
+    }
+
+    fn percentile_from_sorted(sorted: &[u64], p: f64) -> u64 {
+        if sorted.is_empty() {
+            return 0;
+        }
         let idx = ((p / 100.0) * (sorted.len() - 1) as f64).round() as usize;
         sorted[idx.min(sorted.len() - 1)]
     }
@@ -1691,6 +1707,21 @@ fn build_report(
             );
             crate::report::bench::SourcesRuntime { source_stats }
         }),
+        per_endpoint: metrics.per_endpoint.into_iter().map(|(endpoint, data)| {
+            let p50 = BenchMetrics::percentile_from_sorted(&data.latencies, 50.0);
+            let p90 = BenchMetrics::percentile_from_sorted(&data.latencies, 90.0);
+            let p95 = BenchMetrics::percentile_from_sorted(&data.latencies, 95.0);
+            let p99 = BenchMetrics::percentile_from_sorted(&data.latencies, 99.0);
+            crate::report::bench::PerEndpointSummary {
+                endpoint,
+                count: data.count,
+                errors: data.errors,
+                latency_p50: p50,
+                latency_p90: p90,
+                latency_p95: p95,
+                latency_p99: p99,
+            }
+        }).collect(),
     };
 
     Ok(report)

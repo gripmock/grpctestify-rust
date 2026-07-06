@@ -90,6 +90,18 @@ pub struct BenchReport {
     pub details: Vec<BenchDetail>,
     pub tags: BTreeMap<String, String>,
     pub sources_runtime: Option<SourcesRuntime>,
+    pub per_endpoint: Vec<PerEndpointSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PerEndpointSummary {
+    pub endpoint: String,
+    pub count: u64,
+    pub errors: u64,
+    pub latency_p50: u64,
+    pub latency_p90: u64,
+    pub latency_p95: u64,
+    pub latency_p99: u64,
 }
 
 impl BenchReport {
@@ -107,6 +119,7 @@ impl BenchReport {
             details: Vec::new(),
             tags: BTreeMap::new(),
             sources_runtime: None,
+            per_endpoint: Vec::new(),
         }
     }
 
