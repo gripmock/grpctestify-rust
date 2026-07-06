@@ -68,6 +68,7 @@ pub struct BenchConfigResolved {
     pub ramp_up: Option<Duration>,
     pub warmup: Option<Duration>,
     pub max_duration: Option<Duration>,
+    pub cool_down: Option<Duration>,
     pub max_rps: Option<f64>,
     pub load_schedule: String,
     pub load_start: Option<f64>,
@@ -111,6 +112,7 @@ impl Default for BenchConfigResolved {
             duration: None,
             ramp_up: None,
             warmup: None,
+            cool_down: None,
             max_duration: None,
             max_rps: None,
             load_schedule: "const".to_string(),
@@ -253,6 +255,9 @@ impl BenchConfigResolved {
             }
             if let Some(d) = bench.get("warmup") {
                 config.warmup = Some(parse_duration(d)?);
+            }
+            if let Some(d) = bench.get("cool_down") {
+                config.cool_down = Some(parse_duration(d)?);
             }
             if let Some(d) = bench_value(bench, "max_duration") {
                 config.max_duration = Some(parse_duration(d)?);
@@ -408,6 +413,9 @@ impl BenchConfigResolved {
             }
             if let Some(d) = bench.get("warmup") {
                 config.warmup = Some(parse_duration(d)?);
+            }
+            if let Some(d) = bench.get("cool_down") {
+                config.cool_down = Some(parse_duration(d)?);
             }
             if let Some(d) = bench_value(bench, "max_duration") {
                 config.max_duration = Some(parse_duration(d)?);
@@ -1163,7 +1171,15 @@ fn target_rps_at(config: &BenchConfigResolved, elapsed: Duration) -> f64 {
     let fallback = config.max_rps.unwrap_or(0.0);
     let start = config.load_start.unwrap_or(fallback);
 
-    match schedule.as_str() {
+    let no_schedule = || -> f64 {
+        if config.max_rps.is_some() {
+            fallback.max(0.0)
+        } else {
+            start.max(0.0)
+        }
+    };
+
+    let rps = match schedule.as_str() {
         "step" => {
             let step = config.load_step.unwrap_or(0.0);
             let step_duration = config.load_step_duration.unwrap_or(Duration::from_secs(1));
@@ -1232,7 +1248,20 @@ fn target_rps_at(config: &BenchConfigResolved, elapsed: Duration) -> f64 {
                 start.max(0.0)
             }
         }
+    };
+
+    // Cool-down overlay: if elapsed exceeds duration, ramp RPS to 0
+    if let (Some(dur), Some(cd)) = (config.duration, config.cool_down) {
+        let dur_secs = dur.as_secs_f64();
+        let cd_secs = cd.as_secs_f64();
+        let t = elapsed.as_secs_f64();
+        if t > dur_secs && cd_secs > 0.0 {
+            let fraction = ((t - dur_secs) / cd_secs).min(1.0);
+            return (rps * (1.0 - fraction)).max(0.0);
+        }
     }
+
+    rps
 }
 
 fn print_progress_snapshot(
