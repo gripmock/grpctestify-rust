@@ -296,6 +296,12 @@ macro_rules! cli_config_field {
             $config.option_sources.insert($key.to_string(), BenchOptionSource::Cli);
         }
     };
+    (option_direct, $config:expr, $cli:expr, $field:ident, $key:literal) => {
+        if let Some(v) = $cli.$field {
+            $config.$field = Some(v);
+            $config.option_sources.insert($key.to_string(), BenchOptionSource::Cli);
+        }
+    };
     (duration, $config:expr, $cli:expr, $field:ident) => {
         if let Some(v) = &$cli.$field {
             $config.$field = Some(parse_duration(v)?);
@@ -304,6 +310,24 @@ macro_rules! cli_config_field {
     (bool_flag, $config:expr, $cli:expr, $field:ident) => {
         if $cli.$field {
             $config.$field = true;
+        }
+    };
+    (string_source, $config:expr, $cli:expr, $field:ident, $key:literal) => {
+        if let Some(v) = &$cli.$field {
+            $config.$field = v.clone();
+            $config.option_sources.insert($key.to_string(), BenchOptionSource::Cli);
+        }
+    };
+    (f64_source, $config:expr, $cli:expr, $field:ident, $key:literal) => {
+        if let Some(v) = $cli.$field {
+            $config.$field = Some(v);
+            $config.option_sources.insert($key.to_string(), BenchOptionSource::Cli);
+        }
+    };
+    (duration_source, $config:expr, $cli:expr, $field:ident, $key:literal) => {
+        if let Some(v) = &$cli.$field {
+            $config.$field = Some(parse_duration(v)?);
+            $config.option_sources.insert($key.to_string(), BenchOptionSource::Cli);
         }
     };
 }
@@ -608,63 +632,19 @@ impl BenchConfigResolved {
         cli_config_field!(string_clone, config, cli, profile, "profile");
         cli_config_field!(string_clone, config, cli, mode, "mode");
         cli_config_field!(direct, config, cli, concurrency, "concurrency");
-        if let Some(n) = cli.requests {
-            config.requests = Some(n);
-        }
-        if let Some(d) = &cli.duration {
-            config.duration = Some(parse_duration(d)?);
-        }
-        if let Some(d) = &cli.ramp_up {
-            config.ramp_up = Some(parse_duration(d)?);
-        }
-        if let Some(d) = &cli.warmup {
-            config.warmup = Some(parse_duration(d)?);
-        }
-        if let Some(d) = &cli.max_duration {
-            config.max_duration = Some(parse_duration(d)?);
-        }
-        if let Some(rps) = cli.max_rps {
-            config.max_rps = Some(rps);
-        }
-        if let Some(v) = &cli.load_schedule {
-            config.load_schedule = v.clone();
-            config
-                .option_sources
-                .insert("load_schedule".to_string(), BenchOptionSource::Cli);
-        }
-        if let Some(v) = cli.load_start {
-            config.load_start = Some(v);
-            config
-                .option_sources
-                .insert("load_start".to_string(), BenchOptionSource::Cli);
-        }
-        if let Some(v) = cli.load_step {
-            config.load_step = Some(v);
-            config
-                .option_sources
-                .insert("load_step".to_string(), BenchOptionSource::Cli);
-        }
-        if let Some(v) = cli.load_end {
-            config.load_end = Some(v);
-            config
-                .option_sources
-                .insert("load_end".to_string(), BenchOptionSource::Cli);
-        }
-        if let Some(v) = &cli.load_step_duration {
-            config.load_step_duration = Some(parse_duration(v)?);
-            config
-                .option_sources
-                .insert("load_step_duration".to_string(), BenchOptionSource::Cli);
-        }
-        if let Some(v) = &cli.load_max_duration {
-            config.load_max_duration = Some(parse_duration(v)?);
-            config
-                .option_sources
-                .insert("load_max_duration".to_string(), BenchOptionSource::Cli);
-        }
-        if let Some(v) = cli.connections {
-            config.connections = v;
-        }
+        cli_config_field!(option_direct, config, cli, requests, "requests");
+        cli_config_field!(duration, config, cli, duration);
+        cli_config_field!(duration, config, cli, ramp_up);
+        cli_config_field!(duration, config, cli, warmup);
+        cli_config_field!(duration, config, cli, max_duration);
+        cli_config_field!(option_direct, config, cli, max_rps, "max_rps");
+        cli_config_field!(string_source, config, cli, load_schedule, "load_schedule");
+        cli_config_field!(f64_source, config, cli, load_start, "load_start");
+        cli_config_field!(f64_source, config, cli, load_step, "load_step");
+        cli_config_field!(f64_source, config, cli, load_end, "load_end");
+        cli_config_field!(duration_source, config, cli, load_step_duration, "load_step_duration");
+        cli_config_field!(duration_source, config, cli, load_max_duration, "load_max_duration");
+        cli_config_field!(direct, config, cli, connections, "connections");
         if let Some(v) = &cli.connect_timeout {
             config.connect_timeout = parse_duration(v)?;
         }
@@ -680,9 +660,7 @@ impl BenchConfigResolved {
         if let Some(am) = &cli.assert_mode {
             config.assert_mode = am.clone();
         }
-        if cli.no_assert {
-            config.no_assert = true;
-        }
+        cli_config_field!(bool_flag, config, cli, no_assert);
         if let Some(sr) = cli.sample_rate {
             config.sample_rate = sr;
         }
