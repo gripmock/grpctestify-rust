@@ -227,63 +227,8 @@ fn parse_duration_sec(s: &str) -> Option<f64> {
     }
 }
 
-/// Macro-driven config resolution from BENCH section + CLI args.
-/// Each field is defined once with its parser and CLI accessor.
-/// Generates both BENCH section parsing and CLI override code.
-macro_rules! bench_config_fields {
-    (string, $config:expr, $bench:expr, $cli:expr, $field:ident, $key:literal) => {
-        // BENCH section
-        if let Some(v) = $bench.get($key) {
-            $config.$field = v.clone();
-        }
-        // CLI override
-        if let Some(v) = &$cli.$field {
-            $config.$field = v.clone();
-        }
-    };
-    (u32, $config:expr, $bench:expr, $cli:expr, $field:ident, $key:literal) => {
-        if let Some(v) = $bench.get($key) {
-            $config.$field = v.parse().unwrap_or(1);
-        }
-        if let Some(v) = $cli.$field {
-            $config.$field = v;
-        }
-    };
-    (f64_opt, $config:expr, $bench:expr, $cli:expr, $field:ident, $key:literal) => {
-        if let Some(v) = bench_value($bench, $key) {
-            $config.$field = v.parse::<f64>().ok();
-        }
-        if let Some(v) = $cli.$field {
-            $config.$field = Some(v);
-        }
-    };
-    (duration, $config:expr, $bench:expr, $cli:expr, $field:ident, $key:literal) => {
-        if let Some(v) = $bench.get($key) {
-            $config.$field = Some(parse_duration(v)?);
-        }
-        if let Some(v) = &$cli.$field {
-            $config.$field = Some(parse_duration(v)?);
-        }
-    };
-    (duration_val, $config:expr, $bench:expr, $cli:expr, $field:ident, $key:literal) => {
-        if let Some(v) = bench_value($bench, $key) {
-            $config.$field = Some(parse_duration(v)?);
-        }
-        if let Some(v) = &$cli.$field {
-            $config.$field = Some(parse_duration(v)?);
-        }
-    };
-    (bool, $config:expr, $bench:expr, $cli:expr, $field:ident, $key:literal) => {
-        if let Some(v) = $bench.get($key) {
-            $config.$field = v == "true" || v == "1";
-        }
-        if $cli.$field {
-            $config.$field = true;
-        }
-    };
-}
-
-/// Macro for CLI-only override (no BENCH section accessor).
+/// Macro for CLI-only config field overrides.
+/// Reduces repetitive `if let Some(v) = &cli.field { config.field = v; }` patterns.
 macro_rules! cli_config_field {
     (string_clone, $config:expr, $cli:expr, $field:ident, $key:literal) => {
         if let Some(v) = &$cli.$field {
