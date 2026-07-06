@@ -923,8 +923,7 @@ fn validate_structure(document: &GctfDocument, errors: &mut Vec<ValidationError>
     }
 
     // Validate section order (optional, but good for readability)
-    // Not enforcing strict order, just checking for obvious issues
-    // TODO: Add optional strict ordering validation
+    validate_section_order(&document, errors);
 
     // Validate inline options are only on supported sections
     for section in &document.sections {
@@ -993,6 +992,41 @@ fn validate_structure(document: &GctfDocument, errors: &mut Vec<ValidationError>
 /// Check if validation passed (no errors)
 pub fn validation_passed(errors: &[ValidationError]) -> bool {
     !errors.iter().any(|e| e.severity == ErrorSeverity::Error)
+}
+
+/// Validate that sections appear in a sensible order.
+/// Not exhaustive — catches obvious issues like RESPONSE before REQUEST.
+fn validate_section_order(document: &GctfDocument, errors: &mut Vec<ValidationError>) {
+    use SectionType::*;
+    let mut seen: Vec<SectionType> = Vec::new();
+
+    for section in &document.sections {
+        let st = &section.section_type;
+        // Check that RESPONSE/ERROR don't appear before REQUEST
+        if matches!(st, Response | Error | Asserts) && !seen.contains(&Request) {
+            errors.push(ValidationError {
+                message: format!(
+                    "{:?} section at line {} appears before any REQUEST section",
+                    st,
+                    section.start_line
+                ),
+                line: Some(section.start_line),
+                severity: ErrorSeverity::Warning,
+            });
+        }
+        // Check that EXTRACT doesn't appear before RESPONSE/ERROR
+        if matches!(st, Extract) && !seen.contains(&Response) && !seen.contains(&Error) && !seen.contains(&Asserts) {
+            errors.push(ValidationError {
+                message: format!(
+                    "EXTRACT section at line {} appears before RESPONSE, ERROR, or ASSERTS",
+                    section.start_line
+                ),
+                line: Some(section.start_line),
+                severity: ErrorSeverity::Warning,
+            });
+        }
+        seen.push(st.clone());
+    }
 }
 
 #[cfg(test)]
