@@ -840,8 +840,12 @@ struct BenchMetrics {
 
 impl BenchMetrics {
     fn with_capacity(hint: usize) -> Self {
+        let mut grpc_status = BTreeMap::new();
+        grpc_status.insert("OK".to_string(), 0);
+        grpc_status.insert("ERROR".to_string(), 0);
         Self {
             latencies: Vec::with_capacity(hint),
+            grpc_status,
             ..Default::default()
         }
     }
@@ -1003,14 +1007,13 @@ fn downsample_latencies(samples: &mut Vec<u64>) {
     if samples.len() <= 1 {
         return;
     }
-
-    let mut keep = Vec::with_capacity(samples.len().div_ceil(2));
-    for (idx, &value) in samples.iter().enumerate() {
-        if idx % 2 == 0 {
-            keep.push(value);
-        }
+    let len = samples.len();
+    let mut write = 0;
+    for i in (0..len).step_by(2) {
+        samples[write] = samples[i];
+        write += 1;
     }
-    *samples = keep;
+    samples.truncate(write);
 }
 
 fn categorize_error(message: &str) -> String {
