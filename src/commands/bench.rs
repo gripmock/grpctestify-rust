@@ -67,6 +67,7 @@ pub struct BenchConfigResolved {
     pub duration: Option<Duration>,
     pub ramp_up: Option<Duration>,
     pub warmup: Option<Duration>,
+    pub warmup_mode: String,
     pub max_duration: Option<Duration>,
     pub cool_down: Option<Duration>,
     pub max_rps: Option<f64>,
@@ -112,6 +113,7 @@ impl Default for BenchConfigResolved {
             duration: None,
             ramp_up: None,
             warmup: None,
+            warmup_mode: "warmup".to_string(),
             cool_down: None,
             max_duration: None,
             max_rps: None,
@@ -306,6 +308,9 @@ impl BenchConfigResolved {
             if let Some(d) = bench.get("warmup") {
                 config.warmup = Some(parse_duration(d)?);
             }
+            if let Some(v) = bench.get("warmup_mode") {
+                config.warmup_mode = v.clone();
+            }
             if let Some(d) = bench.get("cool_down") {
                 config.cool_down = Some(parse_duration(d)?);
             }
@@ -463,6 +468,9 @@ impl BenchConfigResolved {
             }
             if let Some(d) = bench.get("warmup") {
                 config.warmup = Some(parse_duration(d)?);
+            }
+            if let Some(v) = bench.get("warmup_mode") {
+                config.warmup_mode = v.clone();
             }
             if let Some(d) = bench.get("cool_down") {
                 config.cool_down = Some(parse_duration(d)?);
@@ -1014,12 +1022,20 @@ async fn run_benchmark(
 
     // Warmup phase
     if let Some(warmup_dur) = warmup {
-        eprintln!("Warmup phase for {:?}...", warmup_dur);
+        if config.warmup_mode == "dry_run" {
+            eprintln!("Warmup phase (dry run — template parsing only, no gRPC)...");
+        } else {
+            eprintln!("Warmup phase for {:?}...", warmup_dur);
+        }
         let warmup_start = Instant::now();
         while warmup_start.elapsed() < warmup_dur {
-            // Warmup iterations
             for file in &test_files {
-                let _ = execute_single_bench_iteration(file, config).await;
+                if config.warmup_mode == "dry_run" {
+                    // Parse template variables without making gRPC calls
+                    let _ = crate::parser::parse_with_recovery(file);
+                } else {
+                    let _ = execute_single_bench_iteration(file, config).await;
+                }
             }
         }
         eprintln!("Warmup complete.");
