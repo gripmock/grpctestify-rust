@@ -1856,6 +1856,19 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
             let summary = report.to_summary_text(args.compact);
             println!("{}", summary);
         }
+        "csv" => {
+            let s = &report.summary;
+            let csv = format!(
+                "count,ok,errors,total_ns,average_ns,fastest_ns,slowest_ns,rps\n{},{},{},{},{},{},{},{}\n",
+                s.count, s.ok, s.errors, s.total_ns, s.average_ns, s.fastest_ns, s.slowest_ns, s.rps_observed
+            );
+            if let Some(output) = &args.output {
+                std::fs::write(output, csv)?;
+                eprintln!("CSV report written to: {}", output.display());
+            } else {
+                println!("{}", csv);
+            }
+        }
         _ => {
             anyhow::bail!("Unsupported format: {}", args.format);
         }
