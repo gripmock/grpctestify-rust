@@ -1043,6 +1043,15 @@ async fn run_benchmark(
         warn!("No test files found for bench");
     }
 
+    // Pre-parse all test files for performance (avoid re-parsing on every iteration)
+    let test_docs: Vec<(std::path::PathBuf, crate::parser::GctfDocument)> = test_files
+        .iter()
+        .map(|f| {
+            let result = crate::parser::parse_with_recovery(f);
+            (f.clone(), result.document)
+        })
+        .collect();
+
     info!("Bench: found {} test files", test_files.len());
 
     // Metrics collector (merged from per-worker local metrics)
@@ -1125,7 +1134,7 @@ async fn run_benchmark(
         let schedule_start = run_start;
 
         for _ in 0..config.concurrency {
-            let files = test_files.clone();
+            let docs = test_docs.clone();
             let cfg = config.clone();
             let progress_count = Arc::clone(&progress_count);
             let progress_errors = Arc::clone(&progress_errors);
@@ -1135,7 +1144,7 @@ async fn run_benchmark(
                 let mut next_slot = Instant::now();
                 let deadline = Instant::now() + dur;
                 while Instant::now() < deadline {
-                    for file in &files {
+                    for (file, gctf_doc) in &docs {
                         if Instant::now() >= deadline {
                             break;
                         }
@@ -1164,7 +1173,7 @@ async fn run_benchmark(
                         };
 
                         let (lat_ns, status, error, endpoint) =
-                            execute_single_bench_iteration_with_vars(file, &cfg, vars).await;
+                            execute_single_bench_iteration_with_vars(gctf_doc, &cfg, vars).await;
                         let finished_at = Instant::now();
                         if should_record_after_deadline(cfg.duration_stop, finished_at, deadline) {
                             local.record(lat_ns, &status, error.as_deref(), &endpoint);
@@ -1198,7 +1207,7 @@ async fn run_benchmark(
         let schedule_start = run_start;
 
         for worker_id in 0..config.concurrency {
-            let files = test_files.clone();
+            let docs = test_docs.clone();
             let cfg = config.clone();
             let progress_count = Arc::clone(&progress_count);
             let progress_errors = Arc::clone(&progress_errors);
@@ -1220,7 +1229,7 @@ async fn run_benchmark(
                         break;
                     }
 
-                    for file in &files {
+                    for (file, gctf_doc) in &docs {
                         if let Some(deadline) = max_deadline
                             && Instant::now() >= deadline
                         {
@@ -1252,7 +1261,7 @@ async fn run_benchmark(
                         };
 
                         let (lat_ns, status, error, endpoint) =
-                            execute_single_bench_iteration_with_vars(file, &cfg, vars).await;
+                            execute_single_bench_iteration_with_vars(gctf_doc, &cfg, vars).await;
                         local.record(lat_ns, &status, error.as_deref(), &endpoint);
                             progress_count.fetch_add(1, Ordering::Relaxed);
                         if status != "OK" {
@@ -1438,11 +1447,12 @@ async fn execute_single_bench_iteration(
     file: &Path,
     config: &BenchConfigResolved,
 ) -> (u64, String, Option<String>, String) {
-    execute_single_bench_iteration_with_vars(file, config, HashMap::new()).await
+    let parse_result = crate::parser::parse_with_recovery(file);
+    execute_single_bench_iteration_with_vars(&parse_result.document, config, HashMap::new()).await
 }
 
 async fn execute_single_bench_iteration_with_vars(
-    file: &Path,
+    doc: &GctfDocument,
     config: &BenchConfigResolved,
     source_variables: HashMap<String, serde_json::Value>,
 ) -> (u64, String, Option<String>, String) {
@@ -1450,8 +1460,6 @@ async fn execute_single_bench_iteration_with_vars(
 
     let start = Instant::now();
 
-    let parse_result = crate::parser::parse_with_recovery(file);
-    let doc = parse_result.document;
     let endpoint = doc.get_endpoint().unwrap_or_else(|| "unknown".to_string());
 
     let timeout_seconds = config.duration.map_or(30, |d| d.as_secs()).max(1);
@@ -1823,9 +1831,7 @@ fn build_report(
                     dimension_misses: stats.dimension_misses,
                     in_memory_lookups: stats.in_memory_lookups,
                     indexed_lookups: stats.indexed_lookups,
-                    index_fallbacks: stats
-                        .index_fallbacks
-                        .load(std::sync::atomic::Ordering::Relaxed),
+                    index_fallbacks: stats.index_fallbacks,
                 },
             );
             crate::report::bench::SourcesRuntime { source_stats }
