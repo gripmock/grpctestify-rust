@@ -39,7 +39,16 @@ use std::path::Path;
 pub trait SourceReader: Send {
     fn next_row(&mut self) -> Result<Option<SourceRow>>;
     fn headers(&self) -> &[String];
+
+    /// Attempt to reset the reader to the beginning.
+    /// Returns `Ok(())` even if unsupported — check `supports_reset()` first.
     fn reset(&mut self) -> Result<()>;
+
+    /// Whether `reset()` is actually supported by this reader.
+    /// Readers wrapping non-seekable streams (stdin, network) return false.
+    fn supports_reset(&self) -> bool {
+        false
+    }
 }
 
 pub fn open_source_reader(

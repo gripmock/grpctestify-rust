@@ -7,9 +7,21 @@ use std::io::{BufRead, BufReader, Read, Seek};
 pub struct NdjsonReader<R> {
     reader: BufReader<R>,
     headers: Vec<String>,
+    /// First row is buffered during header discovery
     pending_first: Option<SourceRow>,
     row_number: usize,
     finished: bool,
+}
+
+fn json_value_to_string(v: Option<&serde_json::Value>) -> String {
+    match v {
+        None => String::new(),
+        Some(serde_json::Value::Null) => String::new(),
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Number(n)) => n.to_string(),
+        Some(serde_json::Value::Bool(b)) => b.to_string(),
+        Some(other) => other.to_string(),
+    }
 }
 
 impl<R: Read> NdjsonReader<R> {
@@ -23,44 +35,66 @@ impl<R: Read> NdjsonReader<R> {
         }
     }
 
-    fn discover_headers_from_first_row(&mut self) -> Result<()> {
-        if !self.headers.is_empty() {
-            return Ok(());
-        }
-
+    fn read_next_line(&mut self) -> Result<Option<String>> {
         loop {
             let mut line = String::new();
-            let bytes = self.reader.read_line(&mut line)?;
-            if bytes == 0 {
-                return Ok(());
+            if self.reader.read_line(&mut line)? == 0 {
+                return Ok(None);
             }
-
             let trimmed = line.trim_ascii();
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
+            return Ok(Some(trimmed.to_string()));
+        }
+    }
 
-            let value: serde_json::Value = serde_json::from_str(trimmed)
-                .map_err(|e| SourceError::InvalidJson(1, e.to_string()))?;
+    fn parse_line(&self, line: &str, line_num: usize) -> Result<Vec<String>> {
+        let value: serde_json::Value = serde_json::from_str(line)
+            .map_err(|e| SourceError::InvalidJson(line_num, e.to_string()))?;
 
-            let obj = match &value {
-                serde_json::Value::Object(m) => m,
-                _ => return Err(SourceError::InvalidJson(1, "expected JSON object".into()).into()),
-            };
+        let obj = match &value {
+            serde_json::Value::Object(m) => m,
+            _ => return Err(SourceError::InvalidJson(line_num, "expected JSON object".into()).into()),
+        };
 
-            let mut keys: Vec<String> = obj.keys().cloned().collect();
-            keys.sort();
-            self.headers = keys;
-            self.row_number = 1;
+        let values: Vec<String> = self
+            .headers
+            .iter()
+            .map(|k| json_value_to_string(obj.get(k)))
+            .collect();
+        Ok(values)
+    }
 
-            let values: Vec<String> = self
-                .headers
-                .iter()
-                .map(|k| json_value_to_string(obj.get(k)))
-                .collect();
-            self.pending_first = Some(SourceRow::new(&self.headers, values));
+    fn discover_headers(&mut self) -> Result<()> {
+        if !self.headers.is_empty() {
             return Ok(());
         }
+
+        let Some(line) = self.read_next_line()? else {
+            return Ok(());
+        };
+
+        let value: serde_json::Value = serde_json::from_str(&line)
+            .map_err(|e| SourceError::InvalidJson(1, e.to_string()))?;
+
+        let obj = match &value {
+            serde_json::Value::Object(m) => m,
+            _ => return Err(SourceError::InvalidJson(1, "expected JSON object".into()).into()),
+        };
+
+        let mut keys: Vec<String> = obj.keys().cloned().collect();
+        keys.sort();
+        self.headers = keys;
+        self.row_number = 1;
+
+        let values: Vec<String> = self
+            .headers
+            .iter()
+            .map(|k| json_value_to_string(obj.get(k)))
+            .collect();
+        self.pending_first = Some(SourceRow::new(&self.headers, values));
+        Ok(())
     }
 }
 
@@ -74,46 +108,29 @@ impl<R: Read + Send> SourceReader for NdjsonReader<R> {
             return Ok(Some(row));
         }
 
-        self.discover_headers_from_first_row()?;
-        if let Some(row) = self.pending_first.take() {
-            return Ok(Some(row));
+        if self.headers.is_empty() {
+            self.discover_headers()?;
+            if let Some(row) = self.pending_first.take() {
+                return Ok(Some(row));
+            }
         }
 
-        loop {
-            let mut line = String::new();
-            let bytes = self.reader.read_line(&mut line)?;
-            if bytes == 0 {
-                self.finished = true;
-                return Ok(None);
-            }
+        let Some(line) = self.read_next_line()? else {
+            self.finished = true;
+            return Ok(None);
+        };
 
-            let trimmed = line.trim_ascii();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-
-            self.row_number += 1;
-
-            let value: serde_json::Value = serde_json::from_str(trimmed)
-                .map_err(|e| SourceError::InvalidJson(self.row_number, e.to_string()))?;
-
-            let values: Vec<String> = self
-                .headers
-                .iter()
-                .map(|k| {
-                    value
-                        .get(k)
-                        .map(|v| json_value_to_string(Some(v)))
-                        .unwrap_or_default()
-                })
-                .collect();
-
-            return Ok(Some(SourceRow::new(&self.headers, values)));
-        }
+        self.row_number += 1;
+        let values = self.parse_line(&line, self.row_number)?;
+        Ok(Some(SourceRow::new(&self.headers, values)))
     }
 
     fn headers(&self) -> &[String] {
         &self.headers
+    }
+
+    fn supports_reset(&self) -> bool {
+        true
     }
 
     fn reset(&mut self) -> Result<()> {
@@ -129,17 +146,6 @@ impl<R: Read + Seek + Send> NdjsonReader<R> {
         self.row_number = 0;
         self.finished = false;
         Ok(())
-    }
-}
-
-fn json_value_to_string(v: Option<&serde_json::Value>) -> String {
-    match v {
-        None => String::new(),
-        Some(serde_json::Value::Null) => String::new(),
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(serde_json::Value::Number(n)) => n.to_string(),
-        Some(serde_json::Value::Bool(b)) => b.to_string(),
-        Some(other) => other.to_string(),
     }
 }
 
