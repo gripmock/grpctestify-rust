@@ -264,8 +264,12 @@ pub struct BenchArgs {
     pub skip_tags: Vec<String>,
 
     /// Exclude files/directories matching the given glob pattern (can be used multiple times)
-    #[arg(long = "exclude", value_name = "PATTERN")]
+    #[arg(long, value_name = "PATTERN")]
     pub exclude: Vec<String>,
+
+    /// List available benchmark profiles and exit
+    #[arg(long, default_value_t = false)]
+    pub list_profiles: bool,
 }
 
 #[derive(Args, Debug, Clone)]

@@ -284,6 +284,7 @@ pub static BUILTIN_PROFILES: LazyLock<HashMap<&'static str, HashMap<&'static str
         let mut m: HashMap<&str, HashMap<&str, &str>> = HashMap::new();
 
         let mut functional = HashMap::new();
+        functional.insert("description", "Quick functional check");
         functional.insert("mode", "fixed");
         functional.insert("concurrency", "1");
         functional.insert("requests", "100");
@@ -291,6 +292,7 @@ pub static BUILTIN_PROFILES: LazyLock<HashMap<&'static str, HashMap<&'static str
         m.insert("functional", functional);
 
         let mut load = HashMap::new();
+        load.insert("description", "Stepped load test 50→200 RPS");
         load.insert("mode", "stepping");
         load.insert("concurrency", "10");
         load.insert("duration", "60s");
@@ -302,6 +304,7 @@ pub static BUILTIN_PROFILES: LazyLock<HashMap<&'static str, HashMap<&'static str
         m.insert("load", load);
 
         let mut stress = HashMap::new();
+        stress.insert("description", "Linear stress test 10→500 RPS");
         stress.insert("mode", "stepping");
         stress.insert("concurrency", "50");
         stress.insert("duration", "120s");
@@ -312,6 +315,7 @@ pub static BUILTIN_PROFILES: LazyLock<HashMap<&'static str, HashMap<&'static str
         m.insert("stress", stress);
 
         let mut spike = HashMap::new();
+        spike.insert("description", "Spike test: 10→500→10 RPS");
         spike.insert("mode", "fixed");
         spike.insert("concurrency", "100");
         spike.insert("duration", "60s");
@@ -323,6 +327,7 @@ pub static BUILTIN_PROFILES: LazyLock<HashMap<&'static str, HashMap<&'static str
         m.insert("spike", spike);
 
         let mut soak = HashMap::new();
+        soak.insert("description", "Long-duration soak at 50 RPS");
         soak.insert("mode", "fixed");
         soak.insert("concurrency", "5");
         soak.insert("duration", "3600s");
@@ -342,6 +347,16 @@ pub fn apply_profile(
         .get(name)
         .map(|profile| profile.iter().map(|(k, v)| (*k, *v)).collect())
         .unwrap_or_default()
+}
+
+/// List all available profiles with their descriptions.
+pub fn list_profiles() -> Vec<(&'static str, HashMap<&'static str, &'static str>)> {
+    let mut result: Vec<(&str, HashMap<&str, &str>)> = BUILTIN_PROFILES
+        .iter()
+        .map(|(name, keys)| (*name, keys.clone()))
+        .collect();
+    result.sort_by(|a, b| a.0.cmp(b.0));
+    result
 }
 
 #[cfg(test)]
