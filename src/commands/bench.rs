@@ -81,6 +81,7 @@ pub struct BenchConfigResolved {
     pub load_spike_target: Option<f64>,
     pub load_spike_after: Option<f64>,
     pub load_spike_duration: Option<f64>,
+    pub load_profile: Option<Vec<(f64, f64)>>,
     pub connections: u32,
     pub connect_timeout: Duration,
     pub keepalive: Option<Duration>,
@@ -124,6 +125,7 @@ impl Default for BenchConfigResolved {
             load_spike_target: None,
             load_spike_after: None,
             load_spike_duration: None,
+            load_profile: None,
             connections: 1,
             connect_timeout: Duration::from_secs(10),
             keepalive: None,
@@ -162,6 +164,64 @@ impl Default for BenchConfigResolved {
             },
             sources: Vec::new(),
         }
+    }
+}
+
+/// Linear interpolation between custom profile points: [(time_secs, rps), ...]
+fn interpolate_custom_profile(profile: &[(f64, f64)], t: f64) -> f64 {
+    if profile.is_empty() {
+        return 0.0;
+    }
+    if t <= profile[0].0 {
+        return profile[0].1.max(0.0);
+    }
+    if t >= profile.last().unwrap().0 {
+        return profile.last().unwrap().1.max(0.0);
+    }
+    for i in 0..profile.len() - 1 {
+        let (t1, r1) = profile[i];
+        let (t2, r2) = profile[i + 1];
+        if t >= t1 && t <= t2 {
+            let fraction = (t - t1) / (t2 - t1);
+            return (r1 + (r2 - r1) * fraction).max(0.0);
+        }
+    }
+    0.0
+}
+
+/// Parse `load_profile` string: "0s:10, 10s:100, 30s:50"
+fn parse_custom_profile(s: &str) -> Option<Vec<(f64, f64)>> {
+    let mut points: Vec<(f64, f64)> = s
+        .split(',')
+        .filter_map(|part| {
+            let part = part.trim();
+            let (time_str, rps_str) = part.split_once(':')?;
+            let time_str = time_str.trim();
+            let rps_str = rps_str.trim();
+            let t = parse_duration_sec(time_str)?;
+            let rps: f64 = rps_str.parse().ok()?;
+            Some((t, rps))
+        })
+        .collect();
+    if points.is_empty() {
+        return None;
+    }
+    points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    Some(points)
+}
+
+fn parse_duration_sec(s: &str) -> Option<f64> {
+    let s = s.trim().to_ascii_lowercase();
+    if let Some(rest) = s.strip_suffix('h') {
+        rest.parse::<f64>().ok().map(|v| v * 3600.0)
+    } else if let Some(rest) = s.strip_suffix('m') {
+        rest.parse::<f64>().ok().map(|v| v * 60.0)
+    } else if let Some(rest) = s.strip_suffix('s') {
+        rest.parse::<f64>().ok()
+    } else if let Some(rest) = s.strip_suffix("ms") {
+        rest.parse::<f64>().ok().map(|v| v / 1000.0)
+    } else {
+        s.parse::<f64>().ok()
     }
 }
 
@@ -205,6 +265,9 @@ impl BenchConfigResolved {
                 config
                     .option_sources
                     .insert("load_schedule".to_string(), BenchOptionSource::BenchSection);
+            }
+            if let Some(v) = bench.get("load_profile") {
+                config.load_profile = parse_custom_profile(v);
             }
             if let Some(v) = bench_value(bench, "load_start") {
                 config.load_start = v.parse::<f64>().ok();
@@ -357,6 +420,9 @@ impl BenchConfigResolved {
                 config
                     .option_sources
                     .insert("load_schedule".to_string(), BenchOptionSource::BenchSection);
+            }
+            if let Some(v) = bench.get("load_profile") {
+                config.load_profile = parse_custom_profile(v);
             }
             if let Some(v) = bench_value(bench, "load_start") {
                 config.load_start = v.parse::<f64>().ok();
@@ -1152,6 +1218,12 @@ fn target_rps_at(config: &BenchConfigResolved, elapsed: Duration) -> f64 {
             } else {
                 baseline.max(0.0)
             }
+        }
+        "custom" => {
+            let t = elapsed.as_secs_f64();
+            config.load_profile.as_ref().map_or(start.max(0.0), |profile| {
+                interpolate_custom_profile(profile, t)
+            })
         }
         _ => {
             if config.max_rps.is_some() {
