@@ -329,6 +329,24 @@ impl BenchConfigResolved {
             if let Some(v) = bench.get("load_profile") {
                 config.load_profile = parse_custom_profile(v);
             }
+            if let Some(v) = bench.get("load_midpoint") {
+                config.load_midpoint = v.parse::<f64>().ok();
+            }
+            if let Some(v) = bench.get("load_amplitude") {
+                config.load_amplitude = v.parse::<f64>().ok();
+            }
+            if let Some(v) = bench.get("load_frequency") {
+                config.load_frequency = v.parse::<f64>().ok();
+            }
+            if let Some(v) = bench.get("load_spike_target") {
+                config.load_spike_target = v.parse::<f64>().ok();
+            }
+            if let Some(v) = bench.get("load_spike_after") {
+                config.load_spike_after = v.parse::<f64>().ok();
+            }
+            if let Some(v) = bench.get("load_spike_duration") {
+                config.load_spike_duration = v.parse::<f64>().ok();
+            }
             if let Some(v) = bench_value(bench, "load_start") {
                 config.load_start = v.parse::<f64>().ok();
                 config
@@ -489,6 +507,24 @@ impl BenchConfigResolved {
             }
             if let Some(v) = bench.get("load_profile") {
                 config.load_profile = parse_custom_profile(v);
+            }
+            if let Some(v) = bench.get("load_midpoint") {
+                config.load_midpoint = v.parse::<f64>().ok();
+            }
+            if let Some(v) = bench.get("load_amplitude") {
+                config.load_amplitude = v.parse::<f64>().ok();
+            }
+            if let Some(v) = bench.get("load_frequency") {
+                config.load_frequency = v.parse::<f64>().ok();
+            }
+            if let Some(v) = bench.get("load_spike_target") {
+                config.load_spike_target = v.parse::<f64>().ok();
+            }
+            if let Some(v) = bench.get("load_spike_after") {
+                config.load_spike_after = v.parse::<f64>().ok();
+            }
+            if let Some(v) = bench.get("load_spike_duration") {
+                config.load_spike_duration = v.parse::<f64>().ok();
             }
             if let Some(v) = bench_value(bench, "load_start") {
                 config.load_start = v.parse::<f64>().ok();
