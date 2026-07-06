@@ -334,6 +334,22 @@ fn append_status_and_errors(out: &mut String, report: &BenchReport) {
             out.push_str(&format!("  [{}] {}\n", count, err));
         }
     }
+
+    if !report.per_endpoint.is_empty() {
+        out.push_str("\nPer-endpoint breakdown:\n");
+        for ep in &report.per_endpoint {
+            out.push_str(&format!(
+                "  {}: {} req, {} err, p50={} p90={} p95={} p99={}\n",
+                ep.endpoint,
+                ep.count,
+                ep.errors,
+                format_ns(ep.latency_p50),
+                format_ns(ep.latency_p90),
+                format_ns(ep.latency_p95),
+                format_ns(ep.latency_p99),
+            ));
+        }
+    }
 }
 
 fn format_ns(ns: u64) -> String {
