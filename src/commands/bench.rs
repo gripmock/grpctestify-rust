@@ -727,7 +727,7 @@ struct PerEndpointData {
 }
 
 impl BenchMetrics {
-    fn record(&mut self, latency_ns: u64, status: &str, error: Option<&str>) {
+    fn record(&mut self, latency_ns: u64, status: &str, error: Option<&str>, endpoint: &str) {
         self.count += 1;
         if status == "OK" || status.is_empty() {
             self.ok += 1;
@@ -741,6 +741,14 @@ impl BenchMetrics {
             let category = categorize_error(err);
             *self.error_dist.entry(category).or_insert(0) += 1;
         }
+
+        // Per-endpoint tracking
+        let ep = self.per_endpoint.entry(endpoint.to_string()).or_default();
+        ep.count += 1;
+        if status != "OK" && !status.is_empty() {
+            ep.errors += 1;
+        }
+        ep.latencies.push(latency_ns);
 
         self.total_ns += latency_ns;
 
@@ -1028,11 +1036,11 @@ async fn run_benchmark(
                             None => std::collections::HashMap::new(),
                         };
 
-                        let (lat_ns, status, error) =
+                        let (lat_ns, status, error, endpoint) =
                             execute_single_bench_iteration_with_vars(file, &cfg, vars).await;
                         let finished_at = Instant::now();
                         if should_record_after_deadline(cfg.duration_stop, finished_at, deadline) {
-                            local.record(lat_ns, &status, error.as_deref());
+                            local.record(lat_ns, &status, error.as_deref(), &endpoint);
                             progress_count.fetch_add(1, Ordering::Relaxed);
                             if status != "OK" {
                                 progress_errors.fetch_add(1, Ordering::Relaxed);
@@ -1116,10 +1124,10 @@ async fn run_benchmark(
                             None => std::collections::HashMap::new(),
                         };
 
-                        let (lat_ns, status, error) =
+                        let (lat_ns, status, error, endpoint) =
                             execute_single_bench_iteration_with_vars(file, &cfg, vars).await;
-                        local.record(lat_ns, &status, error.as_deref());
-                        progress_count.fetch_add(1, Ordering::Relaxed);
+                        local.record(lat_ns, &status, error.as_deref(), &endpoint);
+                            progress_count.fetch_add(1, Ordering::Relaxed);
                         if status != "OK" {
                             progress_errors.fetch_add(1, Ordering::Relaxed);
                         }
@@ -1302,7 +1310,7 @@ fn print_progress_snapshot(
 async fn execute_single_bench_iteration(
     file: &Path,
     config: &BenchConfigResolved,
-) -> (u64, String, Option<String>) {
+) -> (u64, String, Option<String>, String) {
     execute_single_bench_iteration_with_vars(file, config, HashMap::new()).await
 }
 
@@ -1310,13 +1318,14 @@ async fn execute_single_bench_iteration_with_vars(
     file: &Path,
     config: &BenchConfigResolved,
     source_variables: HashMap<String, serde_json::Value>,
-) -> (u64, String, Option<String>) {
+) -> (u64, String, Option<String>, String) {
     use crate::execution::{TestExecutionStatus, TestRunner};
 
     let start = Instant::now();
 
     let parse_result = crate::parser::parse_with_recovery(file);
     let doc = parse_result.document;
+    let endpoint = doc.get_endpoint().unwrap_or_else(|| "unknown".to_string());
 
     let timeout_seconds = config.duration.map_or(30, |d| d.as_secs()).max(1);
     let no_assert = config.no_assert || config.assert_mode == "off" || config.assert_mode == "skip";
@@ -1325,18 +1334,20 @@ async fn execute_single_bench_iteration_with_vars(
     match runner.run_test_with_variables(&doc, source_variables).await {
         Ok(result) => match result.status {
             TestExecutionStatus::Pass => {
-                (start.elapsed().as_nanos() as u64, "OK".to_string(), None)
+                (start.elapsed().as_nanos() as u64, "OK".to_string(), None, endpoint.clone())
             }
             TestExecutionStatus::Fail(msg) => (
                 start.elapsed().as_nanos() as u64,
                 "ERROR".to_string(),
                 Some(msg),
+                endpoint.clone(),
             ),
         },
         Err(e) => (
             start.elapsed().as_nanos() as u64,
             "ERROR".to_string(),
             Some(e.to_string()),
+            endpoint,
         ),
     }
 }
@@ -2331,7 +2342,7 @@ mod tests {
     fn test_metrics_record_caps_latency_sample_growth() {
         let mut metrics = BenchMetrics::default();
         for i in 0..(MAX_LATENCY_SAMPLES + 10) {
-            metrics.record(i as u64, "OK", None);
+            metrics.record(i as u64, "OK", None, "test");
         }
 
         assert!(metrics.latencies.len() <= MAX_LATENCY_SAMPLES);
@@ -2371,8 +2382,8 @@ mod tests {
     #[test]
     fn test_resolve_metric_error_rate_pct() {
         let mut metrics = BenchMetrics::default();
-        metrics.record(1_000_000, "OK", None);
-        metrics.record(1_000_000, "ERROR", Some("boom"));
+        metrics.record(1_000_000, "OK", None, "test");
+        metrics.record(1_000_000, "ERROR", Some("boom"), "test");
 
         let value = resolve_metric_value(&metrics, "error_rate_pct").unwrap_or_default();
         assert!((value - 50.0).abs() < f64::EPSILON);
@@ -2381,7 +2392,7 @@ mod tests {
     #[test]
     fn test_unknown_threshold_metric_fails_with_reason() {
         let mut metrics = BenchMetrics::default();
-        metrics.record(1_000_000, "OK", None);
+        metrics.record(1_000_000, "OK", None, "test");
 
         let mut thresholds = HashMap::new();
         thresholds.insert("unknown_metric".to_string(), "< 10".to_string());
