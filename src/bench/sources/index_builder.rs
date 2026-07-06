@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+const DEFAULT_MEMORY_LIMIT: u64 = 256 * 1024 * 1024; // 256MB
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildPhase {
     Scan,
@@ -141,6 +143,19 @@ where
         .write_to_file(&idx_path)
         .with_context(|| format!("failed to write index to {}", idx_path.display()))?;
     on_progress(BuildPhase::Write, 1, 1);
+
+    // Warn if index file exceeds memory limit
+    if let Ok(meta) = std::fs::metadata(&idx_path) {
+        let size = meta.len();
+        if size > DEFAULT_MEMORY_LIMIT {
+            tracing::warn!(
+                "Index file {} is {} MB — exceeds {} MB limit. Consider increasing memory budget or reducing dataset size.",
+                idx_path.display(),
+                size / (1024 * 1024),
+                DEFAULT_MEMORY_LIMIT / (1024 * 1024)
+            );
+        }
+    }
 
     Ok(idx_path)
 }

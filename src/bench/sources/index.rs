@@ -8,6 +8,12 @@ use std::path::Path;
 
 const INDEX_MAGIC: u32 = 0x47435449;
 const INDEX_VERSION: u32 = 5; // v5: single-file + typed keys + CRC32 checksum
+pub const COMPOSITE_KEY_SEPARATOR: &str = "\x1F"; // Unit separator for composite keys
+
+/// Build a composite key from multiple column values, joined by COMPOSITE_KEY_SEPARATOR.
+pub fn make_composite_key(parts: &[&str]) -> String {
+    parts.join(COMPOSITE_KEY_SEPARATOR)
+}
 
 fn json_value_to_string(v: Option<&serde_json::Value>) -> String {
     match v {
