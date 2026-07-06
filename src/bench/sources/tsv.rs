@@ -2,10 +2,10 @@ use super::SourceReader;
 use super::error::SourceError;
 use super::row::SourceRow;
 use anyhow::Result;
-use std::io::{BufRead, BufReader, Read, Seek};
+use std::io::{BufReader, Read, Seek};
 
 pub struct TsvReader<R> {
-    reader: BufReader<R>,
+    reader: csv::Reader<BufReader<R>>,
     headers: Vec<String>,
     row_number: usize,
     finished: bool,
@@ -13,37 +13,37 @@ pub struct TsvReader<R> {
 
 impl<R: Read> TsvReader<R> {
     pub fn new(reader: BufReader<R>) -> Result<Self> {
-        let mut slf = Self {
-            reader,
-            headers: Vec::new(),
-            row_number: 0,
-            finished: false,
-        };
-        slf.read_header()?;
-        Ok(slf)
-    }
+        let mut csv_reader = csv::ReaderBuilder::new()
+            .delimiter(b'\t')
+            .comment(Some(b'#'))
+            .has_headers(true)
+            .flexible(false)
+            .from_reader(reader);
 
-    fn read_header(&mut self) -> Result<()> {
-        let mut line = String::new();
-        let bytes = self.reader.read_line(&mut line)?;
-        if bytes == 0 {
+        let headers = csv_reader
+            .headers()
+            .map_err(|e| anyhow::anyhow!("failed to read TSV header: {e}"))?
+            .iter()
+            .map(|h| h.to_string())
+            .collect::<Vec<_>>();
+
+        if headers.is_empty() {
             return Err(SourceError::EmptyFile("tsv".into()).into());
         }
-        let header_line = line.trim_end_matches(['\n', '\r']);
-        self.headers = header_line
-            .split('\t')
-            .map(|s| s.trim().to_string())
-            .collect();
 
         let mut seen = std::collections::HashSet::new();
-        for col in &self.headers {
+        for col in &headers {
             if !seen.insert(col.as_str()) {
                 return Err(SourceError::DuplicateColumn(col.clone()).into());
             }
         }
 
-        self.row_number = 1;
-        Ok(())
+        Ok(Self {
+            reader: csv_reader,
+            headers,
+            row_number: 1,
+            finished: false,
+        })
     }
 }
 
@@ -53,22 +53,16 @@ impl<R: Read + Send> SourceReader for TsvReader<R> {
             return Ok(None);
         }
 
-        let mut line = String::new();
-        loop {
-            line.clear();
-            let bytes = self.reader.read_line(&mut line)?;
-            if bytes == 0 {
-                self.finished = true;
-                return Ok(None);
-            }
-
-            let trimmed = line.trim_end_matches(['\n', '\r']);
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-
+        for result in self.reader.records() {
             self.row_number += 1;
-            let values: Vec<String> = trimmed.split('\t').map(|s| s.trim().to_string()).collect();
+            let record = match result {
+                Ok(r) => r,
+                Err(e) => {
+                    return Err(anyhow::anyhow!("TSV error at row {}: {e}", self.row_number));
+                }
+            };
+
+            let values: Vec<String> = record.iter().map(|f| f.to_string()).collect();
 
             if values.len() != self.headers.len() {
                 return Err(SourceError::FieldCountMismatch {
@@ -81,6 +75,9 @@ impl<R: Read + Send> SourceReader for TsvReader<R> {
 
             return Ok(Some(SourceRow::new(&self.headers, values)));
         }
+
+        self.finished = true;
+        Ok(None)
     }
 
     fn headers(&self) -> &[String] {
@@ -94,11 +91,7 @@ impl<R: Read + Send> SourceReader for TsvReader<R> {
 
 impl<R: Read + Seek + Send> TsvReader<R> {
     pub fn reset_seekable(&mut self) -> Result<()> {
-        self.reader.seek(std::io::SeekFrom::Start(0))?;
-        self.row_number = 0;
-        self.finished = false;
-        self.read_header()?;
-        Ok(())
+        Err(anyhow::anyhow!("reset_seekable not supported with csv crate reader"))
     }
 }
 
