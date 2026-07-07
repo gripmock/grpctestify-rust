@@ -117,6 +117,7 @@ pub enum FallbackType {
 struct DimensionJoin {
     source_name: String,
     foreign_key: String,
+    remote_key: String,
 }
 
 #[derive(Clone)]
@@ -341,6 +342,7 @@ impl SourceDrivenConfig {
             dim_joins.push(DimensionJoin {
                 source_name: dim_name.clone(),
                 foreign_key: key_col.clone(),
+                remote_key: key_col.clone(),
             });
 
             resolved_paths.insert(dim_name.clone(), resolved.clone());
