@@ -1868,6 +1868,14 @@ fn build_report(
     Ok(report)
 }
 
+/// Validate BENCH section configuration from a parsed document.
+/// Returns Ok(()) if the BENCH section is valid, or an error describing the issue.
+pub fn validate_bench_config(doc: &crate::parser::GctfDocument) -> Result<()> {
+    let bench_section = extract_bench_section(doc);
+    BenchConfigResolved::from_bench_section(bench_section.as_ref())?;
+    Ok(())
+}
+
 /// Main bench command handler
 pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
     if args.test_paths.is_empty() {

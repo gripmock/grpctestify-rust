@@ -293,6 +293,19 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                     file_has_error = true;
                 }
 
+                // Validate BENCH section config if --bench flag is set
+                if args.bench && !file_has_error {
+                    if let Err(e) = crate::commands::bench::validate_bench_config(&doc) {
+                        diagnostics.push(Diagnostic::error(
+                            &file_str,
+                            "BENCH_CONFIG_ERROR",
+                            &e.to_string(),
+                            1,
+                        ));
+                        file_has_error = true;
+                    }
+                }
+
                 if !args.is_json() && !file_has_error {
                     println!("{} ... OK", file.display());
                 }

@@ -380,6 +380,10 @@ pub struct CheckArgs {
     /// Output format (text, json)
     #[arg(long, default_value = "text")]
     pub format: String,
+
+    /// Validate BENCH section configuration
+    #[arg(long, default_value_t = false)]
+    pub bench: bool,
 }
 
 #[derive(Args, Debug, Clone)]
