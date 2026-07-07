@@ -1045,6 +1045,32 @@ fn validate_section_order(document: &GctfDocument, errors: &mut Vec<ValidationEr
     }
 }
 
+/// DFS-based cycle detection in dimension join graph.
+fn has_cycle<'a>(
+    adj: &std::collections::BTreeMap<&'a str, Vec<&'a str>>,
+    node: &'a str,
+    visited: &mut std::collections::BTreeSet<&'a str>,
+    stack: &mut std::collections::BTreeSet<&'a str>,
+) -> bool {
+    if stack.contains(node) {
+        return true;
+    }
+    if visited.contains(node) {
+        return false;
+    }
+    visited.insert(node);
+    stack.insert(node);
+    if let Some(neighbors) = adj.get(node) {
+        for n in neighbors {
+            if has_cycle(adj, n, visited, stack) {
+                return true;
+            }
+        }
+    }
+    stack.remove(node);
+    false
+}
+
 /// Validate that BENCH data source files referenced in the BENCH section exist.
 fn validate_bench_sources_exist(document: &GctfDocument, errors: &mut Vec<ValidationError>) {
     for section in &document.sections {
@@ -1059,8 +1085,9 @@ fn validate_bench_sources_exist(document: &GctfDocument, errors: &mut Vec<Valida
             continue;
         };
         match serde_yaml_ng::from_str::<Vec<crate::bench::sources::SourceDefinition>>(sources_yaml) {
-            Ok(defs) => {
-                for def in &defs {
+            Ok(ref defs) => {
+                // Check file existence
+                for def in defs {
                     let resolved = std::path::Path::new(&document.file_path)
                         .parent()
                         .unwrap_or(std::path::Path::new("."))
@@ -1075,6 +1102,48 @@ fn validate_bench_sources_exist(document: &GctfDocument, errors: &mut Vec<Valida
                             line: Some(section.start_line),
                             severity: ErrorSeverity::Warning,
                         });
+                    }
+                }
+
+                // Detect circular dimension joins
+                if defs.len() > 1 {
+                    let mut adj: std::collections::BTreeMap<&str, Vec<&str>> =
+                        std::collections::BTreeMap::new();
+                    for def in defs {
+                        let name = def.name.as_deref().unwrap_or("primary");
+                        if let Some(idx) = &def.indexed_by {
+                            let cols = match idx {
+                                crate::bench::sources::definition::IndexedBy::Single(c) => {
+                                    vec![c.as_str()]
+                                }
+                                crate::bench::sources::definition::IndexedBy::Multi(v) => {
+                                    v.iter().map(|s| s.as_str()).collect()
+                                }
+                            };
+                            for col in cols {
+                                // Check if col looks like a reference to another source
+                                if let Some(target) = col.strip_prefix('@') {
+                                    adj.entry(name).or_default().push(target);
+                                }
+                            }
+                        }
+                    }
+                    // Check for cycles using DFS
+                    let mut visited: std::collections::BTreeSet<&str> =
+                        std::collections::BTreeSet::new();
+                    let mut stack: std::collections::BTreeSet<&str> =
+                        std::collections::BTreeSet::new();
+                    for node in adj.keys().copied().collect::<Vec<_>>() {
+                        if has_cycle(&adj, node, &mut visited, &mut stack) {
+                            errors.push(ValidationError {
+                                message: format!(
+                                    "Circular dimension join detected involving source '{}'",
+                                    node
+                                ),
+                                line: Some(section.start_line),
+                                severity: ErrorSeverity::Error,
+                            });
+                        }
                     }
                 }
             }
