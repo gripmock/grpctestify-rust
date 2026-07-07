@@ -1,5 +1,5 @@
 use super::index::{KeyType, SourceIndex};
-use super::row::SourceRow;
+use source_row::SourceRow;
 use super::{SourceDefinition, open_source_reader};
 use crate::utils::file::FileUtils;
 use anyhow::{Context, Result};

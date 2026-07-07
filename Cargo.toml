@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/twoq-cache", "crates/source-row", "crates/source-error", "crates/cfg-runtime"]
+members = ["crates/twoq-cache", "crates/source-row", "crates/source-error", "crates/cfg-runtime", "crates/apif-query"]
 
 [workspace.package]
 version = "1.7.0"
@@ -155,6 +155,10 @@ globset = { workspace = true }
 sysinfo = { workspace = true }
 memmap2 = { workspace = true }
 crc32fast = { workspace = true }
+twoq-cache = { path = "crates/twoq-cache" }
+source-row = { path = "crates/source-row" }
+source-error = { path = "crates/source-error" }
+cfg-runtime = { path = "crates/cfg-runtime" }
 csv = "1.3"
 rand = "0.8"
 json5 = "1.3.1"

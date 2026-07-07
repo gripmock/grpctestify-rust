@@ -1,6 +1,6 @@
 use super::SourceReader;
-use super::error::SourceError;
-use super::row::SourceRow;
+use source_error::SourceError;
+use source_row::SourceRow;
 use anyhow::Result;
 use std::io::{BufRead, BufReader, Read, Seek};
 

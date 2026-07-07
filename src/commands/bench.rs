@@ -2120,7 +2120,6 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
-        bench_metadata: vec![],
             list_profiles: false,
         };
 
@@ -2192,7 +2191,6 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
-        bench_metadata: vec![],
             list_profiles: false,
         };
 
@@ -2250,7 +2248,6 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
-        bench_metadata: vec![],
             list_profiles: false,
         };
 
@@ -2302,7 +2299,6 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
-        bench_metadata: vec![],
             list_profiles: false,
         };
 
@@ -2386,7 +2382,6 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
-        bench_metadata: vec![],
             list_profiles: false,
         };
 
@@ -2434,7 +2429,6 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
-        bench_metadata: vec![],
             list_profiles: false,
         };
 
@@ -2480,7 +2474,6 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
-            bench_metadata: vec![],
             list_profiles: false,
         };
 

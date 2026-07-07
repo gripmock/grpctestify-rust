@@ -2,7 +2,7 @@ use super::filter::{FilterCondition, matches_all as matches_filter_all};
 use super::index::SourceIndex;
 use super::index_builder::index_path_for_source;
 use super::memory::InMemorySource;
-use super::row::SourceRow;
+use source_row::SourceRow;
 use super::{SourceDefinition, SourceReader, open_source_reader};
 use crate::utils::file::FileUtils;
 use anyhow::{Context, Result};

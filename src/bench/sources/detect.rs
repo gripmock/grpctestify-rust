@@ -30,7 +30,7 @@ impl std::str::FromStr for SourceFormat {
     }
 }
 
-pub fn detect_format(path: &Path) -> Result<SourceFormat, super::error::SourceError> {
+pub fn detect_format(path: &Path) -> Result<SourceFormat, source_error::SourceError> {
     let filename = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -45,7 +45,7 @@ pub fn detect_format(path: &Path) -> Result<SourceFormat, super::error::SourceEr
     }
     if filename.ends_with(".json") {
         let content = std::fs::read_to_string(path).map_err(|e| {
-            super::error::SourceError::FileOpenFailed(path.display().to_string(), e)
+            source_error::SourceError::FileOpenFailed(path.display().to_string(), e)
         })?;
         return Ok(detect_format_from_content(&content));
     }
@@ -54,7 +54,7 @@ pub fn detect_format(path: &Path) -> Result<SourceFormat, super::error::SourceEr
     }
 
     let content = std::fs::read_to_string(path)
-        .map_err(|e| super::error::SourceError::FileOpenFailed(path.display().to_string(), e))?;
+        .map_err(|e| source_error::SourceError::FileOpenFailed(path.display().to_string(), e))?;
     Ok(detect_format_from_content(&content))
 }
 

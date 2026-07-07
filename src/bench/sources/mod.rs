@@ -1,34 +1,31 @@
 pub mod analyzer;
-pub mod cache;
 pub mod csv;
 pub mod definition;
 pub mod detect;
 pub mod driven;
-pub mod error;
 pub mod filter;
 pub mod index;
 pub mod index_builder;
 pub mod memory;
 pub mod ndjson;
-pub mod row;
 pub mod tsv;
 
 pub use analyzer::{
     IndexReason, IndexRequirement, SourceUsageAnalyzer, SourceUsagePlan, effective_source_name,
 };
-pub use cache::TwoQCache;
+pub use twoq_cache::TwoQCache;
 pub use csv::CsvReader;
 pub use definition::{IndexMode, JoinType, SourceDefinition};
 pub use detect::{SourceFormat, detect_format};
 pub use driven::{
     FallbackReason, FallbackType, RuntimeFallbackPolicy, SourceDrivenConfig, SourceFallbackEvent,
 };
-pub use error::SourceError;
+pub use source_error::SourceError;
 pub use filter::{FilterCondition, matches_all as matches_filter_all};
 pub use index::{BloomFilter, IndexEntry, IndexEntryV4, SourceIndex, XorFilter};
 pub use memory::InMemorySource;
 pub use ndjson::NdjsonReader;
-pub use row::SourceRow;
+pub use source_row::SourceRow;
 pub use tsv::TsvReader;
 
 use crate::utils::file::FileUtils;

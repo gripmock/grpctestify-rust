@@ -1,4 +1,4 @@
-use super::row::SourceRow;
+use source_row::SourceRow;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
