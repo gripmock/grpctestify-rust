@@ -1,0 +1,6 @@
+[package]
+name = "twoq-cache"
+version = "0.1.0"
+edition = "2021"
+description = "TwoQ adaptive cache — scan-resistant hot/cold cache"
+license = "MIT"
