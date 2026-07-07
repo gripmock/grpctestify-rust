@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/twoq-cache"]
+members = ["crates/twoq-cache", "crates/source-row"]
 
 [workspace.package]
 version = "1.7.0"
