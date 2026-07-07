@@ -1,0 +1,9 @@
+[package]
+name = "apif-diagnostics"
+version = "0.1.0"
+edition = "2021"
+description = "Diagnostic types and builders for APIF file validation"
+license = "MIT"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }

@@ -1,7 +1,4 @@
-pub mod builder;
-pub mod types;
-
-pub use builder::{DiagnosticBuilder, GctfDiagnostics};
-pub use types::{
+pub use apif_diagnostics::{
     Diagnostic, DiagnosticCode, DiagnosticCollection, DiagnosticSeverity, Position, Range,
+    DiagnosticBuilder, GctfDiagnostics,
 };
