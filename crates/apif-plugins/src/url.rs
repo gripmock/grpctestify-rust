@@ -1,0 +1,165 @@
+use anyhow::Result;
+use serde_json::Value;
+
+use apif_assert::engine::AssertionResult;
+use crate::{
+    ArgTypeInfo, Plugin, PluginContext, PluginPurity, PluginResult, PluginSignature, TypeInfo,
+};
+
+pub struct UrlPlugin;
+
+impl Plugin for UrlPlugin {
+    fn name(&self) -> &str {
+        "url"
+    }
+
+    fn description(&self) -> &str {
+        "Validates if the provided value is a valid URL"
+    }
+
+    fn signature(&self) -> PluginSignature {
+        PluginSignature {
+            return_type: TypeInfo::Bool,
+            arg_types: &[ArgTypeInfo {
+                expected: TypeInfo::String,
+                required: true,
+                default: None,
+            }],
+            purity: PluginPurity::Pure,
+            deterministic: true,
+            idempotent: true,
+            safe_for_rewrite: true,
+            arg_names: &["value"],
+        }
+    }
+
+    fn execute(&self, args: &[Value], _context: &PluginContext) -> Result<PluginResult> {
+        if args.len() != 1 {
+            return Ok(PluginResult::Assertion(AssertionResult::Error(
+                "url: expects exactly 1 argument".to_string(),
+            )));
+        }
+
+        let arg = &args[0];
+
+        match arg.as_str() {
+            Some(s) => {
+                if url::Url::parse(s).is_ok() {
+                    Ok(PluginResult::Assertion(AssertionResult::Pass))
+                } else {
+                    Ok(PluginResult::Assertion(AssertionResult::fail(format!(
+                        "Expected valid URL, got '{}'",
+                        s
+                    ))))
+                }
+            }
+            None => Ok(PluginResult::Assertion(AssertionResult::fail(format!(
+                "Expected string for URL check, got {:?}",
+                arg
+            )))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_context() -> PluginContext<'static> {
+        PluginContext::new(&Value::Null)
+    }
+
+    #[test]
+    fn test_url_plugin_name() {
+        let plugin = UrlPlugin;
+        assert_eq!(plugin.name(), "url");
+    }
+
+    #[test]
+    fn test_url_plugin_valid_url() {
+        let plugin = UrlPlugin;
+        let context = create_context();
+        let result = plugin.execute(
+            &[Value::String("https://example.com".to_string())],
+            &context,
+        );
+        assert!(result.is_ok());
+        if let PluginResult::Assertion(AssertionResult::Pass) = result.unwrap() {
+            // Pass
+        } else {
+            panic!("Expected Pass assertion result");
+        }
+    }
+
+    #[test]
+    fn test_url_plugin_invalid_url() {
+        let plugin = UrlPlugin;
+        let context = create_context();
+        let result = plugin.execute(&[Value::String("not-a-url".to_string())], &context);
+        assert!(result.is_ok());
+        if let PluginResult::Assertion(AssertionResult::Fail { .. }) = result.unwrap() {
+            // Pass
+        } else {
+            panic!("Expected Fail assertion result");
+        }
+    }
+
+    #[test]
+    fn test_url_plugin_no_args() {
+        let plugin = UrlPlugin;
+        let context = create_context();
+        let result = plugin.execute(&[], &context);
+        assert!(result.is_ok());
+        if let PluginResult::Assertion(AssertionResult::Error(msg)) = result.unwrap() {
+            assert!(msg.contains("1 argument"));
+        } else {
+            panic!("Expected Error assertion result");
+        }
+    }
+
+    #[test]
+    fn test_url_plugin_too_many_args() {
+        let plugin = UrlPlugin;
+        let context = create_context();
+        let result = plugin.execute(
+            &[
+                Value::String("https://example.com".to_string()),
+                Value::String("extra".to_string()),
+            ],
+            &context,
+        );
+        assert!(result.is_ok());
+        if let PluginResult::Assertion(AssertionResult::Error(msg)) = result.unwrap() {
+            assert!(msg.contains("1 argument"));
+        } else {
+            panic!("Expected Error assertion result");
+        }
+    }
+
+    #[test]
+    fn test_url_plugin_wrong_type() {
+        let plugin = UrlPlugin;
+        let context = create_context();
+        let result = plugin.execute(&[Value::Number(serde_json::Number::from(123))], &context);
+        assert!(result.is_ok());
+        if let PluginResult::Assertion(AssertionResult::Fail { .. }) = result.unwrap() {
+            // Pass
+        } else {
+            panic!("Expected Fail assertion result");
+        }
+    }
+
+    #[test]
+    fn test_url_plugin_description() {
+        let plugin = UrlPlugin;
+        assert!(plugin.description().contains("URL"));
+    }
+
+    #[test]
+    fn test_url_plugin_signature() {
+        let plugin = UrlPlugin;
+        let sig = plugin.signature();
+        assert_eq!(sig.arg_names, &["value"]);
+        assert!(sig.safe_for_rewrite);
+    }
+}

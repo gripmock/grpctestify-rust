@@ -226,4 +226,30 @@ mod tests {
             "abc-123"
         );
     }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn profile_channel_cache_hit() {
+        let config = GrpcClientConfig {
+            address: "http://localhost:14777".to_string(),
+            timeout_seconds: 1,
+            tls_config: None,
+            proto_config: None,
+            metadata: None,
+            target_service: None,
+            compression: Default::default(),
+        };
+
+        let start = std::time::Instant::now();
+        let r1 = create_channel(&config).await;
+        let d1 = start.elapsed();
+        eprintln!("channel[miss]: {:?} ({})", d1, if r1.is_ok() { "ok" } else { "err" });
+
+        let start = std::time::Instant::now();
+        let r2 = create_channel(&config).await;
+        let d2 = start.elapsed();
+        eprintln!("channel[hit]:  {:?} ({})", d2, if r2.is_ok() { "ok" } else { "err" });
+
+        assert!(d2 < d1 || d2.as_micros() < 1000, "cache hit should be faster than miss");
+    }
 }

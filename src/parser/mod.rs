@@ -1,54 +1,32 @@
-//! # Parser Module
-//!
-//! Pipeline: `text → tokenizer → parser → AST → semantic analysis → execution`
-//!
-//! Parses `.gctf` test files into an AST with support for:
-//! - JSON5 with comments, trailing commas, unquoted keys
-//! - Multi-document files separated by `--- NEW ---`
-//! - Error recovery parsing
-//! - Ternary expressions in EXTRACT sections
-//! - Full assertion AST with tokenization and span tracking
+// Thin shim — all implementation lives in crates/apif-parser.
+// Paths like `crate::parser::ast::GctfDocument` still work.
 
-pub mod assertion_ast;
-pub(crate) mod assertions;
-pub mod ast;
-pub mod builder;
-pub mod content_parser;
-pub mod core;
-pub mod document_splitter;
-pub mod error_recovery;
-pub mod gctf_tokenizer;
-pub mod json_mod;
-pub mod json_stream_parser;
-pub mod query_ast;
-pub mod ternary;
-pub mod ternary_ast;
-pub mod tokenizer;
-pub mod validator;
-
-pub use assertion_ast::{
-    AssertionExpr, BinaryOp, Expr, Literal, assertion_to_string, parse_assertion,
-    remove_redundant_parens,
-};
-pub use content_parser::{build_section, parse_inline_options, parse_section_content};
-pub use tokenizer::{
-    Span, Token, TokenKind, collect_identifiers, collect_operators, collect_plugin_calls,
-    tokenize_assertion,
+pub use apif_parser::{
+    AssertionExpr, BinaryOp, ErrorSeverity, Expr, ExtractValue, ExtractVar, FileMeta,
+    GctfAttribute, GctfDocument, GctfDocumentBuilder, InlineOptions, Literal, ParseDiagnostics,
+    Section, SectionContent, SectionHeader, SectionType, Span, Token, TokenKind, ValidationError,
+    assertion_to_string, build_section, parse_assertion, parse_content_with_recovery,
+    parse_gctf, parse_gctf_from_str, parse_gctf_with_diagnostics, parse_inline_options,
+    parse_section_content, parse_with_recovery, process_extract_value, remove_redundant_parens,
+    serialize_gctf, split_sections_by_boundary, ternary_to_jq, tokenize_assertion, tokenize_gctf,
+    tokenize_inline_options, tokenize_kv_line, validate_document, validate_document_diagnostics,
+    ErrorRecoveryResult,
 };
 
-pub use gctf_tokenizer::{
-    GctfToken, GctfTokenKind, tokenize_extract_line, tokenize_gctf, tokenize_inline_options,
-    tokenize_kv_line,
-};
+// Re-export sub-modules for paths like `crate::parser::ast::*`
+pub use apif_parser::{ast, assertion_ast, gctf_tokenizer, tokenizer};
 
-pub use document_splitter::split_sections_by_boundary;
+// query_ast backward compat — resolves to `crate::parser::query_ast::*`
+pub mod query_ast {
+    pub use crate::parser::{parse_query, FilterExpr};
+}
+pub use apif_query::{parse_query, FilterExpr};
 
-pub use ast::GctfDocument;
-pub use builder::GctfDocumentBuilder;
-pub use core::{ParseDiagnostics, parse_gctf, parse_gctf_from_str, parse_gctf_with_diagnostics};
-pub use error_recovery::{ErrorRecoveryResult, parse_content_with_recovery, parse_with_recovery};
-pub use ternary::{process_extract_value, ternary_to_jq};
-pub use ternary_ast::{ExtractValue, ExtractVar};
-pub use validator::{
-    ErrorSeverity, ValidationError, validate_document, validate_document_diagnostics,
+// Validator items
+pub use apif_parser::validator;
+
+// Other modules
+pub use apif_parser::{
+    assertions, builder, content_parser, core, document_splitter, error_recovery, json_mod,
+    json_stream_parser, ternary, ternary_ast,
 };

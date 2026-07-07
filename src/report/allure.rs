@@ -229,7 +229,7 @@ impl Reporter for AllureReporter {
         let test_name_short = extract_test_name(display_name);
         let suite_name = extract_suite_name(test_name);
 
-        let fallback_step = if result.grpc_duration_ms.is_some() {
+        let fallback_step = if result.call_duration_ms.is_some() {
             Some(vec![Step {
                 name: "gRPC call".to_string(),
                 status: if result.status == crate::state::TestStatus::Pass {

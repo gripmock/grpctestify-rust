@@ -1,0 +1,92 @@
+// JSON reporter - outputs test results to a JSON file
+
+use super::Reporter;
+use apif_state::TestResults;
+use anyhow::{Context, Result};
+use serde::Serialize;
+use std::fs::File;
+use std::path::PathBuf;
+
+pub struct JsonReporter {
+    output_path: PathBuf,
+}
+
+impl JsonReporter {
+    pub fn new(output_path: PathBuf) -> Self {
+        Self { output_path }
+    }
+}
+
+#[derive(Serialize)]
+struct JsonReportContext {
+    tool: String,
+    version: String,
+    generated_at: i64,
+}
+
+#[derive(Serialize)]
+struct JsonReport<'a> {
+    #[serde(flatten)]
+    results: &'a TestResults,
+    report_context: JsonReportContext,
+}
+
+impl Reporter for JsonReporter {
+    fn on_suite_end(&self, results: &TestResults) -> Result<()> {
+        let file = File::create(&self.output_path).with_context(|| {
+            format!(
+                "Failed to create JSON report file: {}",
+                self.output_path.display()
+            )
+        })?;
+
+        let report = JsonReport {
+            results,
+            report_context: {
+                let ctx = JsonReportContext {
+                    tool: "apif".to_string(),
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                    generated_at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64,
+                };
+                ctx
+            },
+        };
+
+        serde_json::to_writer_pretty(file, &report)
+            .context("Failed to serialize test results to JSON")?;
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_json_reporter_new() {
+        let reporter = JsonReporter::new(PathBuf::from("test.json"));
+        assert_eq!(reporter.output_path.to_str(), Some("test.json"));
+    }
+
+    #[test]
+    fn test_json_report_serialize() {
+        let results = TestResults::new();
+        let ctx = JsonReportContext {
+            tool: "apif".into(),
+            version: "1.0".into(),
+            generated_at: 1000000,
+        };
+        let report = JsonReport {
+            results: &results,
+            report_context: ctx,
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"tool\":\"apif\""));
+        assert!(json.contains("\"version\":\"1.0\""));
+        assert!(json.contains("\"generated_at\":1000000"));
+    }
+}

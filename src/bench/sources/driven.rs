@@ -79,6 +79,22 @@ impl DimensionSource {
             }
         }
     }
+
+    /// Look up ALL rows matching the given key.
+    /// Only supported for in-memory dimensions.
+    fn lookup_all(&self, key: &str) -> Vec<SourceRow> {
+        match self {
+            DimensionSource::Memory(mem) => {
+                mem.iter()
+                    .filter(|(k, _)| k.as_str() == key)
+                    .map(|(_, row)| row.clone())
+                    .collect()
+            }
+            DimensionSource::Indexed { .. } => {
+                Vec::new()
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -119,6 +135,14 @@ struct DimensionJoin {
     foreign_key: String,
     remote_key: String,
     join_type: super::definition::JoinType,
+}
+
+/// Tracks cross-product iteration state for a single primary row.
+/// Stores the row and pre-computed dimension lookup results.
+struct CrossProductState {
+    row: SourceRow,
+    cross_matches: Vec<Vec<SourceRow>>,
+    cross_indices: Vec<usize>,
 }
 
 #[derive(Clone)]
@@ -196,6 +220,9 @@ pub struct SourceDrivenConfig {
     pub load_stats: DimLoadStats,
     pub runtime_stats: SourceRuntimeStats,
     pub fallback_policy: RuntimeFallbackPolicy,
+    cross_product_state: std::sync::Mutex<Option<CrossProductState>>,
+    pub loaded_at: std::time::Instant,
+    pub current_row: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -341,10 +368,7 @@ impl SourceDrivenConfig {
             let key_col = def
                 .indexed_by
                 .as_ref()
-                .map(|idx| match idx {
-                    super::definition::IndexedBy::Single(s) => s.clone(),
-                    super::definition::IndexedBy::Multi(v) => v.join(super::index::COMPOSITE_KEY_SEPARATOR),
-                })
+                .map(|v| v.join(super::index::COMPOSITE_KEY_SEPARATOR))
                 .unwrap_or_default();
 
             dim_joins.push(DimensionJoin {
@@ -471,6 +495,9 @@ impl SourceDrivenConfig {
             resolved_paths,
             dim_joins,
             primary_filter,
+            cross_product_state: std::sync::Mutex::new(None),
+            loaded_at: std::time::Instant::now(),
+            current_row: std::sync::atomic::AtomicU64::new(0),
             load_stats: DimLoadStats {
                 in_memory_count,
                 indexed_count,
@@ -483,6 +510,15 @@ impl SourceDrivenConfig {
     }
 
     pub fn next_row_variables(&self) -> Result<Option<HashMap<String, Value>>> {
+        // If we're in the middle of a cross-product iteration, yield the next combination
+        {
+            let state_guard = self.cross_product_state.lock().unwrap();
+            if state_guard.is_some() {
+                drop(state_guard);
+                return self.next_cross_product_combination();
+            }
+        }
+
         let mut reader = self.primary.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         let row = loop {
             match reader.next_row()? {
@@ -498,16 +534,7 @@ impl SourceDrivenConfig {
         };
         drop(reader);
 
-        let mut vars = HashMap::new();
-
-        for col in row.columns() {
-            if let Some(val) = row.get(col) {
-                vars.insert(
-                    format!("{}.{}", self.primary_name, col),
-                    Value::String(val.to_string()),
-                );
-            }
-        }
+        let mut vars = self.build_primary_vars(&row);
 
         // Check INNER join constraints — skip row if FK not found, try next row
         let inner_missing = self.dim_joins.iter().any(|j| {
@@ -516,33 +543,133 @@ impl SourceDrivenConfig {
                     .map_or(false, |fk| self.dimension_lookup(&j.source_name, fk).is_none())
         });
         if inner_missing {
-            // Skip this row and try the next one
             return self.next_row_variables();
         }
 
-        let joins: Vec<(String, String, String)> = self
-            .dim_joins
-            .iter()
-            .filter_map(|j| {
-                row.get(&j.foreign_key)
-                    .map(|fk| (j.source_name.clone(), fk.to_string(), j.remote_key.clone()))
-            })
-            .collect();
-
-        for (source_name, fk_val, _remote_key) in joins {
-            if let Some(dim_row) = self.dimension_lookup(&source_name, &fk_val) {
-                for col in dim_row.columns() {
-                    if let Some(val) = dim_row.get(col) {
-                        vars.insert(
-                            format!("{}.{}", source_name, col),
-                            Value::String(val.to_string()),
-                        );
+        // Process LEFT joins (standard: add dimension fields when FK matches)
+        for join in &self.dim_joins {
+            if join.join_type != super::definition::JoinType::Left {
+                continue;
+            }
+            if let Some(fk_val) = row.get(&join.foreign_key) {
+                if let Some(dim_row) = self.dimension_lookup(&join.source_name, fk_val) {
+                    for col in dim_row.columns() {
+                        if let Some(val) = dim_row.get(col) {
+                            vars.insert(
+                                format!("{}.{}", join.source_name, col),
+                                Value::String(val.to_string()),
+                            );
+                        }
                     }
                 }
             }
         }
 
+        // Check for CROSS joins — build cross-product state
+        let has_cross = self.dim_joins.iter().any(|j| j.join_type == super::definition::JoinType::Cross);
+        if has_cross {
+            let mut cross_matches: Vec<Vec<SourceRow>> = Vec::new();
+            for join in &self.dim_joins {
+                if join.join_type != super::definition::JoinType::Cross {
+                    continue;
+                }
+                if let Some(fk_val) = row.get(&join.foreign_key) {
+                    if let Some(all_rows) = self.dimension_lookup_all(&join.source_name, fk_val) {
+                        cross_matches.push(all_rows);
+                    } else {
+                        cross_matches.push(Vec::new());
+                    }
+                } else {
+                    cross_matches.push(Vec::new());
+                }
+            }
+
+            *self.cross_product_state.lock().unwrap() = Some(CrossProductState {
+                row,
+                cross_matches,
+                cross_indices: vec![0; self.dim_joins.iter().filter(|j| j.join_type == super::definition::JoinType::Cross).count()],
+            });
+            return self.next_cross_product_combination();
+        }
+
+        self.current_row.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(Some(vars))
+    }
+
+    /// Yield the next combination from a cross-product state.
+    fn next_cross_product_combination(&self) -> Result<Option<HashMap<String, Value>>> {
+        let mut state_guard = self.cross_product_state.lock().unwrap();
+        let state = state_guard.as_ref().unwrap();
+        let row = &state.row;
+        let mut vars = self.build_primary_vars(row);
+
+        // Inject dimension fields for each cross join at the current index
+        let mut cross_idx = 0;
+        for join in &self.dim_joins {
+            if join.join_type != super::definition::JoinType::Cross {
+                continue;
+            }
+            if let Some(matches) = state.cross_matches.get(cross_idx) {
+                let idx = state.cross_indices[cross_idx];
+                if idx < matches.len() {
+                    let dim_row = &matches[idx];
+                    for col in dim_row.columns() {
+                        if let Some(val) = dim_row.get(col) {
+                            vars.insert(
+                                format!("{}.{}", join.source_name, col),
+                                Value::String(val.to_string()),
+                            );
+                        }
+                    }
+                }
+            }
+            cross_idx += 1;
+        }
+
+        // Advance the cross-product indices (lexicographic order)
+        let cross_count = self.dim_joins.iter().filter(|j| j.join_type == super::definition::JoinType::Cross).count();
+        let mut new_indices = state.cross_indices.clone();
+        let mut advanced = false;
+
+        for i in (0..cross_count).rev() {
+            let max = state.cross_matches[i].len();
+            if max == 0 {
+                continue;
+            }
+            if new_indices[i] + 1 < max {
+                new_indices[i] += 1;
+                advanced = true;
+                break;
+            } else {
+                new_indices[i] = 0;
+            }
+        }
+
+        if advanced {
+            *state_guard = Some(CrossProductState {
+                row: row.clone(),
+                cross_matches: state.cross_matches.clone(),
+                cross_indices: new_indices,
+            });
+        } else {
+            *state_guard = None;
+        }
+
+        self.current_row.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(Some(vars))
+    }
+
+    fn build_primary_vars(&self, row: &SourceRow) -> HashMap<String, Value> {
+        let mut vars = HashMap::new();
+        for col in row.columns() {
+            if let Some(val) = row.get(col) {
+                vars.insert(
+                    format!("{}.{}", self.primary_name, col),
+                    Value::String(val.to_string()),
+                );
+            }
+        }
+        vars
     }
 
     pub fn dimension_lookup(&self, source_name: &str, key: &str) -> Option<SourceRow> {
@@ -552,6 +679,16 @@ impl SourceDrivenConfig {
         self.runtime_stats
             .record_lookup(source_name, result.is_some(), is_indexed);
         result
+    }
+
+    pub fn dimension_lookup_all(&self, source_name: &str, key: &str) -> Option<Vec<SourceRow>> {
+        let dim = self.dimensions.get(source_name)?;
+        let rows = dim.lookup_all(key);
+        if rows.is_empty() {
+            None
+        } else {
+            Some(rows)
+        }
     }
 
     pub fn build_dimension_variables(
@@ -746,7 +883,7 @@ mod tests {
         );
 
         let defs: Vec<SourceDefinition> = serde_yaml_ng::from_str(
-            "- file: pvz.csv\n  name: pvz\n- file: regions.csv\n  name: regions\n  indexed_by: region_id\n"
+            "- file: pvz.csv\n  name: pvz\n- file: regions.csv\n  name: regions\n  indexed_by: [region_id]\n"
         ).unwrap();
 
         let doc_path = dir.join("test.gctf");
@@ -801,7 +938,7 @@ mod tests {
         create_temp_csv(&dir, "ref.csv", "ref_id,label\nOK,Found\n");
 
         let defs: Vec<SourceDefinition> = serde_yaml_ng::from_str(
-            "- file: data.csv\n  name: data\n- file: ref.csv\n  name: ref\n  indexed_by: ref_id\n",
+            "- file: data.csv\n  name: data\n- file: ref.csv\n  name: ref\n  indexed_by: [ref_id]\n",
         )
         .unwrap();
 

@@ -15,7 +15,7 @@ pub struct SourceDefinition {
     #[serde(default)]
     pub header: Option<bool>,
     #[serde(default)]
-    pub indexed_by: Option<IndexedBy>,
+    pub indexed_by: Option<Vec<String>>,
     #[serde(default)]
     pub index_mode: Option<IndexMode>,
     #[serde(default)]
@@ -31,13 +31,7 @@ pub struct SourceDefinition {
 pub enum JoinType {
     Inner,
     Left,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum IndexedBy {
-    Single(String),
-    Multi(Vec<String>),
+    Cross,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -70,7 +64,7 @@ impl SourceDefinition {
             format: format.cloned(),
             delimiter: None,
             header: None,
-            indexed_by: Some(IndexedBy::Single(key_column.to_string())),
+            indexed_by: Some(vec![key_column.to_string()]),
             index_mode: Some(IndexMode::BuildOnce),
             memory_budget: None,
             filter: None,
@@ -89,8 +83,7 @@ impl SourceDefinition {
     pub fn indexed_columns(&self) -> Vec<&str> {
         match &self.indexed_by {
             None => Vec::new(),
-            Some(IndexedBy::Single(s)) => vec![s.as_str()],
-            Some(IndexedBy::Multi(v)) => v.iter().map(|s| s.as_str()).collect(),
+            Some(v) => v.iter().map(|s| s.as_str()).collect(),
         }
     }
 }
@@ -114,7 +107,7 @@ mod tests {
 file: data/pvz.csv
 name: pvz
 format: csv
-indexed_by: pvz_id
+indexed_by: [pvz_id]
 index_mode: build_once
 memory_budget: 256mb
 ";

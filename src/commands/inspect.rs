@@ -323,7 +323,7 @@ fn print_json_report(
         semantic_diagnostics,
         optimization_hints,
         inferred_rpc_mode: Some(plan.summary.rpc_mode_name.clone()),
-        effective_runtime,
+        effective_runtime: effective_runtime.map(|r| serde_json::to_value(&r).unwrap_or_default()),
         bench_resolved: bench_resolved_options(doc),
     };
     match serde_json::to_string_pretty(&report) {

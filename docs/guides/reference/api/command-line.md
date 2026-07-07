@@ -35,6 +35,8 @@ grpctestify [OPTIONS] [TEST_PATHS]... [COMMAND]
 - `explain <FILE>` - show execution explanation (`text` or `json`)
 - `list [PATH]` - list discovered tests for tooling and IDE integration
 - `reflect [SYMBOL]` - list reflected services and methods from a target server
+- `call <FILE>` - call gRPC endpoint without assertions
+- `health <ADDRESS>` - check gRPC service health
 - `lsp` - start language server protocol mode
 
 ## Global options
@@ -73,8 +75,10 @@ Note: if `--log-format` is set without `--log-output`, the run continues and fil
 - `inspect`: `--format <text|json>`
 - `explain`: `--format <text|json>`
 - `list`: `--format <text|json>`, `--with-range`
-- `reflect`: `--address <ADDR>`, `--plaintext`
+- `reflect`: `--address <ADDR>`, `--plaintext`, `--format <text|json>`, `--list-methods`, `--describe <SERVICE/METHOD>`, `--tls-ca <FILE>`, `--tls-cert <FILE>`, `--tls-key <FILE>`
 - `lsp`: `--stdio`
+- `call`: `--insecure`, `--bench`, `--concurrency <N>`, `--requests <N>`, `--duration <DURATION>`
+- `health`: `--service <NAME>`, `--format <text|json>`, `--insecure`, `--timeout <SECONDS>`
 - `bench` (selected):
   - stop conditions: `-n, --requests`, `-d, --duration`, `--max-duration`
   - load profile: `--max-rps`, `--load-schedule`, `--load-start`, `--load-step`, `--load-end`, `--load-step-duration`, `--load-max-duration`
@@ -103,6 +107,48 @@ grpctestify bench tests/ --progress-interval 2s
 ```
 
 `reflect --plaintext` expects `http://...` or `host:port` addresses. It is rejected for explicit `https://...` addresses.
+
+## Health
+
+```bash
+# Check overall server health
+grpctestify health localhost:50051
+
+# Check specific service
+grpctestify health localhost:50051 --service my.Service
+
+# JSON output
+grpctestify health localhost:50051 --format json
+
+# Skip TLS verification
+grpctestify health localhost:50051 --insecure
+```
+
+## Call with --bench
+
+```bash
+# Run a test file as benchmark
+grpctestify call test.gctf --bench --concurrency 10 --requests 1000
+
+# Skip TLS verification
+grpctestify call test.gctf --insecure
+```
+
+## Reflect
+
+```bash
+# List all methods with signatures
+grpctestify reflect localhost:50051 --list-methods
+
+# Describe a specific method
+grpctestify reflect localhost:50051 --describe my.Service/Method
+
+# JSON output
+grpctestify reflect localhost:50051 --format json
+
+# TLS client certificate
+grpctestify reflect localhost:50051 --tls-cert client.pem --tls-key client.key
+```
 
 ## Examples
 
@@ -136,6 +182,12 @@ grpctestify fmt -w .
 
 # Check formatting (non-zero exit if changes are needed)
 grpctestify fmt .
+
+# Reflect all methods
+grpctestify reflect --list-methods --address localhost:50051
+
+# Health check
+grpctestify health localhost:50051 --service my.Service
 ```
 
 ## Fmt behavior

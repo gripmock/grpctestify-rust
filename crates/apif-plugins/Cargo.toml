@@ -1,0 +1,20 @@
+[package]
+name = "apif-plugins"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Assertion plugins for .apif/.gctf test files"
+
+[dependencies]
+apif-assert = { path = "../apif-assert" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+uuid = { workspace = true }
+email_address = { workspace = true }
+url = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]

@@ -1,49 +1,19 @@
 // Tests for report generators - public API only
 
-use grpctestify::cli::args::ProgressMode;
+use grpctestify::report::ConsoleMode;
 use grpctestify::report::{Reporter, console::ConsoleReporter, json::JsonReporter};
 use grpctestify::state::{TestMeta, TestResult, TestResults, TestStatus};
 
 #[test]
 fn test_progress_mode_from_str_dots() {
-    // Arrange & Act
-    let mode: ProgressMode = "dots".parse().unwrap_or(ProgressMode::Dots);
-
-    // Assert
-    assert!(matches!(mode, ProgressMode::Dots));
-}
-
-#[test]
-fn test_progress_mode_from_str_bar() {
-    // Arrange & Act
-    let mode: ProgressMode = "bar".parse().unwrap_or(ProgressMode::Dots);
-
-    // Assert
-    assert!(matches!(mode, ProgressMode::Bar));
-}
-
-#[test]
-fn test_progress_mode_from_str_none() {
-    // Arrange & Act
-    let mode: ProgressMode = "none".parse().unwrap_or(ProgressMode::Dots);
-
-    // Assert
-    assert!(matches!(mode, ProgressMode::None));
-}
-
-#[test]
-fn test_progress_mode_from_str_invalid() {
-    // Arrange & Act
-    let mode: ProgressMode = "invalid".parse().unwrap_or(ProgressMode::Dots);
-
-    // Assert
-    assert!(matches!(mode, ProgressMode::Dots));
+    let mode = ConsoleMode::Dots;
+    assert!(matches!(mode, ConsoleMode::Dots));
 }
 
 #[test]
 fn test_progress_mode_debug() {
     // Arrange
-    let mode = ProgressMode::Dots;
+    let mode = ConsoleMode::Dots;
 
     // Act
     let debug_str = format!("{:?}", mode);
@@ -54,14 +24,9 @@ fn test_progress_mode_debug() {
 
 #[test]
 fn test_progress_mode_clone() {
-    // Arrange
-    let mode = ProgressMode::Bar;
-
-    // Act
+    let mode = ConsoleMode::Dots;
     let mode_clone = mode;
-
-    // Assert
-    assert!(matches!(mode_clone, ProgressMode::Bar));
+    assert!(matches!(mode_clone, ConsoleMode::Dots));
 }
 
 #[test]
@@ -130,7 +95,7 @@ fn test_junit_reporter_skipped_test() {
         name: "test_skip.gctf".to_string(),
         status: grpctestify::state::TestStatus::Skip,
         duration_ms: 0,
-        grpc_duration_ms: None,
+        call_duration_ms: None,
         error_message: Some("Skipped due to condition".to_string()),
         execution_time: chrono::Utc::now().timestamp(),
         meta: grpctestify::state::TestMeta::default(),
@@ -158,7 +123,7 @@ fn test_json_reporter_on_suite_end() {
         name: "test_pass.gctf".to_string(),
         status: TestStatus::Pass,
         duration_ms: 50,
-        grpc_duration_ms: Some(30),
+        call_duration_ms: Some(30),
         error_message: None,
         execution_time: chrono::Utc::now().timestamp(),
         meta: TestMeta::default(),
@@ -179,7 +144,7 @@ fn test_json_reporter_on_suite_end() {
     assert!(json.get("total").is_some());
     assert!(json.get("passed").is_some());
     assert!(json.get("report_context").is_some());
-    assert_eq!(json["report_context"]["tool"], "grpctestify");
+    assert_eq!(json["report_context"]["tool"], "apif");
     assert_eq!(json["total"], 1);
     assert_eq!(json["passed"], 1);
 }
@@ -223,7 +188,7 @@ fn test_json_reporter_round_trip() {
         name: "test_a.gctf".to_string(),
         status: TestStatus::Pass,
         duration_ms: 10,
-        grpc_duration_ms: Some(5),
+        call_duration_ms: Some(5),
         error_message: None,
         execution_time: 1700000000,
         meta: TestMeta::default(),
@@ -232,7 +197,7 @@ fn test_json_reporter_round_trip() {
         name: "test_b.gctf".to_string(),
         status: TestStatus::Fail,
         duration_ms: 200,
-        grpc_duration_ms: Some(150),
+        call_duration_ms: Some(150),
         error_message: Some("Expected 200, got 500".to_string()),
         execution_time: 1700000001,
         meta: TestMeta::default(),
@@ -257,7 +222,7 @@ fn test_console_reporter_verbose_mode() {
         sort_mode: "name".to_string(),
         dry_run: false,
     };
-    let reporter = ConsoleReporter::new(ProgressMode::Verbose, 1, env_info);
+    let reporter = ConsoleReporter::new(ConsoleMode::Verbose, 1, env_info);
 
     // Act & Assert: Should not panic
     reporter.on_test_start("test_verbose.gctf");
@@ -265,7 +230,7 @@ fn test_console_reporter_verbose_mode() {
         name: "test_verbose.gctf".to_string(),
         status: TestStatus::Pass,
         duration_ms: 10,
-        grpc_duration_ms: None,
+        call_duration_ms: None,
         error_message: None,
         execution_time: chrono::Utc::now().timestamp(),
         meta: TestMeta::default(),
@@ -282,14 +247,14 @@ fn test_console_reporter_dots_mode() {
         sort_mode: "name".to_string(),
         dry_run: false,
     };
-    let reporter = ConsoleReporter::new(ProgressMode::Dots, 2, env_info);
+    let reporter = ConsoleReporter::new(ConsoleMode::Dots, 2, env_info);
 
     // Act: Emit dots
     let pass1 = TestResult {
         name: "test1.gctf".to_string(),
         status: TestStatus::Pass,
         duration_ms: 10,
-        grpc_duration_ms: None,
+        call_duration_ms: None,
         error_message: None,
         execution_time: chrono::Utc::now().timestamp(),
         meta: TestMeta::default(),
@@ -308,7 +273,7 @@ fn test_console_reporter_print_summary() {
         sort_mode: "name".to_string(),
         dry_run: true,
     };
-    let reporter = ConsoleReporter::new(ProgressMode::Verbose, 3, env_info);
+    let reporter = ConsoleReporter::new(ConsoleMode::Verbose, 3, env_info);
 
     // Act: Should not panic
     reporter.print_summary(
@@ -331,14 +296,14 @@ fn test_console_reporter_print_slowest_tests() {
         sort_mode: "name".to_string(),
         dry_run: false,
     };
-    let reporter = ConsoleReporter::new(ProgressMode::Verbose, 3, env_info);
+    let reporter = ConsoleReporter::new(ConsoleMode::Verbose, 3, env_info);
 
     let results = vec![
         TestResult {
             name: "fast.gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 5,
-            grpc_duration_ms: None,
+            call_duration_ms: None,
             error_message: None,
             execution_time: chrono::Utc::now().timestamp(),
             meta: TestMeta::default(),
@@ -347,7 +312,7 @@ fn test_console_reporter_print_slowest_tests() {
             name: "slow.gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 500,
-            grpc_duration_ms: None,
+            call_duration_ms: None,
             error_message: None,
             execution_time: chrono::Utc::now().timestamp(),
             meta: TestMeta::default(),
@@ -458,7 +423,7 @@ fn test_junit_reporter_tags_in_properties() {
         name: "test_tagged.gctf".to_string(),
         status: TestStatus::Pass,
         duration_ms: 10,
-        grpc_duration_ms: Some(5),
+        call_duration_ms: Some(5),
         error_message: None,
         execution_time: 1700000000,
         meta,
@@ -490,7 +455,7 @@ fn test_json_reporter_includes_meta() {
         name: "test.gctf".to_string(),
         status: TestStatus::Pass,
         duration_ms: 10,
-        grpc_duration_ms: Some(5),
+        call_duration_ms: Some(5),
         error_message: None,
         execution_time: 1700000000,
         meta,

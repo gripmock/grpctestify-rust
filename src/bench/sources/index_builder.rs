@@ -331,7 +331,7 @@ mod tests {
         create_temp_csv(&dir, "data.csv", "id,name\n1,Alice\n2,Bob\n3,Charlie\n");
 
         let defs: Vec<SourceDefinition> =
-            serde_yaml_ng::from_str("- file: data.csv\n  name: data\n  indexed_by: id\n").unwrap();
+            serde_yaml_ng::from_str("- file: data.csv\n  name: data\n  indexed_by: [id]\n").unwrap();
 
         let doc_path = dir.join("test.gctf");
         std::fs::write(&doc_path, "").unwrap();
@@ -357,7 +357,7 @@ mod tests {
         create_temp_csv(&dir, "items.csv", "code,label\nA,Alpha\nB,Bravo\n");
 
         let defs: Vec<SourceDefinition> =
-            serde_yaml_ng::from_str("- file: items.csv\n  name: items\n  indexed_by: code\n")
+            serde_yaml_ng::from_str("- file: items.csv\n  name: items\n  indexed_by: [code]\n")
                 .unwrap();
 
         let doc_path = dir.join("test.gctf");
@@ -384,7 +384,7 @@ mod tests {
         create_temp_csv(&dir, "data.csv", "id,val\n1,hello\n");
 
         let defs: Vec<SourceDefinition> =
-            serde_yaml_ng::from_str("- file: data.csv\n  name: d\n  indexed_by: id\n").unwrap();
+            serde_yaml_ng::from_str("- file: data.csv\n  name: d\n  indexed_by: [id]\n").unwrap();
 
         let doc_path = dir.join("test.gctf");
         std::fs::write(&doc_path, "").unwrap();

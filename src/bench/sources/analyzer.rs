@@ -246,7 +246,7 @@ mod tests {
   file: data/pvz.csv
 - name: regions
   file: data/regions.csv
-  indexed_by: region_id
+  indexed_by: [region_id]
 "#,
         )
         .unwrap();

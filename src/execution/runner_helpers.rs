@@ -13,6 +13,45 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Convert apif-execution CallStreamItem + CallError to gRPC StreamItem + tonic::Status.
+/// Used by the CallClient factory path in the runner to maintain compatibility
+/// with the existing gRPC-centric error and stream handling code.
+pub fn convert_call_item(
+    item: Result<apif_execution::CallStreamItem, apif_execution::CallError>,
+) -> Result<crate::grpc::client::StreamItem, tonic::Status> {
+    match item {
+        Ok(apif_execution::CallStreamItem::Message(msg)) => {
+            Ok(crate::grpc::client::StreamItem::Message(msg))
+        }
+        Ok(apif_execution::CallStreamItem::Trailers(t)) => {
+            Ok(crate::grpc::client::StreamItem::Trailers(t))
+        }
+        Err(err) => {
+            let code = match err.code {
+                0 => tonic::Code::Ok,
+                1 => tonic::Code::Cancelled,
+                2 => tonic::Code::Unknown,
+                3 => tonic::Code::InvalidArgument,
+                4 => tonic::Code::DeadlineExceeded,
+                5 => tonic::Code::NotFound,
+                6 => tonic::Code::AlreadyExists,
+                7 => tonic::Code::PermissionDenied,
+                8 => tonic::Code::ResourceExhausted,
+                9 => tonic::Code::FailedPrecondition,
+                10 => tonic::Code::Aborted,
+                11 => tonic::Code::OutOfRange,
+                12 => tonic::Code::Unimplemented,
+                13 => tonic::Code::Internal,
+                14 => tonic::Code::Unavailable,
+                15 => tonic::Code::DataLoss,
+                16 => tonic::Code::Unauthenticated,
+                _ => tonic::Code::Unknown,
+            };
+            Err(tonic::Status::new(code, err.message))
+        }
+    }
+}
+
 /// Buffer size for the request message channel.
 /// Controls back-pressure for client streaming: larger values allow more
 /// buffered requests but consume more memory.

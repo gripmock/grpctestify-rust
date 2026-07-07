@@ -8,8 +8,9 @@ use crate::report::bench::{
     BenchThresholdResult,
 };
 use crate::utils::FileUtils;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::{BTreeMap, HashMap};
+use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -93,6 +94,7 @@ pub struct BenchConfigResolved {
     pub no_assert: bool,
     pub sample_rate: f64,
     pub cache: bool,
+    pub cache_ttl: Option<Duration>,
     pub skip_first: u32,
     pub count_errors_in_latency: bool,
     pub duration_stop: DurationStopMode,
@@ -139,6 +141,7 @@ impl Default for BenchConfigResolved {
             no_assert: false,
             sample_rate: 1.0,
             cache: true,
+            cache_ttl: None,
             skip_first: 0,
             count_errors_in_latency: false,
             duration_stop: DurationStopMode::Wait,
@@ -419,6 +422,9 @@ impl BenchConfigResolved {
             if let Some(cache) = bench.get("cache") {
                 config.cache = cache == "true" || cache == "1";
             }
+            if let Some(ttl) = bench.get("cache_ttl") {
+                config.cache_ttl = Some(parse_duration(ttl)?);
+            }
 
             for (key, value) in bench {
                 if let Some(metric) = key.strip_prefix("threshold.") {
@@ -598,6 +604,9 @@ impl BenchConfigResolved {
             if let Some(cache) = bench.get("cache") {
                 config.cache = cache == "true" || cache == "1";
             }
+            if let Some(ttl) = bench.get("cache_ttl") {
+                config.cache_ttl = Some(parse_duration(ttl)?);
+            }
 
             // Collect thresholds (keys starting with "threshold.")
             for (key, value) in bench {
@@ -756,17 +765,16 @@ fn extract_bench_section(doc: &GctfDocument) -> Option<HashMap<String, String>> 
 
 /// Apply profile defaults to config for keys not already set in the BENCH section.
 fn apply_profile_defaults(config: &mut BenchConfigResolved, profile_name: &str) {
-    use crate::bench::schema::apply_profile;
-    for (key, value) in apply_profile(profile_name) {
+    for (key, value) in crate::bench::schema::apply_profile_dynamic(profile_name) {
         // Only apply if not explicitly set via BENCH section or CLI
-        let is_explicit = config.option_sources.get(key)
+        let is_explicit = config.option_sources.get(&key)
             .map(|s| *s != BenchOptionSource::Default)
             .unwrap_or(false);
         if is_explicit {
             continue;
         }
-        match key {
-            "mode" => config.mode = value.to_string(),
+        match key.as_str() {
+            "mode" => config.mode = value,
             "concurrency" => {
                 if let Ok(v) = value.parse::<u32>() {
                     config.concurrency = v;
@@ -778,11 +786,11 @@ fn apply_profile_defaults(config: &mut BenchConfigResolved, profile_name: &str) 
                 }
             }
             "duration" => {
-                if let Ok(d) = parse_duration(value) {
+                if let Ok(d) = parse_duration(&value) {
                     config.duration = Some(d);
                 }
             }
-            "load_schedule" => config.load_schedule = value.to_string(),
+            "load_schedule" => config.load_schedule = value,
             "load_start" => {
                 if let Ok(v) = value.parse::<f64>() {
                     config.load_start = Some(v);
@@ -799,7 +807,7 @@ fn apply_profile_defaults(config: &mut BenchConfigResolved, profile_name: &str) 
                 }
             }
             "load_step_duration" => {
-                if let Ok(d) = parse_duration(value) {
+                if let Ok(d) = parse_duration(&value) {
                     config.load_step_duration = Some(d);
                 }
             }
@@ -836,6 +844,7 @@ struct BenchMetrics {
     error_dist: BTreeMap<String, u64>,
     latencies: Vec<u64>,
     per_endpoint: BTreeMap<String, PerEndpointData>,
+    details: Vec<crate::report::bench::BenchDetail>,
 }
 
 impl BenchMetrics {
@@ -867,15 +876,20 @@ impl BenchMetrics {
             self.errors += 1;
         }
 
-        *self.grpc_status.entry(status.to_string()).or_insert(0) += 1;
+        // Use static key strings to avoid allocation in hot path
+        let status_key = if status.is_empty() { "OK" } else { status };
+        *self.grpc_status.entry(status_key.to_string()).or_insert(0) += 1;
 
         if let Some(err) = error {
             let category = categorize_error(err);
             *self.error_dist.entry(category).or_insert(0) += 1;
         }
 
-        // Per-endpoint tracking
+        // Per-endpoint tracking — pre-allocate to reduce reallocations
         let ep = self.per_endpoint.entry(endpoint.to_string()).or_default();
+        if ep.latencies.capacity() == 0 {
+            ep.latencies.reserve(64);
+        }
         ep.count += 1;
         if status != "OK" && !status.is_empty() {
             ep.errors += 1;
@@ -895,6 +909,16 @@ impl BenchMetrics {
             downsample_latencies(&mut self.latencies);
         }
         self.latencies.push(latency_ns);
+
+        // Collect per-response detail (capped at 100k)
+        if self.details.len() < MAX_LATENCY_SAMPLES {
+            self.details.push(crate::report::bench::BenchDetail {
+                timestamp: chrono::Utc::now().timestamp(),
+                latency_ns,
+                status: status.to_string(),
+                error: error.map(|s| s.to_string()),
+            });
+        }
     }
 
     fn compute_percentile(&self, p: f64) -> u64 {
@@ -999,6 +1023,11 @@ impl BenchMetrics {
                 downsample_latencies(&mut self.latencies);
             }
             self.latencies.push(lat);
+        }
+
+        self.details.extend(other.details);
+        if self.details.len() > MAX_LATENCY_SAMPLES {
+            self.details.truncate(MAX_LATENCY_SAMPLES);
         }
     }
 }
@@ -1830,7 +1859,7 @@ fn build_report(
         grpc_status_distribution: metrics.grpc_status,
         error_distribution: metrics.error_dist,
         threshold_evaluation: threshold_results,
-        details: vec![],
+        details: metrics.details,
         tags: BTreeMap::new(),
         sources_runtime: source_config.map(|sc| {
             let stats = sc.runtime_stats.snapshot();
@@ -1878,6 +1907,38 @@ pub fn validate_bench_config(doc: &crate::parser::GctfDocument) -> Result<()> {
 
 /// Main bench command handler
 pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
+    // Handle --list-profiles
+    if args.list_profiles {
+        crate::bench::schema::list_profiles().iter().for_each(|(name, keys)| {
+            let desc = keys.get("description").map(|s| s.as_str()).unwrap_or("");
+            eprintln!("  {:<12} {}", name, desc);
+        });
+        return Ok(());
+    }
+
+    // Load custom profiles from --profile-file
+    if let Some(ref profile_file) = args.profile_file {
+        let yaml_content = std::fs::read_to_string(profile_file)
+            .with_context(|| format!("Failed to read profile file: {}", profile_file.display()))?;
+        let profiles: HashMap<String, HashMap<String, String>> = serde_yaml_ng::from_str(&yaml_content)
+            .context("Invalid profile YAML format")?;
+        // Register custom profiles into a global store for apply_profile
+        for (name, mut keys) in profiles {
+            // Handle extends: inherit keys from parent profile
+            if let Some(parent) = keys.remove("extends") {
+                let parent_keys = crate::bench::schema::apply_profile(&parent);
+                if parent_keys.is_empty() {
+                    anyhow::bail!("Parent profile '{}' not found for '{}'", parent, name);
+                }
+                for (k, v) in parent_keys {
+                    keys.entry(k.to_string()).or_insert(v.to_string());
+                }
+            }
+            // Register into BUILTIN_PROFILES via a static registry
+            crate::bench::schema::register_custom_profile(&name, keys);
+        }
+    }
+
     // Direct call mode: create temp .gctf from --call / --data flags
     let synthetic_path = if let Some(endpoint) = &args.call {
         let body = args.data.as_deref().unwrap_or("{}");
@@ -2001,6 +2062,35 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
 
     let report = run_benchmark(&test_paths, &config, &args.exclude).await?;
 
+    // Allure benchmark attachment
+    if let Some(allure_dir) = &args.allure_output_dir {
+        std::fs::create_dir_all(allure_dir)?;
+        let bench_json = serde_json::to_string_pretty(&report)?;
+        let attachment_file = allure_dir.join("benchmark-report.json");
+        std::fs::write(&attachment_file, &bench_json)?;
+        eprintln!("Allure benchmark attachment written to: {}", attachment_file.display());
+    }
+
+    // Custom template rendering (overrides format)
+    if let Some(template_path) = &args.report_template {
+        let template_str = std::fs::read_to_string(template_path)
+            .with_context(|| format!("Failed to read template: {}", template_path.display()))?;
+        let mut env = minijinja::Environment::new();
+        env.add_template("report", &template_str)
+            .context("Invalid template syntax")?;
+        let tmpl = env.get_template("report").unwrap();
+        let report_json = serde_json::to_value(&report)?;
+        let rendered = tmpl.render(minijinja::Value::from_serialize(&report_json))
+            .context("Template rendering failed")?;
+        if let Some(output) = &args.output {
+            std::fs::write(output, &rendered)?;
+            eprintln!("Rendered report written to: {}", output.display());
+        } else {
+            println!("{}", rendered);
+        }
+        return Ok(());
+    }
+
     // Output report based on format
     match args.format.as_str() {
         "json" => {
@@ -2045,6 +2135,21 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
                 eprintln!("HTML report written to: {}", output.display());
             } else {
                 println!("{}", html);
+            }
+        }
+        "detail-json" => {
+            // Per-response JSON Lines — one JSON object per response
+            if let Some(output) = &args.output {
+                let mut file = std::fs::File::create(output)?;
+                for detail in &report.details {
+                    let line = serde_json::to_string(detail)?;
+                    writeln!(file, "{}", line)?;
+                }
+                eprintln!("Detail JSON written to: {}", output.display());
+            } else {
+                for detail in &report.details {
+                    println!("{}", serde_json::to_string(detail)?);
+                }
             }
         }
         _ => {
@@ -2146,6 +2251,9 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
+            report_template: None,
+            allure_output_dir: None,
+            profile_file: None,
             call: None,
             data: None,
             list_profiles: false,
@@ -2219,6 +2327,9 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
+            report_template: None,
+            allure_output_dir: None,
+            profile_file: None,
             call: None,
             data: None,
             list_profiles: false,
@@ -2278,6 +2389,9 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
+            report_template: None,
+            allure_output_dir: None,
+            profile_file: None,
             call: None,
             data: None,
             list_profiles: false,
@@ -2331,6 +2445,9 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
+            report_template: None,
+            allure_output_dir: None,
+            profile_file: None,
             call: None,
             data: None,
             list_profiles: false,
@@ -2416,6 +2533,9 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
+            report_template: None,
+            allure_output_dir: None,
+            profile_file: None,
             call: None,
             data: None,
             list_profiles: false,
@@ -2465,6 +2585,9 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
+            report_template: None,
+            allure_output_dir: None,
+            profile_file: None,
             call: None,
             data: None,
             list_profiles: false,
@@ -2512,6 +2635,9 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
+            report_template: None,
+            allure_output_dir: None,
+            profile_file: None,
             call: None,
             data: None,
             list_profiles: false,

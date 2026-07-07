@@ -1,37 +1,12 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-pub const BENCH_NUMERIC_KEYS: &[&str] = &[
-    "concurrency",
-    "requests",
-    "max_rps",
-    "connections",
-    "cpus",
-    "skip_first",
-    "load_start",
-    "load_step",
-    "load_end",
-    "load_midpoint",
-    "load_amplitude",
-    "load_frequency",
-    "load_spike_target",
-    "load_spike_after",
-    "load_spike_duration",
-];
-
-pub const BENCH_DURATION_KEYS: &[&str] = &[
-    "max_duration",
-    "connect_timeout",
-    "keepalive",
-    "ramp_up",
-    "warmup",
-    "duration",
-    "cache_ttl",
-    "cool_down",
-    "load_step_duration",
-    "load_max_duration",
-    "progress_interval",
-];
+// Re-export bench schema constants from parser (format-level validation data)
+pub use crate::parser::validator::{
+    BENCH_ASSERT_MODE_VALUES, BENCH_CACHE_VALUES, BENCH_DURATION_KEYS, BENCH_DURATION_STOP_VALUES,
+    BENCH_LOAD_SCHEDULE_VALUES, BENCH_MODE_VALUES, BENCH_NUMERIC_KEYS, allowed_values_message,
+    canonical_bench_key, is_allowed_value,
+};
 
 pub const BENCH_BOOLEAN_KEYS: &[&str] = &["no_assert", "count_errors_in_latency"];
 
@@ -48,13 +23,6 @@ pub const BENCH_DIRECT_KEYS: &[&str] = &[
     "warmup_mode",
     "load_profile",
 ];
-
-pub const BENCH_MODE_VALUES: &[&str] = &["fixed", "stepping", "adaptive", "closed", "open"];
-pub const BENCH_LOAD_SCHEDULE_VALUES: &[&str] = &["const", "step", "line", "sine", "spike", "custom"];
-pub const BENCH_DURATION_STOP_VALUES: &[&str] = &["close", "wait", "ignore"];
-pub const BENCH_ASSERT_MODE_VALUES: &[&str] =
-    &["full", "sampled", "off", "fail_fast", "collect_all", "skip"];
-pub const BENCH_CACHE_VALUES: &[&str] = &["on", "off", "refresh", "true", "false", "1", "0"];
 
 pub const BENCH_COMPOUND_KEYS: &[&str] = &["sources"];
 
@@ -79,15 +47,6 @@ pub fn bench_keys_canonical_order() -> Vec<&'static str> {
             .then_with(|| a.cmp(b))
     });
     keys
-}
-
-pub fn is_allowed_value(value: &str, allowed: &[&str]) -> bool {
-    let normalized = value.trim().to_ascii_lowercase();
-    allowed.iter().any(|v| *v == normalized)
-}
-
-pub fn allowed_values_message(allowed: &[&str]) -> String {
-    allowed.join(", ")
 }
 
 pub fn bench_key_detail(key: &str) -> String {
@@ -154,21 +113,6 @@ pub fn bench_key_detail(key: &str) -> String {
 
 pub fn bench_aliases(_key: &str) -> &'static [&'static str] {
     &[]
-}
-
-pub fn canonical_bench_key(key: &str) -> Option<&'static str> {
-    for canonical in supported_bench_keys() {
-        if canonical == "thresholds.*" {
-            continue;
-        }
-        if key == canonical {
-            return Some(canonical);
-        }
-        if bench_aliases(canonical).contains(&key) {
-            return Some(canonical);
-        }
-    }
-    None
 }
 
 pub fn is_known_bench_key(key: &str) -> bool {
@@ -370,19 +314,46 @@ pub static BUILTIN_PROFILES: LazyLock<HashMap<&'static str, HashMap<&'static str
 pub fn apply_profile(
     name: &str,
 ) -> Vec<(&'static str, &'static str)> {
-    BUILTIN_PROFILES
-        .get(name)
-        .map(|profile| profile.iter().map(|(k, v)| (*k, *v)).collect())
-        .unwrap_or_default()
+    if let Some(profile) = BUILTIN_PROFILES.get(name) {
+        return profile.iter().map(|(k, v)| (*k, *v)).collect();
+    }
+    Vec::new()
 }
 
-/// List all available profiles with their descriptions.
-pub fn list_profiles() -> Vec<(&'static str, HashMap<&'static str, &'static str>)> {
-    let mut result: Vec<(&str, HashMap<&str, &str>)> = BUILTIN_PROFILES
+/// Custom profiles loaded from YAML files at runtime.
+static CUSTOM_PROFILES: std::sync::LazyLock<std::sync::RwLock<HashMap<String, HashMap<String, String>>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
+
+/// Register a custom profile at runtime.
+pub fn register_custom_profile(name: &str, keys: HashMap<String, String>) {
+    CUSTOM_PROFILES.write().unwrap().insert(name.to_string(), keys);
+}
+
+/// Apply a custom (or built-in) profile, returning key-value pairs.
+/// Returns empty vec if the profile is not found.
+pub fn apply_profile_dynamic(name: &str) -> Vec<(String, String)> {
+    // Check built-in first
+    let builtin = apply_profile(name);
+    if !builtin.is_empty() {
+        return builtin.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    }
+    // Check custom profiles
+    if let Some(keys) = CUSTOM_PROFILES.read().unwrap().get(name) {
+        return keys.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    }
+    Vec::new()
+}
+
+/// List all available profiles (built-in + custom).
+pub fn list_profiles() -> Vec<(String, HashMap<String, String>)> {
+    let mut result: Vec<(String, HashMap<String, String>)> = BUILTIN_PROFILES
         .iter()
-        .map(|(name, keys)| (*name, keys.clone()))
+        .map(|(name, keys)| (name.to_string(), keys.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()))
         .collect();
-    result.sort_by(|a, b| a.0.cmp(b.0));
+    for (name, keys) in CUSTOM_PROFILES.read().unwrap().iter() {
+        result.push((name.clone(), keys.clone()));
+    }
+    result.sort_by(|a, b| a.0.cmp(&b.0));
     result
 }
 

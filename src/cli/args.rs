@@ -88,6 +88,31 @@ pub enum Commands {
     Index(IndexArgs),
     /// Query data sources interactively
     Query(QueryArgs),
+    /// Check gRPC service health
+    Health(HealthArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct HealthArgs {
+    /// Server address (host:port)
+    #[arg(required = true)]
+    pub address: String,
+
+    /// Service name to check (default: empty — checks overall server health)
+    #[arg(long, default_value = "")]
+    pub service: String,
+
+    /// Output format (text, json)
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// Skip TLS verification
+    #[arg(long, default_value_t = false)]
+    pub insecure: bool,
+
+    /// Timeout in seconds
+    #[arg(long, default_value_t = 10)]
+    pub timeout: u64,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -251,6 +276,14 @@ pub struct BenchArgs {
     )]
     pub output: Option<PathBuf>,
 
+    /// Custom MiniJinja template file for benchmark report
+    #[arg(long, value_name = "TEMPLATE_FILE")]
+    pub report_template: Option<PathBuf>,
+
+    /// Allure output directory for benchmark attachments
+    #[arg(long, value_name = "DIR")]
+    pub allure_output_dir: Option<PathBuf>,
+
     /// Compact console output (omit histogram)
     #[arg(long, default_value_t = false)]
     pub compact: bool,
@@ -270,6 +303,10 @@ pub struct BenchArgs {
     /// List available benchmark profiles and exit
     #[arg(long, default_value_t = false)]
     pub list_profiles: bool,
+
+    /// Path to custom profile YAML file
+    #[arg(long, value_name = "FILE")]
+    pub profile_file: Option<PathBuf>,
 
     /// Direct gRPC method call (service/method) — no .gctf file needed
     #[arg(long, value_name = "SERVICE/METHOD")]
@@ -491,6 +528,30 @@ pub struct ReflectArgs {
     /// Plaintext connection (no TLS). If omitted, localhost/http addresses default to plaintext.
     #[arg(long, default_value_t = false)]
     pub plaintext: bool,
+
+    /// Output format (text, json)
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// List all methods with full signatures
+    #[arg(long, default_value_t = false)]
+    pub list_methods: bool,
+
+    /// Describe a method's request and response message fields
+    #[arg(long, value_name = "SERVICE/METHOD")]
+    pub describe: Option<String>,
+
+    /// CA certificate path for TLS
+    #[arg(long)]
+    pub tls_ca: Option<String>,
+
+    /// Client certificate path for TLS
+    #[arg(long)]
+    pub tls_cert: Option<String>,
+
+    /// Client key path for TLS
+    #[arg(long)]
+    pub tls_key: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -546,9 +607,29 @@ pub struct CallArgs {
     #[arg(long, default_value_t = 30)]
     pub connect_timeout: u64,
 
+    /// Skip TLS certificate verification
+    #[arg(long, default_value_t = false)]
+    pub insecure: bool,
+
     /// Request timeout in seconds
     #[arg(long, default_value_t = 60)]
     pub max_time: u64,
+
+    /// Run as benchmark instead of single call
+    #[arg(long, default_value_t = false)]
+    pub bench: bool,
+
+    /// Benchmark concurrency (with --bench)
+    #[arg(long, requires = "bench")]
+    pub concurrency: Option<u32>,
+
+    /// Benchmark requests (with --bench)
+    #[arg(long, requires = "bench")]
+    pub requests: Option<u64>,
+
+    /// Benchmark duration (with --bench), e.g. "30s"
+    #[arg(long, requires = "bench")]
+    pub duration: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]

@@ -1,5 +1,6 @@
 // gRPC client module
 
+pub mod adapter;
 pub mod channel;
 pub mod client;
 pub mod grpcurl_invocation;

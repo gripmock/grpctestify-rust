@@ -1,10 +1,6 @@
-// Assertion module
-
-pub mod comparator;
-pub mod diff;
-pub mod engine;
-pub mod operators;
-
-pub use comparator::JsonComparator;
-pub use diff::get_json_diff;
-pub use engine::{AssertionEngine, AssertionResult};
+// Thin shim — all implementation lives in crates/apif-assert.
+pub use apif_assert::{
+    AssertionEngine, AssertionResult, AssertionTiming, JsonComparator, NoopPluginRegistry,
+    PluginApi, PluginContext, PluginRegistry, PluginResult, get_json_diff,
+};
+pub use apif_assert::{comparator, diff, engine, operators, registry};

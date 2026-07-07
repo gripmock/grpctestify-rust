@@ -92,6 +92,7 @@ pub struct AssertionInfo {
     pub assertions: Vec<String>,
     pub line_start: usize,
     pub line_end: usize,
+    pub response_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +101,7 @@ pub struct ExtractionInfo {
     pub variables: HashMap<String, String>,
     pub line_start: usize,
     pub line_end: usize,
+    pub response_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -321,6 +323,7 @@ impl ExecutionPlan {
                     assertions,
                     line_start: section.start_line,
                     line_end: section.end_line,
+                    response_index: None,
                 }
             })
             .collect();
@@ -341,6 +344,7 @@ impl ExecutionPlan {
                     variables,
                     line_start: section.start_line,
                     line_end: section.end_line,
+                    response_index: None,
                 }
             })
             .collect();
@@ -551,7 +555,7 @@ pub enum TestExecutionStatus {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TestExecutionResult {
     pub status: TestExecutionStatus,
-    pub grpc_duration_ms: Option<u64>,
+    pub call_duration_ms: Option<u64>,
     pub captured_response: Option<crate::grpc::GrpcResponse>,
     pub meta: crate::state::TestMeta,
 }
@@ -590,19 +594,19 @@ impl AssertionScopeTimingState {
 }
 
 impl TestExecutionResult {
-    pub fn pass(grpc_duration_ms: Option<u64>) -> Self {
+    pub fn pass(call_duration_ms: Option<u64>) -> Self {
         Self {
             status: TestExecutionStatus::Pass,
-            grpc_duration_ms,
+            call_duration_ms,
             captured_response: None,
             meta: crate::state::TestMeta::default(),
         }
     }
 
-    pub fn fail(message: String, grpc_duration_ms: Option<u64>) -> Self {
+    pub fn fail(message: String, call_duration_ms: Option<u64>) -> Self {
         Self {
             status: TestExecutionStatus::Fail(message),
-            grpc_duration_ms,
+            call_duration_ms,
             captured_response: None,
             meta: crate::state::TestMeta::default(),
         }
@@ -726,7 +730,7 @@ impl TestRunner {
 
         for doc in document.iter_chain() {
             let result = self.run_one(doc, &mut variables).await?;
-            if let Some(dur) = result.grpc_duration_ms {
+            if let Some(dur) = result.call_duration_ms {
                 total_duration_ms += dur as f64;
             }
 
@@ -739,7 +743,7 @@ impl TestRunner {
         // Build summary result
         Ok(TestExecutionResult {
             status: overall_status,
-            grpc_duration_ms: Some(total_duration_ms as u64),
+            call_duration_ms: Some(total_duration_ms as u64),
             captured_response: None,
             meta: crate::state::TestMeta::default(),
         })

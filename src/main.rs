@@ -69,6 +69,7 @@ async fn main() -> Result<()> {
         Some(Commands::Lsp(args)) => commands::handle_lsp(args).await,
         Some(Commands::Bench(args)) => commands::handle_bench(args).await,
         Some(Commands::Query(args)) => commands::handle_query(args),
+        Some(Commands::Health(args)) => commands::handle_health(args).await,
         None => {
             // Implicit Run
             let args = cli.run_args.clone();

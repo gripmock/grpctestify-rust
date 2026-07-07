@@ -1,0 +1,19 @@
+[package]
+name = "apif-execution"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Protocol-agnostic test execution engine for .apif/.gctf files"
+
+[dependencies]
+apif-ast = { path = "../apif-ast" }
+apif-assert = { path = "../apif-assert" }
+apif-state = { path = "../apif-state" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+futures = "0.3"
+async-trait = "0.1"

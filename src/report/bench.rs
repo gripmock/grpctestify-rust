@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fmt::Write as FmtWrite;
 
 pub const BENCH_REPORT_SCHEMA_VERSION: &str = "bench_report_schema_v1";
 
@@ -243,28 +244,13 @@ impl BenchReport {
     pub fn to_summary_text(&self, compact: bool) -> String {
         let mut out = String::new();
 
-        out.push_str("Summary:\n");
-        out.push_str(&format!("  Count:        {}\n", self.summary.count));
-        out.push_str(&format!(
-            "  Total:        {}\n",
-            format_ns(self.summary.total_ns)
-        ));
-        out.push_str(&format!(
-            "  Slowest:      {}\n",
-            format_ns(self.summary.slowest_ns)
-        ));
-        out.push_str(&format!(
-            "  Fastest:      {}\n",
-            format_ns(self.summary.fastest_ns)
-        ));
-        out.push_str(&format!(
-            "  Average:      {}\n",
-            format_ns(self.summary.average_ns)
-        ));
-        out.push_str(&format!(
-            "  Requests/sec: {:.2}\n",
-            self.summary.rps_observed
-        ));
+        let _ = write!(out, "Summary:\n");
+        let _ = write!(out, "  Count:        {}\n", self.summary.count);
+        let _ = write!(out, "  Total:        {}\n", format_ns(self.summary.total_ns));
+        let _ = write!(out, "  Slowest:      {}\n", format_ns(self.summary.slowest_ns));
+        let _ = write!(out, "  Fastest:      {}\n", format_ns(self.summary.fastest_ns));
+        let _ = write!(out, "  Average:      {}\n", format_ns(self.summary.average_ns));
+        let _ = write!(out, "  Requests/sec: {:.2}\n", self.summary.rps_observed);
 
         if !self.threshold_evaluation.is_empty() {
             let passed = self
@@ -273,7 +259,7 @@ impl BenchReport {
                 .filter(|t| t.passed)
                 .count();
             let total = self.threshold_evaluation.len();
-            out.push_str(&format!("  Thresholds:   {}/{} passed\n", passed, total));
+            let _ = write!(out, "  Thresholds:   {}/{} passed\n", passed, total);
         }
 
         if compact {
@@ -297,7 +283,7 @@ impl BenchReport {
                 format_histogram_mark_ms(bucket.lower_ns)
             };
             let bars = histogram_bars(bucket.frequency);
-            out.push_str(&format!("  {:<12} [{:<5}] |{}\n", mark, bucket.count, bars));
+            let _ = write!(out, "  {:<12} [{:<5}] |{}\n", mark, bucket.count, bars);
         }
 
         out.push_str("\nLatency distribution:\n");
@@ -377,7 +363,7 @@ fn append_status_and_errors(out: &mut String, report: &BenchReport) {
     } else {
         let total = report.summary.count.max(1);
         for (status, count) in &report.grpc_status_distribution {
-            out.push_str(&format!("  [{}]   {} responses\n", status, count));
+            let _ = write!(out, "  [{}]   {} responses\n", status, count);
             let _ = total;
         }
     }
@@ -387,7 +373,7 @@ fn append_status_and_errors(out: &mut String, report: &BenchReport) {
         out.push_str("  (none)\n");
     } else {
         for (err, count) in &report.error_distribution {
-            out.push_str(&format!("  [{}] {}\n", count, err));
+            let _ = write!(out, "  [{}] {}\n", count, err);
         }
     }
 

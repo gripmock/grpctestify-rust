@@ -2115,7 +2115,7 @@ not not @has_header("x")
             }
         }
 
-        let engine = AssertionEngine::new();
+        let engine = AssertionEngine::with_registry(std::sync::Arc::new(crate::plugins::PluginManager::new()));
         let cases = [
             "!!@has_header(\"x\")",
             "not not @has_header(\"x\")",
@@ -2262,7 +2262,7 @@ not (.status == 200)
         let hints = collect_assertion_optimizations(&doc);
         assert!(!hints.is_empty());
 
-        let engine = AssertionEngine::new();
+        let engine = AssertionEngine::with_registry(std::sync::Arc::new(crate::plugins::PluginManager::new()));
         let contexts = vec![
             (
                 "status_200_with_header",
