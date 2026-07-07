@@ -2120,7 +2120,8 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
-        list_profiles: false,
+        bench_metadata: vec![],
+            list_profiles: false,
         };
 
         let config = BenchConfigResolved::from_cli_and_bench(&args, None).unwrap();
@@ -2191,7 +2192,8 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
-        list_profiles: false,
+        bench_metadata: vec![],
+            list_profiles: false,
         };
 
         let config = BenchConfigResolved::from_cli_and_bench(&args, Some(&bench_section)).unwrap();
@@ -2248,7 +2250,8 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
-        list_profiles: false,
+        bench_metadata: vec![],
+            list_profiles: false,
         };
 
         let config = BenchConfigResolved::from_cli_and_bench(&args, Some(&bench_section)).unwrap();
@@ -2299,7 +2302,8 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
-        list_profiles: false,
+        bench_metadata: vec![],
+            list_profiles: false,
         };
 
         let config = BenchConfigResolved::from_cli_and_bench(&args, Some(&bench_section)).unwrap();
@@ -2382,7 +2386,8 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
-        list_profiles: false,
+        bench_metadata: vec![],
+            list_profiles: false,
         };
 
         let config = BenchConfigResolved::from_cli_and_bench(&args, None).unwrap();
@@ -2429,7 +2434,8 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
-        list_profiles: false,
+        bench_metadata: vec![],
+            list_profiles: false,
         };
 
         assert!(BenchConfigResolved::from_cli_and_bench(&args, None).is_err());
@@ -2474,6 +2480,7 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
+            bench_metadata: vec![],
             list_profiles: false,
         };
 
