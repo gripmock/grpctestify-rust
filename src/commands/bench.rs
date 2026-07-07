@@ -2012,6 +2012,15 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
                 println!("{}", csv);
             }
         }
+        "html" => {
+            let html = report.to_html();
+            if let Some(output) = &args.output {
+                std::fs::write(output, html)?;
+                eprintln!("HTML report written to: {}", output.display());
+            } else {
+                println!("{}", html);
+            }
+        }
         _ => {
             anyhow::bail!("Unsupported format: {}", args.format);
         }
