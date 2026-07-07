@@ -100,7 +100,10 @@ impl GctfDocumentBuilder {
             metadata: DocumentMetadata {
                 source: None,
                 mtime: None,
-                parsed_at: crate::time::now_timestamp(),
+                parsed_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
             },
             next_document: None,
         }
@@ -108,7 +111,7 @@ impl GctfDocumentBuilder {
 
     pub fn render(self) -> String {
         let doc = self.build();
-        crate::serialize_gctf(&doc)
+        serialize_gctf_internal(&doc)
     }
 
     fn push_section(&mut self, section_type: SectionType, content: SectionContent) {

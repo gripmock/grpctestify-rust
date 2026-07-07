@@ -53,7 +53,10 @@ impl Default for DocumentMetadata {
         Self {
             source: None,
             mtime: None,
-            parsed_at: crate::time::now_timestamp(),
+            parsed_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
         }
     }
 }
