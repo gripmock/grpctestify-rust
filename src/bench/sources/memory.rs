@@ -67,6 +67,24 @@ impl InMemorySource {
     pub fn iter(&self) -> impl Iterator<Item = (&String, &SourceRow)> {
         self.data.iter()
     }
+
+    /// Filter the in-memory source, keeping only rows that match ALL filter conditions.
+    pub fn filter(&self, conditions: &[super::filter::FilterCondition]) -> Self {
+        use super::filter::matches_all;
+        let mut filtered_data = HashMap::new();
+        for (key, row) in &self.data {
+            if matches_all(row, conditions) {
+                filtered_data.insert(key.clone(), row.clone());
+            }
+        }
+        let row_count = filtered_data.len();
+        Self {
+            data: filtered_data,
+            key_column: self.key_column.clone(),
+            headers: self.headers.clone(),
+            row_count,
+        }
+    }
 }
 
 #[cfg(test)]

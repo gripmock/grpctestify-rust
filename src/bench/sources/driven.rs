@@ -176,7 +176,14 @@ fn load_dimension_in_memory(
     };
     let mem = InMemorySource::load(&mut *reader, &effective_key)
         .with_context(|| format!("failed to load dimension '{}'", resolved_path.display()))?;
-    Ok(DimensionSource::Memory(Arc::new(mem)))
+    // Apply dimension filter if configured
+    let mem = if let Some(ref filter) = def.filter {
+        let filtered = mem.filter(filter);
+        Arc::new(filtered)
+    } else {
+        Arc::new(mem)
+    };
+    Ok(DimensionSource::Memory(mem))
 }
 
 pub struct SourceDrivenConfig {
