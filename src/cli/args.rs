@@ -267,10 +267,6 @@ pub struct BenchArgs {
     #[arg(long, value_name = "PATTERN")]
     pub exclude: Vec<String>,
 
-    /// gRPC metadata headers (key=value, repeatable)
-    #[arg(long = "metadata", value_name = "KEY=VALUE")]
-    pub bench_metadata: Vec<String>,
-
     /// List available benchmark profiles and exit
     #[arg(long, default_value_t = false)]
     pub list_profiles: bool,
