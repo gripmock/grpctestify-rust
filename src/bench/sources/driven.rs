@@ -343,7 +343,7 @@ impl SourceDrivenConfig {
                 .as_ref()
                 .map(|idx| match idx {
                     super::definition::IndexedBy::Single(s) => s.clone(),
-                    super::definition::IndexedBy::Multi(v) => v[0].clone(),
+                    super::definition::IndexedBy::Multi(v) => v.join(super::index::COMPOSITE_KEY_SEPARATOR),
                 })
                 .unwrap_or_default();
 
