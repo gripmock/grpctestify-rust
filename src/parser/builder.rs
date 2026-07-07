@@ -111,7 +111,7 @@ impl GctfDocumentBuilder {
 
     pub fn render(self) -> String {
         let doc = self.build();
-        serialize_gctf_internal(&doc)
+        crate::serialize_gctf(&doc)
     }
 
     fn push_section(&mut self, section_type: SectionType, content: SectionContent) {

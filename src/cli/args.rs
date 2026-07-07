@@ -270,6 +270,14 @@ pub struct BenchArgs {
     /// List available benchmark profiles and exit
     #[arg(long, default_value_t = false)]
     pub list_profiles: bool,
+
+    /// Direct gRPC method call (service/method) — no .gctf file needed
+    #[arg(long, value_name = "SERVICE/METHOD")]
+    pub call: Option<String>,
+
+    /// Inline JSON request body (used with --call)
+    #[arg(long, value_name = "JSON")]
+    pub data: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]

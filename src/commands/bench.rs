@@ -1878,18 +1878,44 @@ pub fn validate_bench_config(doc: &crate::parser::GctfDocument) -> Result<()> {
 
 /// Main bench command handler
 pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
-    if args.test_paths.is_empty() {
-        anyhow::bail!("No test paths provided");
+    // Direct call mode: create temp .gctf from --call / --data flags
+    let synthetic_path = if let Some(endpoint) = &args.call {
+        let body = args.data.as_deref().unwrap_or("{}");
+        let content = format!(
+            "--- ADDRESS ---\n<env:GRPCTESTIFY_ADDRESS>\n--- ENDPOINT ---\n{endpoint}\n--- REQUEST ---\n{body}\n"
+        );
+        let dir = std::env::temp_dir().join("grpctestify-bench");
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("direct-{}.gctf", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()));
+        std::fs::write(&path, &content)?;
+        Some(path)
+    } else {
+        None
+    };
+
+    let mut test_paths = args.test_paths.clone();
+    if let Some(ref path) = synthetic_path {
+        test_paths.push(path.clone());
+    }
+
+    if test_paths.is_empty() {
+        anyhow::bail!("No test paths provided. Use paths, .gctf files, or --call SERVICE/METHOD");
     }
 
     eprintln!("BENCH MODE - Running benchmarks...");
     eprintln!();
 
     // Parse first test file to extract BENCH section
-    let first_file = &args.test_paths[0];
+    let first_file = &test_paths[0];
     if !first_file.exists() {
         anyhow::bail!("File not found: {}", first_file.display());
     }
+
+    // Store synthetic path in first_file for cleanup later
+    let _ = synthetic_path;
 
     let parse_result = crate::parser::parse_with_recovery(first_file);
     let doc = parse_result.document;
@@ -1973,7 +1999,7 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
     }
     eprintln!();
 
-    let report = run_benchmark(&args.test_paths, &config, &args.exclude).await?;
+    let report = run_benchmark(&test_paths, &config, &args.exclude).await?;
 
     // Output report based on format
     match args.format.as_str() {
@@ -2120,6 +2146,8 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
+            call: None,
+            data: None,
             list_profiles: false,
         };
 
@@ -2191,6 +2219,8 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
+            call: None,
+            data: None,
             list_profiles: false,
         };
 
@@ -2248,6 +2278,8 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
+            call: None,
+            data: None,
             list_profiles: false,
         };
 
@@ -2299,6 +2331,8 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
+            call: None,
+            data: None,
             list_profiles: false,
         };
 
@@ -2382,6 +2416,8 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
+            call: None,
+            data: None,
             list_profiles: false,
         };
 
@@ -2429,6 +2465,8 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
+            call: None,
+            data: None,
             list_profiles: false,
         };
 
@@ -2474,6 +2512,8 @@ mod tests {
             tags: vec![],
             skip_tags: vec![],
             exclude: vec![],
+            call: None,
+            data: None,
             list_profiles: false,
         };
 
