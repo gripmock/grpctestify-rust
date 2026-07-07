@@ -118,6 +118,7 @@ struct DimensionJoin {
     source_name: String,
     foreign_key: String,
     remote_key: String,
+    join_type: super::definition::JoinType,
 }
 
 #[derive(Clone)]
@@ -343,6 +344,7 @@ impl SourceDrivenConfig {
                 source_name: dim_name.clone(),
                 foreign_key: key_col.clone(),
                 remote_key: key_col.clone(),
+                join_type: def.join_type_or_default(),
             });
 
             resolved_paths.insert(dim_name.clone(), resolved.clone());
@@ -500,16 +502,27 @@ impl SourceDrivenConfig {
             }
         }
 
-        let joins: Vec<(String, String)> = self
+        // Check INNER join constraints — skip row if FK not found, try next row
+        let inner_missing = self.dim_joins.iter().any(|j| {
+            j.join_type == super::definition::JoinType::Inner
+                && row.get(&j.foreign_key)
+                    .map_or(false, |fk| self.dimension_lookup(&j.source_name, fk).is_none())
+        });
+        if inner_missing {
+            // Skip this row and try the next one
+            return self.next_row_variables();
+        }
+
+        let joins: Vec<(String, String, String)> = self
             .dim_joins
             .iter()
             .filter_map(|j| {
                 row.get(&j.foreign_key)
-                    .map(|fk| (j.source_name.clone(), fk.to_string()))
+                    .map(|fk| (j.source_name.clone(), fk.to_string(), j.remote_key.clone()))
             })
             .collect();
 
-        for (source_name, fk_val) in joins {
+        for (source_name, fk_val, _remote_key) in joins {
             if let Some(dim_row) = self.dimension_lookup(&source_name, &fk_val) {
                 for col in dim_row.columns() {
                     if let Some(val) = dim_row.get(col) {

@@ -22,6 +22,15 @@ pub struct SourceDefinition {
     pub memory_budget: Option<String>,
     #[serde(default)]
     pub filter: Option<Vec<FilterCondition>>,
+    #[serde(default)]
+    pub join_type: Option<JoinType>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JoinType {
+    Inner,
+    Left,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -65,7 +74,12 @@ impl SourceDefinition {
             index_mode: Some(IndexMode::BuildOnce),
             memory_budget: None,
             filter: None,
+            join_type: None,
         }
+    }
+
+    pub fn join_type_or_default(&self) -> JoinType {
+        self.join_type.unwrap_or(JoinType::Left)
     }
 
     pub fn effective_index_mode(&self) -> IndexMode {

@@ -18,7 +18,7 @@ pub use analyzer::{
 };
 pub use cache::TwoQCache;
 pub use csv::CsvReader;
-pub use definition::{IndexMode, SourceDefinition};
+pub use definition::{IndexMode, JoinType, SourceDefinition};
 pub use detect::{SourceFormat, detect_format};
 pub use driven::{
     FallbackReason, FallbackType, RuntimeFallbackPolicy, SourceDrivenConfig, SourceFallbackEvent,
