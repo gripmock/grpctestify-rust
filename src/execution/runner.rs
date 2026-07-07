@@ -40,6 +40,7 @@ pub struct ExecutionPlan {
 pub struct ConnectionInfo {
     pub address: String,
     pub source: String,
+    pub backend: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,17 +161,20 @@ impl ExecutionPlan {
                         "ADDRESS section [Line {}-{}]",
                         section.start_line, section.end_line
                     ),
+                    backend: "default".to_string(),
                 }
             } else {
                 ConnectionInfo {
                     address: "<env:GRPCTESTIFY_ADDRESS>".to_string(),
                     source: "Environment variable (implicit)".to_string(),
+                    backend: "default".to_string(),
                 }
             }
         } else {
             ConnectionInfo {
                 address: "<env:GRPCTESTIFY_ADDRESS>".to_string(),
                 source: "Environment variable (implicit)".to_string(),
+                backend: "default".to_string(),
             }
         };
 
