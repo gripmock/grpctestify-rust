@@ -1,0 +1,6 @@
+[package]
+name = "source-error"
+version = "0.1.0"
+edition = "2021"
+description = "Typed errors for CSV/TSV/NDJSON data sources"
+license = "MIT"
