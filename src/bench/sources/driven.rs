@@ -840,6 +840,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn primary_only_no_dimensions() {
         let dir = std::env::temp_dir().join("gctf_driven_test");
         std::fs::create_dir_all(&dir).unwrap();
@@ -872,6 +873,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn primary_with_dimension_join() {
         let dir = std::env::temp_dir().join("gctf_driven_join_test");
         std::fs::create_dir_all(&dir).unwrap();
@@ -963,6 +965,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn primary_filter_skips_non_matching_rows() {
         let dir = std::env::temp_dir().join("gctf_driven_filter_test");
         std::fs::create_dir_all(&dir).unwrap();
