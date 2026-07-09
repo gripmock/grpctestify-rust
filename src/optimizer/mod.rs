@@ -1062,10 +1062,9 @@ fn suggest_type_aware_numeric_comparison(expr: &str) -> Option<(RuleId, String)>
 
     let (left, right) = if let Some(idx) = trimmed.find(">=") {
         (trimmed[..idx].trim(), trimmed[idx + 2..].trim())
-    } else if let Some(idx) = trimmed.find("<=") {
-        (trimmed[..idx].trim(), trimmed[idx + 2..].trim())
     } else {
-        return None;
+        let idx = trimmed.find("<=")?;
+        (trimmed[..idx].trim(), trimmed[idx + 2..].trim())
     };
 
     let plugin_call = if right == "0" {

@@ -201,15 +201,7 @@ mod tests {
     use super::*;
 
     fn parse_doc(content: &str) -> GctfDocument {
-        let dir = std::env::temp_dir().join("gctf_analyzer_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = dir.join(format!("sample_{ts}.gctf"));
-        std::fs::write(&path, content).unwrap();
-        crate::parser::parse_gctf(&path).unwrap()
+        crate::parser::parse_gctf_from_str(content, "test.gctf").unwrap()
     }
 
     #[test]
