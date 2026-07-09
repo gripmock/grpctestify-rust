@@ -826,6 +826,7 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    #[cfg(not(miri))]
     fn create_temp_csv(dir: &Path, name: &str, content: &str) -> PathBuf {
         let path = dir.join(name);
         let mut f = std::fs::File::create(&path).unwrap();

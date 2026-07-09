@@ -309,6 +309,7 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    #[cfg(not(miri))]
     fn create_temp_csv(dir: &Path, name: &str, content: &str) -> PathBuf {
         let path = dir.join(name);
         let mut f = std::fs::File::create(&path).unwrap();
@@ -323,6 +324,7 @@ mod tests {
         assert_eq!(idx, PathBuf::from("data/pvz.csv.region_id.gcti"));
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn build_and_load_index() {
         let dir = std::env::temp_dir().join("gctf_idx_build_test");
@@ -349,6 +351,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn load_or_build_creates_on_first_call() {
         let dir = std::env::temp_dir().join("gctf_idx_auto_test");
@@ -377,6 +380,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn load_or_build_reuses_existing() {
         let dir = std::env::temp_dir().join("gctf_idx_reuse_test");
@@ -395,6 +399,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn build_index_no_key_column_errors() {
         let dir = std::env::temp_dir().join("gctf_idx_nokey_test");

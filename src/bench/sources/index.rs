@@ -1457,6 +1457,7 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    #[cfg(not(miri))]
     #[test]
     fn write_and_read_roundtrip() {
         let dir = std::env::temp_dir().join("gctf_index_test");
@@ -1485,6 +1486,7 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn invalid_magic_fails() {
         let dir = std::env::temp_dir().join("gctf_index_test");
@@ -1537,6 +1539,7 @@ mod tests {
         assert!(idx.lookup_row(&mut cursor, "99").unwrap().is_none());
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn empty_index_roundtrip() {
         let dir = std::env::temp_dir().join("gctf_index_test");
@@ -1553,6 +1556,7 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn unicode_keys() {
         let dir = std::env::temp_dir().join("gctf_index_test");
@@ -1572,6 +1576,7 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn duplicate_keys_are_preserved() {
         let dir = std::env::temp_dir().join("gctf_index_dup_test");

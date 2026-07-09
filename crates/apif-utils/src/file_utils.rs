@@ -88,6 +88,7 @@ mod tests {
     use std::fs;
 
     #[test]
+    #[cfg(not(miri))]
     fn test_collect_test_files_empty_dir() {
         let dir = std::env::temp_dir().join("gctf_test_empty");
         let _ = fs::remove_dir_all(&dir);
@@ -98,6 +99,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn test_collect_test_files_with_gctf() {
         let dir = std::env::temp_dir().join("gctf_test_files");
         let _ = fs::remove_dir_all(&dir);
@@ -117,6 +119,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn test_get_file_size() {
         let dir = std::env::temp_dir().join("gctf_test_size");
         let _ = fs::remove_dir_all(&dir);
