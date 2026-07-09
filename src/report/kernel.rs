@@ -380,10 +380,7 @@ fn categorize_failure(error_msg: &Option<String>) -> String {
 }
 
 fn extract_grpc_code(error_msg: &Option<String>) -> Option<i32> {
-    let msg = match error_msg {
-        Some(m) => m,
-        None => return None,
-    };
+    let msg = error_msg.as_ref()?;
 
     if let Some(pos) = msg.find("gRPC code ") {
         let rest = &msg[pos + 10..];

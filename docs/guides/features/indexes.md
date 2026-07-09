@@ -27,7 +27,7 @@ grpctestify index --stats data/users.gcti
 ## Key Types
 
 | Type | Detection | Storage |
-|------|-----------|---------|
+| ---- | --------- | ------- |
 | String | default | Sorted BTreeMap |
 | U64 / I64 | numeric parse | Sorted Vec (binary search) |
 | UUID | regex match | Packed 128-bit |
@@ -43,5 +43,6 @@ grpctestify index --stats data/users.gcti
 ## Performance
 
 Index lookup is O(log n) for numeric keys (binary search) and O(1) with bloom filter pre-check:
+
 - 500K entries: ~2µs per lookup
 - Index file: ~50MB for 500K string keys

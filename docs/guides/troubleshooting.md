@@ -146,15 +146,22 @@ A gRPC Test File. It defines endpoint, request, expected response, and assertion
 
 ### Why does `grpctestify check` fail on my file?
 
-Run `grpctestify check --verbose` for detailed diagnostics. Common issues: missing required sections, JSON syntax errors, or incorrect assertion expressions.
+Run `grpctestify check --verbose` for detailed diagnostics.
+Common issues: missing required sections, JSON syntax errors,
+or incorrect assertion expressions.
 
 ### Can I test streaming endpoints?
 
-Yes. gRPC Testify supports unary, server streaming, client streaming, and bidirectional streaming. Use the inline options on `ENDPOINT` (e.g., `--- ENDPOINT --- with_stream`).
+Yes. gRPC Testify supports unary, server streaming, client streaming,
+and bidirectional streaming. Use inline options on `ENDPOINT`
+(e.g., `--- ENDPOINT --- with_stream`).
 
 ### How do benchmark sources work?
 
-Define one or more `sources` in the `BENCH` section. Each source is a CSV/TSV/NDJSON file with an optional `indexed_by` column. During bench execution, rows from the primary source drive gRPC requests via template variables. See [Data Sources](bench-sources).
+Define one or more `sources` in the `BENCH` section. Each source is a CSV/TSV/NDJSON
+file with an optional `indexed_by` column. During bench execution, rows from the
+primary source drive gRPC requests via template variables.
+See [Data Sources](bench-sources).
 
 ## Related
 

@@ -750,14 +750,14 @@ mod tests {
 
         let result = engine.evaluate(".price:number >= 0", &response, None, None);
         assert!(
-            matches!(result, AssertionResult::Pass),
+            matches!(result, Ok(AssertionResult::Pass)),
             "Expected Pass, got: {:?}",
             result
         );
 
         let result = engine.evaluate(".price:number < 0", &response, None, None);
         assert!(
-            matches!(result, AssertionResult::Fail { .. }),
+            matches!(result, Ok(AssertionResult::Fail { .. })),
             "Expected Fail, got: {:?}",
             result
         );
@@ -772,14 +772,14 @@ mod tests {
 
         let result = engine.evaluate(".name:string contains \"hello\"", &response, None, None);
         assert!(
-            matches!(result, AssertionResult::Pass),
+            matches!(result, Ok(AssertionResult::Pass)),
             "Expected Pass, got: {:?}",
             result
         );
 
         let result = engine.evaluate(".name:string startsWith \"he\"", &response, None, None);
         assert!(
-            matches!(result, AssertionResult::Pass),
+            matches!(result, Ok(AssertionResult::Pass)),
             "Expected Pass, got: {:?}",
             result
         );
@@ -796,8 +796,8 @@ mod tests {
         let without_cast = engine.evaluate(".value == 123", &response, None, None);
         let with_cast = engine.evaluate(".value:number == 123", &response, None, None);
         assert_eq!(
-            matches!(without_cast, AssertionResult::Pass),
-            matches!(with_cast, AssertionResult::Pass),
+            matches!(without_cast, Ok(AssertionResult::Pass)),
+            matches!(with_cast, Ok(AssertionResult::Pass)),
             "Type cast should not change evaluation result"
         );
     }

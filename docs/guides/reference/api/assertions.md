@@ -82,7 +82,10 @@ Preferred canonical operators:
 
 ## Type annotations
 
-Some operators only work with specific types: `>`, `>=`, `<`, `<=` require numbers; `contains`, `startsWith` require strings. When the type is unknown — typically because there's no running gRPC server to provide protobuf schemas — add a `:type` annotation:
+Some operators only work with specific types: `>`, `>=`, `<`, `<=` require numbers;
+`contains`, `startsWith` require strings. When the type is unknown — typically
+because there's no running gRPC server to provide protobuf schemas — add a `:type`
+annotation:
 
 ```gctf
 --- ASSERTS ---
@@ -114,7 +117,8 @@ $total:number >= 0
 $name:string contains "hello"
 ```
 
-Inside `REQUEST` / `RESPONSE` / `ERROR` payloads use `"{{var}}"` — the template engine substitutes the value preserving its JSON type:
+Inside `REQUEST` / `RESPONSE` / `ERROR` payloads use `"{{var}}"` — the template
+engine substitutes the value preserving its JSON type:
 
 ```json
 {"price": "{{total}}"}        # replaced with 42 (number)
@@ -124,7 +128,7 @@ Inside `REQUEST` / `RESPONSE` / `ERROR` payloads use `"{{var}}"` — the templat
 ### Available types
 
 | Annotation | Meaning |
-|---|---|
+| ---------- | ------- |
 | `:bool` | boolean |
 | `:uint` | non-negative integer |
 | `:number` | any number |

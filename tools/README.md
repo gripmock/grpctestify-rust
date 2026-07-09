@@ -53,13 +53,13 @@ Quick workflow for contributors:
 cargo run --manifest-path tools/bench-data-gen/Cargo.toml --release -- .tmp/bench-data
 ```
 
-2. Build/verify indexes for one scenario:
+1.  Build/verify indexes for one scenario:
 
 ```bash
 cargo run --bin grpctestify -- index .tmp/bench-data/1mb/bench/index_matrix_csv.gctf
 ```
 
-3. Run bench scenario:
+1.  Run bench scenario:
 
 ```bash
 cargo run --bin grpctestify -- bench .tmp/bench-data/1mb/bench/index_matrix_csv.gctf

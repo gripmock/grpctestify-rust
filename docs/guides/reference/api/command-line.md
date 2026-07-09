@@ -78,7 +78,9 @@ Note: if `--log-format` is set without `--log-output`, the run continues and fil
 - `inspect`: `--format <text|json>`
 - `explain`: `--format <text|json>`
 - `list`: `--format <text|json>`, `--with-range`
-- `reflect`: `--address <ADDR>`, `--plaintext`, `--format <text|json>`, `--list-methods`, `--describe <SERVICE/METHOD>`, `--tls-ca <FILE>`, `--tls-cert <FILE>`, `--tls-key <FILE>`
+- `reflect`: `--address <ADDR>`, `--plaintext`, `--format <text|json>`,
+  `--list-methods`, `--describe <SERVICE/METHOD>`,
+  `--tls-ca <FILE>`, `--tls-cert <FILE>`, `--tls-key <FILE>`
 - `lsp`: `--stdio`
 - `call`: `--insecure`, `--bench`, `--concurrency <N>`, `--requests <N>`, `--duration <DURATION>`
 - `health`: `--service <NAME>`, `--format <text|json>`, `--insecure`, `--timeout <SECONDS>`
