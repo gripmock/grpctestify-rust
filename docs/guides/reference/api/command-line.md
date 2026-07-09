@@ -38,6 +38,9 @@ grpctestify [OPTIONS] [TEST_PATHS]... [COMMAND]
 - `call <FILE>` - call gRPC endpoint without assertions
 - `health <ADDRESS>` - check gRPC service health
 - `lsp` - start language server protocol mode
+- `index <SOURCES...>` - build/rebuild data source indexes
+- `query [FILES...]` - interactive shell or CLI query for data sources
+- `gen grpcurl [--execute] <grpcurl-args>` - generate `.gctf` from grpcurl invocation
 
 ## Global options
 

@@ -13,14 +13,12 @@ auth.AuthService/Login
 
 --- RESPONSE ---
 {
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
-  "expires_in": 3600
+  "expires_in": 3600,
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
 }
 
 --- EXTRACT ---
-token = .token
 
-// Document 2: fetch user profile using the token
 --- ENDPOINT ---
 users.UserService/GetUser
 
@@ -38,8 +36,8 @@ Authorization: Bearer {{token}}
   "name": "Alice",
   "email": "alice@example.com"
 }
-
 // Document 3: list orders with the same token
+
 --- ENDPOINT ---
 orders.OrderService/ListOrders
 
@@ -48,8 +46,8 @@ Authorization: Bearer {{token}}
 
 --- REQUEST ---
 {
-  "user_id": 42,
-  "limit": 10
+  "limit": 10,
+  "user_id": 42
 }
 
 --- RESPONSE ---
@@ -63,9 +61,7 @@ Authorization: Bearer {{token}}
 }
 
 --- EXTRACT ---
-order_count = .orders | length
 
-// Document 4: public settings endpoint (no auth required)
 --- ENDPOINT ---
 settings.SettingsService/GetPublicSettings
 
@@ -74,6 +70,6 @@ settings.SettingsService/GetPublicSettings
 
 --- RESPONSE ---
 {
-  "theme": "dark",
-  "language": "en"
+  "language": "en",
+  "theme": "dark"
 }

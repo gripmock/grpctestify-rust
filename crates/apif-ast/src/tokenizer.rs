@@ -46,6 +46,7 @@ pub enum TokenKind {
     Bang,
     Pipe,
     Slash,
+    Colon,
     VarDelim,
 }
 
@@ -239,6 +240,21 @@ pub fn tokenize_assertion(source: &str) -> Vec<Token> {
                     _ => TokenKind::Ident(v),
                 };
                 out.push(Token::new(kind, Span { start: s, end: i }));
+            }
+            ':' => {
+                let s = i;
+                i += 1;
+                out.push(Token::new(TokenKind::Colon, Span { start: s, end: i }));
+            }
+            '$' => {
+                let s = i;
+                i += 1;
+                let mut v = String::from('$');
+                while i < cs.len() && (cs[i].is_alphanumeric() || cs[i] == '_') {
+                    v.push(cs[i]);
+                    i += 1;
+                }
+                out.push(Token::new(TokenKind::Ident(v), Span { start: s, end: i }));
             }
             '/' => {
                 let s = i;

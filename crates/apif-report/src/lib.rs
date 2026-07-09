@@ -7,8 +7,8 @@ pub mod json;
 pub mod junit;
 pub mod streaming;
 
-use apif_state::{TestResult, TestResults};
 use anyhow::Result;
+use apif_state::{TestResult, TestResults};
 pub use console::{ConsoleMode, ConsoleReporter};
 pub use diagnostics::{
     AstOverview, BenchResolvedOption, CheckReport, CheckSummary, Diagnostic, DiagnosticSeverity,

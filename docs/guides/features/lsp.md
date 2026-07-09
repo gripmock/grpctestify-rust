@@ -14,7 +14,7 @@ gRPC Testify includes a built-in Language Server Protocol (LSP) server that prov
 
 ## VS Code Setup
 
-1. Install the [gRPC Testify VS Code extension](https://marketplace.visualstudio.com/items?grpctestify)
+1. Install the [gRPC Testify VS Code extension](https://marketplace.visualstudio.com/items?itemName=gripmock.grpc-testify)
 2. Open any `.gctf` file
 3. The LSP server starts automatically
 

@@ -234,6 +234,13 @@ pub fn tokenize_kv_line(line: &str) -> Option<(String, String)> {
 }
 
 pub fn tokenize_extract_line(line: &str) -> Option<(String, String)> {
+    let (name, _, value) = tokenize_extract_line_full(line)?;
+    Some((name, value))
+}
+
+/// Like `tokenize_extract_line` but also returns the optional type annotation
+/// from `name:Type = value` syntax.
+pub fn tokenize_extract_line_full(line: &str) -> Option<(String, Option<String>, String)> {
     let bytes = line.as_bytes();
     let len = bytes.len();
     let mut pos = 0;
@@ -264,6 +271,7 @@ pub fn tokenize_extract_line(line: &str) -> Option<(String, String)> {
     while name_end > name_start && is_ws(bytes[name_end - 1]) {
         name_end -= 1;
     }
+    let raw_name = slice_str(line, name_start, name_end);
     pos += 1;
 
     while pos < len && is_ws(bytes[pos]) {
@@ -275,11 +283,28 @@ pub fn tokenize_extract_line(line: &str) -> Option<(String, String)> {
     while val_end > val_start && is_ws(bytes[val_end - 1]) {
         val_end -= 1;
     }
+    let value = slice_str(line, val_start, val_end);
 
-    Some((
-        slice_str(line, name_start, name_end),
-        slice_str(line, val_start, val_end),
-    ))
+    // Parse `name:Type` pattern from the variable name
+    let (name, type_annotation) = if let Some(colon_pos) = raw_name.rfind(':') {
+        let maybe_type = raw_name[colon_pos + 1..].trim();
+        if !maybe_type.is_empty()
+            && maybe_type
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            (
+                raw_name[..colon_pos].trim().to_string(),
+                Some(maybe_type.to_string()),
+            )
+        } else {
+            (raw_name, None)
+        }
+    } else {
+        (raw_name, None)
+    };
+
+    Some((name, type_annotation, value))
 }
 
 pub fn tokenize_inline_options(raw: &str) -> Vec<(String, String)> {

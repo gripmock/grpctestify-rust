@@ -1,12 +1,13 @@
 use super::SourceReader;
+use anyhow::Result;
 use source_error::SourceError;
 use source_row::SourceRow;
-use anyhow::Result;
 use std::io::{BufReader, Read, Seek};
 
 pub struct CsvReader<R> {
     reader: csv::Reader<BufReader<R>>,
     headers: Vec<String>,
+    #[allow(dead_code)]
     delimiter: u8,
     row_number: usize,
     finished: bool,
@@ -55,7 +56,7 @@ impl<R: Read + Send> SourceReader for CsvReader<R> {
             return Ok(None);
         }
 
-        for result in self.reader.records() {
+        if let Some(result) = self.reader.records().next() {
             self.row_number += 1;
             let record = match result {
                 Ok(r) => r,
@@ -95,7 +96,9 @@ impl<R: Read + Seek + Send> CsvReader<R> {
     pub fn reset_seekable(&mut self) -> Result<()> {
         // csv::Reader doesn't expose the inner writer,
         // so we need to replace it entirely by seeking the raw reader
-        Err(anyhow::anyhow!("reset_seekable not supported with csv crate reader"))
+        Err(anyhow::anyhow!(
+            "reset_seekable not supported with csv crate reader"
+        ))
     }
 }
 

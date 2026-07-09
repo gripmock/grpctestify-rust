@@ -1049,14 +1049,15 @@ fn print_type_optimization_hints(doc: &GctfDocument, file_path: &Path) {
                     hints_printed = true;
                 }
 
+                let name_display =
+                    format!("{}.{}", def.name.as_deref().unwrap_or(&def.file), key_col);
                 println!(
-                    "  {} {}: consider `indexed_by: {}: {}` (inferred from {} samples, {}% confidence)",
+                    "  {} {name_display}: consider `indexed_by: {}: {}` (inferred from {} samples, {}% confidence)",
                     if stats.confidence >= 0.9 {
                         "✓"
                     } else {
                         "⚠"
                     },
-                    format!("{}.{}", def.name.as_deref().unwrap_or(&def.file), key_col),
                     key_col,
                     suggested,
                     stats.samples_taken,
@@ -1113,7 +1114,7 @@ fn print_source_hints(doc: &GctfDocument, file_path: &Path) {
             let from_file_stem = std::path::Path::new(&s.file)
                 .file_stem()
                 .map(|stem| stem.to_string_lossy())
-                .map(|stem| stem.as_ref() == &req.source)
+                .map(|stem| stem.as_ref() == req.source)
                 .unwrap_or(false);
             from_name || from_file_stem
         });
@@ -1124,10 +1125,7 @@ fn print_source_hints(doc: &GctfDocument, file_path: &Path) {
         };
 
         let resolved_path = FileUtils::resolve_relative_path(file_path, source_file_path);
-        let key_column = key_columns
-            .first()
-            .map(|s| *s)
-            .unwrap_or_else(|| req.column.as_str());
+        let key_column = key_columns.first().copied().unwrap_or(req.column.as_str());
         let idx_path = index_path_for_source(&resolved_path, key_column);
 
         let idx_exists = idx_path.exists();
@@ -1168,18 +1166,11 @@ fn print_source_hints(doc: &GctfDocument, file_path: &Path) {
 
         let cmd_hint = if idx_corrupted {
             " (run `grpctestify index --force` to rebuild)"
-        } else if idx_exists {
-            ""
         } else {
             ""
         };
 
-        println!(
-            "  {} {}{}",
-            status,
-            format!("{}.{}", req.source, req.column),
-            cmd_hint
-        );
+        println!("  {} {}.{}{}", status, req.source, req.column, cmd_hint);
     }
 
     if hints_printed {

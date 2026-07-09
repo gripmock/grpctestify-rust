@@ -51,9 +51,9 @@ pub fn handle_query(args: &QueryArgs) -> Result<()> {
     }
 
     if args.files.is_empty() && args.query.is_none() {
-        run_shell(sources, &args)?;
+        run_shell(sources, args)?;
     } else if let Some(query) = &args.query {
-        execute_query(query, &sources, &args)?;
+        execute_query(query, &sources, args)?;
     }
 
     Ok(())
@@ -85,16 +85,13 @@ fn load_gctf_file(path: &Path, sources: &mut SourceCollection) -> Result<()> {
         .with_context(|| format!("failed to parse {}", path.display()))?;
 
     for section in &ast.sections {
-        if section.section_type == crate::parser::ast::SectionType::Bench {
-            if let crate::parser::ast::SectionContent::KeyValues(kv) = &section.content {
-                if let Some(sources_yaml) = kv.get("sources") {
-                    if let Ok(defs) = serde_yaml_ng::from_str::<Vec<SourceDefinition>>(sources_yaml)
-                    {
-                        for def in defs {
-                            sources.add_from_definition(path, def)?;
-                        }
-                    }
-                }
+        if section.section_type == crate::parser::ast::SectionType::Bench
+            && let crate::parser::ast::SectionContent::KeyValues(kv) = &section.content
+            && let Some(sources_yaml) = kv.get("sources")
+            && let Ok(defs) = serde_yaml_ng::from_str::<Vec<SourceDefinition>>(sources_yaml)
+        {
+            for def in defs {
+                sources.add_from_definition(path, def)?;
             }
         }
     }
@@ -385,8 +382,8 @@ fn execute_query(query: &str, sources: &SourceCollection, args: &QueryArgs) -> R
     let mut rows = source.scan(&parsed.filters)?;
 
     if let Some(ref order_by) = args.order_by {
-        let (col, desc) = if order_by.starts_with('-') {
-            (&order_by[1..], true)
+        let (col, desc) = if let Some(rest) = order_by.strip_prefix('-') {
+            (rest, true)
         } else {
             (order_by.as_str(), false)
         };
@@ -748,6 +745,7 @@ impl QuerySource for IndexedSource {
 struct StreamingSource {
     path: PathBuf,
 
+    #[allow(dead_code)]
     def: SourceDefinition,
 }
 
@@ -784,6 +782,7 @@ impl QuerySource for StreamingSource {
 struct DirectFileSource {
     path: PathBuf,
 
+    #[allow(dead_code)]
     index_col: Option<String>,
 }
 
@@ -806,13 +805,13 @@ impl QuerySource for DirectFileSource {
         let mut headers = reader.headers().to_vec();
 
         // For NdjsonReader, headers are populated after first next_row() call
-        if headers.is_empty() {
-            if let Some(row) = reader.next_row()? {
-                headers = reader.headers().to_vec();
-                let map = row_to_map(&headers, &row);
-                if filters.iter().all(|f| f.matches(&map)) {
-                    results.push(map);
-                }
+        if headers.is_empty()
+            && let Some(row) = reader.next_row()?
+        {
+            headers = reader.headers().to_vec();
+            let map = row_to_map(&headers, &row);
+            if filters.iter().all(|f| f.matches(&map)) {
+                results.push(map);
             }
         }
 
@@ -831,13 +830,15 @@ impl QuerySource for DirectFileSource {
     }
 }
 
+type ParsedContent = (Vec<String>, Vec<HashMap<String, String>>);
+
 struct StdinSource {
     content: String,
     format: crate::bench::sources::SourceFormat,
 }
 
 impl StdinSource {
-    fn parse_content(&self) -> Result<(Vec<String>, Vec<HashMap<String, String>>)> {
+    fn parse_content(&self) -> Result<ParsedContent> {
         let reader = BufReader::new(self.content.as_bytes());
         match self.format {
             crate::bench::sources::SourceFormat::Csv => {

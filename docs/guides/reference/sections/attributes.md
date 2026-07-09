@@ -1,12 +1,5 @@
 # Attributes
 
-::: warning Experimental
-Attributes are an **experimental feature**.
-The syntax, behavior, and available attributes may change in future releases
-without a migration path.
-This feature may be removed entirely in a future version.
-:::
-
 Per-section execution modifiers using `#[name(value)]` syntax.
 
 ## When to use

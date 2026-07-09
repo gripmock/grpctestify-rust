@@ -1,5 +1,5 @@
-use apif_state::{TestResult, TestResults};
 use anyhow::Result;
+use apif_state::{TestResult, TestResults};
 use serde_json::json;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};

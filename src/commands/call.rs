@@ -201,18 +201,18 @@ async fn handle_call_document(
     let address = runner_helpers::effective_address(doc);
     let mut tls_config = runner_helpers::build_tls_config(doc, gctf_file);
     if opts.insecure {
-        tls_config = tls_config.map(|mut t| {
-            t.insecure_skip_verify = true;
-            t
-        }).or_else(|| {
-            Some(crate::grpc::TlsConfig {
+        tls_config = tls_config
+            .map(|mut t| {
+                t.insecure_skip_verify = true;
+                t
+            })
+            .or(Some(crate::grpc::TlsConfig {
                 ca_cert_path: None,
                 client_cert_path: None,
                 client_key_path: None,
                 server_name: None,
                 insecure_skip_verify: true,
-            })
-        });
+            }));
     }
     let tls_label = if tls_config.is_some() {
         "TLS"

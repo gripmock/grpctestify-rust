@@ -392,7 +392,6 @@ mod tests {
         })
     }
 
-
     #[test]
     fn test_assertion_result_fail() {
         let result = AssertionResult::fail("test message");
@@ -426,7 +425,6 @@ mod tests {
         let debug_str = format!("{:?}", result);
         assert!(debug_str.contains("Pass"));
     }
-
 
     #[test]
     fn test_evaluate_equality_operator() {
@@ -662,8 +660,6 @@ mod tests {
         }
     }
 
-
-
     #[test]
     fn test_evaluate_nested_path() {
         let engine = AssertionEngine::new();
@@ -743,6 +739,67 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert!(matches!(&results[0], AssertionResult::Pass));
         assert!(matches!(&results[1], AssertionResult::Fail { .. }));
+    }
+
+    #[test]
+    fn test_evaluate_type_cast_number() {
+        let engine = AssertionEngine::new();
+        let response = json!({
+            "price": 42
+        });
+
+        let result = engine.evaluate(".price:number >= 0", &response, None, None);
+        assert!(
+            matches!(result, AssertionResult::Pass),
+            "Expected Pass, got: {:?}",
+            result
+        );
+
+        let result = engine.evaluate(".price:number < 0", &response, None, None);
+        assert!(
+            matches!(result, AssertionResult::Fail { .. }),
+            "Expected Fail, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_evaluate_type_cast_string() {
+        let engine = AssertionEngine::new();
+        let response = json!({
+            "name": "hello world"
+        });
+
+        let result = engine.evaluate(".name:string contains \"hello\"", &response, None, None);
+        assert!(
+            matches!(result, AssertionResult::Pass),
+            "Expected Pass, got: {:?}",
+            result
+        );
+
+        let result = engine.evaluate(".name:string startsWith \"he\"", &response, None, None);
+        assert!(
+            matches!(result, AssertionResult::Pass),
+            "Expected Pass, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_evaluate_type_cast_is_noop() {
+        let engine = AssertionEngine::new();
+        let response = json!({
+            "value": 123
+        });
+
+        // Type cast should not affect evaluation result
+        let without_cast = engine.evaluate(".value == 123", &response, None, None);
+        let with_cast = engine.evaluate(".value:number == 123", &response, None, None);
+        assert_eq!(
+            matches!(without_cast, AssertionResult::Pass),
+            matches!(with_cast, AssertionResult::Pass),
+            "Type cast should not change evaluation result"
+        );
     }
 
     #[test]
@@ -868,6 +925,4 @@ mod tests {
         let second = AssertionEngine::get_or_compile_jaq_filter(expr).unwrap();
         assert!(Arc::ptr_eq(&first, &second));
     }
-
-
 }

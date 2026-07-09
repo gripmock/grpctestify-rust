@@ -1,8 +1,8 @@
 // Health command — checks gRPC service health using grpc.health.v1.Health/Check
 
-use anyhow::Result;
 use crate::cli::args::HealthArgs;
 use crate::grpc::{GrpcClient, GrpcClientConfig, TlsConfig};
+use anyhow::Result;
 
 pub async fn handle_health(args: &HealthArgs) -> Result<()> {
     let start = std::time::Instant::now();
@@ -37,10 +37,14 @@ pub async fn handle_health(args: &HealthArgs) -> Result<()> {
     };
 
     let request = serde_json::json!({"service": service_name});
-    let response = client.call("grpc.health.v1.Health", "Check", vec![request]).await?;
+    let response = client
+        .call("grpc.health.v1.Health", "Check", vec![request])
+        .await?;
 
     let elapsed = start.elapsed().as_millis() as u64;
-    let status = response.messages.first()
+    let status = response
+        .messages
+        .first()
         .and_then(|m| m.get("status").and_then(|s| s.as_str()))
         .unwrap_or("UNKNOWN");
 
@@ -58,7 +62,10 @@ pub async fn handle_health(args: &HealthArgs) -> Result<()> {
                 "SERVING" => "✓",
                 _ => "✗",
             };
-            println!("{} Service: {} ({}) [{} ms]", icon, status, service_name, elapsed);
+            println!(
+                "{} Service: {} ({}) [{} ms]",
+                icon, status, service_name, elapsed
+            );
         }
     }
 

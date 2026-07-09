@@ -1,8 +1,8 @@
 // JSON reporter - outputs test results to a JSON file
 
 use super::Reporter;
-use apif_state::TestResults;
 use anyhow::{Context, Result};
+use apif_state::TestResults;
 use serde::Serialize;
 use std::fs::File;
 use std::path::PathBuf;
@@ -42,16 +42,13 @@ impl Reporter for JsonReporter {
 
         let report = JsonReport {
             results,
-            report_context: {
-                let ctx = JsonReportContext {
-                    tool: "apif".to_string(),
-                    version: env!("CARGO_PKG_VERSION").to_string(),
-                    generated_at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64,
-                };
-                ctx
+            report_context: JsonReportContext {
+                tool: "apif".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                generated_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
             },
         };
 

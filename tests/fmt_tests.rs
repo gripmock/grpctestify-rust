@@ -188,6 +188,73 @@ timeout: 10
 }
 
 #[test]
+fn test_fmt_preserves_type_cast_in_asserts() {
+    let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE with_asserts ---
+{
+  "price": 42
+}
+
+--- ASSERTS ---
+.price:number >= 0
+"#;
+
+    let formatted = format_with_serializer(source);
+    assert!(
+        formatted.contains(".price:number >= 0"),
+        "Type cast should be preserved in formatted output"
+    );
+    assert!(formatted.contains("--- ASSERTS ---"));
+}
+
+#[test]
+fn test_fmt_preserves_type_cast_string_contains() {
+    let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE with_asserts ---
+{
+  "name": "hello"
+}
+
+--- ASSERTS ---
+.name:string contains "hello"
+"#;
+
+    let formatted = format_with_serializer(source);
+    assert!(formatted.contains(".name:string contains \"hello\""));
+}
+
+#[test]
+fn test_fmt_preserves_type_cast_plugin() {
+    let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE with_asserts ---
+{
+  "items": [1, 2, 3]
+}
+
+--- ASSERTS ---
+@len(.items):uint >= 0
+"#;
+
+    let formatted = format_with_serializer(source);
+    assert!(formatted.contains("@len(.items):uint >= 0"));
+}
+
+#[test]
 fn test_fmt_keeps_attribute_on_request_not_endpoint() {
     let source = r#"--- ENDPOINT ---
 extended.DesignService/GetThemeColor

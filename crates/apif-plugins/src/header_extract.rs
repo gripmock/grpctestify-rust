@@ -4,10 +4,10 @@
 use anyhow::Result;
 use serde_json::Value;
 
-use apif_assert::engine::AssertionResult;
 use crate::{
     ArgTypeInfo, Plugin, PluginContext, PluginPurity, PluginResult, PluginSignature, TypeInfo,
 };
+use apif_assert::engine::AssertionResult;
 
 /// Header plugin - extracts header values
 #[derive(Debug, Clone, Default)]
@@ -24,7 +24,7 @@ impl Plugin for HeaderExtractPlugin {
 
     fn signature(&self) -> PluginSignature {
         PluginSignature {
-            return_type: TypeInfo::StringOrNull,
+            return_type: TypeInfo::String,
             arg_types: &[ArgTypeInfo {
                 expected: TypeInfo::String,
                 required: true,

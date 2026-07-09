@@ -73,7 +73,18 @@ links:
 @len(.items) > 0
 @header("x-request-id") != null
 @uuid(.user.id)
+.price:number >= 0
+$total >= 0
 ```
+
+Type annotations (`:type`) let you use ordering operators when the schema is unknown:
+
+```gctf
+.price:number >= 0
+.name:string contains "hello"
+```
+
+Use `$name` to reference [EXTRACT](../reference/sections/extract) variables — their type propagates automatically.
 
 ## Inline response options
 

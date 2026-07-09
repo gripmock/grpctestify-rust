@@ -3,22 +3,20 @@ auth.AuthService/Login
 
 --- REQUEST ---
 {
-  "username": "testuser",
-  "password": "secret"
+  "password": "secret",
+  "username": "testuser"
 }
 
 --- RESPONSE ---
 {
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0",
-  "refresh_token": "550e8400-e29b-41d4-a716-446655440000",
-  "expires_in": 3600
+  "expires_in": 3600,
+  "refresh_token": "550e8400-e29b-41d4-a716-446655440000"
 }
 
 --- EXTRACT ---
-access_token = .access_token
-refresh_token = .refresh_token
 
 --- ASSERTS ---
-@len($access_token) > 0
-@uuid($refresh_token)
+@len(access_token) > 0
+@uuid(refresh_token)
 .expires_in == 3600

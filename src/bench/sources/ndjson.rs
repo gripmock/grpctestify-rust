@@ -1,7 +1,7 @@
 use super::SourceReader;
+use anyhow::Result;
 use source_error::SourceError;
 use source_row::SourceRow;
-use anyhow::Result;
 use std::io::{BufRead, BufReader, Read, Seek};
 
 pub struct NdjsonReader<R> {
@@ -55,7 +55,11 @@ impl<R: Read> NdjsonReader<R> {
 
         let obj = match &value {
             serde_json::Value::Object(m) => m,
-            _ => return Err(SourceError::InvalidJson(line_num, "expected JSON object".into()).into()),
+            _ => {
+                return Err(
+                    SourceError::InvalidJson(line_num, "expected JSON object".into()).into(),
+                );
+            }
         };
 
         let values: Vec<String> = self
@@ -75,8 +79,8 @@ impl<R: Read> NdjsonReader<R> {
             return Ok(());
         };
 
-        let value: serde_json::Value = serde_json::from_str(&line)
-            .map_err(|e| SourceError::InvalidJson(1, e.to_string()))?;
+        let value: serde_json::Value =
+            serde_json::from_str(&line).map_err(|e| SourceError::InvalidJson(1, e.to_string()))?;
 
         let obj = match &value {
             serde_json::Value::Object(m) => m,

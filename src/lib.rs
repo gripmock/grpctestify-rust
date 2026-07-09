@@ -21,5 +21,3 @@ pub mod utils;
 pub use parser::parse_gctf;
 pub use parser::serialize_gctf;
 pub use parser::validate_document;
-
-

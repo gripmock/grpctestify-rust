@@ -13,20 +13,20 @@ pub mod tsv;
 pub use analyzer::{
     IndexReason, IndexRequirement, SourceUsageAnalyzer, SourceUsagePlan, effective_source_name,
 };
-pub use twoq_cache::TwoQCache;
 pub use csv::CsvReader;
 pub use definition::{IndexMode, JoinType, SourceDefinition};
 pub use detect::{SourceFormat, detect_format};
 pub use driven::{
     FallbackReason, FallbackType, RuntimeFallbackPolicy, SourceDrivenConfig, SourceFallbackEvent,
 };
-pub use source_error::SourceError;
 pub use filter::{FilterCondition, matches_all as matches_filter_all};
 pub use index::{BloomFilter, IndexEntry, IndexEntryV4, SourceIndex, XorFilter};
 pub use memory::InMemorySource;
 pub use ndjson::NdjsonReader;
+pub use source_error::SourceError;
 pub use source_row::SourceRow;
 pub use tsv::TsvReader;
+pub use twoq_cache::TwoQCache;
 
 use crate::utils::file::FileUtils;
 use anyhow::Result;
@@ -122,7 +122,7 @@ mod tests {
             vars.get("users.name"),
             Some(&serde_json::Value::String("Alice".into()))
         );
-        assert!(vars.get("id").is_none());
+        assert!(!vars.contains_key("id"));
     }
 
     #[test]

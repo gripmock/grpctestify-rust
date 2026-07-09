@@ -6,10 +6,10 @@ use anyhow::Result;
 use serde_json::Value;
 use std::env;
 
-use apif_assert::engine::AssertionResult;
 use crate::{
     ArgTypeInfo, Plugin, PluginContext, PluginPurity, PluginResult, PluginSignature, TypeInfo,
 };
+use apif_assert::engine::AssertionResult;
 
 /// Environment variable plugin
 #[derive(Debug, Clone, Default)]
@@ -26,7 +26,7 @@ impl Plugin for EnvPlugin {
 
     fn signature(&self) -> PluginSignature {
         PluginSignature {
-            return_type: TypeInfo::StringOrNull,
+            return_type: TypeInfo::String,
             arg_types: &[
                 ArgTypeInfo {
                     expected: TypeInfo::String,

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use rand::Rng;
+use rand::RngExt;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::collections::BTreeMap;
@@ -29,8 +29,9 @@ fn json_value_to_string(v: Option<&serde_json::Value>) -> String {
 const FLAG_HAS_UNICODE: u64 = 1 << 62;
 const FLAG_HAS_METADATA: u64 = 1 << 63;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum KeyType {
+    #[default]
     String,
     U64,
     I64,
@@ -109,12 +110,6 @@ impl KeyType {
     }
 }
 
-impl Default for KeyType {
-    fn default() -> Self {
-        KeyType::String
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum KeyValue {
     String(String),
@@ -181,7 +176,7 @@ fn parse_date(s: &str) -> Option<u32> {
     let year: u32 = parts[0].parse().ok()?;
     let month: u32 = parts[1].parse().ok()?;
     let day: u32 = parts[2].parse().ok()?;
-    if year < 1900 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31 {
+    if !(1900..=2100).contains(&year) || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }
     Some(year * 10000 + month * 100 + day)
@@ -260,11 +255,11 @@ pub fn infer_key_type_from_stream<R: Read + Seek + BufRead>(
 
     let mut samples = Vec::with_capacity(max_samples.min(1000));
     let mut bytes_scanned = 0u64;
-    let mut rng = StdRng::from_entropy();
+    let mut rng = StdRng::from_rng(&mut rand::rng());
 
     let num_samples = max_samples.min(1000);
     let sample_positions: Vec<u64> = (0..num_samples)
-        .map(|_| rng.gen_range(0..file_size))
+        .map(|_| rng.random_range(0..file_size))
         .collect();
 
     for pos in sample_positions {
@@ -363,11 +358,11 @@ pub fn infer_key_type_from_ndjson_stream<R: Read + Seek + BufRead>(
 
     let mut samples = Vec::with_capacity(max_samples.min(1000));
     let mut bytes_scanned = 0u64;
-    let mut rng = StdRng::from_entropy();
+    let mut rng = StdRng::from_rng(&mut rand::rng());
 
     let num_samples = max_samples.min(1000);
     let sample_positions: Vec<u64> = (0..num_samples)
-        .map(|_| rng.gen_range(0..file_size))
+        .map(|_| rng.random_range(0..file_size))
         .collect();
 
     for pos in sample_positions {
@@ -452,7 +447,7 @@ fn is_uuid(s: &str) -> bool {
     let mut si = s.bytes();
     for c in expected.bytes() {
         if c == b'x' {
-            if !si.next().map_or(false, |b| b.is_ascii_hexdigit()) {
+            if !si.next().is_some_and(|b| b.is_ascii_hexdigit()) {
                 return false;
             }
         } else if si.next() != Some(c) {
@@ -491,7 +486,7 @@ impl BloomFilter {
     pub fn new(expected_elements: usize, false_positive_rate: f64) -> Self {
         let m = Self::optimal_bit_count(expected_elements, false_positive_rate);
         let k = Self::optimal_hash_count(m, expected_elements);
-        let bits = vec![0u64; (m + 63) / 64];
+        let bits = vec![0u64; m.div_ceil(64)];
         Self {
             bits,
             hash_count: k as u32,
@@ -500,7 +495,7 @@ impl BloomFilter {
     }
 
     pub fn with_capacity(bit_count: usize, hash_count: u32) -> Self {
-        let bits = vec![0u64; (bit_count + 63) / 64];
+        let bits = vec![0u64; bit_count.div_ceil(64)];
         Self {
             bits,
             hash_count,
@@ -591,14 +586,14 @@ impl BloomFilter {
         reader.read_exact(&mut hash_buf)?;
         let hash_count = u32::from_le_bytes(hash_buf);
 
-        let bits = vec![0u64; (bit_count + 63) / 64];
+        let bits = vec![0u64; bit_count.div_ceil(64)];
         let mut result = Self {
             bits,
             hash_count,
             bit_count,
         };
 
-        let byte_count = (bit_count + 7) / 8;
+        let byte_count = bit_count.div_ceil(8);
         let mut buf = vec![0u8; byte_count];
         reader.read_exact(&mut buf)?;
         for (i, chunk) in buf.chunks(8).enumerate() {
@@ -634,7 +629,7 @@ impl XorFilter {
 
     fn optimal_fingerprint_bits(p: f64) -> u32 {
         let p = p.clamp(0.0001, 0.9999);
-        ((-p.log2()).ceil() as u32).max(4).min(16)
+        ((-p.log2()).ceil() as u32).clamp(4, 16)
     }
 
     fn optimal_array_size(n: usize) -> usize {
@@ -682,7 +677,7 @@ impl XorFilter {
             1 => k ^= data[i] as u64,
             _ => {}
         }
-        if len % 8 != 0 {
+        if !len.is_multiple_of(8) {
             k ^= (len as u64).wrapping_mul(c2);
             k = k.wrapping_mul(c1);
             h ^= k;
@@ -721,7 +716,7 @@ impl XorFilter {
 
     fn compute_fingerprint(&self, key: &str) -> u8 {
         let h = Self::murmurhash64(key.as_bytes(), self.seed ^ 0xdeadbeef);
-        let fb = self.fingerprint_bits as u32;
+        let fb = self.fingerprint_bits;
         ((h >> 32) ^ h) as u8 & ((1u8 << fb) - 1)
     }
 
@@ -954,19 +949,19 @@ impl SourceIndex {
     }
 
     pub fn lookup(&self, key: &str) -> Option<&IndexEntry> {
-        if let Some(ref filter) = self.filter {
-            if !filter.contains(key) {
-                return None;
-            }
+        if let Some(filter) = &self.filter
+            && !filter.contains(key)
+        {
+            return None;
         }
         self.binary_search(key)
     }
 
     pub fn lookup_all(&self, key: &str) -> Option<&[IndexEntry]> {
-        if let Some(ref filter) = self.filter {
-            if !filter.contains(key) {
-                return None;
-            }
+        if let Some(filter) = &self.filter
+            && !filter.contains(key)
+        {
+            return None;
         }
         match &self.storage {
             KeyStorage::String(map) => map.get(key).map(|v| v.as_slice()),
@@ -981,16 +976,16 @@ impl SourceIndex {
     }
 
     pub fn contains(&self, key: &str) -> bool {
-        if let Some(ref filter) = self.filter {
-            if !filter.contains(key) {
-                return false;
-            }
+        if let Some(filter) = &self.filter
+            && !filter.contains(key)
+        {
+            return false;
         }
         self.lookup_all(key).is_some()
     }
 
     pub fn fast_negative_lookup(&self, key: &str) -> bool {
-        if let Some(ref filter) = self.filter {
+        if let Some(filter) = &self.filter {
             return filter.contains(key);
         }
         true
@@ -1020,8 +1015,7 @@ impl SourceIndex {
                     Ok(idx) => idx,
                     Err(idx) => idx,
                 };
-                for i in start_idx..vec.len() {
-                    let (kv, _, entries) = &vec[i];
+                for (kv, _, entries) in &vec[start_idx..] {
                     if kv > &end_kv {
                         break;
                     }
@@ -1470,9 +1464,9 @@ mod tests {
         let path = dir.join("test.gcti");
 
         let mut idx = SourceIndex::new("pvz_id");
-        idx.insert("pvz_001".into(), 0, 50);
-        idx.insert("pvz_002".into(), 51, 60);
-        idx.insert("pvz_003".into(), 112, 45);
+        idx.insert("pvz_001".into(), 0, 50).unwrap();
+        idx.insert("pvz_002".into(), 51, 60).unwrap();
+        idx.insert("pvz_003".into(), 112, 45).unwrap();
         idx.write_to_file(&path).unwrap();
 
         let loaded = SourceIndex::read_from_file(&path).unwrap();
@@ -1509,9 +1503,9 @@ mod tests {
     #[test]
     fn entries_sorted_by_key() {
         let mut idx = SourceIndex::new("id");
-        idx.insert("c".into(), 200, 10);
-        idx.insert("a".into(), 0, 10);
-        idx.insert("b".into(), 100, 10);
+        idx.insert("c".into(), 200, 10).unwrap();
+        idx.insert("a".into(), 0, 10).unwrap();
+        idx.insert("b".into(), 100, 10).unwrap();
 
         let keys: Vec<&str> = idx.iter().map(|(k, _)| k).collect();
         assert_eq!(keys, vec!["a", "b", "c"]);
@@ -1525,11 +1519,13 @@ mod tests {
         let header_line = "id,name,age\n";
         let row1_offset = header_line.len() as u64;
         let row1 = "1,Alice,30";
-        idx.insert("1".into(), row1_offset, row1.len() as u32);
+        idx.insert("1".into(), row1_offset, row1.len() as u32)
+            .unwrap();
 
         let row2_offset = (header_line.len() + row1.len() + 1) as u64;
         let row2 = "2,Bob,25";
-        idx.insert("2".into(), row2_offset, row2.len() as u32);
+        idx.insert("2".into(), row2_offset, row2.len() as u32)
+            .unwrap();
 
         let mut cursor = Cursor::new(source_data);
         let line1 = idx.lookup_row(&mut cursor, "1").unwrap().unwrap();
@@ -1564,8 +1560,8 @@ mod tests {
         let path = dir.join("unicode.gcti");
 
         let mut idx = SourceIndex::new("город");
-        idx.insert("Москва".into(), 0, 10);
-        idx.insert("Санкт-Петербург".into(), 10, 20);
+        idx.insert("Москва".into(), 0, 10).unwrap();
+        idx.insert("Санкт-Петербург".into(), 10, 20).unwrap();
         idx.write_to_file(&path).unwrap();
 
         let loaded = SourceIndex::read_from_file(&path).unwrap();
@@ -1583,9 +1579,9 @@ mod tests {
         let path = dir.join("dup.gcti");
 
         let mut idx = SourceIndex::new("zone_id");
-        idx.insert("z1".into(), 10, 20);
-        idx.insert("z1".into(), 31, 22);
-        idx.insert("z2".into(), 54, 18);
+        idx.insert("z1".into(), 10, 20).unwrap();
+        idx.insert("z1".into(), 31, 22).unwrap();
+        idx.insert("z2".into(), 54, 18).unwrap();
         idx.write_to_file(&path).unwrap();
 
         let loaded = SourceIndex::read_from_file(&path).unwrap();
@@ -1654,10 +1650,10 @@ mod tests {
     #[test]
     fn lookup_range_string_keys() {
         let mut idx = SourceIndex::new("zone_id");
-        idx.insert("zone_a".into(), 0, 10);
-        idx.insert("zone_b".into(), 20, 15);
-        idx.insert("zone_c".into(), 50, 20);
-        idx.insert("zone_d".into(), 100, 25);
+        idx.insert("zone_a".into(), 0, 10).unwrap();
+        idx.insert("zone_b".into(), 20, 15).unwrap();
+        idx.insert("zone_c".into(), 50, 20).unwrap();
+        idx.insert("zone_d".into(), 100, 25).unwrap();
 
         let results = idx.lookup_range("zone_a", "zone_c");
         assert_eq!(results.len(), 3);
@@ -1669,10 +1665,10 @@ mod tests {
     #[test]
     fn lookup_range_numeric_keys() {
         let mut idx = SourceIndex::with_key_type("date_id", KeyType::DatePacked);
-        idx.insert("2024-01-01".into(), 0, 10);
-        idx.insert("2024-01-15".into(), 20, 15);
-        idx.insert("2024-01-31".into(), 50, 20);
-        idx.insert("2024-02-01".into(), 100, 25);
+        idx.insert("2024-01-01".into(), 0, 10).unwrap();
+        idx.insert("2024-01-15".into(), 20, 15).unwrap();
+        idx.insert("2024-01-31".into(), 50, 20).unwrap();
+        idx.insert("2024-02-01".into(), 100, 25).unwrap();
 
         let results = idx.lookup_range("2024-01-01", "2024-01-31");
         assert_eq!(results.len(), 3);
@@ -1685,9 +1681,9 @@ mod tests {
     #[test]
     fn lookup_range_single_key() {
         let mut idx = SourceIndex::new("id");
-        idx.insert("a".into(), 0, 10);
-        idx.insert("b".into(), 20, 15);
-        idx.insert("c".into(), 50, 20);
+        idx.insert("a".into(), 0, 10).unwrap();
+        idx.insert("b".into(), 20, 15).unwrap();
+        idx.insert("c".into(), 50, 20).unwrap();
 
         let results = idx.lookup_range("b", "b");
         assert_eq!(results.len(), 1);
@@ -1697,8 +1693,8 @@ mod tests {
     #[test]
     fn lookup_range_no_match() {
         let mut idx = SourceIndex::new("id");
-        idx.insert("a".into(), 0, 10);
-        idx.insert("c".into(), 50, 20);
+        idx.insert("a".into(), 0, 10).unwrap();
+        idx.insert("c".into(), 50, 20).unwrap();
 
         let results = idx.lookup_range("b", "b");
         assert!(results.is_empty());

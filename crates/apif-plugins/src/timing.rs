@@ -1,9 +1,7 @@
 use anyhow::{Result, anyhow};
 use serde_json::Value;
 
-use crate::{
-    Plugin, PluginContext, PluginPurity, PluginResult, PluginSignature, TypeInfo,
-};
+use crate::{Plugin, PluginContext, PluginPurity, PluginResult, PluginSignature, TypeInfo};
 
 pub struct ElapsedMsPlugin;
 

@@ -17,7 +17,10 @@ impl Default for ExecutionMetrics {
     fn default() -> Self {
         Self {
             total_duration_ms: 0,
-            start_time: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+            start_time: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
             end_time: 0,
             rpc_calls: 0,
             total_rpc_ms: 0,

@@ -3,10 +3,12 @@
 use crate::assert::AssertionEngine;
 #[cfg(test)]
 use crate::parser::ast::{Section, SectionContent, SectionType};
-use crate::plugins::AssertionTiming;
+use crate::plugins::{AssertionTiming, PluginManager};
 use crate::utils::section_content_line;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::LazyLock;
 
 /// Assertion evaluation result
 #[derive(Debug, Clone)]
@@ -20,11 +22,15 @@ pub struct AssertionHandler {
     engine: AssertionEngine,
 }
 
+/// Global plugin registry for assertion evaluation.
+static PLUGIN_REGISTRY: LazyLock<Arc<dyn apif_assert::registry::PluginRegistry>> =
+    LazyLock::new(|| Arc::new(PluginManager::new()));
+
 impl AssertionHandler {
     /// Create new assertion handler
     pub fn new(_verbose: bool) -> Self {
         Self {
-            engine: AssertionEngine::new(),
+            engine: AssertionEngine::with_registry(PLUGIN_REGISTRY.clone()),
         }
     }
 

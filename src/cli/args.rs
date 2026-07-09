@@ -58,6 +58,7 @@ pub struct Cli {
     pub completion: Option<String>,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Run tests (default)

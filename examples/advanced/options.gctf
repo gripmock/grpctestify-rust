@@ -6,10 +6,10 @@ tags: [options]
 helloworld.Greeter/SayHello
 
 --- OPTIONS ---
-timeout: 10
+no_retry: false
 retry: 3
 retry_delay: 0.5
-no_retry: false
+timeout: 10
 
 --- REQUEST ---
 {

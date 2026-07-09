@@ -3,17 +3,16 @@ name: Benchmark smoke test
 tags: [bench, smoke]
 
 --- BENCH ---
-profile: smoke
-mode: fixed
-concurrency: 4
-requests: 1000
-duration: 30s
-warmup: 3s
 assert_mode: sampled
+concurrency: 4
+duration: 30s
+mode: fixed
+profile: smoke
+requests: 1000
 sample_rate: 0.1
-thresholds:
-  latency_ms.p(95): "<200"
-  error_rate_pct: "<1.0"
+thresholds.error_rate_pct: <1.0
+thresholds.latency_ms.p(95): <200
+warmup: 3s
 
 --- ENDPOINT ---
 helloworld.Greeter/SayHello

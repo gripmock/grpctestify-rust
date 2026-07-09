@@ -259,12 +259,6 @@ mod tests {
     }
 
     #[test]
-
-    #[test]
-
-    #[test]
-
-    #[test]
     fn test_ternary_with_parentheses_preserved() {
         // Verify parentheses are preserved correctly
         let input = ".a > 0 ? (.a > 10 ? \"big\" : \"medium\") : \"small\"";
@@ -272,5 +266,4 @@ mod tests {
         assert!(result.contains("(if .a > 10 then"));
         assert!(result.contains("end)"));
     }
-
 }

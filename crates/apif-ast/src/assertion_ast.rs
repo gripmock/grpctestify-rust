@@ -65,6 +65,9 @@ pub enum Expr {
     },
     Json(String),
     Yaml(String),
+    /// Type annotation: `expr:TypeName`. Evaluates to `expr` at runtime,
+    /// but hints to the type checker that the expression has the given type.
+    As(Box<Expr>, String),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -150,7 +153,8 @@ impl std::fmt::Display for Expr {
             }
             Self::Json(s) => write!(f, "{}", s),
             Self::Yaml(s) => write!(f, "{}", s),
-            Self::Variable(n) => write!(f, "{{{{{}}}}}", n),
+            Self::Variable(n) => write!(f, "${}", n),
+            Self::As(inner, type_name) => write!(f, "{}:{}", inner, type_name),
         }
     }
 }
@@ -422,7 +426,7 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
     if *p >= ts.len() {
         return AssertionExpr::Atom(Expr::JqPath(String::new()));
     }
-    let expr = match &ts[*p].kind {
+    let mut expr = match &ts[*p].kind {
         TokenKind::StringLit(s) => {
             *p += 1;
             Expr::Literal(Literal::Str(s.clone()))
@@ -575,6 +579,10 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
             json.push('}');
             Expr::Json(json)
         }
+        TokenKind::Ident(s) if s.starts_with('$') => {
+            *p += 1;
+            Expr::Variable(s[1..].to_string())
+        }
         TokenKind::Dot | TokenKind::Ident(_) => {
             let mut path = String::with_capacity(24);
             while *p < ts.len() {
@@ -618,6 +626,17 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
             Expr::JqPath(String::new())
         }
     };
+
+    // Parse optional `:TypeName` type annotation
+    if *p < ts.len() && matches!(&ts[*p].kind, TokenKind::Colon) {
+        *p += 1; // consume ':'
+        if let TokenKind::Ident(type_name) = &ts[*p].kind {
+            let name = type_name.clone();
+            *p += 1; // consume type name
+            expr = Expr::As(Box::new(expr), name);
+        }
+    }
+
     AssertionExpr::Atom(expr)
 }
 
@@ -712,9 +731,8 @@ fn push_expr(expr: &Expr, out: &mut String) {
         }
         Expr::Literal(Literal::Null) => out.push_str("null"),
         Expr::Variable(n) => {
-            out.push_str("{{");
+            out.push('$');
             out.push_str(n);
-            out.push_str("}}");
         }
         Expr::RegExp { pattern, flags } => {
             out.push('/');
@@ -723,6 +741,11 @@ fn push_expr(expr: &Expr, out: &mut String) {
             out.push_str(flags);
         }
         Expr::Json(s) | Expr::Yaml(s) => out.push_str(s),
+        Expr::As(inner, type_name) => {
+            push_expr(inner, out);
+            out.push(':');
+            out.push_str(type_name);
+        }
     }
 }
 
@@ -1270,5 +1293,145 @@ mod tests {
         let s = assertion_to_string(&expr);
         assert!(s.contains('?'), "Should contain ternary: {}", s);
         assert!(s.contains('('), "Should contain parens: {}", s);
+    }
+
+    // ─── Type cast tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_type_cast_number() {
+        let expr = parse_assertion(".price:number >= 0");
+        if let AssertionExpr::Binary { op, left, right } = expr {
+            assert_eq!(op, BinaryOp::Ge);
+            assert!(matches!(&*left, AssertionExpr::Atom(Expr::As(_, tn)) if tn == "number"));
+            if let AssertionExpr::Atom(Expr::As(inner, tn)) = &*left {
+                assert_eq!(tn, "number");
+                assert!(matches!(&**inner, Expr::JqPath(p) if p == ".price"));
+            }
+            assert!(
+                matches!(&*right, AssertionExpr::Atom(Expr::Literal(Literal::Number(n))) if n == "0")
+            );
+        } else {
+            panic!("Expected Binary, got: {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_type_cast_string() {
+        let expr = parse_assertion(".name:string contains \"hello\"");
+        assert!(matches!(
+            expr,
+            AssertionExpr::Binary {
+                op: BinaryOp::Contains,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_parse_type_cast_uint() {
+        let expr = parse_assertion("@len(.items):uint > 0");
+        if let AssertionExpr::Binary { op, left, .. } = expr {
+            assert_eq!(op, BinaryOp::Gt);
+            assert!(matches!(&*left, AssertionExpr::Atom(Expr::As(_, tn)) if tn == "uint"));
+        } else {
+            panic!("Expected Binary, got: {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_type_cast_bool() {
+        let expr = parse_assertion(".active:bool == true");
+        if let AssertionExpr::Binary { op, left, right } = expr {
+            assert_eq!(op, BinaryOp::Eq);
+            assert!(matches!(&*left, AssertionExpr::Atom(Expr::As(_, tn)) if tn == "bool"));
+            assert!(matches!(
+                &*right,
+                AssertionExpr::Atom(Expr::Literal(Literal::Bool(true)))
+            ));
+        } else {
+            panic!("Expected Binary, got: {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_type_cast_all_types_parsed() {
+        let types = [
+            "bool", "uint", "number", "string", "json", "yaml", "uuid", "email", "url", "ip",
+        ];
+        for type_name in &types {
+            let raw = format!(".x:{} == 0", type_name);
+            let expr = parse_assertion(&raw);
+            assert!(
+                matches!(&expr, AssertionExpr::Binary { left, .. }
+                    if matches!(&**left, AssertionExpr::Atom(Expr::As(_, tn)) if tn == type_name)),
+                "Failed for type: {}",
+                type_name
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_type_cast_roundtrip() {
+        let original = ".price:number >= 0";
+        let expr = parse_assertion(original);
+        let s = assertion_to_string(&expr);
+        assert_eq!(s, original);
+    }
+
+    #[test]
+    fn test_parse_type_cast_compound() {
+        let expr = parse_assertion(".items:json == {\"key\": \"value\"}");
+        if let AssertionExpr::Binary { op, left, right } = expr {
+            assert_eq!(op, BinaryOp::Eq);
+            assert!(matches!(&*left, AssertionExpr::Atom(Expr::As(_, tn)) if tn == "json"));
+            assert!(matches!(&*right, AssertionExpr::Atom(Expr::Json(_))));
+        } else {
+            panic!("Expected Binary, got: {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_type_cast_jq_path_preserved() {
+        let expr = parse_assertion(".user.name:string == \"alice\"");
+        if let AssertionExpr::Binary { left, .. } = &expr {
+            if let AssertionExpr::Atom(Expr::As(inner, tn)) = &**left {
+                assert_eq!(tn, "string");
+                assert!(matches!(&**inner, Expr::JqPath(p) if p == ".user.name"));
+            } else {
+                panic!("Expected As, got: {:?}", left);
+            }
+        } else {
+            panic!("Expected Binary, got: {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_parse_type_cast_assertion_to_string_preserves_cast() {
+        let cases = [
+            ".x:number > 0",
+            ".x:string == \"hello\"",
+            ".x:bool == true",
+            ".x:uint >= 5",
+        ];
+        for original in &cases {
+            let expr = parse_assertion(original);
+            let s = assertion_to_string(&expr);
+            assert_eq!(s.as_str(), *original, "Roundtrip failed for: {}", original);
+        }
+    }
+
+    #[test]
+    fn test_parse_type_cast_with_plugin() {
+        let expr = parse_assertion("@len(.items):number >= 0");
+        if let AssertionExpr::Binary { left, .. } = &expr {
+            if let AssertionExpr::Atom(Expr::As(inner, tn)) = &**left {
+                assert_eq!(tn, "number");
+                assert!(matches!(&**inner, Expr::PluginCall { name, .. } if name == "len"));
+            } else {
+                panic!("Expected As(PluginCall), got: {:?}", left);
+            }
+        } else {
+            panic!("Expected Binary, got: {:?}", expr);
+        }
     }
 }

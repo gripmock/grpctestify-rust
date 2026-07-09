@@ -46,6 +46,12 @@ pub struct DocumentMetadata {
 
     /// Parsed at timestamp
     pub parsed_at: i64,
+
+    /// Variable type annotations from EXTRACT sections: `name:Type = .path`
+    /// Maps variable name → type name (e.g., "number", "string").
+    /// Used for {{var}} type inference in assertions.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub variable_types: HashMap<String, String>,
 }
 
 impl Default for DocumentMetadata {
@@ -57,6 +63,7 @@ impl Default for DocumentMetadata {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs() as i64,
+            variable_types: HashMap::new(),
         }
     }
 }

@@ -1,8 +1,8 @@
 // GCTF document validator - validates parsed AST
 // Checks for required sections, conflicts, and data integrity
 
-use apif_ast::*;
 use anyhow::{Result, bail};
+use apif_ast::*;
 use serde::Serialize;
 
 /// Validation error
@@ -27,20 +27,40 @@ pub enum ErrorSeverity {
 // The bench runtime module re-exports them for its own use.
 
 pub const BENCH_NUMERIC_KEYS: &[&str] = &[
-    "concurrency", "requests", "max_rps", "connections", "cpus",
-    "skip_first", "load_start", "load_step", "load_end",
-    "load_midpoint", "load_amplitude", "load_frequency",
-    "load_spike_target", "load_spike_after", "load_spike_duration",
+    "concurrency",
+    "requests",
+    "max_rps",
+    "connections",
+    "cpus",
+    "skip_first",
+    "load_start",
+    "load_step",
+    "load_end",
+    "load_midpoint",
+    "load_amplitude",
+    "load_frequency",
+    "load_spike_target",
+    "load_spike_after",
+    "load_spike_duration",
 ];
 
 pub const BENCH_DURATION_KEYS: &[&str] = &[
-    "max_duration", "connect_timeout", "keepalive", "ramp_up",
-    "warmup", "duration", "cache_ttl", "cool_down",
-    "load_step_duration", "load_max_duration", "progress_interval",
+    "max_duration",
+    "connect_timeout",
+    "keepalive",
+    "ramp_up",
+    "warmup",
+    "duration",
+    "cache_ttl",
+    "cool_down",
+    "load_step_duration",
+    "load_max_duration",
+    "progress_interval",
 ];
 
 pub const BENCH_MODE_VALUES: &[&str] = &["fixed", "stepping", "adaptive", "closed", "open"];
-pub const BENCH_LOAD_SCHEDULE_VALUES: &[&str] = &["const", "step", "line", "sine", "spike", "custom"];
+pub const BENCH_LOAD_SCHEDULE_VALUES: &[&str] =
+    &["const", "step", "line", "sine", "spike", "custom"];
 pub const BENCH_DURATION_STOP_VALUES: &[&str] = &["close", "wait", "ignore"];
 pub const BENCH_ASSERT_MODE_VALUES: &[&str] =
     &["full", "sampled", "off", "fail_fast", "collect_all", "skip"];
@@ -482,8 +502,8 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                                         severity: ErrorSeverity::Error,
                                     });
                                 }
-            }
-            _ => {
+                            }
+                            _ => {
                                 errors.push(ValidationError {
                                     message: format!(
                                         "Unknown OPTIONS key '{}'. Supported keys: timeout, retry, retry_delay, no_retry, compression",
@@ -822,17 +842,12 @@ fn validate_bench_duration(
         });
         return;
     }
-    let unit = if trimmed.ends_with("ms") {
-        &trimmed[..trimmed.len() - 2]
-    } else if trimmed.ends_with('s') {
-        &trimmed[..trimmed.len() - 1]
-    } else if trimmed.ends_with('m') {
-        &trimmed[..trimmed.len() - 1]
-    } else if trimmed.ends_with('h') {
-        &trimmed[..trimmed.len() - 1]
-    } else {
-        trimmed
-    };
+    let unit = trimmed
+        .strip_suffix("ms")
+        .or_else(|| trimmed.strip_suffix("s"))
+        .or_else(|| trimmed.strip_suffix("m"))
+        .or_else(|| trimmed.strip_suffix("h"))
+        .unwrap_or(trimmed);
     if unit.parse::<f64>().is_err() {
         errors.push(ValidationError {
             message: format!(
@@ -1052,7 +1067,7 @@ fn validate_structure(document: &GctfDocument, errors: &mut Vec<ValidationError>
     }
 
     // Validate section order (optional, but good for readability)
-    validate_section_order(&document, errors);
+    validate_section_order(document, errors);
 
     // Validate BENCH data source files exist
     validate_bench_sources_exist(document, errors);
@@ -1139,15 +1154,18 @@ fn validate_section_order(document: &GctfDocument, errors: &mut Vec<ValidationEr
             errors.push(ValidationError {
                 message: format!(
                     "{:?} section at line {} appears before any REQUEST section",
-                    st,
-                    section.start_line
+                    st, section.start_line
                 ),
                 line: Some(section.start_line),
                 severity: ErrorSeverity::Warning,
             });
         }
         // Check that EXTRACT doesn't appear before RESPONSE/ERROR
-        if matches!(st, Extract) && !seen.contains(&Response) && !seen.contains(&Error) && !seen.contains(&Asserts) {
+        if matches!(st, Extract)
+            && !seen.contains(&Response)
+            && !seen.contains(&Error)
+            && !seen.contains(&Asserts)
+        {
             errors.push(ValidationError {
                 message: format!(
                     "EXTRACT section at line {} appears before RESPONSE, ERROR, or ASSERTS",
@@ -1157,7 +1175,7 @@ fn validate_section_order(document: &GctfDocument, errors: &mut Vec<ValidationEr
                 severity: ErrorSeverity::Warning,
             });
         }
-        seen.push(st.clone());
+        seen.push(*st);
     }
 }
 

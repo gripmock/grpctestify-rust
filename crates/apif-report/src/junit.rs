@@ -1,8 +1,8 @@
 // JUnit reporter - outputs test results in JUnit XML format
 
 use super::Reporter;
-use apif_state::{TestResults, TestStatus};
 use anyhow::{Context, Result};
+use apif_state::{TestResults, TestStatus};
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -142,7 +142,6 @@ impl Reporter for JunitReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use apif_state::{TestResult, TestStatus};
 
     #[test]
     fn test_junit_reporter_new() {

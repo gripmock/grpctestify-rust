@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 
@@ -45,18 +46,25 @@ impl<K: Hash + Eq + Clone, V> TwoQCache<K, V> {
     }
 
     pub fn insert(&mut self, key: K, value: V) {
-        if self.hot.contains_key(&key) {
-            self.hot.insert(key, value);
-            return;
+        match self.hot.entry(key) {
+            Entry::Occupied(mut e) => {
+                e.insert(value);
+            }
+            Entry::Vacant(e) => {
+                let key = e.into_key();
+                match self.cold.entry(key) {
+                    Entry::Occupied(mut e) => {
+                        e.insert(value);
+                    }
+                    Entry::Vacant(e) => {
+                        let key = e.into_key();
+                        self.cold.insert(key.clone(), value);
+                        self.cold_order.push_back(key);
+                        self.evict_cold();
+                    }
+                }
+            }
         }
-        if self.cold.contains_key(&key) {
-            self.cold.insert(key, value);
-            return;
-        }
-
-        self.cold.insert(key.clone(), value);
-        self.cold_order.push_back(key);
-        self.evict_cold();
     }
 
     pub fn contains(&self, key: &K) -> bool {

@@ -61,7 +61,10 @@ impl TestResult {
             duration_ms,
             call_duration_ms,
             error_message: None,
-            execution_time: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+            execution_time: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
             meta: TestMeta::default(),
         }
     }
@@ -79,7 +82,10 @@ impl TestResult {
             duration_ms,
             call_duration_ms,
             error_message: None,
-            execution_time: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+            execution_time: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
             meta,
         }
     }
@@ -97,7 +103,10 @@ impl TestResult {
             duration_ms,
             call_duration_ms,
             error_message: Some(error_message),
-            execution_time: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+            execution_time: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
             meta: TestMeta::default(),
         }
     }
@@ -116,7 +125,10 @@ impl TestResult {
             duration_ms,
             call_duration_ms,
             error_message: Some(error_message),
-            execution_time: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+            execution_time: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
             meta,
         }
     }

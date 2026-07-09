@@ -14,7 +14,7 @@ serde_json = { workspace = true }
 jaq-core = { workspace = true }
 jaq-std = { workspace = true }
 jaq-json = { workspace = true }
-console = "0.15"
+console = "0.16"
 dissimilar = "1.0"
 regex = { workspace = true }
 

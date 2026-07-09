@@ -966,22 +966,21 @@ pub fn collect_sources_diagnostics(
         {
             Ok(defs) => {
                 for def in &defs {
-                    if def.file.is_empty() {
-                        if let Some(line_idx) =
+                    if def.file.is_empty()
+                        && let Some(line_idx) =
                             find_line_with_key("sources", &lines, section.start_line)
-                        {
-                            diagnostics.push(Diagnostic {
-                                range: Range::new(
-                                    Position::new(line_idx as u32, 0),
-                                    Position::new(line_idx as u32, sources_yaml.len() as u32),
-                                ),
-                                severity: Some(DiagnosticSeverity::ERROR),
-                                code: Some(NumberOrString::String("SRC001".to_string())),
-                                source: Some("grpctestify-sources".to_string()),
-                                message: "source 'file' is required".to_string(),
-                                ..Diagnostic::default()
-                            });
-                        }
+                    {
+                        diagnostics.push(Diagnostic {
+                            range: Range::new(
+                                Position::new(line_idx as u32, 0),
+                                Position::new(line_idx as u32, sources_yaml.len() as u32),
+                            ),
+                            severity: Some(DiagnosticSeverity::ERROR),
+                            code: Some(NumberOrString::String("SRC001".to_string())),
+                            source: Some("grpctestify-sources".to_string()),
+                            message: "source 'file' is required".to_string(),
+                            ..Diagnostic::default()
+                        });
                     }
                 }
             }

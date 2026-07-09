@@ -309,9 +309,10 @@ fn eval_atom(
             Literal::Str(s) => Value::String(s.clone()),
             Literal::Null => Value::Null,
         },
-        Expr::Variable(name) => Value::String(format!("{{{{{}}}}}", name)),
+        Expr::Variable(name) => Value::String(format!("${}", name)),
         Expr::RegExp { pattern, flags: _ } => Value::String(format!("/{}/", pattern)),
         Expr::Json(s) | Expr::Yaml(s) => serde_json::from_str(s).unwrap_or(Value::Null),
+        Expr::As(inner, _) => eval_atom(pm, inner, response, headers, trailers, timing),
     }
 }
 
@@ -486,22 +487,6 @@ mod tests {
         assert!(matches!(r, AssertionResult::Pass));
     }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     #[test]
     fn test_xor_both_true() {
         let r = eval(&pm(), ".x == 1 xor .y == 2", &json!({"x": 1, "y": 2}));
@@ -513,13 +498,6 @@ mod tests {
         let r = eval(&pm(), ".x == 9 xor .y == 9", &json!({"x": 1, "y": 2}));
         assert!(matches!(r, AssertionResult::Fail { .. }), "got: {:?}", r);
     }
-
-
-
-
-
-
-
 
     #[test]
     fn test_numeric_greater() {

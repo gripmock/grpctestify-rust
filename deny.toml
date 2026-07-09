@@ -9,10 +9,7 @@ targets = [
 ]
 
 [advisories]
-ignore = [
-  { id = "RUSTSEC-2025-0119", reason = "transitive via indicatif; no maintained replacement selected yet" },
-  { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is still required by tonic and existing cert-loading paths" },
-]
+ignore = []
 unmaintained = "all"
 yanked = "deny"
 

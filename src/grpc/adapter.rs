@@ -1,5 +1,8 @@
 use anyhow::Result;
-use apif_execution::{CallClient, CallClientFactory, CallClientConfig, CallError, CallRequest, CallStreamItem, EndpointMeta, RpcMode};
+use apif_execution::{
+    CallClient, CallClientConfig, CallClientFactory, CallError, CallRequest, CallStreamItem,
+    EndpointMeta, RpcMode,
+};
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::Value;

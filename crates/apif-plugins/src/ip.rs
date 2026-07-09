@@ -1,10 +1,10 @@
 use anyhow::Result;
 use serde_json::Value;
 
-use apif_assert::engine::AssertionResult;
 use crate::{
     ArgTypeInfo, Plugin, PluginContext, PluginPurity, PluginResult, PluginSignature, TypeInfo,
 };
+use apif_assert::engine::AssertionResult;
 
 pub struct IpPlugin;
 

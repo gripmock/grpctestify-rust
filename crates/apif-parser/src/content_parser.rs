@@ -4,14 +4,10 @@
 
 use anyhow::Result;
 
-use crate::ast::{
-    FileMeta, GctfAttribute, InlineOptions, Section, SectionContent, SectionType,
-};
-use crate::gctf_tokenizer::{
-    tokenize_extract_line, tokenize_inline_options, tokenize_kv_line,
-};
-use crate::json_mod;
 use crate::assertions::strip_assertion_comments;
+use crate::ast::{FileMeta, GctfAttribute, InlineOptions, Section, SectionContent, SectionType};
+use crate::gctf_tokenizer::{tokenize_extract_line, tokenize_inline_options, tokenize_kv_line};
+use crate::json_mod;
 use crate::json_stream_parser;
 
 /// Parse section content based on section type.
@@ -287,7 +283,6 @@ fn parse_key_value_section(content: &str) -> Result<std::collections::HashMap<St
 
 /// Parse assertions section (one assertion per line).
 fn parse_assertions(content: &str) -> Result<Vec<String>> {
-    
     // No normalization needed — regex literals /pattern/ are now handled
     // by the assertion AST parser as Expr::RegExp nodes.
     let assertions: Vec<String> = content

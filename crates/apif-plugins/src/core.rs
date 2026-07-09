@@ -29,7 +29,6 @@
 //! | `@elapsed_ms` / `@total_elapsed_ms` | Timing assertions | non-negative integer |
 //! | `@scope_message_count` / `@scope_index` | Streaming scope info | non-negative integer |
 
-
 pub use crate::type_info::{ArgTypeInfo, TypeInfo, TypedPluginSignature};
 
 use anyhow::Result;
@@ -41,7 +40,6 @@ use apif_assert::registry;
 
 // Re-export shared types from assert module (single source of truth)
 pub use registry::{AssertionTiming, PluginContext, PluginResult};
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginPurity {
@@ -78,10 +76,6 @@ impl Default for PluginSignature {
         }
     }
 }
-
-
-
-
 
 /// Trait for all plugins
 pub trait Plugin: Send + Sync {
@@ -240,7 +234,8 @@ impl apif_assert::registry::PluginRegistry for PluginManager {
             .expect("lock poisoned")
             .get(normalized)
             .map(|p| {
-                let p: Arc<dyn apif_assert::registry::PluginApi> = Arc::new(PluginApiWrapper(p.clone()));
+                let p: Arc<dyn apif_assert::registry::PluginApi> =
+                    Arc::new(PluginApiWrapper(p.clone()));
                 p
             })
     }
@@ -344,7 +339,7 @@ mod tests {
     fn test_signature_metadata_env() {
         let manager = PluginManager::new();
         let signature = manager.get("env").unwrap().signature();
-        assert_eq!(signature.return_type, TypeInfo::StringOrNull);
+        assert_eq!(signature.return_type, TypeInfo::String);
         assert_eq!(signature.purity, PluginPurity::Impure);
         assert!(!signature.deterministic);
         assert!(!signature.idempotent);

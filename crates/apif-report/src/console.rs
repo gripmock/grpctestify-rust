@@ -292,7 +292,6 @@ impl super::Reporter for ConsoleReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use apif_state::{TestResult, TestResults};
 
     #[test]
     fn test_console_mode_debug() {

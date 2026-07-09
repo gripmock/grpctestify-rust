@@ -1,8 +1,8 @@
 use grpctestify::assert::engine::{AssertionEngine, AssertionResult};
 use grpctestify::plugins::PluginManager;
-use std::sync::Arc;
 use serde_json::json;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[test]
 fn test_uuid_plugin() {

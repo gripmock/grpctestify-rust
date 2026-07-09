@@ -1,7 +1,7 @@
 use super::SourceReader;
+use anyhow::Result;
 use source_error::SourceError;
 use source_row::SourceRow;
-use anyhow::Result;
 use std::io::{BufReader, Read, Seek};
 
 pub struct TsvReader<R> {
@@ -53,7 +53,7 @@ impl<R: Read + Send> SourceReader for TsvReader<R> {
             return Ok(None);
         }
 
-        for result in self.reader.records() {
+        if let Some(result) = self.reader.records().next() {
             self.row_number += 1;
             let record = match result {
                 Ok(r) => r,
@@ -91,7 +91,9 @@ impl<R: Read + Send> SourceReader for TsvReader<R> {
 
 impl<R: Read + Seek + Send> TsvReader<R> {
     pub fn reset_seekable(&mut self) -> Result<()> {
-        Err(anyhow::anyhow!("reset_seekable not supported with csv crate reader"))
+        Err(anyhow::anyhow!(
+            "reset_seekable not supported with csv crate reader"
+        ))
     }
 }
 

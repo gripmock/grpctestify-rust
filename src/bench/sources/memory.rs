@@ -1,7 +1,7 @@
 use super::SourceReader;
+use anyhow::Result;
 use source_error::SourceError;
 use source_row::SourceRow;
-use anyhow::Result;
 use std::collections::HashMap;
 
 pub struct InMemorySource {

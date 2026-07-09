@@ -15,16 +15,24 @@ pub struct PluginContext<'a> {
 
 impl<'a> PluginContext<'a> {
     pub fn new(response: &'a Value) -> Self {
-        Self { response, headers: None, trailers: None, timing: None }
+        Self {
+            response,
+            headers: None,
+            trailers: None,
+            timing: None,
+        }
     }
     pub fn with_headers(mut self, headers: Option<&'a HashMap<String, String>>) -> Self {
-        self.headers = headers; self
+        self.headers = headers;
+        self
     }
     pub fn with_trailers(mut self, trailers: Option<&'a HashMap<String, String>>) -> Self {
-        self.trailers = trailers; self
+        self.trailers = trailers;
+        self
     }
     pub fn with_timing(mut self, timing: Option<&'a AssertionTiming>) -> Self {
-        self.timing = timing; self
+        self.timing = timing;
+        self
     }
 }
 

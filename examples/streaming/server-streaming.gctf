@@ -11,11 +11,13 @@ chat.ChatService/ReceiveMessages
   "from": "Server",
   "text": "Welcome!"
 }
+
 --- RESPONSE ---
 {
   "from": "Server",
   "text": "Message 1"
 }
+
 --- RESPONSE ---
 {
   "from": "Server",

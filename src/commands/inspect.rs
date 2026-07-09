@@ -637,14 +637,20 @@ fn print_variables(doc: &parser::GctfDocument) {
     }
 
     for section in extract_sections {
-        if let SectionContent::Extract(extractions) = &section.content {
-            println!(
-                "  Extract block at lines {}-{}:",
-                section.start_line + 1,
-                section.end_line + 1
-            );
-            for (name, query) in sorted_kv(extractions) {
-                println!("    ${{ {:<15} }} = {}", name, query);
+        println!(
+            "  Extract block at lines {}-{}:",
+            section.start_line + 1,
+            section.end_line + 1
+        );
+        for line in section.raw_content.lines() {
+            if let Some((name, type_opt, value)) =
+                crate::parser::gctf_tokenizer::tokenize_extract_line_full(line)
+            {
+                if let Some(tn) = type_opt {
+                    println!("    ${{ {:<15} }} :{} = {}", name, tn, value);
+                } else {
+                    println!("    ${{ {:<15} }} = {}", name, value);
+                }
             }
         }
     }
@@ -666,12 +672,6 @@ fn print_variables(doc: &parser::GctfDocument) {
             println!("    - {} section at line {}", section_type, line + 1);
         }
     }
-}
-
-fn sorted_kv(map: &HashMap<String, String>) -> Vec<(&str, &str)> {
-    let mut pairs: Vec<(&str, &str)> = map.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    pairs.sort_by_key(|(ka, _)| *ka);
-    pairs
 }
 
 fn print_logic_flow(doc: &parser::GctfDocument, workflow: &Workflow) {
@@ -953,7 +953,7 @@ fn print_source_info(doc: &parser::GctfDocument, file_path: &Path) {
         let source_file_path = s.file.as_str();
         let resolved_path = FileUtils::resolve_relative_path(file_path, source_file_path);
         let columns = s.indexed_columns();
-        let key_column = columns.first().map(|s| *s).unwrap_or("");
+        let key_column = columns.first().copied().unwrap_or("");
 
         let idx_path = index_path_for_source(&resolved_path, key_column);
         let idx_exists = idx_path.exists();
@@ -983,7 +983,7 @@ fn print_source_info(doc: &parser::GctfDocument, file_path: &Path) {
         let indexed_by_display = if columns.is_empty() {
             "(none)".to_string()
         } else {
-            columns.iter().map(|s| *s).collect::<Vec<_>>().join(", ")
+            columns.join(", ")
         };
         println!(
             "  - {}: file={}, indexed_by=[{}], type={}, index={}",

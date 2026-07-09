@@ -57,24 +57,42 @@ impl TestResults {
         }
     }
 
-    pub fn total(&self) -> usize { self.total }
-    pub fn passed(&self) -> usize { self.passed }
-    pub fn failed(&self) -> usize { self.failed }
-    pub fn skipped(&self) -> usize { self.skipped }
+    pub fn total(&self) -> usize {
+        self.total
+    }
+    pub fn passed(&self) -> usize {
+        self.passed
+    }
+    pub fn failed(&self) -> usize {
+        self.failed
+    }
+    pub fn skipped(&self) -> usize {
+        self.skipped
+    }
 
     pub fn get(&self, index: usize) -> Option<&TestResult> {
         self.results.get(index)
     }
 
-    pub fn all(&self) -> &[TestResult] { &self.results }
-
-    pub fn all_passed(&self) -> bool { self.failed == 0 }
-
-    pub fn pass_rate(&self) -> f64 {
-        if self.total == 0 { 0.0 } else { (self.passed as f64 / self.total as f64) * 100.0 }
+    pub fn all(&self) -> &[TestResult] {
+        &self.results
     }
 
-    pub fn metrics(&self) -> &ExecutionMetrics { &self.metrics }
+    pub fn all_passed(&self) -> bool {
+        self.failed == 0
+    }
+
+    pub fn pass_rate(&self) -> f64 {
+        if self.total == 0 {
+            0.0
+        } else {
+            (self.passed as f64 / self.total as f64) * 100.0
+        }
+    }
+
+    pub fn metrics(&self) -> &ExecutionMetrics {
+        &self.metrics
+    }
 
     pub fn reset(&mut self) {
         self.total = 0;

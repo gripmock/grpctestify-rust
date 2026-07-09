@@ -4,7 +4,7 @@
 //!
 //! Parses `.gctf` test files into an AST with support for:
 //! - JSON5 with comments, trailing commas, unquoted keys
-//! - Multi-document files separated by `--- NEW ---`
+//! - Multi-document files via document chain (iter_chain)
 //! - Error recovery parsing
 //! - Ternary expressions in EXTRACT sections
 //! - Full assertion AST with tokenization and span tracking

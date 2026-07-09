@@ -1,8 +1,8 @@
 use super::index::{KeyType, SourceIndex};
-use source_row::SourceRow;
 use super::{SourceDefinition, open_source_reader};
 use crate::utils::file::FileUtils;
 use anyhow::{Context, Result};
+use source_row::SourceRow;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -256,12 +256,11 @@ pub fn load_or_build_index(
     let key_column = &key_columns[0];
     let idx_path = index_path_for_source(&source_path, key_column);
 
-    if idx_path.exists() {
-        if let Ok(index) = SourceIndex::read_from_file(&idx_path) {
-            if is_index_fresh(&idx_path, &source_path) {
-                return Ok(index);
-            }
-        }
+    if idx_path.exists()
+        && let Ok(index) = SourceIndex::read_from_file(&idx_path)
+        && is_index_fresh(&idx_path, &source_path)
+    {
+        return Ok(index);
     }
 
     build_index_for_source(definition, document_path)?;
@@ -331,7 +330,8 @@ mod tests {
         create_temp_csv(&dir, "data.csv", "id,name\n1,Alice\n2,Bob\n3,Charlie\n");
 
         let defs: Vec<SourceDefinition> =
-            serde_yaml_ng::from_str("- file: data.csv\n  name: data\n  indexed_by: [id]\n").unwrap();
+            serde_yaml_ng::from_str("- file: data.csv\n  name: data\n  indexed_by: [id]\n")
+                .unwrap();
 
         let doc_path = dir.join("test.gctf");
         std::fs::write(&doc_path, "").unwrap();

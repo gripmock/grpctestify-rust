@@ -13,10 +13,12 @@ impl FileUtils {
         let walker = walkdir::WalkDir::new(path).follow_links(true).into_iter();
         for entry in walker.flatten() {
             let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "gctf" || ext == "apif") {
-                if !is_excluded(path, exclude_patterns) {
-                    files.push(path.to_path_buf());
-                }
+            if path
+                .extension()
+                .is_some_and(|ext| ext == "gctf" || ext == "apif")
+                && !is_excluded(path, exclude_patterns)
+            {
+                files.push(path.to_path_buf());
             }
         }
         files
@@ -32,9 +34,10 @@ impl FileUtils {
                     .cmp(&Self::get_mtime(a).unwrap_or(0))
             }),
             "random" => {
-                use rand::seq::SliceRandom;
                 use rand::SeedableRng;
-                let mut rng = rand::rngs::StdRng::from_entropy();
+                use rand::rngs::StdRng;
+                use rand::seq::SliceRandom;
+                let mut rng = StdRng::from_rng(&mut rand::rng());
                 files.shuffle(&mut rng);
             }
             _ => {}

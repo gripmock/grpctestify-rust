@@ -136,25 +136,24 @@ fn check_preamble_section_order(doc: &parser::GctfDocument) -> Vec<(usize, Strin
 fn check_bench_key_order(doc: &parser::GctfDocument) -> Vec<(usize, String, String)> {
     let mut out = Vec::new();
     for section in &doc.sections {
-        if section.section_type == SectionType::Bench {
-            if let parser::ast::SectionContent::KeyValues(kv) = &section.content {
-                let keys: Vec<_> = kv.keys().collect();
-                for i in 1..keys.len() {
-                    let prev_rank = bench_key_rank(keys[i - 1]);
-                    let curr_rank = bench_key_rank(keys[i]);
-                    if curr_rank < prev_rank {
-                        let line = section.start_line + 1;
-                        out.push((
+        if section.section_type == SectionType::Bench
+            && let parser::ast::SectionContent::KeyValues(kv) = &section.content
+        {
+            let keys: Vec<_> = kv.keys().collect();
+            for i in 1..keys.len() {
+                let prev_rank = bench_key_rank(keys[i - 1]);
+                let curr_rank = bench_key_rank(keys[i]);
+                if curr_rank < prev_rank {
+                    let line = section.start_line + 1;
+                    out.push((
                             line,
                             format!(
                                 "BENCH key order: '{}' should come before '{}' (canonical order via bench_key_rank)",
                                 keys[i - 1], keys[i]
                             ),
-                        format!(
-                            "reorder BENCH keys or run `grpctestify fmt --write` to auto-fix"
-                        ),
+                        "reorder BENCH keys or run `grpctestify fmt --write` to auto-fix"
+                            .to_string(),
                         ));
-                    }
                 }
             }
         }
@@ -294,16 +293,17 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                 }
 
                 // Validate BENCH section config if --bench flag is set
-                if args.bench && !file_has_error {
-                    if let Err(e) = crate::commands::bench::validate_bench_config(&doc) {
-                        diagnostics.push(Diagnostic::error(
-                            &file_str,
-                            "BENCH_CONFIG_ERROR",
-                            &e.to_string(),
-                            1,
-                        ));
-                        file_has_error = true;
-                    }
+                if args.bench
+                    && !file_has_error
+                    && let Err(e) = crate::commands::bench::validate_bench_config(&doc)
+                {
+                    diagnostics.push(Diagnostic::error(
+                        &file_str,
+                        "BENCH_CONFIG_ERROR",
+                        &e.to_string(),
+                        1,
+                    ));
+                    file_has_error = true;
                 }
 
                 if !args.is_json() && !file_has_error {

@@ -7,11 +7,6 @@ echo.EchoService/SayHello
 --- REQUEST ---
 {"message": "first"}
 
---- NEW ---
-
---- ADDRESS ---
-localhost:19999
-
 --- ENDPOINT ---
 echo.EchoService/SayHello
 

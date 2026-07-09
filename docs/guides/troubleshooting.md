@@ -82,6 +82,22 @@ If behavior differs between `run` and `bench`, verify you are reading the correc
 - Verify values match expected format for `@timestamp`, `@url`, `@ip`, `@email`, `@uuid`
 - Check raw response types with `inspect` output before writing strict assertions
 
+### Ordering operators fail (`.price >= 0`)
+
+Add a `:type` annotation when the schema is unknown:
+
+```gctf
+.price:number >= 0
+.name:string contains "hello"
+```
+
+Or extract the value with a type annotation:
+
+```gctf
+price:number = .price
+$price >= 0
+```
+
 ## Debugging commands
 
 ```bash

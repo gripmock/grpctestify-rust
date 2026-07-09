@@ -2,11 +2,11 @@ use super::filter::{FilterCondition, matches_all as matches_filter_all};
 use super::index::SourceIndex;
 use super::index_builder::index_path_for_source;
 use super::memory::InMemorySource;
-use source_row::SourceRow;
 use super::{SourceDefinition, SourceReader, open_source_reader};
 use crate::utils::file::FileUtils;
 use anyhow::{Context, Result};
 use serde_json::Value;
+use source_row::SourceRow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -17,12 +17,11 @@ const MAX_DIMENSION_MEMORY_BUDGET: u64 = 512 * 1024 * 1024;
 const MIN_DIMENSION_MEMORY_BUDGET: u64 = 32 * 1024 * 1024;
 
 fn resolve_dimension_budget() -> u64 {
-    if let Ok(val) = std::env::var(ENV_DIMENSION_MEMORY_BUDGET) {
-        if !val.is_empty() {
-            if let Ok(bytes) = parse_bytes(&val) {
-                return bytes;
-            }
-        }
+    if let Ok(val) = std::env::var(ENV_DIMENSION_MEMORY_BUDGET)
+        && !val.is_empty()
+        && let Ok(bytes) = parse_bytes(&val)
+    {
+        return bytes;
     }
 
     let mut sys = sysinfo::System::new_with_specifics(sysinfo::RefreshKind::nothing());
@@ -84,15 +83,12 @@ impl DimensionSource {
     /// Only supported for in-memory dimensions.
     fn lookup_all(&self, key: &str) -> Vec<SourceRow> {
         match self {
-            DimensionSource::Memory(mem) => {
-                mem.iter()
-                    .filter(|(k, _)| k.as_str() == key)
-                    .map(|(_, row)| row.clone())
-                    .collect()
-            }
-            DimensionSource::Indexed { .. } => {
-                Vec::new()
-            }
+            DimensionSource::Memory(mem) => mem
+                .iter()
+                .filter(|(k, _)| k.as_str() == key)
+                .map(|(_, row)| row.clone())
+                .collect(),
+            DimensionSource::Indexed { .. } => Vec::new(),
         }
     }
 }
@@ -133,6 +129,7 @@ pub enum FallbackType {
 struct DimensionJoin {
     source_name: String,
     foreign_key: String,
+    #[allow(dead_code)]
     remote_key: String,
     join_type: super::definition::JoinType,
 }
@@ -539,8 +536,9 @@ impl SourceDrivenConfig {
         // Check INNER join constraints — skip row if FK not found, try next row
         let inner_missing = self.dim_joins.iter().any(|j| {
             j.join_type == super::definition::JoinType::Inner
-                && row.get(&j.foreign_key)
-                    .map_or(false, |fk| self.dimension_lookup(&j.source_name, fk).is_none())
+                && row
+                    .get(&j.foreign_key)
+                    .is_some_and(|fk| self.dimension_lookup(&j.source_name, fk).is_none())
         });
         if inner_missing {
             return self.next_row_variables();
@@ -551,22 +549,25 @@ impl SourceDrivenConfig {
             if join.join_type != super::definition::JoinType::Left {
                 continue;
             }
-            if let Some(fk_val) = row.get(&join.foreign_key) {
-                if let Some(dim_row) = self.dimension_lookup(&join.source_name, fk_val) {
-                    for col in dim_row.columns() {
-                        if let Some(val) = dim_row.get(col) {
-                            vars.insert(
-                                format!("{}.{}", join.source_name, col),
-                                Value::String(val.to_string()),
-                            );
-                        }
+            if let Some(fk_val) = row.get(&join.foreign_key)
+                && let Some(dim_row) = self.dimension_lookup(&join.source_name, fk_val)
+            {
+                for col in dim_row.columns() {
+                    if let Some(val) = dim_row.get(col) {
+                        vars.insert(
+                            format!("{}.{}", join.source_name, col),
+                            Value::String(val.to_string()),
+                        );
                     }
                 }
             }
         }
 
         // Check for CROSS joins — build cross-product state
-        let has_cross = self.dim_joins.iter().any(|j| j.join_type == super::definition::JoinType::Cross);
+        let has_cross = self
+            .dim_joins
+            .iter()
+            .any(|j| j.join_type == super::definition::JoinType::Cross);
         if has_cross {
             let mut cross_matches: Vec<Vec<SourceRow>> = Vec::new();
             for join in &self.dim_joins {
@@ -587,12 +588,19 @@ impl SourceDrivenConfig {
             *self.cross_product_state.lock().unwrap() = Some(CrossProductState {
                 row,
                 cross_matches,
-                cross_indices: vec![0; self.dim_joins.iter().filter(|j| j.join_type == super::definition::JoinType::Cross).count()],
+                cross_indices: vec![
+                    0;
+                    self.dim_joins
+                        .iter()
+                        .filter(|j| j.join_type == super::definition::JoinType::Cross)
+                        .count()
+                ],
             });
             return self.next_cross_product_combination();
         }
 
-        self.current_row.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.current_row
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(Some(vars))
     }
 
@@ -627,7 +635,11 @@ impl SourceDrivenConfig {
         }
 
         // Advance the cross-product indices (lexicographic order)
-        let cross_count = self.dim_joins.iter().filter(|j| j.join_type == super::definition::JoinType::Cross).count();
+        let cross_count = self
+            .dim_joins
+            .iter()
+            .filter(|j| j.join_type == super::definition::JoinType::Cross)
+            .count();
         let mut new_indices = state.cross_indices.clone();
         let mut advanced = false;
 
@@ -655,7 +667,8 @@ impl SourceDrivenConfig {
             *state_guard = None;
         }
 
-        self.current_row.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.current_row
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(Some(vars))
     }
 
@@ -684,11 +697,7 @@ impl SourceDrivenConfig {
     pub fn dimension_lookup_all(&self, source_name: &str, key: &str) -> Option<Vec<SourceRow>> {
         let dim = self.dimensions.get(source_name)?;
         let rows = dim.lookup_all(key);
-        if rows.is_empty() {
-            None
-        } else {
-            Some(rows)
-        }
+        if rows.is_empty() { None } else { Some(rows) }
     }
 
     pub fn build_dimension_variables(
@@ -699,15 +708,12 @@ impl SourceDrivenConfig {
         let mut vars = HashMap::new();
 
         for (dim_name, local_key_col, _remote_key_col) in joins {
-            if let Some(key_val) = row.get(local_key_col) {
-                if let Some(dim_row) = self.dimension_lookup(dim_name, key_val) {
-                    for col in dim_row.columns() {
-                        if let Some(val) = dim_row.get(col) {
-                            vars.insert(
-                                format!("{dim_name}.{col}"),
-                                Value::String(val.to_string()),
-                            );
-                        }
+            if let Some(key_val) = row.get(local_key_col)
+                && let Some(dim_row) = self.dimension_lookup(dim_name, key_val)
+            {
+                for col in dim_row.columns() {
+                    if let Some(val) = dim_row.get(col) {
+                        vars.insert(format!("{dim_name}.{col}"), Value::String(val.to_string()));
                     }
                 }
             }
@@ -738,12 +744,11 @@ fn load_or_build_index_with_key(
             Ok(index) => {
                 let idx_meta = std::fs::metadata(&idx_path);
                 let src_meta = std::fs::metadata(&source_path);
-                if let (Ok(im), Ok(sm)) = (idx_meta, src_meta) {
-                    if let (Ok(it), Ok(st)) = (im.modified(), sm.modified()) {
-                        if it >= st {
-                            return Ok(index);
-                        }
-                    }
+                if let (Ok(im), Ok(sm)) = (idx_meta, src_meta)
+                    && let (Ok(it), Ok(st)) = (im.modified(), sm.modified())
+                    && it >= st
+                {
+                    return Ok(index);
                 }
             }
             Err(e) => {
@@ -951,7 +956,7 @@ mod tests {
 
         let vars = config.next_row_variables().unwrap().unwrap();
         assert_eq!(vars.get("data.val"), Some(&Value::String("hello".into())));
-        assert!(vars.get("ref.label").is_none());
+        assert!(!vars.contains_key("ref.label"));
 
         std::fs::remove_dir_all(&dir).ok();
     }

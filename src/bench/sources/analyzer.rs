@@ -167,10 +167,7 @@ fn collect_from_json(v: &Value, out: &mut Vec<TemplateRef>) {
 
 fn collect_from_string(s: &str, out: &mut Vec<TemplateRef>) {
     let mut rest = s;
-    loop {
-        let Some(start) = rest.find("{{") else {
-            break;
-        };
+    while let Some(start) = rest.find("{{") {
         let after = &rest[start + 2..];
         let Some(end) = after.find("}}") else {
             break;

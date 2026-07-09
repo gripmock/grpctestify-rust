@@ -9,7 +9,7 @@ use crate::assert::{AssertionEngine, JsonComparator, get_json_diff};
 use crate::grpc::{GrpcClient, GrpcClientConfig};
 use crate::optimizer;
 use crate::parser::ast::{SectionContent, SectionType};
-use crate::plugins::AssertionTiming;
+use crate::plugins::{AssertionTiming, PluginManager};
 use crate::report::CoverageCollector;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -17,9 +17,14 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
+
+/// Global plugin registry used by all assertion engines.
+static PLUGIN_REGISTRY: LazyLock<Arc<dyn apif_assert::registry::PluginRegistry>> =
+    LazyLock::new(|| Arc::new(PluginManager::new()));
 
 /// Execution plan for inspect workflow visualization
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -702,7 +707,7 @@ impl TestRunner {
             no_assert,
             write_mode,
             verbose,
-            assertion_engine: AssertionEngine::new(),
+            assertion_engine: AssertionEngine::with_registry(PLUGIN_REGISTRY.clone()),
             coverage_collector: coverage_collector.clone(),
             // Initialize handler modules
             request_handler: RequestHandler::new(no_assert, verbose, coverage_collector.clone()),
@@ -863,10 +868,7 @@ impl TestRunner {
         let inferred_rpc_mode = infer_rpc_mode_for_section_types(document);
         let actual_rpc_mode = get_actual_rpc_mode(&client, &full_service, &method);
         if let Some(warning) = check_rpc_mode_compatibility(&inferred_rpc_mode, &actual_rpc_mode) {
-            eprintln!(
-                "[RPC MODE WARNING] {} (service={}, method={})",
-                warning, full_service, method
-            );
+            tracing::debug!("{} (service={}, method={})", warning, full_service, method);
         }
 
         // Setup Streaming

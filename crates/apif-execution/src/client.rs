@@ -61,7 +61,10 @@ pub trait CallClient: Send {
 /// Factory that creates call clients for specific documents/configs.
 #[async_trait]
 pub trait CallClientFactory: Send + Sync {
-    async fn create_client(&self, config: &crate::config::CallClientConfig) -> Result<Box<dyn CallClient>>;
+    async fn create_client(
+        &self,
+        config: &crate::config::CallClientConfig,
+    ) -> Result<Box<dyn CallClient>>;
 }
 
 #[cfg(test)]
@@ -79,7 +82,10 @@ mod tests {
 
     #[test]
     fn test_call_error_new() {
-        let err = CallError { code: 5, message: "not found".into() };
+        let err = CallError {
+            code: 5,
+            message: "not found".into(),
+        };
         assert_eq!(err.code, 5);
         assert_eq!(err.message, "not found");
     }
@@ -115,4 +121,3 @@ mod tests {
         assert_eq!(meta.input_type.as_deref(), Some("test.Request"));
     }
 }
-

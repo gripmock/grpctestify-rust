@@ -311,9 +311,7 @@ pub static BUILTIN_PROFILES: LazyLock<HashMap<&'static str, HashMap<&'static str
 
 /// Apply a named profile to a BENCH section config.
 /// Returns the list of (key, value) pairs that the profile defines.
-pub fn apply_profile(
-    name: &str,
-) -> Vec<(&'static str, &'static str)> {
+pub fn apply_profile(name: &str) -> Vec<(&'static str, &'static str)> {
     if let Some(profile) = BUILTIN_PROFILES.get(name) {
         return profile.iter().map(|(k, v)| (*k, *v)).collect();
     }
@@ -321,12 +319,16 @@ pub fn apply_profile(
 }
 
 /// Custom profiles loaded from YAML files at runtime.
-static CUSTOM_PROFILES: std::sync::LazyLock<std::sync::RwLock<HashMap<String, HashMap<String, String>>>> =
-    std::sync::LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
+static CUSTOM_PROFILES: std::sync::LazyLock<
+    std::sync::RwLock<HashMap<String, HashMap<String, String>>>,
+> = std::sync::LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
 
 /// Register a custom profile at runtime.
 pub fn register_custom_profile(name: &str, keys: HashMap<String, String>) {
-    CUSTOM_PROFILES.write().unwrap().insert(name.to_string(), keys);
+    CUSTOM_PROFILES
+        .write()
+        .unwrap()
+        .insert(name.to_string(), keys);
 }
 
 /// Apply a custom (or built-in) profile, returning key-value pairs.
@@ -335,7 +337,10 @@ pub fn apply_profile_dynamic(name: &str) -> Vec<(String, String)> {
     // Check built-in first
     let builtin = apply_profile(name);
     if !builtin.is_empty() {
-        return builtin.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        return builtin
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
     }
     // Check custom profiles
     if let Some(keys) = CUSTOM_PROFILES.read().unwrap().get(name) {
@@ -348,7 +353,14 @@ pub fn apply_profile_dynamic(name: &str) -> Vec<(String, String)> {
 pub fn list_profiles() -> Vec<(String, HashMap<String, String>)> {
     let mut result: Vec<(String, HashMap<String, String>)> = BUILTIN_PROFILES
         .iter()
-        .map(|(name, keys)| (name.to_string(), keys.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()))
+        .map(|(name, keys)| {
+            (
+                name.to_string(),
+                keys.iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            )
+        })
         .collect();
     for (name, keys) in CUSTOM_PROFILES.read().unwrap().iter() {
         result.push((name.clone(), keys.clone()));

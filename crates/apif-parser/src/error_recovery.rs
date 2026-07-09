@@ -2,11 +2,9 @@
 // Parses as much as possible and collects all errors
 
 use crate::assertions::strip_assertion_comments;
-use apif_diagnostics::{DiagnosticCode, DiagnosticCollection, Range};
-use crate::ast::{
-    DocumentMetadata, FileMeta, GctfDocument, Section, SectionContent, SectionType,
-};
+use crate::ast::{DocumentMetadata, FileMeta, GctfDocument, Section, SectionContent, SectionType};
 use crate::gctf_tokenizer;
+use apif_diagnostics::{DiagnosticCode, DiagnosticCollection, Range};
 use std::path::Path;
 
 /// Result of error recovery parsing
@@ -18,7 +16,7 @@ pub struct ErrorRecoveryResult {
 }
 
 /// Parse GCTF file with error recovery.
-/// Supports multiple documents separated by `--- NEW ---`.
+/// Supports multiple documents via document chain.
 pub fn parse_with_recovery(file_path: &Path) -> ErrorRecoveryResult {
     let content = std::fs::read_to_string(file_path).unwrap_or_default();
     parse_content_with_recovery(&content, file_path.to_string_lossy().as_ref())
@@ -64,6 +62,7 @@ fn build_doc_from_sections(sections: &[Section], file_path: &str) -> GctfDocumen
             source: None,
             mtime: None,
             parsed_at: 0,
+            ..Default::default()
         },
         next_document: None,
     }
@@ -106,6 +105,7 @@ fn parse_single_with_recovery(content: &str, file_path: &str) -> ErrorRecoveryRe
             source: Some(content.to_string()),
             mtime: None,
             parsed_at: 0,
+            ..Default::default()
         },
         next_document: None,
     };

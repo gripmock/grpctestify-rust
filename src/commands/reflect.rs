@@ -55,9 +55,12 @@ pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
         if parts.len() != 2 {
             anyhow::bail!("Use format: Service/Method");
         }
-        let svc = pool.get_service_by_name(parts[0])
+        let svc = pool
+            .get_service_by_name(parts[0])
             .ok_or_else(|| anyhow::anyhow!("Service not found: {}", parts[0]))?;
-        let method = svc.methods().find(|m| m.name() == parts[1])
+        let method = svc
+            .methods()
+            .find(|m| m.name() == parts[1])
             .ok_or_else(|| anyhow::anyhow!("Method not found: {}", parts[1]))?;
 
         let is_cs = method.is_client_streaming();

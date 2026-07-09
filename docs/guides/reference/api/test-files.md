@@ -44,6 +44,26 @@ For section details, use [Section Reference](../sections/).
 - `META` is optional, but only one is allowed and it must be the first section
 - `BENCH` is optional, but only one is allowed and it should be first or immediately after `META`
 
+## Type annotations
+
+Add `:type` to field paths or variables in `ASSERTS` when the schema is unknown:
+
+```gctf
+--- ASSERTS ---
+.price:number >= 0
+.name:string contains "hello"
+```
+
+Use `$name` to reference [EXTRACT](../sections/extract) variables:
+
+```gctf
+--- EXTRACT ---
+total:number = .price
+
+--- ASSERTS ---
+$total >= 0
+```
+
 ## Attributes
 
 Per-section modifiers using `#[name(value)]` syntax:

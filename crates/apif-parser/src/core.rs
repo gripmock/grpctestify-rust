@@ -1,10 +1,10 @@
 // GCTF file parser - converts .gctf text to AST
 // Handles section extraction, comment removal, and inline option parsing
 
-use apif_ast::*;
 use crate::content_parser::{self, parse_attribute};
-use apif_ast::gctf_tokenizer::{GctfTokenKind, tokenize_gctf};
 use anyhow::{Context, Result};
+use apif_ast::gctf_tokenizer::{GctfTokenKind, tokenize_gctf};
+use apif_ast::*;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
@@ -381,7 +381,7 @@ fn bench_key_rank(key: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_parse_sections_basic() {
         let input = "\

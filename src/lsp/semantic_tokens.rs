@@ -82,7 +82,11 @@ fn tokenize_line_as_assertion(line: &str, line_num: u32, tokens: &mut Vec<SrcTok
         }
 
         let token_type = match &tok.kind {
-            TokenKind::Ident(s) if s.starts_with('.') || s.starts_with("{{") => VARIABLE,
+            TokenKind::Ident(s)
+                if s.starts_with('.') || s.starts_with("{{") || s.starts_with('$') =>
+            {
+                VARIABLE
+            }
             TokenKind::Ident(s) if s == "if" || s == "then" || s == "else" || s == "end" => KEYWORD,
             TokenKind::Ident(s) if s == "true" || s == "false" || s == "null" => KEYWORD,
             TokenKind::Ident(s) if s == "and" || s == "or" || s == "xor" || s == "not" => KEYWORD,
@@ -102,6 +106,7 @@ fn tokenize_line_as_assertion(line: &str, line_num: u32, tokens: &mut Vec<SrcTok
             | TokenKind::Bang
             | TokenKind::Pipe
             | TokenKind::Slash
+            | TokenKind::Colon
             | TokenKind::VarDelim => continue,
             TokenKind::Ident(_) => VARIABLE,
         };

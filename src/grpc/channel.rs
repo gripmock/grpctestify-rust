@@ -243,13 +243,24 @@ mod tests {
         let start = std::time::Instant::now();
         let r1 = create_channel(&config).await;
         let d1 = start.elapsed();
-        eprintln!("channel[miss]: {:?} ({})", d1, if r1.is_ok() { "ok" } else { "err" });
+        eprintln!(
+            "channel[miss]: {:?} ({})",
+            d1,
+            if r1.is_ok() { "ok" } else { "err" }
+        );
 
         let start = std::time::Instant::now();
         let r2 = create_channel(&config).await;
         let d2 = start.elapsed();
-        eprintln!("channel[hit]:  {:?} ({})", d2, if r2.is_ok() { "ok" } else { "err" });
+        eprintln!(
+            "channel[hit]:  {:?} ({})",
+            d2,
+            if r2.is_ok() { "ok" } else { "err" }
+        );
 
-        assert!(d2 < d1 || d2.as_micros() < 1000, "cache hit should be faster than miss");
+        assert!(
+            d2 < d1 || d2.as_micros() < 1000,
+            "cache hit should be faster than miss"
+        );
     }
 }
