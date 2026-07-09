@@ -824,6 +824,7 @@ fn estimate_row_size(row: &SourceRow) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(miri))]
     use std::io::Write;
 
     #[cfg(not(miri))]
