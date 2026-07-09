@@ -935,6 +935,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn dimension_missing_fk_still_injects_primary() {
         let dir = std::env::temp_dir().join("gctf_driven_fk_test");
         std::fs::create_dir_all(&dir).unwrap();
