@@ -935,7 +935,7 @@ impl BenchMetrics {
         // Collect per-response detail (capped at 100k)
         if self.details.len() < MAX_LATENCY_SAMPLES {
             self.details.push(crate::report::bench::BenchDetail {
-                timestamp: chrono::Utc::now().timestamp(),
+                timestamp: crate::time::now_timestamp(),
                 latency_ns,
                 status: status.to_string(),
                 error: error.map(|s| s.to_string()),
@@ -1090,7 +1090,7 @@ async fn run_benchmark(
     config: &BenchConfigResolved,
     exclude: &[String],
 ) -> Result<BenchReport> {
-    let start_ts = chrono::Utc::now().timestamp();
+    let start_ts = crate::time::now_timestamp();
 
     // Collect test files
     let mut test_files = Vec::new();
@@ -1349,7 +1349,7 @@ async fn run_benchmark(
     print_progress_snapshot(run_start, &progress_count, &progress_errors, config);
 
     let run_elapsed = run_start.elapsed();
-    let end_ts = chrono::Utc::now().timestamp();
+    let end_ts = crate::time::now_timestamp();
 
     let end_reason = derive_end_reason(has_duration, config.max_duration, run_elapsed);
 
