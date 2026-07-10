@@ -5,7 +5,7 @@ Built-in assertion plugins available in `ASSERTS`.
 ## Validation plugins
 
 | Plugin | Checks | Returns |
-|---|---|---|
+| --- | --- | --- |
 | `@is_uuid(value)` | valid UUID format | bool |
 | `@is_email(value)` | valid email address | bool |
 | `@is_ip(value)` | valid IP address (v4/v6) | bool |
@@ -17,14 +17,14 @@ Built-in assertion plugins available in `ASSERTS`.
 ## State plugins
 
 | Plugin | Checks | Returns |
-|---|---|---|
+| --- | --- | --- |
 | `@is_empty(value)` | value is null/empty string/empty array/empty object | bool |
 | `@has_value(value)` | value is non-null and non-empty | bool |
 
 ## Metadata plugins
 
 | Plugin | Returns |
-|---|---|
+| --- | --- |
 | `@header("name")` | header value (string or null) |
 | `@has_header("name")` | bool |
 | `@trailer("name")` | trailer value (string or null) |
@@ -33,7 +33,7 @@ Built-in assertion plugins available in `ASSERTS`.
 ## Utility plugins
 
 | Plugin | Returns |
-|---|---|
+| --- | --- |
 | `@len(value)` | non-negative integer |
 | `@regex(value, pattern)` | bool |
 | `@env("NAME")` | environment variable value (string or null) |
@@ -41,7 +41,7 @@ Built-in assertion plugins available in `ASSERTS`.
 ## Timing plugins
 
 | Plugin | Returns |
-|---|---|
+| --- | --- |
 | `@elapsed_ms()` | non-negative integer |
 | `@total_elapsed_ms()` | non-negative integer |
 | `@scope.message_count()` | non-negative integer |
@@ -52,7 +52,7 @@ Built-in assertion plugins available in `ASSERTS`.
 Extract parts from typed values:
 
 | Method | Returns | Example |
-|---|---|---|
+| --- | --- | --- |
 | `@url.scheme(url)` | `:string` | `"https"` |
 | `@url.host(url)` | `:string` | `"example.com"` |
 | `@url.port(url)` | `:string` | `"443"` |

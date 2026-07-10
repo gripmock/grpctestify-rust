@@ -49,6 +49,7 @@ Timing helpers are available inside `ASSERTS` and are most useful with `RESPONSE
 @elapsed_ms() >= 10
 @total_elapsed_ms() >= 10
 ```
+
 - `@elapsed_ms()` - elapsed for current assertion scope.
 - `@total_elapsed_ms()` - cumulative elapsed across completed assertion scopes.
 - `@scope.message_count()` - number of response messages in current scope.
