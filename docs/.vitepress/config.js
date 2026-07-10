@@ -186,6 +186,15 @@ export default defineConfig({
           ? defaultFence(tokens, idx, options, env, slf)
           : slf.renderToken(tokens, idx, options)
       }
+
+      const defaultCodeInline = md.renderer.rules.code_inline
+      md.renderer.rules.code_inline = (tokens, idx, options, env, slf) => {
+        const token = tokens[idx]
+        token.attrSet('v-pre', '')
+        return defaultCodeInline
+          ? defaultCodeInline(tokens, idx, options, env, slf)
+          : slf.renderToken(tokens, idx, options)
+      }
     }
   },
 
