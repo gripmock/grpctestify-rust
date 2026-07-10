@@ -62,8 +62,6 @@ impl Reporter for JsonReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Reporter;
-    use apif_state::TestResult;
 
     #[test]
     fn test_json_reporter_new() {
@@ -72,15 +70,19 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn test_json_reporter_lifecycle() {
-        let reporter = JsonReporter::new(PathBuf::from("/tmp/test_output.json"));
+        use crate::Reporter;
+        use apif_state::TestResult;
+        let path = std::env::temp_dir().join("test_output.json");
+        let reporter = JsonReporter::new(path.clone());
         reporter.on_test_start("test1");
         let pass = TestResult::pass("test1.gctf", 100, Some(50));
         reporter.on_test_end("test1", &pass);
         let results = apif_state::TestResults::new();
         assert!(reporter.on_suite_end(&results).is_ok());
         // Cleanup
-        let _ = std::fs::remove_file("/tmp/test_output.json");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

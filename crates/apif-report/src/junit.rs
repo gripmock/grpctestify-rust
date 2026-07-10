@@ -142,8 +142,6 @@ impl Reporter for JunitReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Reporter;
-    use apif_state::TestResult;
 
     #[test]
     fn test_junit_reporter_new() {
@@ -236,24 +234,32 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn test_junit_reporter_lifecycle() {
-        let reporter = JunitReporter::new(PathBuf::from("/tmp/test_junit_output.xml"));
+        use crate::Reporter;
+        use apif_state::TestResult;
+        let path = std::env::temp_dir().join("test_junit_output.xml");
+        let reporter = JunitReporter::new(path.clone());
         let mut results = TestResults::new();
         results.add(TestResult::pass("test.gctf", 100, None));
         assert!(reporter.on_suite_end(&results).is_ok());
-        assert!(std::path::Path::new("/tmp/test_junit_output.xml").exists());
-        let _ = std::fs::remove_file("/tmp/test_junit_output.xml");
+        assert!(path.exists());
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
+    #[cfg(not(miri))]
     fn test_junit_reporter_with_failure() {
-        let reporter = JunitReporter::new(PathBuf::from("/tmp/test_junit_fail.xml"));
+        use crate::Reporter;
+        use apif_state::TestResult;
+        let path = std::env::temp_dir().join("test_junit_fail.xml");
+        let reporter = JunitReporter::new(path.clone());
         let mut results = TestResults::new();
         results.add(TestResult::fail("test.gctf", "error msg".into(), 100, None));
         assert!(reporter.on_suite_end(&results).is_ok());
-        let content = std::fs::read_to_string("/tmp/test_junit_fail.xml").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("failure"));
         assert!(content.contains("error msg"));
-        let _ = std::fs::remove_file("/tmp/test_junit_fail.xml");
+        let _ = std::fs::remove_file(&path);
     }
 }
