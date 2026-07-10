@@ -1114,8 +1114,7 @@ fn print_source_hints(doc: &GctfDocument, file_path: &Path) {
             let from_file_stem = std::path::Path::new(&s.file)
                 .file_stem()
                 .map(|stem| stem.to_string_lossy())
-                .map(|stem| stem.as_ref() == req.source)
-                .unwrap_or(false);
+                .is_some_and(|stem| stem.as_ref() == req.source);
             from_name || from_file_stem
         });
 

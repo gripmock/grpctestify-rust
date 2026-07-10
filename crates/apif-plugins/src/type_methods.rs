@@ -165,7 +165,10 @@ impl Plugin for EmailLocalPart {
             Value::String(s) => s,
             _ => return Ok(PluginResult::Value(Value::Null)),
         };
-        let local = s.split('@').nth(0).unwrap_or("").to_string();
+        let local = s
+            .split_once('@')
+            .map_or(s.as_str(), |(local, _)| local)
+            .to_string();
         Ok(PluginResult::Value(Value::String(local)))
     }
     fn signature(&self) -> PluginSignature {

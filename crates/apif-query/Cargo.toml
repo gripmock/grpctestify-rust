@@ -12,7 +12,7 @@ description = "Query DSL parser for APIF data sources"
 [dependencies]
 anyhow = { workspace = true }
 regex = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true }
 
 [dev-dependencies]
 criterion = "0.8"

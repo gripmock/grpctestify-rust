@@ -294,6 +294,7 @@ mod tests {
     use super::*;
     use crate::Reporter;
     use apif_state::TestResult;
+    use std::assert_matches;
 
     fn env_info() -> EnvironmentInfo {
         EnvironmentInfo {
@@ -314,7 +315,7 @@ mod tests {
     #[test]
     fn test_console_reporter_new() {
         let reporter = ConsoleReporter::new(ConsoleMode::Silent, 10, env_info());
-        assert!(matches!(reporter.mode, ConsoleMode::Silent));
+        assert_matches!(reporter.mode, ConsoleMode::Silent);
     }
 
     #[test]

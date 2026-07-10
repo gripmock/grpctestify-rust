@@ -40,6 +40,7 @@ impl InMemorySource {
         self.data.get(key)
     }
 
+    #[must_use]
     pub fn contains(&self, key: &str) -> bool {
         self.data.contains_key(key)
     }
@@ -48,6 +49,7 @@ impl InMemorySource {
         self.data.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }

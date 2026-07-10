@@ -2185,8 +2185,7 @@ impl TestRunner {
             }
             if tls_config
                 .get("insecure")
-                .map(|s| runner_helpers::parse_bool_flag(s))
-                .unwrap_or(false)
+                .is_some_and(|s| runner_helpers::parse_bool_flag(s))
             {
                 println!("   Insecure Skip Verify: true");
             }
@@ -2293,7 +2292,7 @@ mod tests {
 
     #[test]
     fn test_parse_compression_option_fallback_to_env() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = ENV_MUTEX.lock().expect("ENV_MUTEX should not be poisoned");
         unsafe {
             std::env::set_var(crate::config::ENV_GRPCTESTIFY_COMPRESSION, "gzip");
         }
@@ -2345,7 +2344,7 @@ mod tests {
 
     #[test]
     fn test_tls_env_defaults_uses_grpctestify_prefix() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = ENV_MUTEX.lock().expect("ENV_MUTEX should not be poisoned");
 
         unsafe {
             std::env::set_var(crate::config::ENV_GRPCTESTIFY_TLS_CA_FILE, "/tmp/ca.pem");
@@ -2379,7 +2378,7 @@ mod tests {
 
     #[test]
     fn test_tls_env_defaults_ignores_empty_values() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = ENV_MUTEX.lock().expect("ENV_MUTEX should not be poisoned");
 
         unsafe {
             std::env::set_var(crate::config::ENV_GRPCTESTIFY_TLS_CA_FILE, "");

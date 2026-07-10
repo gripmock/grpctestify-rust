@@ -35,6 +35,7 @@ pub struct TlsConfig {
 
 impl TlsConfig {
     /// Check if TLS config is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.ca_cert_path.is_none()
             && self.client_cert_path.is_none()

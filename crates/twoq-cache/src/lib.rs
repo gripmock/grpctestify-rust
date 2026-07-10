@@ -67,22 +67,32 @@ impl<K: Hash + Eq + Clone, V> TwoQCache<K, V> {
         }
     }
 
+    #[inline]
+    #[must_use]
     pub fn contains(&self, key: &K) -> bool {
         self.hot.contains_key(key) || self.cold.contains_key(key)
     }
 
+    #[inline]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.hot.len() + self.cold.len()
     }
 
+    #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.hot.is_empty() && self.cold.is_empty()
     }
 
+    #[inline]
+    #[must_use]
     pub fn hot_len(&self) -> usize {
         self.hot.len()
     }
 
+    #[inline]
+    #[must_use]
     pub fn cold_len(&self) -> usize {
         self.cold.len()
     }

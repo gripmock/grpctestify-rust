@@ -163,6 +163,7 @@ pub struct WorkflowSummary {
 }
 
 impl Workflow {
+    #[must_use]
     pub fn has_streaming(&self) -> bool {
         let request_count = self
             .events
@@ -559,7 +560,7 @@ impl Workflow {
         .into_iter()
         .map(|h| OptimizationHint {
             line: h.line,
-            rule_id: h.rule_id.as_str().to_string(),
+            rule_id: h.rule_id.to_string(),
             before: h.before,
             after: h.after,
         })

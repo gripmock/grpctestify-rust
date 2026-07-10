@@ -509,8 +509,7 @@ fn index_state(index_path: &Path, source_path: &Path) -> IndexState {
 
 fn is_bench_file(path: &Path) -> bool {
     path.extension()
-        .map(|e| e.eq_ignore_ascii_case("gctf"))
-        .unwrap_or(false)
+        .is_some_and(|e| e.eq_ignore_ascii_case("gctf"))
 }
 
 fn parse_sources_from_bench_file(path: &Path) -> Result<Option<Vec<SourceDefinition>>> {

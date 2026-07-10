@@ -20,18 +20,22 @@ pub enum TypeInfo {
 }
 
 impl TypeInfo {
+    #[must_use]
     pub fn is_numeric(&self) -> bool {
         matches!(self, TypeInfo::UInt | TypeInfo::Number)
     }
 
+    #[must_use]
     pub fn is_stringy(&self) -> bool {
         matches!(self, TypeInfo::String)
     }
 
+    #[must_use]
     pub fn is_temporal(&self) -> bool {
         matches!(self, TypeInfo::Time)
     }
 
+    #[must_use]
     pub fn is_nullable(&self) -> bool {
         matches!(self, TypeInfo::Any)
     }

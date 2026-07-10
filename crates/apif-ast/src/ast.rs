@@ -95,6 +95,7 @@ pub struct FileMeta {
 
 impl FileMeta {
     /// Check if meta has any content
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.name.is_none()
             && self.summary.is_none()
@@ -112,17 +113,17 @@ pub struct GctfAttribute {
 }
 
 impl GctfAttribute {
-    pub fn new(name: &str, value: &str) -> Self {
+    pub fn new(name: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
-            name: name.to_string(),
-            value: value.to_string(),
+            name: name.into(),
+            value: value.into(),
         }
     }
 
-    pub fn flag(name: &str) -> Self {
+    pub fn flag(name: impl Into<String>) -> Self {
         Self {
-            name: name.to_string(),
-            value: "true".to_string(),
+            name: name.into(),
+            value: "true".into(),
         }
     }
 
@@ -180,10 +181,10 @@ impl Section {
             .unwrap_or(false)
     }
 
+    #[must_use]
     pub fn has_tag(&self, tag: &str) -> bool {
         self.get_attribute("tag")
-            .map(|a| a.value.split(',').any(|t| t.trim() == tag))
-            .unwrap_or(false)
+            .is_some_and(|a| a.value.split(',').any(|t| t.trim() == tag))
     }
 
     pub fn get_compression(&self) -> Option<String> {
@@ -312,6 +313,7 @@ pub enum SectionType {
 
 impl SectionType {
     /// Returns `true` if this section marks the end of a logical request-response cycle.
+    #[must_use]
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
@@ -359,6 +361,7 @@ impl SectionType {
     }
 
     /// Check if section can appear multiple times
+    #[must_use]
     pub fn is_multiple_allowed(&self) -> bool {
         matches!(
             self,
@@ -370,6 +373,7 @@ impl SectionType {
     }
 
     /// Check if section is file-level (not inside documents)
+    #[must_use]
     pub fn is_file_level(&self) -> bool {
         matches!(self, SectionType::Meta | SectionType::Bench)
     }
@@ -445,6 +449,7 @@ impl InlineOptions {
         parts
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         !self.with_asserts
             && !self.partial
@@ -519,6 +524,7 @@ impl GctfDocument {
         count
     }
 
+    #[must_use]
     pub fn is_single_document(&self) -> bool {
         self.next_document.is_none()
     }
@@ -671,6 +677,7 @@ impl GctfDocument {
     }
 
     /// Check for RESPONSE and ERROR conflict
+    #[must_use]
     pub fn has_response_error_conflict(&self) -> bool {
         self.first_section(SectionType::Response).is_some()
             && self.first_section(SectionType::Error).is_some()

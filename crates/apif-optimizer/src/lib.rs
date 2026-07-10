@@ -12,6 +12,7 @@ pub enum OptimizeLevel {
 }
 
 impl OptimizeLevel {
+    #[must_use]
     pub fn is_enabled(self, rule_level: OptimizeLevel) -> bool {
         self as u8 >= rule_level as u8
     }
@@ -763,8 +764,7 @@ fn is_idempotent_expr(expr: &str, signatures: &HashMap<String, PluginSignature>)
     if let Some(plugin_name) = extract_plugin_call_name(trimmed) {
         return signatures
             .get(plugin_name.as_str())
-            .map(|sig| sig.idempotent)
-            .unwrap_or(false);
+            .is_some_and(|sig| sig.idempotent);
     }
 
     false

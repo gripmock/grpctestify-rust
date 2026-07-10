@@ -744,7 +744,7 @@ fn collect_optimizer_rewrites_with_ranges(
                 Position::new(lsp_line, end_char),
             ),
             hint.after,
-            hint.rule_id.as_str().to_string(),
+            hint.rule_id.to_string(),
             hint.before,
         ));
     }
@@ -1334,7 +1334,7 @@ test.Service/Method
         assert!(!diagnostics.is_empty(), "R001 should fire at Safe level");
         assert_eq!(
             diagnostics[0].code,
-            Some(NumberOrString::String(rule_ids::R001.as_str().to_string()))
+            Some(NumberOrString::String(rule_ids::R001.to_string()))
         );
     }
 
@@ -1570,7 +1570,7 @@ test.Service/Method
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(
             diagnostics[0].code,
-            Some(NumberOrString::String(rule_ids::R001.as_str().to_string()))
+            Some(NumberOrString::String(rule_ids::R001.to_string()))
         );
     }
 

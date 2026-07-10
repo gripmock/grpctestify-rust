@@ -359,9 +359,7 @@ fn eval_binary_value(lhs: Value, op: &BinaryOp, rhs: Value) -> Value {
             _ => false,
         },
         BinaryOp::Matches => match (&lhs, &rhs) {
-            (Value::String(l), Value::String(r)) => {
-                cached_regex(r).map(|re| re.is_match(l)).unwrap_or(false)
-            }
+            (Value::String(l), Value::String(r)) => cached_regex(r).is_ok_and(|re| re.is_match(l)),
             _ => false,
         },
     };
