@@ -1,10 +1,11 @@
 // Fmt command - format GCTF files
 
 use anyhow::Result;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
-use crate::cli::args::FmtArgs;
+use crate::cli::args::{Cli, FmtArgs};
 use crate::optimizer;
+use crate::optimizer::OptimizeLevel;
 use crate::parser;
 use crate::semantics;
 use crate::utils::FileUtils;
@@ -438,6 +439,14 @@ fn format_gctf_chain(head: &crate::parser::GctfDocument, source: &str) -> String
     // Walk every section across all documents in the chain
     for doc in head.iter_chain() {
         for section in &doc.sections {
+            // Skip empty EXTRACT sections
+            if matches!(section.section_type, parser::ast::SectionType::Extract)
+                && matches!(section.content, parser::ast::SectionContent::Empty)
+            {
+                current_line = section.end_line.min(lines.len());
+                continue;
+            }
+
             let attr_count = section.attributes.len();
             let attr_line_start = section.start_line.saturating_sub(attr_count);
 
@@ -480,12 +489,22 @@ fn format_gctf_chain(head: &crate::parser::GctfDocument, source: &str) -> String
     rendered
 }
 
+/// Format GCTF content with Safe optimizer level (default).
 pub fn format_gctf_content(source: &str, file_name: &str) -> Result<String> {
+    format_gctf_content_with_level(source, file_name, optimizer::OptimizeLevel::Safe)
+}
+
+/// Format GCTF content with explicit optimizer level.
+pub fn format_gctf_content_with_level(
+    source: &str,
+    file_name: &str,
+    level: OptimizeLevel,
+) -> Result<String> {
     let doc = parser::parse_gctf_from_str(source, file_name)?;
 
     // Apply optimizer rewrites before formatting
     let eol = canonical_line_ending();
-    let source_after_optimizer = apply_optimizer_rewrites(&doc, source, eol);
+    let source_after_optimizer = apply_optimizer_rewrites(&doc, source, eol, level);
 
     // Re-parse after optimizer to get updated raw_content
     let doc_after = parser::parse_gctf_from_str(&source_after_optimizer, file_name)?;
@@ -493,8 +512,13 @@ pub fn format_gctf_content(source: &str, file_name: &str) -> Result<String> {
 }
 
 /// Apply optimizer rewrites to source lines
-fn apply_optimizer_rewrites(doc: &crate::parser::GctfDocument, source: &str, eol: &str) -> String {
-    let hints = optimizer::collect_assertion_optimizations(doc);
+fn apply_optimizer_rewrites(
+    doc: &crate::parser::GctfDocument,
+    source: &str,
+    eol: &str,
+    level: OptimizeLevel,
+) -> String {
+    let hints = optimizer::collect_assertion_optimizations(doc, level);
     if hints.is_empty() {
         return source.to_string();
     }
@@ -519,7 +543,8 @@ fn apply_optimizer_rewrites(doc: &crate::parser::GctfDocument, source: &str, eol
     rewritten
 }
 
-pub async fn handle_fmt(args: &FmtArgs) -> Result<()> {
+pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
+    let level = cli.optimize_level(optimizer::OptimizeLevel::Safe);
     let mut files = Vec::new();
     let mut has_error = false;
     let mut files_needing_format = 0usize;
@@ -589,6 +614,16 @@ pub async fn handle_fmt(args: &FmtArgs) -> Result<()> {
                 );
                 chain_has_error = true;
             }
+            // Suppress SEM_D001 in fmt — Safe-level optimizer auto-fixes them
+            for dep in semantics::collect_deprecated_plugin_calls(d) {
+                debug!(
+                    "{}:{}: [{}] {}",
+                    file.display(),
+                    dep.line,
+                    dep.rule_id,
+                    dep.message
+                );
+            }
         }
         if chain_has_error {
             has_error = true;
@@ -596,7 +631,7 @@ pub async fn handle_fmt(args: &FmtArgs) -> Result<()> {
         }
 
         // Use the format function which handles multi-document automatically
-        let formatted = match format_gctf_content(&original, &file_name) {
+        let formatted = match format_gctf_content_with_level(&original, &file_name, level) {
             Ok(f) => f,
             Err(e) => {
                 error!("{}:1: [FORMAT_ERROR] {}", file.display(), e);
@@ -714,7 +749,7 @@ grpc.health.v1.Health/Watch
 }
 
 --- ASSERTS ---
-@scope_message_count() == 2
+@scope.message_count() == 2
 "#;
 
         let formatted = format_gctf_content(source, "test.gctf").unwrap();
@@ -737,7 +772,7 @@ grpc.health.v1.Health/Watch
 }
 
 --- ASSERTS ---
-@scope_message_count() == 2
+@scope.message_count() == 2
 "#;
 
         assert_eq!(formatted, expected);
@@ -796,7 +831,7 @@ grpc.health.v1.Health/Check
 
 
 --- ASSERTS ---
-@scope_message_count() == 2
+@scope.message_count() == 2
 "#;
 
         let formatted = format_gctf_content(source, "test.gctf").unwrap();
@@ -817,7 +852,7 @@ grpc.health.v1.Health/Check
 }
 
 --- ASSERTS ---
-@scope_message_count() == 2
+@scope.message_count() == 2
 "#;
         assert_eq!(formatted, expected);
     }
@@ -840,7 +875,7 @@ grpc.health.v1.Health/Check
   "status": "SERVING"
 }
 --- ASSERTS --- 
-@scope_message_count() == 2
+@scope.message_count() == 2
 "#;
 
         let formatted = format_gctf_content(source, "test.gctf").unwrap();
@@ -861,7 +896,7 @@ grpc.health.v1.Health/Check
 }
 
 --- ASSERTS ---
-@scope_message_count() == 2
+@scope.message_count() == 2
 "#;
         assert_eq!(formatted, expected);
     }
@@ -884,7 +919,7 @@ grpc.health.v1.Health/Check
   "status": "SERVING"
 }
 --- ASSERTS ---
-@scope_message_count() == 2
+@scope.message_count() == 2
 "#;
         let source = to_crlf(source_lf);
 
@@ -906,7 +941,7 @@ grpc.health.v1.Health/Check
 }
 
 --- ASSERTS ---
-@scope_message_count() == 2
+@scope.message_count() == 2
 "#;
         assert_eq!(formatted, expected);
     }

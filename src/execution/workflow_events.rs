@@ -1,6 +1,7 @@
 // Workflow events - semantic execution flow from ExecutionPlan
 // Supports: N requests, N responses, multiple backends, interleaved streaming
 
+use crate::optimizer;
 use serde::{Deserialize, Serialize};
 
 /// Workflow event - represents a semantic step in test execution
@@ -551,15 +552,18 @@ impl Workflow {
         });
 
         // Run optimizer analysis
-        let hints: Vec<OptimizationHint> = crate::optimizer::collect_assertion_optimizations(doc)
-            .into_iter()
-            .map(|h| OptimizationHint {
-                line: h.line,
-                rule_id: h.rule_id.as_str().to_string(),
-                before: h.before,
-                after: h.after,
-            })
-            .collect();
+        let hints: Vec<OptimizationHint> = crate::optimizer::collect_assertion_optimizations(
+            doc,
+            optimizer::OptimizeLevel::Advisory,
+        )
+        .into_iter()
+        .map(|h| OptimizationHint {
+            line: h.line,
+            rule_id: h.rule_id.as_str().to_string(),
+            before: h.before,
+            after: h.after,
+        })
+        .collect();
 
         if !hints.is_empty() {
             events.push(WorkflowEvent::OptimizationFound { hints });

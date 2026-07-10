@@ -78,6 +78,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn row_from_csv_line() {
+        let row = SourceRow::from_csv_line("1,Alice,engineer");
+        assert_eq!(row.columns(), &["col_0", "col_1", "col_2"]);
+        assert_eq!(row.values(), &["1", "Alice", "engineer"]);
+        assert_eq!(row.len(), 3);
+    }
+
+    #[test]
+    fn row_from_csv_empty_line() {
+        let row = SourceRow::from_csv_line("");
+        // split("") on empty string produces [""]
+        assert_eq!(row.len(), 1);
+        assert_eq!(row.get("col_0"), Some(""));
+    }
+
+    #[test]
     fn row_new_and_get() {
         let headers = vec!["id".into(), "name".into()];
         let row = SourceRow::new(&headers, vec!["42".into(), "Alice".into()]);

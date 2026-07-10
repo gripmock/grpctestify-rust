@@ -7,7 +7,6 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProgressMode {
     Dots,
-    Bar,
     None,
     Verbose,
 }
@@ -18,7 +17,7 @@ impl std::str::FromStr for ProgressMode {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "dots" => Ok(Self::Dots),
-            "bar" => Ok(Self::Bar),
+            "bar" => Ok(Self::Dots),
             "none" => Ok(Self::None),
             _ => Ok(Self::Dots),
         }
@@ -52,6 +51,10 @@ pub struct Cli {
     /// Enable verbose debug output
     #[arg(short = 'v', long, global = true, default_value_t = false)]
     pub verbose: bool,
+
+    /// Optimizer level (0=none, 1=safe, 2=advisory, 3=aggressive)
+    #[arg(long = "optimize", short = 'O', value_name = "LEVEL", global = true, default_value_t = String::new())]
+    pub optimize: String,
 
     /// Install shell completion (bash, zsh, fish, elvish, powershell)
     #[arg(long, value_name = "SHELL_TYPE", value_parser = ["bash", "zsh", "fish", "elvish", "powershell"])]
@@ -689,7 +692,7 @@ impl Cli {
 
         match progress.as_str() {
             "dots" => ProgressMode::Dots,
-            "bar" => ProgressMode::Bar,
+            "bar" => ProgressMode::Dots,
             "none" => ProgressMode::None,
             "auto" => {
                 if self.verbose {
@@ -715,6 +718,21 @@ impl Cli {
             "allure" => LogFormat::Allure,
             _ => LogFormat::Console,
         })
+    }
+
+    /// Get optimizer level from CLI flag or default for command
+    pub fn optimize_level(
+        &self,
+        default: crate::optimizer::OptimizeLevel,
+    ) -> crate::optimizer::OptimizeLevel {
+        use crate::optimizer::OptimizeLevel;
+        match self.optimize.as_str() {
+            "0" | "none" => OptimizeLevel::None,
+            "1" | "safe" => OptimizeLevel::Safe,
+            "2" | "advisory" => OptimizeLevel::Advisory,
+            "3" | "aggressive" => OptimizeLevel::Aggressive,
+            _ => default,
+        }
     }
 
     /// Helper to get effective RunArgs

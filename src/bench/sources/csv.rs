@@ -7,8 +7,7 @@ use std::io::{BufReader, Read, Seek};
 pub struct CsvReader<R> {
     reader: csv::Reader<BufReader<R>>,
     headers: Vec<String>,
-    #[allow(dead_code)]
-    delimiter: u8,
+    _delimiter: u8,
     row_number: usize,
     finished: bool,
 }
@@ -43,7 +42,7 @@ impl<R: Read> CsvReader<R> {
         Ok(Self {
             reader: csv_reader,
             headers,
-            delimiter,
+            _delimiter: delimiter,
             row_number: 1,
             finished: false,
         })

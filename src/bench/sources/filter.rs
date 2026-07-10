@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use source_row::SourceRow;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct FilterCondition {
@@ -14,6 +15,8 @@ pub struct FilterCondition {
     pub lt: Option<String>,
     #[serde(default, rename = "in")]
     pub in_values: Option<Vec<String>>,
+    #[serde(skip)]
+    in_set: Option<HashSet<String>>,
 }
 
 impl FilterCondition {
@@ -46,13 +49,24 @@ impl FilterCondition {
             return false;
         }
 
-        if let Some(values) = &self.in_values
-            && !values.iter().any(|v| v == actual)
-        {
-            return false;
+        if let Some(values) = &self.in_values {
+            let found = if let Some(set) = &self.in_set {
+                set.contains(actual)
+            } else {
+                values.iter().any(|v| v == actual)
+            };
+            if !found {
+                return false;
+            }
         }
 
         true
+    }
+
+    pub fn optimize(&mut self) {
+        if let Some(values) = &self.in_values {
+            self.in_set = Some(values.iter().cloned().collect());
+        }
     }
 }
 
@@ -82,6 +96,7 @@ mod tests {
             gte: None,
             lt: None,
             in_values: None,
+            in_set: None,
         };
         assert!(cond.matches(&row()));
     }
@@ -95,6 +110,7 @@ mod tests {
             gte: None,
             lt: None,
             in_values: Some(vec!["inactive".into(), "active".into()]),
+            in_set: None,
         };
         assert!(cond.matches(&row()));
     }
@@ -108,6 +124,7 @@ mod tests {
             gte: None,
             lt: None,
             in_values: None,
+            in_set: None,
         };
         assert!(cond.matches(&row()));
     }
@@ -121,6 +138,7 @@ mod tests {
             gte: Some("2024-01-01".into()),
             lt: Some("2025-01-01".into()),
             in_values: None,
+            in_set: None,
         };
         assert!(cond.matches(&row()));
     }
@@ -135,6 +153,7 @@ mod tests {
                 gte: None,
                 lt: None,
                 in_values: None,
+                in_set: None,
             },
             FilterCondition {
                 field: "region_id".into(),
@@ -143,6 +162,7 @@ mod tests {
                 gte: None,
                 lt: None,
                 in_values: None,
+                in_set: None,
             },
         ];
         assert!(!matches_all(&row(), &conds));

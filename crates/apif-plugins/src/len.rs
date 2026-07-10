@@ -30,6 +30,7 @@ impl Plugin for LenPlugin {
             idempotent: true,
             safe_for_rewrite: true,
             arg_names: &["value"],
+            replacement: None,
         }
     }
 

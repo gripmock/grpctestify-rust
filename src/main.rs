@@ -56,8 +56,8 @@ async fn main() -> Result<()> {
 
     match &cli.command {
         Some(Commands::Reflect(args)) => commands::handle_reflect(args).await,
-        Some(Commands::Fmt(args)) => commands::handle_fmt(args).await,
-        Some(Commands::Check(args)) => commands::handle_check(args).await,
+        Some(Commands::Fmt(args)) => commands::handle_fmt(args, &cli).await,
+        Some(Commands::Check(args)) => commands::handle_check(args, &cli).await,
         Some(Commands::Explain(args)) => commands::handle_explain(args).await,
         Some(Commands::Grpcurl(args)) => commands::handle_grpcurl(args).await,
         Some(Commands::Inspect(args)) => commands::handle_inspect(args).await,

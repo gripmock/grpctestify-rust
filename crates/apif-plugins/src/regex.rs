@@ -69,6 +69,7 @@ impl Plugin for RegexPlugin {
             idempotent: true,
             safe_for_rewrite: true,
             arg_names: &["value", "pattern"],
+            replacement: None,
         }
     }
 

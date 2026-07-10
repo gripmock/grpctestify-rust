@@ -35,6 +35,7 @@ impl Plugin for TrailerExtractPlugin {
             idempotent: true,
             safe_for_rewrite: false,
             arg_names: &["name"],
+            replacement: None,
         }
     }
 
@@ -109,6 +110,7 @@ impl Plugin for HasTrailerPlugin {
             idempotent: true,
             safe_for_rewrite: true,
             arg_names: &["name"],
+            replacement: None,
         }
     }
 

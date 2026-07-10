@@ -572,9 +572,81 @@ example.v1.Greeter/SayHello
     );
 
     let updated = std::fs::read_to_string(&file).expect("failed to read rewritten gctf file");
+    assert!(updated.contains("@has_header(\"x-request-id\") == true"));
+    // Safe level (fmt default) keeps `== true` — boolean rewrite is Advisory level
+}
+
+#[test]
+fn test_fmt_applies_optimizer_with_level_advisory() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("fmt-opt-advisory.gctf");
+    let content = r#"--- ENDPOINT ---
+example.v1.Greeter/SayHello
+
+--- REQUEST ---
+{"name": "World"}
+
+--- RESPONSE ---
+{"message": "Hello World"}
+
+--- ASSERTS ---
+@has_header("x-request-id") == true
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["fmt", "-w", "-O", "2", &path]);
+    assert!(
+        output.status.success(),
+        "fmt -w -O 2 failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let updated = std::fs::read_to_string(&file).expect("failed to read rewritten gctf file");
     assert!(updated.contains("@has_header(\"x-request-id\")"));
-    // Optimizer should simplify `@has_header(...) == true` to just `@has_header(...)`
-    assert!(!updated.contains("== true"));
+    // Advisory level simplifies `@has_header(...) == true` to just `@has_header(...)`
+    assert!(
+        !updated.contains("== true"),
+        "Advisory level should remove `== true`, got: {}",
+        updated
+    );
+}
+
+#[test]
+fn test_fmt_applies_optimizer_with_level_aggressive() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("fmt-opt-aggressive.gctf");
+    let content = r#"--- ENDPOINT ---
+example.v1.Greeter/SayHello
+
+--- REQUEST ---
+{"name": "World"}
+
+--- RESPONSE ---
+{"message": "Hello World"}
+
+--- ASSERTS ---
+@len(.items) >= 0
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["fmt", "-w", "-O", "3", &path]);
+    assert!(
+        output.status.success(),
+        "fmt -w -O 3 failed\nstderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let updated = std::fs::read_to_string(&file).expect("failed to read rewritten gctf file");
+    // Aggressive level simplifies `@len(.items) >= 0` to `true` (UInt always >= 0)
+    assert!(
+        updated.contains("true"),
+        "Aggressive level should replace with `true`, got: {}",
+        updated
+    );
 }
 
 #[test]

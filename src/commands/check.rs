@@ -1,5 +1,6 @@
 // Check command - validate GCTF files
 
+use crate::cli::Cli;
 use crate::cli::args::HasFormat;
 use anyhow::Result;
 use std::path::PathBuf;
@@ -7,6 +8,7 @@ use tracing::info;
 
 use crate::bench::schema::bench_key_rank;
 use crate::cli::args::CheckArgs;
+use crate::optimizer::OptimizeLevel;
 use crate::parser;
 use crate::parser::ErrorSeverity;
 use crate::parser::ast::SectionType;
@@ -161,7 +163,7 @@ fn check_bench_key_order(doc: &parser::GctfDocument) -> Vec<(usize, String, Stri
     out
 }
 
-pub async fn handle_check(args: &CheckArgs) -> Result<()> {
+pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
     let mut files = Vec::new();
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
     let mut files_with_errors = 0;
@@ -290,6 +292,21 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                         .with_hint(&format!("Assertion: {}", unknown.expression)),
                     );
                     file_has_error = true;
+                }
+
+                // Use same optimizer pipeline as fmt — shared logic
+                let opt_level = cli.optimize_level(OptimizeLevel::Safe);
+                let opt_hints = crate::optimizer::collect_assertion_optimizations(&doc, opt_level);
+                for hint in opt_hints {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            &file_str,
+                            hint.rule_id.as_str(),
+                            &format!("{} → {}", hint.before, hint.after),
+                            hint.line,
+                        )
+                        .with_hint(&hint.preconditions.unwrap_or_default()),
+                    );
                 }
 
                 // Validate BENCH section config if --bench flag is set

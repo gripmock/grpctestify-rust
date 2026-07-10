@@ -74,8 +74,8 @@ mod tests {
             Some("@elapsed_ms() >= 10".to_string())
         );
         assert_eq!(
-            strip_assertion_comments("@scope_message_count() == 2 # two messages"),
-            Some("@scope_message_count() == 2".to_string())
+            strip_assertion_comments("@scope.message_count() == 2 # two messages"),
+            Some("@scope.message_count() == 2".to_string())
         );
     }
 

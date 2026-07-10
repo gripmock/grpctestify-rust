@@ -251,7 +251,7 @@ pub fn report_context() -> KernelReportContext {
     KernelReportContext {
         tool: "grpctestify".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        generated_at: crate::time::now_timestamp(),
+        generated_at: crate::polyfill::runtime::now_timestamp(),
     }
 }
 

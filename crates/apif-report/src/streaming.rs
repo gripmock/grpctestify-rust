@@ -95,3 +95,57 @@ impl Reporter for StreamingJsonReporter {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Reporter;
+    use apif_state::TestResult;
+
+    #[test]
+    fn test_streaming_reporter_new() {
+        let reporter = StreamingJsonReporter::new(5);
+        assert_eq!(reporter.test_count, 5);
+        assert!(!reporter.suite_started.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_streaming_reporter_lifecycle() {
+        let reporter = StreamingJsonReporter::new(2);
+        // These should not panic — emit writes to stdout but swallows errors
+        reporter.on_test_start("test1");
+        reporter.on_test_start("test2");
+
+        let result = TestResult::pass("test1.gctf", 100, Some(50));
+        reporter.on_test_end("test1", &result);
+
+        let result = TestResult::fail("test2.gctf", "error".to_string(), 200, Some(100));
+        reporter.on_test_end("test2", &result);
+
+        let results = TestResults::new();
+        let r = reporter.on_suite_end(&results);
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn test_streaming_reporter_on_test_end_with_error_message() {
+        let reporter = StreamingJsonReporter::new(1);
+        reporter.on_test_start("test");
+
+        let result = TestResult::fail("test.gctf", "something broke".into(), 150, None);
+        reporter.on_test_end("test", &result);
+
+        let results = TestResults::new();
+        assert!(reporter.on_suite_end(&results).is_ok());
+    }
+
+    #[test]
+    fn test_streaming_reporter_suite_start_once() {
+        let reporter = StreamingJsonReporter::new(1);
+        // First call sets suite_started
+        reporter.on_test_start("t1");
+        assert!(reporter.suite_started.load(Ordering::SeqCst));
+        // Subsequent calls should not re-emit suite_start
+        reporter.on_test_start("t2");
+    }
+}

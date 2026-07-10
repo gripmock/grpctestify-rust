@@ -46,7 +46,7 @@ pub struct AssertionTiming {
 }
 
 /// Result of a plugin execution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PluginResult {
     Assertion(AssertionResult),
     Value(Value),

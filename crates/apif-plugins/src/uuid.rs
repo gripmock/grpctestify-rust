@@ -30,6 +30,7 @@ impl Plugin for UuidPlugin {
             idempotent: true,
             safe_for_rewrite: true,
             arg_names: &["value"],
+            replacement: None,
         }
     }
 

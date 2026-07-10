@@ -181,4 +181,72 @@ mod tests {
         assert!(debug_str.contains("test.gctf"));
         assert!(debug_str.contains("Pass"));
     }
+
+    #[test]
+    fn test_test_result_pass_with_meta() {
+        let meta = TestMeta {
+            name: Some("display".into()),
+            summary: Some("test summary".into()),
+            tags: vec!["api".into()],
+            owner: Some("team".into()),
+            links: vec!["http://link".into()],
+        };
+        let result = TestResult::pass_with_meta("test.gctf", 100, Some(50), meta.clone());
+        assert_eq!(result.status, TestStatus::Pass);
+        assert_eq!(result.meta, meta);
+    }
+
+    #[test]
+    fn test_test_result_fail_with_meta() {
+        let meta = TestMeta {
+            name: Some("display".into()),
+            ..Default::default()
+        };
+        let result = TestResult::fail_with_meta(
+            "test.gctf",
+            "error message".to_string(),
+            100,
+            Some(50),
+            meta.clone(),
+        );
+        assert_eq!(result.status, TestStatus::Fail);
+        assert_eq!(result.error_message, Some("error message".to_string()));
+        assert_eq!(result.meta, meta);
+    }
+
+    #[test]
+    fn test_test_meta_is_empty() {
+        let meta = TestMeta::default();
+        assert!(meta.is_empty());
+
+        let meta = TestMeta {
+            name: Some("test".into()),
+            ..Default::default()
+        };
+        assert!(!meta.is_empty());
+    }
+
+    #[test]
+    fn test_test_meta_from_file_meta() {
+        let file_meta = apif_ast::FileMeta {
+            name: Some("test.gctf".into()),
+            summary: Some("desc".into()),
+            tags: vec!["tag".into()],
+            owner: Some("me".into()),
+            links: vec!["http://link".into()],
+        };
+        let meta = TestMeta::from_file_meta(&file_meta);
+        assert_eq!(meta.name, Some("test.gctf".into()));
+        assert_eq!(meta.summary, Some("desc".into()));
+        assert_eq!(meta.tags, vec!["tag"]);
+        assert_eq!(meta.links, vec!["http://link"]);
+    }
+
+    #[test]
+    fn test_test_result_serialization() {
+        let result = TestResult::pass("test.gctf", 100, Some(50));
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("Pass"));
+        assert!(json.contains("test.gctf"));
+    }
 }

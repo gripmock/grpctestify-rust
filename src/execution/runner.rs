@@ -316,7 +316,7 @@ impl ExecutionPlan {
                     lines
                         .iter()
                         .map(|line| {
-                            optimizer::rewrite_assertion_expression_fixed_point_if_changed(line)
+                            optimizer::rewrite_assertion_expression_fixed_point_if_changed_with_level(line, optimizer::OptimizeLevel::Safe)
                                 .unwrap_or_else(|| line.clone())
                         })
                         .collect()
@@ -1951,7 +1951,10 @@ impl TestRunner {
 
         for (idx, line) in lines.iter().enumerate() {
             if let Some(rewritten) =
-                optimizer::rewrite_assertion_expression_fixed_point_if_changed(line)
+                optimizer::rewrite_assertion_expression_fixed_point_if_changed_with_level(
+                    line,
+                    optimizer::OptimizeLevel::Safe,
+                )
             {
                 let vec = optimized_lines.get_or_insert_with(|| lines[..idx].to_vec());
                 vec.push(rewritten);
