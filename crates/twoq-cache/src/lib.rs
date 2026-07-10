@@ -105,12 +105,10 @@ impl<K: Hash + Eq + Clone, V> TwoQCache<K, V> {
 
     fn evict_hot(&mut self) {
         while self.hot.len() > self.hot_limit {
-            if let Some(oldest) = self.hot_order.pop_front() {
-                if let Some(v) = self.hot.remove(&oldest) {
-                    self.cold.insert(oldest.clone(), v);
-                    self.cold_order.push_back(oldest);
-                    self.evict_cold();
-                }
+            if let Some(oldest) = self.hot_order.pop_front() && let Some(v) = self.hot.remove(&oldest) {
+                self.cold.insert(oldest.clone(), v);
+                self.cold_order.push_back(oldest);
+                self.evict_cold();
             }
         }
     }
