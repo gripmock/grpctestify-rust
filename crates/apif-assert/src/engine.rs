@@ -239,6 +239,7 @@ impl AssertionEngine {
     }
 
     // Check if any assertion failed (re-exported wrapper)
+    #[must_use]
     pub fn has_failures(&self, results: &[AssertionResult]) -> bool {
         results
             .iter()

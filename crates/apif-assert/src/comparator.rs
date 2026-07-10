@@ -126,7 +126,7 @@ impl JsonComparator {
                     }
 
                     // Match expected items against actual items using hash map
-                    for exp_item in exp_arr.iter() {
+                    for exp_item in exp_arr {
                         let exp_hash = Self::hash_value(exp_item);
                         let mut found = false;
 

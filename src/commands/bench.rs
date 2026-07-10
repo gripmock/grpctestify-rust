@@ -790,8 +790,7 @@ fn apply_profile_defaults(config: &mut BenchConfigResolved, profile_name: &str) 
         let is_explicit = config
             .option_sources
             .get(&key)
-            .map(|s| *s != BenchOptionSource::Default)
-            .unwrap_or(false);
+            .is_some_and(|s| *s != BenchOptionSource::Default);
         if is_explicit {
             continue;
         }

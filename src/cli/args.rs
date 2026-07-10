@@ -794,6 +794,7 @@ impl HasFormat for BenchArgs {
 }
 
 impl RunArgs {
+    #[must_use]
     pub fn is_json_coverage(&self) -> bool {
         is_json_format(&self.coverage_format)
     }

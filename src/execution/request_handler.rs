@@ -171,8 +171,7 @@ impl RequestHandler {
                 server_name: tls_map.get("server_name").cloned(),
                 insecure_skip_verify: tls_map
                     .get("insecure")
-                    .map(|v| v == "true" || v == "1")
-                    .unwrap_or(false),
+                    .is_some_and(|v| v == "true" || v == "1"),
             })
     }
 

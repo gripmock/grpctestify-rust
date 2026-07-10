@@ -22,6 +22,7 @@ pub struct TestMeta {
 }
 
 impl TestMeta {
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.name.is_none() && self.summary.is_none() && self.tags.is_empty()
     }

@@ -381,8 +381,7 @@ pub fn build_tls_config(document: &GctfDocument, document_path: &Path) -> Option
     let insecure_skip_verify = tls_section
         .as_ref()
         .and_then(|m| m.get("insecure"))
-        .map(|s| parse_bool_flag(s))
-        .unwrap_or(false);
+        .is_some_and(|s| parse_bool_flag(s));
 
     if ca_cert_path.is_some()
         || client_cert_path.is_some()

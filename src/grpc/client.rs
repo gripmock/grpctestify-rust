@@ -808,7 +808,7 @@ mod tests {
 
     #[test]
     fn test_compression_mode_from_env() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = ENV_MUTEX.lock().expect("ENV_MUTEX should not be poisoned");
         unsafe {
             std::env::set_var(crate::config::ENV_GRPCTESTIFY_COMPRESSION, "gzip");
         }
@@ -821,7 +821,7 @@ mod tests {
 
     #[test]
     fn test_compression_mode_none_from_env() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = ENV_MUTEX.lock().expect("ENV_MUTEX should not be poisoned");
         unsafe {
             std::env::set_var(crate::config::ENV_GRPCTESTIFY_COMPRESSION, "none");
         }
@@ -834,7 +834,7 @@ mod tests {
 
     #[test]
     fn test_compression_mode_default() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = ENV_MUTEX.lock().expect("ENV_MUTEX should not be poisoned");
         // Ensure env var is not set
         unsafe {
             std::env::remove_var(crate::config::ENV_GRPCTESTIFY_COMPRESSION);

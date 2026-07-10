@@ -2,6 +2,7 @@
 
 use grpctestify::execution::{ExecutionPlan, StreamingPattern, Workflow};
 use grpctestify::parser::parse_gctf;
+use std::assert_matches;
 use std::path::Path;
 
 /// Test workflow generation for basic unary calls
@@ -71,8 +72,8 @@ fn test_workflow_from_streaming_plan() {
         // Check streaming analysis
         let pattern = workflow.analyze_streaming();
         match expected_mode {
-            "Server" => assert!(matches!(pattern, StreamingPattern::ServerStreaming { .. })),
-            "Client" => assert!(matches!(pattern, StreamingPattern::ClientStreaming { .. })),
+            "Server" => assert_matches!(pattern, StreamingPattern::ServerStreaming { .. }),
+            "Client" => assert_matches!(pattern, StreamingPattern::ClientStreaming { .. }),
             _ => panic!("Unknown mode: {}", expected_mode),
         }
     }
@@ -185,18 +186,14 @@ fn test_workflow_event_sequence() {
     let first = workflow.events.first();
     let last = workflow.events.last();
 
-    assert!(
-        matches!(
-            first,
-            Some(grpctestify::execution::WorkflowEvent::TestLoaded { .. })
-        ),
+    assert_matches!(
+        first,
+        Some(grpctestify::execution::WorkflowEvent::TestLoaded { .. }),
         "Workflow should start with TestLoaded"
     );
-    assert!(
-        matches!(
-            last,
-            Some(grpctestify::execution::WorkflowEvent::Complete { .. })
-        ),
+    assert_matches!(
+        last,
+        Some(grpctestify::execution::WorkflowEvent::Complete { .. }),
         "Workflow should end with Complete"
     );
 }
@@ -352,8 +349,9 @@ fn test_workflow_events_by_type() {
 
     // Verify all returned events match the requested type
     for event in connect_events {
-        assert!(
-            matches!(event, grpctestify::execution::WorkflowEvent::Connect { .. }),
+        assert_matches!(
+            event,
+            grpctestify::execution::WorkflowEvent::Connect { .. },
             "Expected Connect event, got {:?}",
             event
         );

@@ -323,16 +323,19 @@ impl DiagnosticCollection {
         self.push(Diagnostic::hint(code, message, range));
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.diagnostics.is_empty()
     }
 
+    #[must_use]
     pub fn has_errors(&self) -> bool {
         self.diagnostics
             .iter()
             .any(|d| d.severity == DiagnosticSeverity::Error)
     }
 
+    #[must_use]
     pub fn has_warnings(&self) -> bool {
         self.diagnostics
             .iter()

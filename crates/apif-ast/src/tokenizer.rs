@@ -21,6 +21,7 @@ impl Span {
     pub fn len(&self) -> usize {
         self.end - self.start
     }
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.start == self.end
     }

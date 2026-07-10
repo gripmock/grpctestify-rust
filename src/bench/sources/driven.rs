@@ -11,6 +11,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tracing::warn;
+use twoq_cache::TwoQCache;
+
+/// Default capacities for the dimension row cache.
+/// The hot queue holds frequently-referenced rows; the cold queue absorbs
+/// one-time lookups to prevent cache pollution.
+const DIMENSION_CACHE_HOT: usize = 2048;
+const DIMENSION_CACHE_COLD: usize = 8192;
 
 const ENV_DIMENSION_MEMORY_BUDGET: &str = "GRPCTESTIFY_DIMENSION_MEMORY_BUDGET";
 const MAX_DIMENSION_MEMORY_BUDGET: u64 = 512 * 1024 * 1024;
@@ -59,21 +66,29 @@ fn parse_bytes(s: &str) -> Result<u64> {
 
 pub enum DimensionSource {
     Memory(Arc<InMemorySource>),
-    Indexed {
-        index: Arc<SourceIndex>,
-        mmap: memmap2::Mmap,
-    },
+    Indexed(Box<IndexedDimension>),
+}
+
+pub struct IndexedDimension {
+    pub index: Arc<SourceIndex>,
+    pub mmap: memmap2::Mmap,
+    pub cache: Mutex<TwoQCache<String, SourceRow>>,
 }
 
 impl DimensionSource {
     fn lookup_row(&self, key: &str) -> Result<Option<SourceRow>> {
         match self {
             DimensionSource::Memory(mem) => Ok(mem.lookup(key).cloned()),
-            DimensionSource::Indexed { index, mmap } => {
-                let Some(line) = index.lookup_row_from_mmap(mmap.as_ref(), key)? else {
+            DimensionSource::Indexed(idx) => {
+                let mut cache = idx.cache.lock().expect("cache mutex poisoned");
+                if let Some(row) = cache.get(&key.to_string()) {
+                    return Ok(Some(row.clone()));
+                }
+                let Some(line) = idx.index.lookup_row_from_mmap(idx.mmap.as_ref(), key)? else {
                     return Ok(None);
                 };
                 let row = SourceRow::from_csv_line(&line);
+                cache.insert(key.to_string(), row.clone());
                 Ok(Some(row))
             }
         }
@@ -88,7 +103,7 @@ impl DimensionSource {
                 .filter(|(k, _)| k.as_str() == key)
                 .map(|(_, row)| row.clone())
                 .collect(),
-            DimensionSource::Indexed { .. } => Vec::new(),
+            DimensionSource::Indexed(_) => Vec::new(),
         }
     }
 }
@@ -176,10 +191,11 @@ fn load_dimension_source(
         .with_context(|| format!("failed to open dimension file: {}", resolved_path.display()))?;
     let mmap = unsafe { memmap2::Mmap::map(&file) }
         .with_context(|| format!("failed to mmap dimension file: {}", resolved_path.display()))?;
-    Ok(DimensionSource::Indexed {
+    Ok(DimensionSource::Indexed(Box::new(IndexedDimension {
         index: Arc::new(index),
         mmap,
-    })
+        cache: Mutex::new(TwoQCache::new(DIMENSION_CACHE_HOT, DIMENSION_CACHE_COLD)),
+    })))
 }
 
 fn load_dimension_in_memory(
@@ -419,7 +435,7 @@ impl SourceDrivenConfig {
                         load_dimension_source(&t.def, document_path, &t.resolved_path, &t.key_col)
                     };
                     let elapsed = start.elapsed().as_millis() as u64;
-                    let mut s = stats.lock().unwrap();
+                    let mut s = stats.lock().expect("stats mutex should not be poisoned");
                     if t.file_size <= memory_bb {
                         s.0 += 1;
                     } else {
@@ -455,7 +471,7 @@ impl SourceDrivenConfig {
                                 )
                             };
                             let elapsed = start.elapsed().as_millis() as u64;
-                            let mut ss = stats.lock().unwrap();
+                            let mut ss = stats.lock().expect("stats mutex should not be poisoned");
                             if t.file_size <= mem_budget {
                                 ss.0 += 1;
                             } else {
@@ -472,7 +488,8 @@ impl SourceDrivenConfig {
             })
         };
 
-        let (in_memory_count, indexed_count, index_build_ms) = *stats.lock().unwrap();
+        let (in_memory_count, indexed_count, index_build_ms) =
+            *stats.lock().expect("stats mutex should not be poisoned");
 
         for (name, result) in results {
             match result {
@@ -509,7 +526,10 @@ impl SourceDrivenConfig {
     pub fn next_row_variables(&self) -> Result<Option<HashMap<String, Value>>> {
         // If we're in the middle of a cross-product iteration, yield the next combination
         {
-            let state_guard = self.cross_product_state.lock().unwrap();
+            let state_guard = self
+                .cross_product_state
+                .lock()
+                .expect("cross_product_state mutex should not be poisoned");
             if state_guard.is_some() {
                 drop(state_guard);
                 return self.next_cross_product_combination();
@@ -585,17 +605,21 @@ impl SourceDrivenConfig {
                 }
             }
 
-            *self.cross_product_state.lock().unwrap() = Some(CrossProductState {
-                row,
-                cross_matches,
-                cross_indices: vec![
-                    0;
-                    self.dim_joins
-                        .iter()
-                        .filter(|j| j.join_type == super::definition::JoinType::Cross)
-                        .count()
-                ],
-            });
+            *self
+                .cross_product_state
+                .lock()
+                .expect("cross_product_state mutex should not be poisoned") =
+                Some(CrossProductState {
+                    row,
+                    cross_matches,
+                    cross_indices: vec![
+                        0;
+                        self.dim_joins
+                            .iter()
+                            .filter(|j| j.join_type == super::definition::JoinType::Cross)
+                            .count()
+                    ],
+                });
             return self.next_cross_product_combination();
         }
 
@@ -606,7 +630,10 @@ impl SourceDrivenConfig {
 
     /// Yield the next combination from a cross-product state.
     fn next_cross_product_combination(&self) -> Result<Option<HashMap<String, Value>>> {
-        let mut state_guard = self.cross_product_state.lock().unwrap();
+        let mut state_guard = self
+            .cross_product_state
+            .lock()
+            .expect("cross_product_state mutex should not be poisoned");
         let state = state_guard.as_ref().unwrap();
         let row = &state.row;
         let mut vars = self.build_primary_vars(row);
@@ -687,7 +714,7 @@ impl SourceDrivenConfig {
 
     pub fn dimension_lookup(&self, source_name: &str, key: &str) -> Option<SourceRow> {
         let dim = self.dimensions.get(source_name)?;
-        let is_indexed = matches!(dim, DimensionSource::Indexed { .. });
+        let is_indexed = matches!(dim, DimensionSource::Indexed(_));
         let result = dim.lookup_row(key).ok().flatten();
         self.runtime_stats
             .record_lookup(source_name, result.is_some(), is_indexed);

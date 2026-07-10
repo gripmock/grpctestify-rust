@@ -965,8 +965,7 @@ fn print_source_info(doc: &parser::GctfDocument, file_path: &Path) {
                     .modified()
                     .ok()
                     .zip(s.modified().ok())
-                    .map(|(it, st)| it >= st)
-                    .unwrap_or(false),
+                    .is_some_and(|(it, st)| it >= st),
                 _ => false,
             };
             let type_from_idx = std::fs::File::open(&idx_path)

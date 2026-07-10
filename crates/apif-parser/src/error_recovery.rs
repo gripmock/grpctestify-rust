@@ -178,8 +178,11 @@ fn parse_section_header(
     let without_delimiters = line.trim_start_matches('-').trim_end_matches('-').trim();
 
     // Extract section name and inline options
-    let parts: Vec<&str> = without_delimiters.splitn(2, ' ').collect();
-    let section_name = parts[0].trim();
+    let (section_name, inline_opts_str) = without_delimiters
+        .split_once(' ')
+        .map_or((without_delimiters, ""), |(name, opts)| (name, opts));
+    let section_name = section_name.trim();
+    let inline_opts_str = inline_opts_str.trim();
 
     // Parse section type
     let section_type = match section_name.to_uppercase().as_str() {
@@ -215,17 +218,18 @@ fn parse_section_header(
     };
 
     // Parse inline options if present
-    let inline_options = if parts.len() > 1 && section_type.supports_inline_options() {
-        match crate::content_parser::parse_inline_options(parts[1]) {
+    let has_opts = !inline_opts_str.is_empty();
+    let inline_options = if has_opts && section_type.supports_inline_options() {
+        match crate::content_parser::parse_inline_options(inline_opts_str) {
             Ok(opts) => opts,
             Err(_) => {
-                parse_inline_options_diagnostic(parts[1], line_num, diagnostics);
+                parse_inline_options_diagnostic(inline_opts_str, line_num, diagnostics);
                 Default::default()
             }
         }
     } else {
-        if parts.len() > 1 {
-            parse_inline_options_diagnostic(parts[1], line_num, diagnostics);
+        if has_opts {
+            parse_inline_options_diagnostic(inline_opts_str, line_num, diagnostics);
         }
         Default::default()
     };

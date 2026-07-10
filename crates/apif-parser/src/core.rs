@@ -11,6 +11,14 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
+type CurrentSection = Option<(
+    SectionType,
+    usize,
+    Vec<String>,
+    InlineOptions,
+    Vec<GctfAttribute>,
+)>;
+
 /// Parse a .gctf file into an AST
 pub fn parse_gctf(file_path: &Path) -> Result<GctfDocument> {
     let (document, _) = parse_gctf_with_diagnostics(file_path)?;
@@ -144,18 +152,11 @@ pub fn parse_gctf_with_diagnostics(file_path: &Path) -> Result<(GctfDocument, Pa
     Ok((document, diagnostics))
 }
 
-#[allow(clippy::type_complexity)]
 fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
     let tokens = tokenize_gctf(source);
     let mut sections = Vec::new();
     let mut section_headers = 0;
-    let mut current_section: Option<(
-        SectionType,
-        usize,
-        Vec<String>,
-        InlineOptions,
-        Vec<GctfAttribute>,
-    )> = None;
+    let mut current_section: CurrentSection = None;
     let mut pending_attributes: Vec<GctfAttribute> = Vec::new();
 
     for token in tokens {

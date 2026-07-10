@@ -4,6 +4,7 @@ use grpctestify::parser::{
     parse_gctf_from_str,
     ternary_ast::{ExtractValue, ExtractVar},
 };
+use std::assert_matches;
 
 // ============================================================================
 // ExtractValue AST Tests
@@ -18,7 +19,7 @@ fn test_extract_value_ast_simple_path() {
     let value = ExtractValue::parse(input);
 
     // Assert
-    assert!(matches!(value, ExtractValue::Simple(_)));
+    assert_matches!(value, ExtractValue::Simple(_));
     assert_eq!(value.to_jq(), ".user.id");
 }
 
@@ -31,7 +32,7 @@ fn test_extract_value_ast_jq_pipe() {
     let value = ExtractValue::parse(input);
 
     // Assert
-    assert!(matches!(value, ExtractValue::JqExpr(_)));
+    assert_matches!(value, ExtractValue::JqExpr(_));
     assert_eq!(value.to_jq(), ".items | length");
 }
 
@@ -44,7 +45,7 @@ fn test_extract_value_ast_ternary_basic() {
     let value = ExtractValue::parse(input);
 
     // Assert
-    assert!(matches!(value, ExtractValue::Ternary(_)));
+    assert_matches!(value, ExtractValue::Ternary(_));
     assert!(value.to_jq().starts_with("if"));
     assert!(value.to_jq().ends_with("end"));
     assert_eq!(
@@ -62,7 +63,7 @@ fn test_extract_value_ast_ternary_with_parens() {
     let value = ExtractValue::parse(input);
 
     // Assert
-    assert!(matches!(value, ExtractValue::Ternary(_)));
+    assert_matches!(value, ExtractValue::Ternary(_));
     let jq = value.to_jq();
     assert!(jq.contains("if"));
     assert!(jq.contains("then"));
@@ -78,7 +79,7 @@ fn test_extract_value_ast_ternary_nested() {
     let value = ExtractValue::parse(input);
 
     // Assert
-    assert!(matches!(value, ExtractValue::Ternary(_)));
+    assert_matches!(value, ExtractValue::Ternary(_));
     let jq = value.to_jq();
     assert!(jq.contains("if .a > 0 then"));
     assert!(jq.contains("if .a > 10 then"));
@@ -93,7 +94,7 @@ fn test_extract_value_ast_ternary_with_header() {
     let value = ExtractValue::parse(input);
 
     // Assert
-    assert!(matches!(value, ExtractValue::Ternary(_)));
+    assert_matches!(value, ExtractValue::Ternary(_));
 }
 
 #[test]
@@ -105,7 +106,7 @@ fn test_extract_value_ast_ternary_with_trailer() {
     let value = ExtractValue::parse(input);
 
     // Assert
-    assert!(matches!(value, ExtractValue::Ternary(_)));
+    assert_matches!(value, ExtractValue::Ternary(_));
 }
 
 // ============================================================================
@@ -122,7 +123,7 @@ fn test_extract_var_ast_simple() {
 
     // Assert
     assert_eq!(var.name, "token");
-    assert!(matches!(var.value, ExtractValue::Simple(_)));
+    assert_matches!(var.value, ExtractValue::Simple(_));
     assert_eq!(var.to_jq(), "token = .access_token");
 }
 
@@ -136,7 +137,7 @@ fn test_extract_var_ast_jq() {
 
     // Assert
     assert_eq!(var.name, "count");
-    assert!(matches!(var.value, ExtractValue::JqExpr(_)));
+    assert_matches!(var.value, ExtractValue::JqExpr(_));
 }
 
 #[test]
@@ -149,7 +150,7 @@ fn test_extract_var_ast_ternary() {
 
     // Assert
     assert_eq!(var.name, "status");
-    assert!(matches!(var.value, ExtractValue::Ternary(_)));
+    assert_matches!(var.value, ExtractValue::Ternary(_));
     assert!(var.to_jq().contains("if"));
     assert!(var.to_jq().contains("then"));
     assert!(var.to_jq().contains("else"));
@@ -212,7 +213,7 @@ fn test_extract_var_ast_with_spaces() {
 fn test_ternary_conversion_to_jq() {
     // Test basic ternary converts to if-then-else
     let value = ExtractValue::parse(".status == 200 ? \"OK\" : \"Error\"");
-    assert!(matches!(value, ExtractValue::Ternary(_)));
+    assert_matches!(value, ExtractValue::Ternary(_));
     assert_eq!(
         value.to_jq(),
         "if .status == 200 then \"OK\" else \"Error\" end"

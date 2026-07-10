@@ -25,11 +25,10 @@ fn infer_type_label(expr: &str) -> &'static str {
             _ => "value",
         };
     }
-    #[allow(clippy::collapsible_if)]
-    if let Some(name) = extract_plugin_call_name(expr.trim()) {
-        if let Some(plugin) = PluginManager::new().get(&name) {
-            return plugin.signature().return_type.display_name();
-        }
+    if let Some(name) = extract_plugin_call_name(expr.trim())
+        && let Some(plugin) = PluginManager::new().get(&name)
+    {
+        return plugin.signature().return_type.display_name();
     }
     "value"
 }

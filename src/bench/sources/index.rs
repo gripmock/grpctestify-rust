@@ -524,6 +524,7 @@ impl BloomFilter {
         }
     }
 
+    #[must_use]
     pub fn contains(&self, key: &str) -> bool {
         for i in 0..self.hash_count {
             let idx = self.hash(key, i);
@@ -732,6 +733,7 @@ impl XorFilter {
         true
     }
 
+    #[must_use]
     pub fn contains(&self, key: &str) -> bool {
         let [h0, h1, h2] = self.compute_positions(key);
         let f = self.compute_fingerprint(key);
@@ -1028,6 +1030,7 @@ impl SourceIndex {
         }
     }
 
+    #[must_use]
     pub fn contains(&self, key: &str) -> bool {
         if let Some(filter) = &self.filter
             && !filter.contains(key)
@@ -1081,6 +1084,7 @@ impl SourceIndex {
         results
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         match &self.storage {
             KeyStorage::String(map) => map.values().map(Vec::len).sum(),
@@ -1095,6 +1099,7 @@ impl SourceIndex {
         }
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         match &self.storage {
             KeyStorage::String(map) => map.is_empty(),

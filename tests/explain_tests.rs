@@ -2,6 +2,7 @@
 
 use grpctestify::execution::ExecutionPlan;
 use grpctestify::parser::{parse_gctf, parse_gctf_from_str};
+use std::assert_matches;
 use std::fs;
 use std::path::Path;
 
@@ -24,8 +25,9 @@ fn test_explain_rpc_mode_unary() {
         assert!(doc.is_ok(), "Failed to parse {}", path);
 
         let plan = ExecutionPlan::from_document(&doc.unwrap());
-        assert!(
-            matches!(plan.rpc_mode, grpctestify::execution::RpcMode::Unary),
+        assert_matches!(
+            plan.rpc_mode,
+            grpctestify::execution::RpcMode::Unary,
             "Expected Unary mode for {}, got {:?}",
             path,
             plan.rpc_mode
@@ -49,11 +51,9 @@ fn test_explain_rpc_mode_server_streaming() {
         assert!(doc.is_ok(), "Failed to parse {}", path);
 
         let plan = ExecutionPlan::from_document(&doc.unwrap());
-        assert!(
-            matches!(
-                plan.rpc_mode,
-                grpctestify::execution::RpcMode::ServerStreaming { .. }
-            ),
+        assert_matches!(
+            plan.rpc_mode,
+            grpctestify::execution::RpcMode::ServerStreaming { .. },
             "Expected ServerStreaming mode for {}, got {:?}",
             path,
             plan.rpc_mode
@@ -77,11 +77,9 @@ fn test_explain_rpc_mode_client_streaming() {
         assert!(doc.is_ok(), "Failed to parse {}", path);
 
         let plan = ExecutionPlan::from_document(&doc.unwrap());
-        assert!(
-            matches!(
-                plan.rpc_mode,
-                grpctestify::execution::RpcMode::ClientStreaming { .. }
-            ),
+        assert_matches!(
+            plan.rpc_mode,
+            grpctestify::execution::RpcMode::ClientStreaming { .. },
             "Expected ClientStreaming mode for {}, got {:?}",
             path,
             plan.rpc_mode
@@ -105,8 +103,9 @@ fn test_explain_rpc_mode_unary_error() {
         assert!(doc.is_ok(), "Failed to parse {}", path);
 
         let plan = ExecutionPlan::from_document(&doc.unwrap());
-        assert!(
-            matches!(plan.rpc_mode, grpctestify::execution::RpcMode::UnaryError),
+        assert_matches!(
+            plan.rpc_mode,
+            grpctestify::execution::RpcMode::UnaryError,
             "Expected UnaryError mode for {}, got {:?}",
             path,
             plan.rpc_mode
