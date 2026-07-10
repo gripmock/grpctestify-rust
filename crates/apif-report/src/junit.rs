@@ -143,7 +143,7 @@ impl Reporter for JunitReporter {
 mod tests {
     use super::*;
     use crate::Reporter;
-    use apif_state::{TestMeta, TestResult};
+    use apif_state::TestResult;
 
     #[test]
     fn test_junit_reporter_new() {
