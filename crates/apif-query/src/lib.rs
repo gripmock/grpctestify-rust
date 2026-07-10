@@ -641,8 +641,6 @@ mod tests {
 
     #[test]
     fn test_filter_matches_like() {
-        let row: std::collections::HashMap<String, String> =
-            std::collections::HashMap::from([("name".into(), "Alice Johnson".into())]);
         let query = parse_query(r#"users name~glob"*John*""#).unwrap();
         assert_eq!(query.filters.len(), 1);
         assert_eq!(query.filters[0].column, "name");
@@ -657,8 +655,6 @@ mod tests {
 
     #[test]
     fn test_filter_matches_regex() {
-        let row: std::collections::HashMap<String, String> =
-            std::collections::HashMap::from([("msg".into(), "error: timeout".into())]);
         let query = parse_query(r#"users msg~re:"error|warn""#).unwrap();
         assert_eq!(query.filters.len(), 1);
         match &query.filters[0].op {

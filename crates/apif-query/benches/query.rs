@@ -1,4 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
+use std::hint::black_box;
 use std::collections::HashMap;
 
 fn benchmark_parse_query(c: &mut Criterion) {
@@ -103,8 +104,6 @@ fn benchmark_like_optimizations(c: &mut Criterion) {
 }
 
 fn benchmark_numeric_comparison(c: &mut Criterion) {
-    use apif_query::FilterOp;
-
     let ops = [
         ("gte_numeric", "500", ">=", "100", true),
         ("gte_string", "xyz", ">=", "abc", true),
