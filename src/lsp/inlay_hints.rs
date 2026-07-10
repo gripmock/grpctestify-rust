@@ -123,7 +123,8 @@ pub fn build_inlay_hints(content: &str, range: Range) -> Vec<InlayHint> {
                 }
             }
         }
-        for opt in optimizer::collect_assertion_optimizations(d) {
+        for opt in optimizer::collect_assertion_optimizations(d, optimizer::OptimizeLevel::Advisory)
+        {
             let line_num = opt.line.saturating_sub(1) as u32;
             if line_num < range.start.line || line_num > range.end.line {
                 continue;

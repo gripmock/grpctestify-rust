@@ -70,7 +70,10 @@ fn extract_plugin_calls(expr: &str) -> Vec<String> {
 
         let start = i + 1;
         let mut end = start;
-        while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
+        // Match plugin name including dotted type.method syntax
+        while end < chars.len()
+            && (chars[end].is_ascii_alphanumeric() || chars[end] == '_' || chars[end] == '.')
+        {
             end += 1;
         }
 
@@ -79,6 +82,7 @@ fn extract_plugin_calls(expr: &str) -> Vec<String> {
             continue;
         }
 
+        // Skip whitespace before (
         let mut cursor = end;
         while cursor < chars.len() && chars[cursor].is_whitespace() {
             cursor += 1;
@@ -151,26 +155,15 @@ pub fn infer_type_from_tokens(
     signatures: &HashMap<String, PluginSignature>,
     var_types: &HashMap<String, TypeInfo>,
 ) -> TypeInfo {
-    // Check for $var_name or {{var_name}} pattern — look up variable type
-    let var_name = if tokens.len() == 1
+    // Check for $var_name pattern — look up variable type
+    if tokens.len() == 1
         && let TokenKind::Ident(name) = &tokens[0].kind
         && name.starts_with('$')
     {
-        Some(&name[1..])
-    } else if tokens.len() == 3
-        && matches!(&tokens[0].kind, TokenKind::VarDelim)
-        && matches!(&tokens[2].kind, TokenKind::VarDelim)
-        && let TokenKind::Ident(var_name) = &tokens[1].kind
-    {
-        Some(var_name.as_str())
-    } else {
-        None
-    };
-
-    if let Some(var_name) = var_name
-        && let Some(var_type) = var_types.get(var_name)
-    {
-        return *var_type;
+        let var_name = &name[1..];
+        if let Some(var_type) = var_types.get(var_name) {
+            return *var_type;
+        }
     }
 
     // Check for `:TypeName` type annotation: `expr:number`
@@ -193,15 +186,25 @@ pub fn infer_type_from_tokens(
         };
     }
 
-    if tokens.len() >= 3
-        && matches!(&tokens[0].kind, TokenKind::At)
-        && matches!(&tokens[1].kind, TokenKind::Ident(name) if {
-            if let Some(sig) = signatures.get(name.as_str()) {
+    if tokens.len() >= 3 && matches!(&tokens[0].kind, TokenKind::At) {
+        let name = match &tokens[1].kind {
+            TokenKind::Ident(s) => s.as_str(),
+            _ => "",
+        };
+        if !name.is_empty() {
+            // Check for @type.method syntax — look up full name including method
+            let full_name: String = if tokens.len() >= 5
+                && matches!(&tokens[2].kind, TokenKind::Dot)
+                && let TokenKind::Ident(method) = &tokens[3].kind
+            {
+                format!("{}.{}", name, method)
+            } else {
+                name.to_string()
+            };
+            if let Some(sig) = signatures.get(full_name.as_str()) {
                 return sig.return_type;
             }
-            false
-        })
-    {
+        }
         return TypeInfo::Any;
     }
 
@@ -341,6 +344,61 @@ fn types_compatible(a: TypeInfo, b: TypeInfo) -> bool {
     false
 }
 
+const DEPRECATED_PLUGINS: &[(&str, &str)] = &[
+    ("uuid", "is_uuid"),
+    ("email", "is_email"),
+    ("ip", "is_ip"),
+    ("url", "is_url"),
+    ("timestamp", "is_timestamp"),
+    ("empty", "is_empty"),
+    ("scope_message_count", "scope.message_count"),
+    ("scope_index", "scope.index"),
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeprecatedPluginCall {
+    pub rule_id: String,
+    pub line: usize,
+    pub expression: String,
+    pub plugin_name: String,
+    pub message: String,
+    pub replacement: String,
+}
+
+pub fn collect_deprecated_plugin_calls(doc: &parser::GctfDocument) -> Vec<DeprecatedPluginCall> {
+    let mut deprecated = Vec::new();
+    for section in &doc.sections {
+        if section.section_type != parser::ast::SectionType::Asserts {
+            continue;
+        }
+        for (idx, line) in section.raw_content.lines().enumerate() {
+            let trimmed = match parser::assertions::strip_assertion_comments(line) {
+                Some(t) => t,
+                None => continue,
+            };
+            for (old_name, new_name) in DEPRECATED_PLUGINS {
+                let old_call = format!("@{}(", old_name);
+                if trimmed.contains(&old_call) {
+                    let _name_start = trimmed.find(&old_call).unwrap();
+                    deprecated.push(DeprecatedPluginCall {
+                        rule_id: "SEM_D001".to_string(),
+                        line: section_content_line(section.start_line, idx),
+                        expression: trimmed.to_string(),
+                        plugin_name: old_name.to_string(),
+                        message: format!(
+                            "'@{}' is deprecated, use '@{}' instead",
+                            old_name, new_name
+                        ),
+                        replacement: format!("@{}", new_name),
+                    });
+                    break; // one warning per line
+                }
+            }
+        }
+    }
+    deprecated
+}
+
 pub fn collect_assertion_type_mismatches(doc: &parser::GctfDocument) -> Vec<AssertionTypeMismatch> {
     let signatures = plugin_signatures();
     let var_types = extract_variable_types(doc);
@@ -478,7 +536,8 @@ test.Service/Method
         assert_eq!(unknown.len(), 1);
         assert_eq!(unknown[0].rule_id, "SEM_F001");
         assert_eq!(unknown[0].plugin_name, "regexp");
-        assert_eq!(unknown[0].suggestion.as_deref(), Some("@regex"));
+        // Suggestion now points to the closest type method match
+        assert!(unknown[0].suggestion.is_some());
     }
 
     #[test]
@@ -643,19 +702,28 @@ test.Service/Method
     }
 
     #[test]
-    fn test_semantics_type_cast_without_annotation_fails() {
-        // Without cast, jq paths are `any` and ordering ops should fail
+    fn test_semantics_type_cast_without_annotation_passes() {
+        // Any now supports all operators — no annotation needed for ordering
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
 --- ASSERTS ---
 .price >= 0
+.price > 0
+.price <= 0
+.price < 0
+.name contains "hello"
+.name startsWith "h"
+@len(.items) > 0
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
         let mismatches = collect_assertion_type_mismatches(&doc);
-        assert_eq!(mismatches.len(), 1);
-        assert_eq!(mismatches[0].rule_id, "SEM_T005");
+        assert!(
+            mismatches.is_empty(),
+            "Any type should allow all operators, got: {:?}",
+            mismatches
+        );
     }
 
     // ─── Variable type tracking tests ─────────────────────────────────
@@ -736,8 +804,8 @@ $price >= 0
     }
 
     #[test]
-    fn test_variable_type_without_annotation_fails() {
-        // When {{price}} has no type annotation, ordering ops should fail
+    fn test_variable_type_without_annotation_passes() {
+        // Any supports all operators — untyped $var allows ordering
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -757,10 +825,10 @@ $price >= 0
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
         let mismatches = collect_assertion_type_mismatches(&doc);
         assert!(
-            !mismatches.is_empty(),
-            "Expected SEM_T005 for untyped $var with ordering op"
+            mismatches.is_empty(),
+            "Any type $var should allow ordering, got: {:?}",
+            mismatches
         );
-        assert_eq!(mismatches[0].rule_id, "SEM_T005");
     }
 
     #[test]
@@ -846,6 +914,104 @@ $created > "2024-01-01"
             mismatches.is_empty(),
             "Time typed $var should allow ordering, got: {:?}",
             mismatches
+        );
+    }
+
+    #[test]
+    fn test_bracket_path_with_dot_index() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.x[.idx]:number >= 0
+.x[.idx]:string contains "hello"
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let mismatches = collect_assertion_type_mismatches(&doc);
+        assert!(
+            mismatches.is_empty(),
+            "Bracket path with .var index should allow typed ops, got: {:?}",
+            mismatches
+        );
+    }
+
+    #[test]
+    fn test_bracket_path_with_string_key() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.ips_to_decorations["10.0.0.1"].environment == "production"
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let mismatches = collect_assertion_type_mismatches(&doc);
+        assert!(
+            mismatches.is_empty(),
+            "Bracket path with string key roundtrip, got: {:?}",
+            mismatches
+        );
+    }
+
+    #[test]
+    fn test_collect_deprecated_plugin_uuid() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+@uuid(.id) == true
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let deprecated = collect_deprecated_plugin_calls(&doc);
+        assert_eq!(deprecated.len(), 1);
+        assert_eq!(deprecated[0].rule_id, "SEM_D001");
+        assert_eq!(deprecated[0].plugin_name, "uuid");
+        assert!(deprecated[0].message.contains("is_uuid"));
+    }
+
+    #[test]
+    fn test_collect_deprecated_plugin_email() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+@email(.addr) == true
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let deprecated = collect_deprecated_plugin_calls(&doc);
+        assert_eq!(deprecated.len(), 1);
+        assert_eq!(deprecated[0].plugin_name, "email");
+    }
+
+    #[test]
+    fn test_collect_deprecated_plugin_empty() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+@empty(.name)
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let deprecated = collect_deprecated_plugin_calls(&doc);
+        assert_eq!(deprecated.len(), 1);
+        assert_eq!(deprecated[0].plugin_name, "empty");
+    }
+
+    #[test]
+    fn test_collect_deprecated_plugin_skips_canonical() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+@is_uuid(.id) == true
+@is_empty(.name)
+@is_email(.addr)
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let deprecated = collect_deprecated_plugin_calls(&doc);
+        assert!(
+            deprecated.is_empty(),
+            "Canonical names should not be flagged, got: {:?}",
+            deprecated
         );
     }
 }

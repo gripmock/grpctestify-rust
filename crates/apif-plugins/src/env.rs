@@ -44,6 +44,7 @@ impl Plugin for EnvPlugin {
             idempotent: false,
             safe_for_rewrite: false,
             arg_names: &["name", "default"],
+            replacement: None,
         }
     }
 

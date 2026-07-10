@@ -129,4 +129,41 @@ mod tests {
         assert_eq!(FileUtils::get_file_size(&file).unwrap(), 5);
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn test_is_excluded() {
+        assert!(!is_excluded(Path::new("test.gctf"), &[]));
+        assert!(is_excluded(Path::new("test.gctf"), &["test*".into()]));
+        assert!(!is_excluded(Path::new("other.gctf"), &["test*".into()]));
+        // Glob pattern matching
+        assert!(is_excluded(Path::new("test.gctf"), &["*.gctf".into()]));
+        assert!(!is_excluded(Path::new("test.gctf"), &["*.txt".into()]));
+    }
+
+    #[test]
+    fn test_sort_files_by_name() {
+        let mut files = vec![
+            PathBuf::from("b.gctf"),
+            PathBuf::from("a.gctf"),
+            PathBuf::from("c.gctf"),
+        ];
+        FileUtils::sort_files(&mut files, "name");
+        assert_eq!(files[0].file_name().unwrap(), "a.gctf");
+        assert_eq!(files[1].file_name().unwrap(), "b.gctf");
+        assert_eq!(files[2].file_name().unwrap(), "c.gctf");
+    }
+
+    #[test]
+    fn test_sort_files_unsupported() {
+        let mut files = vec![PathBuf::from("b.gctf"), PathBuf::from("a.gctf")];
+        FileUtils::sort_files(&mut files, "unsupported");
+        // Should stay in original order
+        assert_eq!(files[0].file_name().unwrap(), "b.gctf");
+    }
+
+    #[test]
+    fn test_get_mtime_nonexistent() {
+        let result = FileUtils::get_mtime(Path::new("/nonexistent/path.gctf"));
+        assert!(result.is_err());
+    }
 }

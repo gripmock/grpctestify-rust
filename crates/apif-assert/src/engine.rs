@@ -925,4 +925,84 @@ mod tests {
         let second = AssertionEngine::get_or_compile_jaq_filter(expr).unwrap();
         assert!(Arc::ptr_eq(&first, &second));
     }
+    #[test]
+    fn test_assertion_result_negate() {
+        let pass = AssertionResult::Pass;
+        assert!(matches!(pass.negate(), AssertionResult::Fail { .. }));
+
+        let fail = AssertionResult::fail("msg");
+        assert!(matches!(fail.negate(), AssertionResult::Pass));
+
+        let error = AssertionResult::Error("err".into());
+        assert!(matches!(error.negate(), AssertionResult::Error(_)));
+    }
+
+    #[test]
+    fn test_assertion_engine_get_failures() {
+        let engine = AssertionEngine::new();
+        let response = create_test_response();
+        let assertions = vec![".id == 123".to_string(), ".id == 999".to_string()];
+        let results = engine.evaluate_all(&assertions, &response, None, None);
+        let failures = engine.get_failures(&results);
+        assert_eq!(failures.len(), 1);
+    }
+
+    #[test]
+    fn test_assertion_engine_has_failures() {
+        let engine = AssertionEngine::new();
+        let response = create_test_response();
+        let result = engine.evaluate_all(&[".id == 999".to_string()], &response, None, None);
+        assert!(engine.has_failures(&result));
+    }
+
+    #[test]
+    fn test_assertion_engine_no_failures() {
+        let engine = AssertionEngine::new();
+        let response = create_test_response();
+        let result = engine.evaluate_all(&[".id == 123".to_string()], &response, None, None);
+        assert!(!engine.has_failures(&result));
+    }
+
+    #[test]
+    fn test_assertion_engine_default() {
+        let engine = AssertionEngine::default();
+        let response = create_test_response();
+        let result = engine
+            .evaluate(".id == 123", &response, None, None)
+            .unwrap();
+        assert!(matches!(result, AssertionResult::Pass));
+    }
+
+    #[test]
+    fn test_assertion_result_fail_with_diff_fields() {
+        let result = AssertionResult::fail_with_diff("mismatch", "{\"a\":1}", "{\"a\":2}");
+        match result {
+            AssertionResult::Fail {
+                message,
+                expected,
+                actual,
+            } => {
+                assert_eq!(message, "mismatch");
+                assert_eq!(expected.unwrap(), "{\"a\":1}");
+                assert_eq!(actual.unwrap(), "{\"a\":2}");
+            }
+            _ => panic!("Expected Fail"),
+        }
+    }
+
+    #[test]
+    fn test_evaluate_url_scheme_parse_only() {
+        use apif_ast::assertion_ast::{AssertionExpr, assertion_to_string, parse_assertion};
+        let expr = parse_assertion("@url.scheme(\"https://example.com\") == \"https\"");
+        assert!(
+            !matches!(&expr, AssertionExpr::Raw(_)),
+            "Expression should be parsed, not Raw: {:?}",
+            expr
+        );
+        let s = assertion_to_string(&expr);
+        assert_eq!(
+            s, "@url.scheme(\"https://example.com\") == \"https\"",
+            "Roundtrip failed"
+        );
+    }
 }

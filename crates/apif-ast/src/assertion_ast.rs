@@ -448,28 +448,36 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
             Expr::Literal(Literal::Null)
         }
         TokenKind::VarDelim => {
+            // {{var}} in assertions is deprecated — use $var instead.
+            // Skip over the tokens to let the expression fall to Raw.
             *p += 1;
-            let mut name = String::with_capacity(16);
             while *p < ts.len() && !matches!(ts[*p].kind, TokenKind::VarDelim) {
-                if let TokenKind::Ident(s) = &ts[*p].kind {
-                    if !name.is_empty() {
-                        name.push(' ');
-                    }
-                    name.push_str(s);
-                }
                 *p += 1;
             }
             if *p < ts.len() {
                 *p += 1;
             }
-            Expr::Variable(name)
+            Expr::JqPath(String::new())
         }
         TokenKind::At => {
             *p += 1;
             let name = if *p < ts.len() {
                 if let TokenKind::Ident(s) = &ts[*p].kind {
                     *p += 1;
-                    s.clone()
+                    let mut name = s.clone();
+                    // @type.method syntax
+                    if *p + 1 < ts.len()
+                        && matches!(&ts[*p].kind, TokenKind::Dot)
+                        && matches!(&ts[*p + 1].kind, TokenKind::Ident(_))
+                    {
+                        *p += 1; // consume dot
+                        if let TokenKind::Ident(method) = &ts[*p].kind {
+                            name.push('.');
+                            name.push_str(method);
+                            *p += 1; // consume method name
+                        }
+                    }
+                    name
                 } else {
                     String::new()
                 }
@@ -494,6 +502,18 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
                 Vec::new()
             };
             Expr::PluginCall { name, args }
+        }
+        TokenKind::Op(op) if op == "-" => {
+            *p += 1;
+            if *p < ts.len()
+                && let TokenKind::NumberLit(n) = &ts[*p].kind
+            {
+                let neg = format!("-{}", n);
+                *p += 1;
+                Expr::Literal(Literal::Number(neg))
+            } else {
+                Expr::JqPath("-".to_string())
+            }
         }
         TokenKind::RegExpLit { pattern, flags } => {
             *p += 1;
@@ -567,9 +587,25 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
                         json.push('@');
                         *p += 1;
                     }
-                    TokenKind::VarDelim => {
-                        json.push_str("{{ }}");
+                    TokenKind::Colon => {
+                        json.push(':');
                         *p += 1;
+                    }
+                    TokenKind::VarDelim => {
+                        json.push_str("{{ ");
+                        *p += 1;
+                        while *p < ts.len() && !matches!(ts[*p].kind, TokenKind::VarDelim) {
+                            if let TokenKind::Ident(s) = &ts[*p].kind {
+                                json.push_str(s);
+                            }
+                            *p += 1;
+                        }
+                        if *p < ts.len() {
+                            json.push_str(" }}");
+                            *p += 1;
+                        } else {
+                            json.push_str(" }}");
+                        }
                     }
                     _ => {
                         *p += 1;
@@ -600,6 +636,17 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
                         path.push_str(s);
                         *p += 1;
                     }
+                    TokenKind::StringLit(s) => {
+                        path.push('.');
+                        path.push('"');
+                        path.push_str(s);
+                        path.push('"');
+                        *p += 1;
+                    }
+                    TokenKind::Op(op) if op == "-" || op == ":" => {
+                        path.push_str(op);
+                        *p += 1;
+                    }
                     TokenKind::LBracket => {
                         path.push('[');
                         *p += 1;
@@ -612,6 +659,12 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
                                 path.push('"');
                                 path.push_str(s);
                                 path.push('"');
+                            } else if let TokenKind::Op(op) = &ts[*p].kind
+                                && (op == ":" || op == "-")
+                            {
+                                path.push_str(op);
+                            } else if let TokenKind::Dot = &ts[*p].kind {
+                                path.push('.');
                             }
                             *p += 1;
                         }
@@ -1384,7 +1437,8 @@ mod tests {
 
     #[test]
     fn test_parse_type_cast_compound() {
-        let expr = parse_assertion(r#".ips_to_decorations["10.0.0.1"].environment == "production""#);
+        let expr =
+            parse_assertion(r#".ips_to_decorations["10.0.0.1"].environment == "production""#);
         assert_eq!(
             assertion_to_string(&expr),
             r#".ips_to_decorations["10.0.0.1"].environment == "production""#
@@ -1422,6 +1476,69 @@ mod tests {
             ".x:string == \"hello\"",
             ".x:bool == true",
             ".x:uint >= 5",
+        ];
+        for original in &cases {
+            let expr = parse_assertion(original);
+            let s = assertion_to_string(&expr);
+            assert_eq!(s.as_str(), *original, "Roundtrip failed for: {}", original);
+        }
+    }
+
+    #[test]
+    fn test_bracket_with_template_string() {
+        let expr = parse_assertion(r#".x["{{var}}"] == "val""#);
+        if let AssertionExpr::Binary { left, .. } = &expr {
+            if let AssertionExpr::Atom(Expr::JqPath(p)) = &**left {
+                assert_eq!(p, r#".x["{{var}}"]"#);
+            } else {
+                panic!("Expected JqPath, got: {:?}", left);
+            }
+        } else {
+            panic!("Expected Binary, got: {:?}", expr);
+        }
+        let s = assertion_to_string(&expr);
+        assert_eq!(s, r#".x["{{var}}"] == "val""#);
+    }
+
+    #[test]
+    fn test_bracket_with_var_index() {
+        let expr = parse_assertion(r#".x[.idx] == 0"#);
+        if let AssertionExpr::Binary { left, .. } = &expr {
+            if let AssertionExpr::Atom(Expr::JqPath(p)) = &**left {
+                assert_eq!(p, ".x[.idx]", "path mismatch, full expr: {:?}", expr);
+            } else {
+                panic!("Expected JqPath, got: {:?}", left);
+            }
+        } else {
+            panic!("Expected Binary, got: {:?}", expr);
+        }
+        let s = assertion_to_string(&expr);
+        assert_eq!(s, ".x[.idx] == 0");
+    }
+
+    #[test]
+    fn test_type_method_syntax() {
+        let expr = parse_assertion(r#"@url.scheme(.webhook) == "https""#);
+        if let AssertionExpr::Binary { left, .. } = &expr {
+            if let AssertionExpr::Atom(Expr::PluginCall { name, args }) = &**left {
+                assert_eq!(name, "url.scheme");
+                assert_eq!(args.len(), 1);
+            } else {
+                panic!("Expected PluginCall, got: {:?}", left);
+            }
+        } else {
+            panic!("Expected Binary, got: {:?}", expr);
+        }
+        let s = assertion_to_string(&expr);
+        assert_eq!(s, r#"@url.scheme(.webhook) == "https""#);
+    }
+
+    #[test]
+    fn test_type_method_roundtrip() {
+        let cases = [
+            "@email.domain(.x) == \"example.com\"",
+            "@json.key(.config, \"timeout\") == 30",
+            "@regexp.test(.pattern, \"input\")",
         ];
         for original in &cases {
             let expr = parse_assertion(original);

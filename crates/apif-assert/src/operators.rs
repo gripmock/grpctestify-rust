@@ -162,6 +162,23 @@ fn evaluate_ast(
 }
 
 /// Evaluate an AST node as a JSON value (for use inside Binary, plugin args, etc.)
+/// Validate a value against a type annotation.
+/// Returns `Value::Null` if the value doesn't match the expected type,
+/// otherwise returns the value unchanged.
+fn validate_type_cast(val: &Value, type_name: &str) -> Value {
+    let valid = match type_name {
+        "bool" => val.is_boolean(),
+        "uint" => val.as_u64().is_some(),
+        "number" => val.is_number(),
+        "string" | "uuid" | "email" | "url" | "ip" => val.is_string(),
+        "time" | "timestamp" | "duration" => val.is_string() || val.is_number(),
+        "json" => val.is_object() || val.is_array(),
+        "yaml" => val.is_string(),
+        _ => true,
+    };
+    if valid { val.clone() } else { Value::Null }
+}
+
 fn eval_plugin_as_assertion(
     pm: &dyn PluginRegistry,
     name: &str,
@@ -310,9 +327,12 @@ fn eval_atom(
             Literal::Null => Value::Null,
         },
         Expr::Variable(name) => Value::String(format!("${}", name)),
-        Expr::RegExp { pattern, flags: _ } => Value::String(format!("/{}/", pattern)),
+        Expr::RegExp { pattern, flags: _ } => Value::String(pattern.clone()),
         Expr::Json(s) | Expr::Yaml(s) => serde_json::from_str(s).unwrap_or(Value::Null),
-        Expr::As(inner, _) => eval_atom(pm, inner, response, headers, trailers, timing),
+        Expr::As(inner, type_name) => {
+            let val = eval_atom(pm, inner, response, headers, trailers, timing);
+            validate_type_cast(&val, type_name)
+        }
     }
 }
 
@@ -594,5 +614,124 @@ mod tests {
     #[test]
     fn test_cached_regex_invalid() {
         assert!(cached_regex(r"[").is_err());
+    }
+
+    #[test]
+    fn test_validate_type_cast() {
+        use serde_json::json;
+        assert_eq!(validate_type_cast(&json!(42), "number"), json!(42));
+        assert_eq!(validate_type_cast(&json!("hello"), "number"), Value::Null);
+        assert_eq!(
+            validate_type_cast(&json!("hello"), "string"),
+            json!("hello")
+        );
+        assert_eq!(validate_type_cast(&json!(42), "string"), Value::Null);
+        assert_eq!(validate_type_cast(&json!(true), "bool"), json!(true));
+        assert_eq!(validate_type_cast(&json!("hello"), "bool"), Value::Null);
+        assert_eq!(validate_type_cast(&json!(42u64), "uint"), json!(42u64));
+        assert_eq!(validate_type_cast(&json!(-1), "uint"), Value::Null);
+        assert_eq!(
+            validate_type_cast(&json!("uuid-str"), "uuid"),
+            json!("uuid-str")
+        );
+        assert_eq!(
+            validate_type_cast(&json!("email@x.com"), "email"),
+            json!("email@x.com")
+        );
+        assert_eq!(validate_type_cast(&json!("url"), "url"), json!("url"));
+        assert_eq!(
+            validate_type_cast(&json!("1.2.3.4"), "ip"),
+            json!("1.2.3.4")
+        );
+        assert_eq!(
+            validate_type_cast(&json!("2024-01-01"), "time"),
+            json!("2024-01-01")
+        );
+        assert_eq!(validate_type_cast(&json!(12345), "timestamp"), json!(12345));
+        assert_eq!(
+            validate_type_cast(&json!("100ms"), "duration"),
+            json!("100ms")
+        );
+        assert_eq!(
+            validate_type_cast(&json!({"k": "v"}), "json"),
+            json!({"k": "v"})
+        );
+        assert_eq!(validate_type_cast(&json!([1, 2]), "json"), json!([1, 2]));
+        assert_eq!(validate_type_cast(&json!("hello"), "json"), Value::Null);
+        assert_eq!(
+            validate_type_cast(&json!("yaml:val"), "yaml"),
+            json!("yaml:val")
+        );
+        assert_eq!(
+            validate_type_cast(&json!("any_val"), "unknown_type"),
+            json!("any_val")
+        );
+    }
+
+    #[test]
+    fn test_normalize_plugin_name_assert() {
+        assert_eq!(normalize_plugin_name("@uuid"), "uuid");
+        assert_eq!(normalize_plugin_name("uuid"), "uuid");
+        assert_eq!(normalize_plugin_name(" @uuid "), "uuid");
+    }
+
+    #[test]
+    fn test_is_truthy() {
+        assert!(!is_truthy(&Value::Null));
+        assert!(!is_truthy(&Value::Bool(false)));
+        assert!(is_truthy(&Value::Bool(true)));
+        assert!(is_truthy(&Value::Number(0.into())));
+        assert!(is_truthy(&Value::String("".into())));
+    }
+
+    #[test]
+    fn test_negate() {
+        let pass = AssertionResult::Pass;
+        assert!(matches!(negate(pass), AssertionResult::Fail { .. }));
+
+        let fail = AssertionResult::fail("msg");
+        assert!(matches!(negate(fail), AssertionResult::Pass));
+
+        let err = AssertionResult::Error("err".into());
+        assert!(matches!(negate(err), AssertionResult::Error(_)));
+    }
+
+    #[test]
+    fn test_fmt_result_short() {
+        assert_eq!(fmt_result_short(&AssertionResult::Pass), "pass");
+        assert_eq!(fmt_result_short(&AssertionResult::fail("msg")), "msg");
+        assert_eq!(
+            fmt_result_short(&AssertionResult::Error("err".into())),
+            "error: err"
+        );
+    }
+
+    #[test]
+    fn test_eval_atom_literal() {
+        let pm = crate::registry::NoopPluginRegistry;
+        let ctx = &json!({});
+        use apif_ast::assertion_ast::{Expr, Literal};
+        let result = eval_atom(
+            &pm,
+            &Expr::Literal(Literal::Number("42".into())),
+            ctx,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(result, json!(42));
+    }
+
+    #[test]
+    fn test_eval_binary_value_num() {
+        use apif_ast::assertion_ast::BinaryOp;
+        assert_eq!(
+            eval_binary_value(json!(5), &BinaryOp::Gt, json!(3)),
+            json!(true)
+        );
+        assert_eq!(
+            eval_binary_value(json!(3), &BinaryOp::Gt, json!(5)),
+            json!(false)
+        );
     }
 }

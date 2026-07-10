@@ -3,6 +3,20 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptimizeLevel {
+    None = 0,
+    Safe = 1,
+    Advisory = 2,
+    Aggressive = 3,
+}
+
+impl OptimizeLevel {
+    pub fn is_enabled(self, rule_level: OptimizeLevel) -> bool {
+        self as u8 >= rule_level as u8
+    }
+}
+
 use apif_parser as parser;
 use apif_parser::assertions::strip_assertion_comments;
 use apif_plugins::{PluginSignature, TypeInfo, extract_plugin_call_name};
@@ -13,6 +27,7 @@ fn likely_needs_assertion_rewrite(expr: &str) -> bool {
         || expr.contains("!=")
         || expr.contains('>')
         || expr.contains('<')
+        || expr.contains('@')
         || expr.contains(" startswith ")
         || expr.contains(" endswith ")
         || expr.contains("!!")
@@ -214,6 +229,8 @@ rule_id_table! {
     P002 => "OPT_P002",
     T001 => "OPT_T001",
     T002 => "OPT_T002",
+    R001 => "OPT_R001",
+    R002 => "OPT_R002",
 }
 
 impl std::fmt::Display for RuleId {
@@ -398,6 +415,18 @@ const REWRITE_RULES: &[RewriteRuleMetadata] = &[
         negative_cases: "expression has `:TypeName` but the inner expression has a different or unknown type",
         proof_note: "Type annotation is redundant when the type is already known",
     },
+    RewriteRuleMetadata {
+        id: rule_ids::R001,
+        preconditions: "deprecated plugin call (uuid/email/ip/url/timestamp/empty)",
+        negative_cases: "already using canonical name",
+        proof_note: "Use canonical plugin name instead of deprecated one",
+    },
+    RewriteRuleMetadata {
+        id: rule_ids::R002,
+        preconditions: "negation pattern `!@is_empty(x)`",
+        negative_cases: "already using `@has_value`",
+        proof_note: "Use `@has_value` instead of `!@is_empty`",
+    },
 ];
 
 fn rule_metadata(rule_id: RuleId) -> Option<&'static RewriteRuleMetadata> {
@@ -462,7 +491,14 @@ fn is_boolean_plugin_expr(expr: &str, bool_plugins: &HashSet<String>) -> bool {
     bool_plugins.contains(plugin_name.as_str())
 }
 
-fn suggest_boolean_rewrite(expr: &str, bool_plugins: &HashSet<String>) -> Option<(RuleId, String)> {
+fn suggest_boolean_rewrite(
+    expr: &str,
+    bool_plugins: &HashSet<String>,
+    level: OptimizeLevel,
+) -> Option<(RuleId, String)> {
+    if !level.is_enabled(OptimizeLevel::Advisory) {
+        return None;
+    }
     let (lhs, rhs) = expr.split_once("==")?;
     let lhs = lhs.trim();
     let rhs = rhs.trim();
@@ -483,7 +519,14 @@ fn suggest_boolean_rewrite(expr: &str, bool_plugins: &HashSet<String>) -> Option
     None
 }
 
-fn suggest_not_not_rewrite(expr: &str, bool_plugins: &HashSet<String>) -> Option<(RuleId, String)> {
+fn suggest_not_not_rewrite(
+    expr: &str,
+    bool_plugins: &HashSet<String>,
+    level: OptimizeLevel,
+) -> Option<(RuleId, String)> {
+    if !level.is_enabled(OptimizeLevel::Safe) {
+        return None;
+    }
     let trimmed = expr.trim();
     if !trimmed.starts_with("not not ") {
         return None;
@@ -500,7 +543,11 @@ fn suggest_not_not_rewrite(expr: &str, bool_plugins: &HashSet<String>) -> Option
 fn suggest_inequality_rewrite(
     expr: &str,
     bool_plugins: &HashSet<String>,
+    level: OptimizeLevel,
 ) -> Option<(RuleId, String)> {
+    if !level.is_enabled(OptimizeLevel::Advisory) {
+        return None;
+    }
     let (lhs, rhs) = expr.split_once("!=")?;
     let lhs = lhs.trim();
     let rhs = rhs.trim();
@@ -522,7 +569,10 @@ fn suggest_inequality_rewrite(
 }
 
 /// Redundant parentheses: (expr) -> expr (single expression, no ambiguity)
-fn suggest_redundant_parens(expr: &str) -> Option<(RuleId, String)> {
+fn suggest_redundant_parens(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
+    if !level.is_enabled(OptimizeLevel::Safe) {
+        return None;
+    }
     let trimmed = expr.trim();
     if !trimmed.starts_with('(') || !trimmed.ends_with(')') {
         return None;
@@ -552,7 +602,11 @@ fn suggest_redundant_parens(expr: &str) -> Option<(RuleId, String)> {
 fn suggest_double_negation_rewrite(
     expr: &str,
     bool_plugins: &HashSet<String>,
+    level: OptimizeLevel,
 ) -> Option<(RuleId, String)> {
+    if !level.is_enabled(OptimizeLevel::Safe) {
+        return None;
+    }
     let trimmed = expr.trim();
     if !trimmed.starts_with("!!") {
         return None;
@@ -566,7 +620,10 @@ fn suggest_double_negation_rewrite(
     None
 }
 
-fn suggest_operator_canonicalization(expr: &str) -> Option<(RuleId, String)> {
+fn suggest_operator_canonicalization(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
+    if !level.is_enabled(OptimizeLevel::Safe) {
+        return None;
+    }
     if expr.contains(" startswith ") {
         let rewritten = expr.replace(" startswith ", " startsWith ");
         return Some((rule_ids::N001, rewritten));
@@ -609,7 +666,10 @@ fn parse_literal(expr: &str) -> Option<serde_json::Value> {
     None
 }
 
-fn suggest_constant_folding(expr: &str) -> Option<(RuleId, String)> {
+fn suggest_constant_folding(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
+    if !level.is_enabled(OptimizeLevel::Aggressive) {
+        return None;
+    }
     let operators = ["==", "!=", ">=", "<=", ">", "<"];
     for op in operators {
         let Some(idx) = expr.find(op) else {
@@ -713,7 +773,11 @@ fn is_idempotent_expr(expr: &str, signatures: &HashMap<String, PluginSignature>)
 fn suggest_reflexive_idempotent(
     expr: &str,
     signatures: &HashMap<String, PluginSignature>,
+    level: OptimizeLevel,
 ) -> Option<(RuleId, String)> {
+    if !level.is_enabled(OptimizeLevel::Aggressive) {
+        return None;
+    }
     let (_op, lhs, rhs, rule_id, result) = if let Some((l, r)) = expr.split_once("==") {
         ("==", l, r, rule_ids::B007, "true")
     } else if let Some((l, r)) = expr.split_once("!=") {
@@ -859,7 +923,10 @@ fn parse_if_then_else(expr: &str) -> Option<(&str, &str, &str)> {
 }
 
 /// Dead branch elimination: if true then A else B = A
-fn suggest_dead_branch_elimination(expr: &str) -> Option<(RuleId, String)> {
+fn suggest_dead_branch_elimination(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
+    if !level.is_enabled(OptimizeLevel::Safe) {
+        return None;
+    }
     let (condition, then_expr, else_expr) = parse_if_then_else(expr)?;
 
     if condition == "true" {
@@ -874,7 +941,10 @@ fn suggest_dead_branch_elimination(expr: &str) -> Option<(RuleId, String)> {
 }
 
 /// Branch merging: if C then X else X = X
-fn suggest_branch_merging(expr: &str) -> Option<(RuleId, String)> {
+fn suggest_branch_merging(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
+    if !level.is_enabled(OptimizeLevel::Advisory) {
+        return None;
+    }
     let (_condition, then_expr, else_expr) = parse_if_then_else(expr)?;
 
     if then_expr == else_expr {
@@ -885,7 +955,10 @@ fn suggest_branch_merging(expr: &str) -> Option<(RuleId, String)> {
 }
 
 /// Nested if simplification: if A then (if A then X else Y) else Z = if A then X else Z
-fn suggest_nested_if_simplification(expr: &str) -> Option<(RuleId, String)> {
+fn suggest_nested_if_simplification(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
+    if !level.is_enabled(OptimizeLevel::Advisory) {
+        return None;
+    }
     let (outer_cond, inner_expr, else_expr) = parse_if_then_else(expr)?;
 
     // Strip parentheses from inner expression if present
@@ -910,7 +983,10 @@ fn suggest_nested_if_simplification(expr: &str) -> Option<(RuleId, String)> {
 }
 
 /// Boolean simplification: if C then true else false = C
-fn suggest_boolean_simplification(expr: &str) -> Option<(RuleId, String)> {
+fn suggest_boolean_simplification(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
+    if !level.is_enabled(OptimizeLevel::Advisory) {
+        return None;
+    }
     let (condition, then_expr, else_expr) = parse_if_then_else(expr)?;
 
     if then_expr == "true" && else_expr == "false" {
@@ -947,7 +1023,10 @@ fn negate_condition_expr(condition: &str) -> String {
 }
 
 /// Condition inversion: if C then false else true = !(C)
-fn suggest_condition_inversion(expr: &str) -> Option<(RuleId, String)> {
+fn suggest_condition_inversion(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
+    if !level.is_enabled(OptimizeLevel::Advisory) {
+        return None;
+    }
     let (condition, then_expr, else_expr) = parse_if_then_else(expr)?;
 
     if then_expr == "false" && else_expr == "true" {
@@ -958,7 +1037,10 @@ fn suggest_condition_inversion(expr: &str) -> Option<(RuleId, String)> {
 }
 
 /// Boolean identity/absorption: A or true = true, A and false = false
-fn suggest_boolean_identity_laws(expr: &str) -> Option<(RuleId, String)> {
+fn suggest_boolean_identity_laws(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
+    if !level.is_enabled(OptimizeLevel::Advisory) {
+        return None;
+    }
     let expr = expr.trim();
 
     // Check for "or true" / "or false"
@@ -997,7 +1079,13 @@ fn suggest_boolean_identity_laws(expr: &str) -> Option<(RuleId, String)> {
 }
 
 /// Plugin-specific: @len(.x) == 0 → @empty(.x)
-fn suggest_plugin_length_simplification(expr: &str) -> Option<(RuleId, String)> {
+fn suggest_plugin_length_simplification(
+    expr: &str,
+    level: OptimizeLevel,
+) -> Option<(RuleId, String)> {
+    if !level.is_enabled(OptimizeLevel::Advisory) {
+        return None;
+    }
     fn extract_len_inner(s: &str) -> Option<&str> {
         if s.starts_with("@len(") && s.ends_with(')') {
             Some(&s[5..s.len() - 1])
@@ -1056,7 +1144,13 @@ fn suggest_plugin_length_simplification(expr: &str) -> Option<(RuleId, String)> 
 /// Type-aware numeric comparison optimization.
 /// Uses TypeInfo to detect that certain plugins return unsigned integers,
 /// making comparisons like `@len(.x) >= 0` always true.
-fn suggest_type_aware_numeric_comparison(expr: &str) -> Option<(RuleId, String)> {
+fn suggest_type_aware_numeric_comparison(
+    expr: &str,
+    level: OptimizeLevel,
+) -> Option<(RuleId, String)> {
+    if !level.is_enabled(OptimizeLevel::Aggressive) {
+        return None;
+    }
     let signatures = plugin_signatures();
     let trimmed = expr.trim();
 
@@ -1086,7 +1180,10 @@ fn suggest_type_aware_numeric_comparison(expr: &str) -> Option<(RuleId, String)>
 }
 
 /// Comparison negation: not (.x == 5) → .x != 5
-fn suggest_comparison_negation(expr: &str) -> Option<(RuleId, String)> {
+fn suggest_comparison_negation(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
+    if !level.is_enabled(OptimizeLevel::Safe) {
+        return None;
+    }
     let expr = expr.trim();
 
     let inner = if expr.starts_with("not (") && expr.ends_with(')') {
@@ -1128,7 +1225,11 @@ fn negate_comparison_expr(inner: &str) -> Option<String> {
 fn suggest_redundant_type_cast(
     expr: &str,
     signatures: &HashMap<String, PluginSignature>,
+    level: OptimizeLevel,
 ) -> Option<(RuleId, String)> {
+    if !level.is_enabled(OptimizeLevel::Safe) {
+        return None;
+    }
     let colon_pos = expr.rfind(':')?;
     if colon_pos == 0 {
         return None;
@@ -1150,11 +1251,9 @@ fn suggest_redundant_type_cast(
     let cast_type = TypeInfo::parse_type_name(cast_type_name)?;
 
     // Infer type of inner expression
-        let inner_tokens = parser::tokenizer::tokenize_assertion(inner_expr);
-        let empty_vars = std::collections::HashMap::new();
-        let inner_type = apif_semantics::infer_type_from_tokens(
-            &inner_tokens, signatures, &empty_vars,
-        );
+    let inner_tokens = parser::tokenizer::tokenize_assertion(inner_expr);
+    let empty_vars = std::collections::HashMap::new();
+    let inner_type = apif_semantics::infer_type_from_tokens(&inner_tokens, signatures, &empty_vars);
 
     // If inner type is unknown, cast might be useful — don't flag
     if inner_type == TypeInfo::Any || inner_type == TypeInfo::Yaml || inner_type == TypeInfo::Json {
@@ -1185,105 +1284,180 @@ fn suggest_redundant_type_cast(
     Some((rule_ids::T002, rewritten))
 }
 
+/// Detect and rewrite deprecated plugin calls using PluginSignature metadata.
+/// Also handles `!@is_empty(x)` → `@has_value(x)`.
+fn suggest_deprecated_plugin_rename(
+    expr: &str,
+    signatures: &HashMap<String, PluginSignature>,
+    level: OptimizeLevel,
+) -> Option<(RuleId, String)> {
+    if !level.is_enabled(OptimizeLevel::Safe) {
+        return None;
+    }
+    let trimmed = expr.trim();
+
+    // Check for `!@is_empty(args)` → `@has_value(args)`
+    if let Some(inner) = trimmed.strip_prefix("!@is_empty(")
+        && inner.ends_with(')')
+    {
+        let args = &inner[..inner.len() - 1];
+        return Some((rule_ids::R002, format!("@has_value({})", args)));
+    }
+
+    // Check for `@is_empty(args) == false` → `@has_value(args)`
+    if let Some(inner) = trimmed.strip_prefix("@is_empty(")
+        && inner.ends_with(") == false")
+    {
+        let args = &inner[..inner.len() - 10];
+        return Some((rule_ids::R002, format!("@has_value({})", args)));
+    }
+
+    // Check for `false == @is_empty(args)` → `@has_value(args)`
+    if let Some(inner) = trimmed.strip_prefix("false == @is_empty(")
+        && inner.ends_with(')')
+    {
+        let args = &inner[..inner.len() - 1];
+        return Some((rule_ids::R002, format!("@has_value({})", args)));
+    }
+
+    // Generic deprecated plugin rename — read from PluginSignature.replacement
+    for (name, sig) in signatures {
+        let Some(replacement) = sig.replacement else {
+            continue;
+        };
+        let at_name = format!("@{}", name);
+        if let Some(rest) = trimmed.strip_prefix(&at_name)
+            && rest.starts_with('(')
+        {
+            return Some((rule_ids::R001, format!("@{}{}", replacement, rest)));
+        }
+        // Handle !@name(...) pattern too — check for known boolean replacements
+        let not_at_name = format!("!@{}", name);
+        if let Some(rest) = trimmed.strip_prefix(&not_at_name)
+            && rest.starts_with('(')
+        {
+            let args = &rest[1..rest.len() - 1];
+            // If the canonical replacement is `is_empty`, skip to `@has_value` directly
+            if replacement == "is_empty" {
+                return Some((rule_ids::R002, format!("@has_value({})", args)));
+            }
+            return Some((rule_ids::R001, format!("!@{}{}", replacement, rest)));
+        }
+    }
+
+    None
+}
+
 fn rewrite_assertion_expression_with_context(
     expr: &str,
     signatures: &HashMap<String, PluginSignature>,
     bool_plugins: &HashSet<String>,
     normalization_mode: NormalizationMode,
+    level: OptimizeLevel,
 ) -> Option<(RuleId, String)> {
     let normalized = normalize_expr_for_optimizer_with_mode(expr, normalization_mode);
     let expr = normalized.as_ref();
 
-    if let Some((rule_id, rewrite)) = suggest_boolean_rewrite(expr, bool_plugins) {
+    if let Some((rule_id, rewrite)) = suggest_boolean_rewrite(expr, bool_plugins, level) {
         return Some((rule_id, rewrite));
     }
 
-    if let Some((rule_id, rewrite)) = suggest_not_not_rewrite(expr, bool_plugins) {
+    if let Some((rule_id, rewrite)) = suggest_not_not_rewrite(expr, bool_plugins, level) {
         return Some((rule_id, rewrite));
     }
 
-    if let Some((rule_id, rewrite)) = suggest_inequality_rewrite(expr, bool_plugins) {
+    if let Some((rule_id, rewrite)) = suggest_inequality_rewrite(expr, bool_plugins, level) {
         return Some((rule_id, rewrite));
     }
 
-    if let Some((rule_id, rewrite)) = suggest_double_negation_rewrite(expr, bool_plugins) {
+    if let Some((rule_id, rewrite)) = suggest_double_negation_rewrite(expr, bool_plugins, level) {
         return Some((rule_id, rewrite));
     }
 
-    if let Some((rule_id, rewrite)) = suggest_operator_canonicalization(expr) {
+    if let Some((rule_id, rewrite)) = suggest_operator_canonicalization(expr, level) {
         return Some((rule_id, rewrite));
     }
 
-    if let Some((rule_id, rewrite)) = suggest_constant_folding(expr) {
+    if let Some((rule_id, rewrite)) = suggest_constant_folding(expr, level) {
         return Some((rule_id, rewrite));
     }
 
-    if let Some((rule_id, rewrite)) = suggest_reflexive_idempotent(expr, signatures) {
+    if let Some((rule_id, rewrite)) = suggest_reflexive_idempotent(expr, signatures, level) {
         return Some((rule_id, rewrite));
     }
 
     // Redundant parentheses removal
-    if let Some((rule_id, rewrite)) = suggest_redundant_parens(expr) {
+    if let Some((rule_id, rewrite)) = suggest_redundant_parens(expr, level) {
         return Some((rule_id, rewrite));
     }
 
     // If-then-else optimizations
-    if let Some((rule_id, rewrite)) = suggest_dead_branch_elimination(expr) {
+    if let Some((rule_id, rewrite)) = suggest_dead_branch_elimination(expr, level) {
         return Some((rule_id, rewrite));
     }
 
-    if let Some((rule_id, rewrite)) = suggest_branch_merging(expr) {
+    if let Some((rule_id, rewrite)) = suggest_branch_merging(expr, level) {
         return Some((rule_id, rewrite));
     }
 
-    if let Some((rule_id, rewrite)) = suggest_nested_if_simplification(expr) {
+    if let Some((rule_id, rewrite)) = suggest_nested_if_simplification(expr, level) {
         return Some((rule_id, rewrite));
     }
 
-    if let Some((rule_id, rewrite)) = suggest_boolean_simplification(expr) {
+    if let Some((rule_id, rewrite)) = suggest_boolean_simplification(expr, level) {
         return Some((rule_id, rewrite));
     }
 
-    if let Some((rule_id, rewrite)) = suggest_condition_inversion(expr) {
+    if let Some((rule_id, rewrite)) = suggest_condition_inversion(expr, level) {
         return Some((rule_id, rewrite));
     }
 
     // Boolean identity/absorption laws
-    if let Some((rule_id, rewrite)) = suggest_boolean_identity_laws(expr) {
+    if let Some((rule_id, rewrite)) = suggest_boolean_identity_laws(expr, level) {
         return Some((rule_id, rewrite));
     }
 
     // Plugin-specific optimizations
-    if let Some((rule_id, rewrite)) = suggest_plugin_length_simplification(expr) {
+    if let Some((rule_id, rewrite)) = suggest_plugin_length_simplification(expr, level) {
         return Some((rule_id, rewrite));
     }
 
     // Type-aware optimizations based on TypeInfo
-    if let Some((rule_id, rewrite)) = suggest_type_aware_numeric_comparison(expr) {
+    if let Some((rule_id, rewrite)) = suggest_type_aware_numeric_comparison(expr, level) {
         return Some((rule_id, rewrite));
     }
 
     // Redundant type annotation removal
-    if let Some((rule_id, rewrite)) = suggest_redundant_type_cast(expr, signatures) {
+    if let Some((rule_id, rewrite)) = suggest_redundant_type_cast(expr, signatures, level) {
+        return Some((rule_id, rewrite));
+    }
+
+    // Deprecated plugin rename
+    if let Some((rule_id, rewrite)) = suggest_deprecated_plugin_rename(expr, signatures, level) {
         return Some((rule_id, rewrite));
     }
 
     // Comparison negation normalization
-    suggest_comparison_negation(expr)
+    suggest_comparison_negation(expr, level)
 }
 
 fn rewrite_assertion_expression_fixed_point_with_mode(
     expr: &str,
     mode: NormalizationMode,
+    level: OptimizeLevel,
 ) -> String {
     let signatures = plugin_signatures();
     let bool_plugins = boolean_plugins();
 
     let mut current = Cow::Borrowed(expr.trim());
     for _ in 0..32 {
-        let Some((_, rewritten)) =
-            rewrite_assertion_expression_with_context(&current, signatures, bool_plugins, mode)
-        else {
+        let Some((_, rewritten)) = rewrite_assertion_expression_with_context(
+            &current,
+            signatures,
+            bool_plugins,
+            mode,
+            level,
+        ) else {
             break;
         };
 
@@ -1298,22 +1472,49 @@ fn rewrite_assertion_expression_fixed_point_with_mode(
 }
 
 pub fn rewrite_assertion_expression(expr: &str) -> Option<(&'static str, String)> {
+    rewrite_assertion_expression_with_level(expr, OptimizeLevel::Advisory)
+}
+
+pub fn rewrite_assertion_expression_with_level(
+    expr: &str,
+    level: OptimizeLevel,
+) -> Option<(&'static str, String)> {
     let signatures = plugin_signatures();
     let bool_plugins = boolean_plugins();
-    rewrite_assertion_expression_with_context(expr, signatures, bool_plugins, normalization_mode())
-        .map(|(rule_id, rewrite)| (rule_id.as_str(), rewrite))
+    rewrite_assertion_expression_with_context(
+        expr,
+        signatures,
+        bool_plugins,
+        normalization_mode(),
+        level,
+    )
+    .map(|(rule_id, rewrite)| (rule_id.as_str(), rewrite))
 }
 
 pub fn rewrite_assertion_expression_fixed_point(expr: &str) -> String {
-    rewrite_assertion_expression_fixed_point_with_mode(expr, normalization_mode())
+    rewrite_assertion_expression_fixed_point_with_level(expr, OptimizeLevel::Advisory)
+}
+
+pub fn rewrite_assertion_expression_fixed_point_with_level(
+    expr: &str,
+    level: OptimizeLevel,
+) -> String {
+    rewrite_assertion_expression_fixed_point_with_mode(expr, normalization_mode(), level)
 }
 
 pub fn rewrite_assertion_expression_fixed_point_if_changed(expr: &str) -> Option<String> {
+    rewrite_assertion_expression_fixed_point_if_changed_with_level(expr, OptimizeLevel::Advisory)
+}
+
+pub fn rewrite_assertion_expression_fixed_point_if_changed_with_level(
+    expr: &str,
+    level: OptimizeLevel,
+) -> Option<String> {
     let trimmed = expr.trim();
     if trimmed.is_empty() || !likely_needs_assertion_rewrite(trimmed) {
         None
     } else {
-        let rewritten = rewrite_assertion_expression_fixed_point(trimmed);
+        let rewritten = rewrite_assertion_expression_fixed_point_with_level(trimmed, level);
         if rewritten == trimmed {
             None
         } else {
@@ -1322,7 +1523,10 @@ pub fn rewrite_assertion_expression_fixed_point_if_changed(expr: &str) -> Option
     }
 }
 
-pub fn collect_assertion_optimizations(doc: &parser::GctfDocument) -> Vec<OptimizationHint> {
+pub fn collect_assertion_optimizations(
+    doc: &parser::GctfDocument,
+    level: OptimizeLevel,
+) -> Vec<OptimizationHint> {
     let signatures = plugin_signatures();
     let bool_plugins = boolean_plugins();
     let mode = normalization_mode();
@@ -1342,9 +1546,13 @@ pub fn collect_assertion_optimizations(doc: &parser::GctfDocument) -> Vec<Optimi
                 continue;
             }
 
-            if let Some((rule_id, rewrite)) =
-                rewrite_assertion_expression_with_context(&trimmed, signatures, bool_plugins, mode)
-            {
+            if let Some((rule_id, rewrite)) = rewrite_assertion_expression_with_context(
+                &trimmed,
+                signatures,
+                bool_plugins,
+                mode,
+                level,
+            ) {
                 debug_assert!(rule_metadata(rule_id).is_some());
                 hints.push(build_hint(
                     rule_id,
@@ -1377,7 +1585,7 @@ test.Service/Method
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::B001);
         assert_eq!(hints[0].after, "@has_header(\"x-request-id\")");
@@ -1393,7 +1601,7 @@ test.Service/Method
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
         if ast_mode_active_for_tests() {
             assert_eq!(hints[0].rule_id, rule_ids::B017);
@@ -1413,7 +1621,7 @@ test.Service/Method
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         if ast_mode_active_for_tests() {
             assert!(hints.is_empty());
         } else {
@@ -1433,7 +1641,7 @@ test.Service/Method
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert!(hints.is_empty());
     }
 
@@ -1448,7 +1656,7 @@ test.Service/Method
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Aggressive);
 
         // Only '3 > 2' is a strict literal compare and safe to fold here.
         assert_eq!(hints.len(), 1);
@@ -1467,7 +1675,7 @@ test.Service/Method
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Aggressive);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::B006);
         assert_eq!(hints[0].after, "true");
@@ -1501,6 +1709,9 @@ test.Service/Method
             rule_ids::P001,
             rule_ids::P002,
             rule_ids::T001,
+            rule_ids::T002,
+            rule_ids::R001,
+            rule_ids::R002,
         ];
 
         for id in expected {
@@ -1521,7 +1732,7 @@ test.Service/Method
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
         assert!(hints[0].preconditions.as_deref().is_some());
         assert!(hints[0].negative_cases.as_deref().is_some());
@@ -1538,7 +1749,7 @@ test.Service/Method
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Aggressive);
 
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::B007);
@@ -1555,7 +1766,7 @@ test.Service/Method
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Aggressive);
 
         assert!(hints.is_empty());
     }
@@ -1570,7 +1781,7 @@ $user_id != $user_id
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Aggressive);
 
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::B008);
@@ -1608,7 +1819,7 @@ true == @has_header("x-request-id") // comment should be ignored
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::B003);
         assert_eq!(hints[0].after, "@has_header(\"x-request-id\")");
@@ -1616,7 +1827,11 @@ true == @has_header("x-request-id") // comment should be ignored
 
     #[test]
     fn test_likely_needs_assertion_rewrite_fast_path() {
-        assert!(!likely_needs_assertion_rewrite("@scope_message_count()"));
+        // Both old and new scope syntax trigger rewrite (contains @ and ==)
+        assert!(likely_needs_assertion_rewrite("@scope_message_count()"));
+        assert!(likely_needs_assertion_rewrite(
+            "@scope.message_count() == 2"
+        ));
         assert!(likely_needs_assertion_rewrite("@elapsed_ms() >= 10"));
         assert!(likely_needs_assertion_rewrite("true == @has_header(\"x\")"));
         assert!(likely_needs_assertion_rewrite(".name startswith \"abc\""));
@@ -1627,24 +1842,33 @@ true == @has_header("x-request-id") // comment should be ignored
 
     #[test]
     fn test_dead_branch_elimination_true() {
-        let (rule_id, rewritten) =
-            suggest_dead_branch_elimination("if true then \"yes\" else \"no\" end").unwrap();
+        let (rule_id, rewritten) = suggest_dead_branch_elimination(
+            "if true then \"yes\" else \"no\" end",
+            OptimizeLevel::Advisory,
+        )
+        .unwrap();
         assert_eq!(rule_id, rule_ids::I001);
         assert_eq!(rewritten, "\"yes\"");
     }
 
     #[test]
     fn test_dead_branch_elimination_false() {
-        let (rule_id, rewritten) =
-            suggest_dead_branch_elimination("if false then \"yes\" else \"no\" end").unwrap();
+        let (rule_id, rewritten) = suggest_dead_branch_elimination(
+            "if false then \"yes\" else \"no\" end",
+            OptimizeLevel::Advisory,
+        )
+        .unwrap();
         assert_eq!(rule_id, rule_ids::I001);
         assert_eq!(rewritten, "\"no\"");
     }
 
     #[test]
     fn test_branch_merging() {
-        let (rule_id, rewritten) =
-            suggest_branch_merging("if .x > 0 then \"same\" else \"same\" end").unwrap();
+        let (rule_id, rewritten) = suggest_branch_merging(
+            "if .x > 0 then \"same\" else \"same\" end",
+            OptimizeLevel::Advisory,
+        )
+        .unwrap();
         assert_eq!(rule_id, rule_ids::I002);
         assert_eq!(rewritten, "\"same\"");
     }
@@ -1655,7 +1879,7 @@ true == @has_header("x-request-id") // comment should be ignored
         // Simplified: if A then X else Z end
         let input =
             "if .a > 0 then (if .a > 0 then \"inner\" else \"other\" end) else \"outer\" end";
-        let result = suggest_nested_if_simplification(input);
+        let result = suggest_nested_if_simplification(input, OptimizeLevel::Advisory);
         assert!(result.is_some());
         let (rule_id, rewritten) = result.unwrap();
         assert_eq!(rule_id, rule_ids::I003);
@@ -1692,7 +1916,7 @@ if true then "always" else "never" end
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::I001);
         assert_eq!(hints[0].after, "\"always\"");
@@ -1708,7 +1932,7 @@ if .x > 0 then "same" else "same" end
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::I002);
         assert_eq!(hints[0].after, "\"same\"");
@@ -1716,59 +1940,77 @@ if .x > 0 then "same" else "same" end
 
     #[test]
     fn test_boolean_simplification() {
-        let (rule_id, rewritten) =
-            suggest_boolean_simplification("if .x > 0 then true else false end").unwrap();
+        let (rule_id, rewritten) = suggest_boolean_simplification(
+            "if .x > 0 then true else false end",
+            OptimizeLevel::Advisory,
+        )
+        .unwrap();
         assert_eq!(rule_id, rule_ids::I004);
         assert_eq!(rewritten, ".x > 0");
     }
 
     #[test]
     fn test_condition_inversion() {
-        let (rule_id, rewritten) =
-            suggest_condition_inversion("if .x > 0 then false else true end").unwrap();
+        let (rule_id, rewritten) = suggest_condition_inversion(
+            "if .x > 0 then false else true end",
+            OptimizeLevel::Advisory,
+        )
+        .unwrap();
         assert_eq!(rule_id, rule_ids::I005);
         assert_eq!(rewritten, ".x <= 0");
     }
 
     #[test]
     fn test_condition_inversion_contains_needs_parens() {
-        let (rule_id, rewritten) =
-            suggest_condition_inversion("if .name contains \"foo\" then false else true end")
-                .unwrap();
+        let (rule_id, rewritten) = suggest_condition_inversion(
+            "if .name contains \"foo\" then false else true end",
+            OptimizeLevel::Advisory,
+        )
+        .unwrap();
         assert_eq!(rule_id, rule_ids::I005);
         assert_eq!(rewritten, "!(.name contains \"foo\")");
     }
 
     #[test]
     fn test_condition_inversion_simple_plugin_call_no_parens() {
-        let (rule_id, rewritten) =
-            suggest_condition_inversion("if @has_header(\"x\") then false else true end").unwrap();
+        let (rule_id, rewritten) = suggest_condition_inversion(
+            "if @has_header(\"x\") then false else true end",
+            OptimizeLevel::Advisory,
+        )
+        .unwrap();
         assert_eq!(rule_id, rule_ids::I005);
         assert_eq!(rewritten, "!@has_header(\"x\")");
     }
 
     #[test]
     fn test_condition_inversion_not_keyword_gets_grouped() {
-        let (rule_id, rewritten) =
-            suggest_condition_inversion("if not @has_header(\"x\") then false else true end")
-                .unwrap();
+        let (rule_id, rewritten) = suggest_condition_inversion(
+            "if not @has_header(\"x\") then false else true end",
+            OptimizeLevel::Advisory,
+        )
+        .unwrap();
         assert_eq!(rule_id, rule_ids::I005);
         assert_eq!(rewritten, "!(not @has_header(\"x\"))");
     }
 
     #[test]
     fn test_condition_inversion_bang_gets_grouped() {
-        let (rule_id, rewritten) =
-            suggest_condition_inversion("if !@has_header(\"x\") then false else true end").unwrap();
+        let (rule_id, rewritten) = suggest_condition_inversion(
+            "if !@has_header(\"x\") then false else true end",
+            OptimizeLevel::Advisory,
+        )
+        .unwrap();
         assert_eq!(rule_id, rule_ids::I005);
         assert_eq!(rewritten, "!(!@has_header(\"x\"))");
     }
 
     #[test]
     fn test_condition_inversion_matches_gets_grouped() {
-        let (rule_id, rewritten) =
-            suggest_condition_inversion("if .name matches /foo.*/ then false else true end")
-                .unwrap();
+        let (rule_id, rewritten) = suggest_condition_inversion(
+            "if .name matches /foo.*/ then false else true end",
+            OptimizeLevel::Advisory,
+        )
+        .unwrap();
         assert_eq!(rule_id, rule_ids::I005);
         assert_eq!(rewritten, "!(.name matches /foo.*/)");
     }
@@ -1783,7 +2025,7 @@ if @has_header("x") then true else false end
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::I004);
         assert_eq!(hints[0].after, "@has_header(\"x\")");
@@ -1799,7 +2041,7 @@ if .status == 200 then false else true end
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::I005);
         assert_eq!(hints[0].after, ".status != 200");
@@ -1828,17 +2070,20 @@ if .status == 200 then false else true end
     #[test]
     fn test_boolean_identity_or() {
         // A or true = true
-        let (rule_id, rewritten) = suggest_boolean_identity_laws(".x or true").unwrap();
+        let (rule_id, rewritten) =
+            suggest_boolean_identity_laws(".x or true", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::B009);
         assert_eq!(rewritten, "true");
 
         // A or false = A
-        let (rule_id, rewritten) = suggest_boolean_identity_laws(".x or false").unwrap();
+        let (rule_id, rewritten) =
+            suggest_boolean_identity_laws(".x or false", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::B009);
         assert_eq!(rewritten, ".x");
 
         // true or A = true
-        let (rule_id, rewritten) = suggest_boolean_identity_laws("true or .x").unwrap();
+        let (rule_id, rewritten) =
+            suggest_boolean_identity_laws("true or .x", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::B009);
         assert_eq!(rewritten, "true");
     }
@@ -1846,17 +2091,20 @@ if .status == 200 then false else true end
     #[test]
     fn test_boolean_absorption_and() {
         // A and true = A
-        let (rule_id, rewritten) = suggest_boolean_identity_laws(".x and true").unwrap();
+        let (rule_id, rewritten) =
+            suggest_boolean_identity_laws(".x and true", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::B010);
         assert_eq!(rewritten, ".x");
 
         // A and false = false
-        let (rule_id, rewritten) = suggest_boolean_identity_laws(".x and false").unwrap();
+        let (rule_id, rewritten) =
+            suggest_boolean_identity_laws(".x and false", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::B010);
         assert_eq!(rewritten, "false");
 
         // false and A = false
-        let (rule_id, rewritten) = suggest_boolean_identity_laws("false and .x").unwrap();
+        let (rule_id, rewritten) =
+            suggest_boolean_identity_laws("false and .x", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::B010);
         assert_eq!(rewritten, "false");
     }
@@ -1865,23 +2113,27 @@ if .status == 200 then false else true end
     fn test_plugin_length_simplification() {
         // @len(.x) == 0 → @empty(.x)
         let (rule_id, rewritten) =
-            suggest_plugin_length_simplification("@len(.items) == 0").unwrap();
+            suggest_plugin_length_simplification("@len(.items) == 0", OptimizeLevel::Advisory)
+                .unwrap();
         assert_eq!(rule_id, rule_ids::P001);
         assert_eq!(rewritten, "@empty(.items)");
 
         // @len(.x) != 0 → @len(.x) > 0
         let (rule_id, rewritten) =
-            suggest_plugin_length_simplification("@len(.items) != 0").unwrap();
+            suggest_plugin_length_simplification("@len(.items) != 0", OptimizeLevel::Advisory)
+                .unwrap();
         assert_eq!(rule_id, rule_ids::P001);
         assert_eq!(rewritten, "@len(.items) > 0");
 
         // @len(.x) > 0 → no simplification
-        let result = suggest_plugin_length_simplification("@len(.items) > 0");
+        let result =
+            suggest_plugin_length_simplification("@len(.items) > 0", OptimizeLevel::Advisory);
         assert!(result.is_none());
 
         // 0 == @len(.x) → @empty(.x)
         let (rule_id, rewritten) =
-            suggest_plugin_length_simplification("0 == @len(.items)").unwrap();
+            suggest_plugin_length_simplification("0 == @len(.items)", OptimizeLevel::Advisory)
+                .unwrap();
         assert_eq!(rule_id, rule_ids::P001);
         assert_eq!(rewritten, "@empty(.items)");
     }
@@ -1889,32 +2141,37 @@ if .status == 200 then false else true end
     #[test]
     fn test_comparison_negation() {
         // not (.x == 5) → .x != 5
-        let (rule_id, rewritten) = suggest_comparison_negation("not (.x == 5)").unwrap();
+        let (rule_id, rewritten) =
+            suggest_comparison_negation("not (.x == 5)", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::N002);
         assert_eq!(rewritten, ".x != 5");
 
         // not (.x != 5) → .x == 5
-        let (rule_id, rewritten) = suggest_comparison_negation("not (.x != 5)").unwrap();
+        let (rule_id, rewritten) =
+            suggest_comparison_negation("not (.x != 5)", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::N002);
         assert_eq!(rewritten, ".x == 5");
 
         // not (.x > 5) → .x <= 5
-        let (rule_id, rewritten) = suggest_comparison_negation("not (.x > 5)").unwrap();
+        let (rule_id, rewritten) =
+            suggest_comparison_negation("not (.x > 5)", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::N002);
         assert_eq!(rewritten, ".x <= 5");
 
         // not (.x >= 5) → .x < 5
-        let (rule_id, rewritten) = suggest_comparison_negation("not (.x >= 5)").unwrap();
+        let (rule_id, rewritten) =
+            suggest_comparison_negation("not (.x >= 5)", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::N002);
         assert_eq!(rewritten, ".x < 5");
 
         // !(.x <= 5) -> .x > 5
-        let (rule_id, rewritten) = suggest_comparison_negation("!(.x <= 5)").unwrap();
+        let (rule_id, rewritten) =
+            suggest_comparison_negation("!(.x <= 5)", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::N002);
         assert_eq!(rewritten, ".x > 5");
 
         // malformed/non-comparison inner should not rewrite
-        assert!(suggest_comparison_negation("!(.x)").is_none());
+        assert!(suggest_comparison_negation("!(.x)", OptimizeLevel::Advisory).is_none());
     }
 
     #[test]
@@ -1927,7 +2184,7 @@ test.Service/Method
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::B009);
         assert_eq!(hints[0].after, "true");
@@ -1943,7 +2200,7 @@ test.Service/Method
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::P001);
         assert_eq!(hints[0].after, "@empty(.items)");
@@ -1959,7 +2216,7 @@ test.Service/Method
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Aggressive);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::T001);
         assert_eq!(hints[0].after, "true");
@@ -1975,7 +2232,7 @@ not (.status == 200)
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::N002);
         assert_eq!(hints[0].after, ".status != 200");
@@ -1990,7 +2247,7 @@ test.Service/Method
 @has_header("x") == false
 "#;
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::B002);
         assert_eq!(hints[0].after, "!@has_header(\"x\")");
@@ -2005,7 +2262,7 @@ test.Service/Method
 false == @has_header("x")
 "#;
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::B004);
         assert_eq!(hints[0].after, "!@has_header(\"x\")");
@@ -2020,7 +2277,7 @@ test.Service/Method
 @has_header("x") != true
 "#;
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::B013);
         assert_eq!(hints[0].after, "!@has_header(\"x\")");
@@ -2035,7 +2292,7 @@ test.Service/Method
 @has_header("x") != false
 "#;
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::B014);
         assert_eq!(hints[0].after, "@has_header(\"x\")");
@@ -2050,7 +2307,7 @@ test.Service/Method
 true != @has_header("x")
 "#;
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::B015);
         assert_eq!(hints[0].after, "!@has_header(\"x\")");
@@ -2065,7 +2322,7 @@ test.Service/Method
 false != @has_header("x")
 "#;
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::B016);
         assert_eq!(hints[0].after, "@has_header(\"x\")");
@@ -2080,7 +2337,7 @@ test.Service/Method
 not not @has_header("x")
 "#;
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::B017);
         assert_eq!(hints[0].after, "@has_header(\"x\")");
@@ -2121,7 +2378,7 @@ not not @has_header("x")
 
     #[test]
     fn test_suggest_constant_folding_string_equality() {
-        let result = suggest_constant_folding("\"foo\" == \"foo\"");
+        let result = suggest_constant_folding("\"foo\" == \"foo\"", OptimizeLevel::Aggressive);
         assert!(result.is_some());
         let (rule_id, after) = result.unwrap();
         assert_eq!(rule_id, rule_ids::B006);
@@ -2130,7 +2387,7 @@ not not @has_header("x")
 
     #[test]
     fn test_suggest_constant_folding_mixed_types() {
-        let result = suggest_constant_folding("\"foo\" == 123");
+        let result = suggest_constant_folding("\"foo\" == 123", OptimizeLevel::Aggressive);
         assert!(result.is_some());
         let (_rule_id, after) = result.unwrap();
         assert_eq!(after, "false");
@@ -2138,7 +2395,7 @@ not not @has_header("x")
 
     #[test]
     fn test_suggest_constant_folding_invalid_json() {
-        let result = suggest_constant_folding("@len(.x) == 5");
+        let result = suggest_constant_folding("@len(.x) == 5", OptimizeLevel::Aggressive);
         assert!(result.is_none());
     }
 
@@ -2158,12 +2415,14 @@ not not @has_header("x")
             signatures,
             bool_plugins,
             NormalizationMode::Conservative,
+            OptimizeLevel::Advisory,
         );
         let ast = rewrite_assertion_expression_with_context(
             expr,
             signatures,
             bool_plugins,
             NormalizationMode::AstCanonical,
+            OptimizeLevel::Advisory,
         );
 
         assert_eq!(conservative.map(|(id, _)| id), None);
@@ -2190,9 +2449,8 @@ not not @has_header("x")
             }
         }
 
-        let engine = AssertionEngine::with_registry(std::sync::Arc::new(
-            apif_plugins::PluginManager::new(),
-        ));
+        let engine =
+            AssertionEngine::with_registry(std::sync::Arc::new(apif_plugins::PluginManager::new()));
         let cases = [
             "!!@has_header(\"x\")",
             "not not @has_header(\"x\")",
@@ -2239,10 +2497,12 @@ not not @has_header("x")
                 let conservative = rewrite_assertion_expression_fixed_point_with_mode(
                     expr,
                     NormalizationMode::Conservative,
+                    OptimizeLevel::Advisory,
                 );
                 let ast = rewrite_assertion_expression_fixed_point_with_mode(
                     expr,
                     NormalizationMode::AstCanonical,
+                    OptimizeLevel::Advisory,
                 );
 
                 let before = engine.evaluate(expr, &response, headers_ref, None).unwrap();
@@ -2267,10 +2527,12 @@ not not @has_header("x")
                 let conservative_twice = rewrite_assertion_expression_fixed_point_with_mode(
                     &conservative,
                     NormalizationMode::Conservative,
+                    OptimizeLevel::Advisory,
                 );
                 let ast_twice = rewrite_assertion_expression_fixed_point_with_mode(
                     &ast,
                     NormalizationMode::AstCanonical,
+                    OptimizeLevel::Advisory,
                 );
                 assert_eq!(
                     conservative, conservative_twice,
@@ -2336,12 +2598,11 @@ not (.status == 200)
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert!(!hints.is_empty());
 
-        let engine = AssertionEngine::with_registry(std::sync::Arc::new(
-            apif_plugins::PluginManager::new(),
-        ));
+        let engine =
+            AssertionEngine::with_registry(std::sync::Arc::new(apif_plugins::PluginManager::new()));
         let contexts = vec![
             (
                 "status_200_with_header",
@@ -2391,7 +2652,7 @@ not (.status == 200)
     fn test_suggest_redundant_type_cast_len_uint() {
         let expr = "@len(.items):uint >= 0";
         let signatures = plugin_signatures();
-        let result = suggest_redundant_type_cast(expr, signatures);
+        let result = suggest_redundant_type_cast(expr, signatures, OptimizeLevel::Advisory);
         assert!(result.is_some(), "Expected redundant cast for @len(:uint)");
         if let Some((rule_id, rewritten)) = result {
             assert_eq!(rule_id, rule_ids::T002);
@@ -2404,7 +2665,7 @@ not (.status == 200)
         // @header returns String, so :string is redundant
         let expr = "@header(\"x\"):string != null";
         let signatures = plugin_signatures();
-        let result = suggest_redundant_type_cast(expr, signatures);
+        let result = suggest_redundant_type_cast(expr, signatures, OptimizeLevel::Advisory);
         assert!(
             result.is_some(),
             "Expected redundant cast for @header(:string)"
@@ -2420,7 +2681,7 @@ not (.status == 200)
         // @len returns UInt, :number is numeric-compatible → redundant
         let expr = "@len(.items):number >= 0";
         let signatures = plugin_signatures();
-        let result = suggest_redundant_type_cast(expr, signatures);
+        let result = suggest_redundant_type_cast(expr, signatures, OptimizeLevel::Advisory);
         assert!(
             result.is_some(),
             "Expected redundant cast for @len(:number)"
@@ -2435,7 +2696,7 @@ not (.status == 200)
         // .price:number is NOT redundant because .price is Any
         let expr = ".price:number >= 0";
         let signatures = plugin_signatures();
-        let result = suggest_redundant_type_cast(expr, signatures);
+        let result = suggest_redundant_type_cast(expr, signatures, OptimizeLevel::Advisory);
         assert!(
             result.is_none(),
             "Should not flag .price:number as redundant"
@@ -2447,7 +2708,7 @@ not (.status == 200)
         // .name:string is NOT redundant because .name is Any
         let expr = ".name:string contains \"hello\"";
         let signatures = plugin_signatures();
-        let result = suggest_redundant_type_cast(expr, signatures);
+        let result = suggest_redundant_type_cast(expr, signatures, OptimizeLevel::Advisory);
         assert!(
             result.is_none(),
             "Should not flag .name:string as redundant"
@@ -2463,7 +2724,7 @@ test.Service/Method
 @len(.items):uint >= 0
 "#;
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        let hints = collect_assertion_optimizations(&doc);
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert!(!hints.is_empty(), "Expected at least one optimization hint");
         assert_eq!(hints[0].rule_id, rule_ids::T002);
         assert_eq!(hints[0].after, "@len(.items) >= 0");

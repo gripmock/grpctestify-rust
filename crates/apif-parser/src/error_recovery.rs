@@ -524,7 +524,7 @@ grpc.health.v1.Health/Watch
 --- ASSERTS ---
 // Watch delay in stubs.yaml is 10ms.
 // Delay applies before the first message in the scope.
-@scope_message_count() == 2
+@scope.message_count() == 2
 @elapsed_ms() >= 10
 @total_elapsed_ms() >= 10
 "#;
@@ -539,7 +539,7 @@ grpc.health.v1.Health/Watch
 
         if let SectionContent::Assertions(lines) = &asserts.content {
             assert_eq!(lines.len(), 3);
-            assert_eq!(lines[0], "@scope_message_count() == 2");
+            assert_eq!(lines[0], "@scope.message_count() == 2");
             assert_eq!(lines[1], "@elapsed_ms() >= 10");
             assert_eq!(lines[2], "@total_elapsed_ms() >= 10");
         } else {
@@ -556,7 +556,7 @@ grpc.health.v1.Health/Watch
 {"service": "examples.health.watch"}
 
 --- ASSERTS ---
-@scope_message_count() == 2 // exactly two updates expected
+@scope.message_count() == 2 // exactly two updates expected
 @elapsed_ms() >= 10 # startup delay should be applied
 @regex(.note, "^https://example.com")
 "#;
@@ -571,7 +571,7 @@ grpc.health.v1.Health/Watch
 
         if let SectionContent::Assertions(lines) = &asserts.content {
             assert_eq!(lines.len(), 3);
-            assert_eq!(lines[0], "@scope_message_count() == 2");
+            assert_eq!(lines[0], "@scope.message_count() == 2");
             assert_eq!(lines[1], "@elapsed_ms() >= 10");
             assert_eq!(lines[2], "@regex(.note, \"^https://example.com\")");
         } else {

@@ -635,7 +635,8 @@ impl XorFilter {
     fn optimal_array_size(n: usize) -> usize {
         let n = n.max(1);
         let c = 1.23;
-        ((n as f64) * c).ceil() as usize
+        let size = ((n as f64) * c).ceil() as usize;
+        size.next_power_of_two()
     }
 
     fn murmurhash64(data: &[u8], seed: u64) -> u64 {
@@ -935,6 +936,58 @@ impl SourceIndex {
         Ok(())
     }
 
+    pub fn batch_insert(
+        &mut self,
+        entries: impl IntoIterator<Item = (String, u64, u32)>,
+    ) -> Result<()> {
+        match &mut self.storage {
+            KeyStorage::String(map) => {
+                for (key, offset, row_length) in entries {
+                    map.entry(key)
+                        .or_default()
+                        .push(IndexEntry { offset, row_length });
+                }
+            }
+            KeyStorage::Numeric(vec) => {
+                let key_type = self.header.key_type;
+                let mut batch: Vec<(KeyValue, String, IndexEntry)> = entries
+                    .into_iter()
+                    .filter_map(|(key, offset, row_length)| {
+                        let kv = key_type.parse(&key)?;
+                        Some((kv, key, IndexEntry { offset, row_length }))
+                    })
+                    .collect();
+
+                batch.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
+                let mut prev_kv: Option<KeyValue> = None;
+                let mut idx = 0usize;
+                for (kv, key, entry) in batch {
+                    if let Some(ref pk) = prev_kv
+                        && pk == &kv
+                        && let Some(ref mut last) = vec.last_mut()
+                        && last.0 == kv
+                    {
+                        last.2.push(entry);
+                        continue;
+                    }
+                    if idx < vec.len() && vec[idx].0 <= kv {
+                        idx = vec[idx..]
+                            .binary_search_by(|e| e.0.cmp(&kv))
+                            .unwrap_or_else(|e| idx + e);
+                    }
+                    if idx < vec.len() && vec[idx].0 == kv {
+                        vec[idx].2.push(entry);
+                    } else {
+                        vec.insert(idx, (kv.clone(), key.clone(), vec![entry]));
+                    }
+                    prev_kv = Some(kv);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn binary_search(&self, key: &str) -> Option<&IndexEntry> {
         match &self.storage {
             KeyStorage::String(map) => map.get(key).and_then(|v| v.first()),
@@ -1149,9 +1202,30 @@ impl SourceIndex {
     pub fn read_from_file(path: &Path) -> Result<Self> {
         let file = std::fs::File::open(path)
             .with_context(|| format!("failed to open index file: {}", path.display()))?;
-        let mut reader = BufReader::new(file);
+        let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        use std::io::Read;
 
-        let magic = read_u32(&mut reader)?;
+        let mut all_data = Vec::with_capacity(file_len as usize);
+        std::io::BufReader::new(file).read_to_end(&mut all_data)?;
+
+        if all_data.len() < 4 {
+            anyhow::bail!("index file too short: {} bytes", all_data.len());
+        }
+
+        let (payload, stored_crc) = all_data.split_at(all_data.len() - 4);
+        let expected_crc = u32::from_le_bytes(stored_crc[..4].try_into().unwrap());
+        let actual_crc = crc32fast::hash(payload);
+        if actual_crc != expected_crc {
+            anyhow::bail!(
+                "CRC32 checksum mismatch in index file: expected 0x{:08X}, got 0x{:08X}",
+                expected_crc,
+                actual_crc
+            );
+        }
+
+        let mut cursor = std::io::Cursor::new(payload);
+
+        let magic = read_u32(&mut cursor)?;
         if magic != INDEX_MAGIC {
             anyhow::bail!(
                 "invalid index file magic: expected 0x{:08X}, got 0x{:08X}",
@@ -1160,22 +1234,22 @@ impl SourceIndex {
             );
         }
 
-        let version = read_u32(&mut reader)?;
+        let version = read_u32(&mut cursor)?;
         if version != INDEX_VERSION {
             anyhow::bail!("unsupported index version: {version}");
         }
 
-        let key_type_id = read_u8(&mut reader)?;
+        let key_type_id = read_u8(&mut cursor)?;
         let key_type = KeyType::from_id(key_type_id).context("invalid key type in index file")?;
 
-        let key_col_len = read_u32(&mut reader)? as usize;
+        let key_col_len = read_u32(&mut cursor)? as usize;
         let mut key_col_buf = vec![0u8; key_col_len];
-        reader.read_exact(&mut key_col_buf)?;
+        cursor.read_exact(&mut key_col_buf)?;
         let key_column =
             String::from_utf8(key_col_buf.clone()).context("invalid UTF-8 in index key_column")?;
 
-        let data_offset = read_u64(&mut reader)?;
-        let entry_count = read_u32(&mut reader)?;
+        let data_offset = read_u64(&mut cursor)?;
+        let entry_count = read_u32(&mut cursor)?;
 
         let storage = if key_type.supports_numeric_vec() {
             KeyStorage::Numeric(Vec::new())
@@ -1187,24 +1261,24 @@ impl SourceIndex {
         let mut read_entries = 0u32;
         let mut prev_key = String::new();
         while read_entries < entry_count {
-            let prefix_len = read_var_u64(&mut reader)? as usize;
-            let suffix_len = read_var_u64(&mut reader)? as usize;
+            let prefix_len = read_var_u64(&mut cursor)? as usize;
+            let suffix_len = read_var_u64(&mut cursor)? as usize;
             let mut suffix_buf = vec![0u8; suffix_len];
-            reader.read_exact(&mut suffix_buf)?;
+            cursor.read_exact(&mut suffix_buf)?;
             let suffix =
                 String::from_utf8(suffix_buf).context("invalid UTF-8 in index key suffix")?;
             let key = rebuild_key(&prev_key, prefix_len, &suffix)?;
-            let posting_count = read_var_u64(&mut reader)? as u32;
+            let posting_count = read_var_u64(&mut cursor)? as u32;
             let mut postings = Vec::with_capacity(posting_count as usize);
             let mut prev_offset = 0u64;
             for _ in 0..posting_count {
-                let raw = read_var_u64(&mut reader)?;
+                let raw = read_var_u64(&mut cursor)?;
                 let offset = if postings.is_empty() {
                     raw
                 } else {
                     prev_offset.saturating_add(raw)
                 };
-                let row_length = read_var_u64(&mut reader)? as u32;
+                let row_length = read_var_u64(&mut cursor)? as u32;
                 postings.push(IndexEntry { offset, row_length });
                 read_entries += 1;
                 prev_offset = offset;
@@ -1221,34 +1295,6 @@ impl SourceIndex {
                     }
                 }
             }
-        }
-
-        let file_len = reader.seek(std::io::SeekFrom::End(0))?;
-        let header_end = 4 + 4 + 1 + 4 + key_col_len + 8 + 4;
-        if file_len < (header_end + 4) as u64 {
-            anyhow::bail!(
-                "index file too short: expected at least {} bytes, got {}",
-                header_end + 4,
-                file_len
-            );
-        }
-
-        let checksum_pos = file_len - 4;
-        reader.seek(std::io::SeekFrom::Start(checksum_pos))?;
-        let stored_checksum = read_u32(&mut reader)?;
-
-        reader.seek(std::io::SeekFrom::Start(0))?;
-        let data_to_hash_len = checksum_pos as usize;
-        let mut data_to_hash = vec![0u8; data_to_hash_len];
-        reader.read_exact(&mut data_to_hash)?;
-        let computed_checksum = crc32fast::hash(&data_to_hash);
-
-        if computed_checksum != stored_checksum {
-            anyhow::bail!(
-                "index file corrupted: checksum mismatch (expected {:08x}, got {:08x}). Run `grpctestify index --force` to rebuild.",
-                stored_checksum,
-                computed_checksum
-            );
         }
 
         Ok(Self {

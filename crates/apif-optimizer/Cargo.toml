@@ -1,18 +1,18 @@
 [package]
 name = "apif-optimizer"
-version.workspace = true
+version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Assertion rewriting engine for .gctf test files"
 
 [dependencies]
-apif-parser = { path = "../apif-parser" }
-apif-plugins = { path = "../apif-plugins" }
-apif-semantics = { path = "../apif-semantics" }
-apif-utils = { path = "../apif-utils" }
+apif-parser = { path = "../apif-parser", version = "0.1.0" }
+apif-plugins = { path = "../apif-plugins", version = "0.1.0" }
+apif-semantics = { path = "../apif-semantics", version = "0.1.0" }
+apif-utils = { path = "../apif-utils", version = "0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-apif-assert = { path = "../apif-assert" }
+apif-assert = { path = "../apif-assert", version = "0.1.0" }

@@ -29,17 +29,6 @@ impl Default for ExecutionMetrics {
     }
 }
 
-impl ExecutionMetrics {
-    pub fn merge(&mut self, other: ExecutionMetrics) {
-        self.total_duration_ms = self.total_duration_ms.max(other.total_duration_ms);
-        self.start_time = self.start_time.min(other.start_time);
-        self.end_time = self.end_time.max(other.end_time);
-        self.rpc_calls += other.rpc_calls;
-        self.total_rpc_ms += other.total_rpc_ms;
-        self.parallel_jobs = self.parallel_jobs.max(other.parallel_jobs);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -31,6 +31,7 @@ impl Plugin for ElapsedMsPlugin {
             idempotent: true,
             safe_for_rewrite: true,
             arg_names: &[],
+            replacement: None,
         }
     }
 }
@@ -63,6 +64,7 @@ impl Plugin for TotalElapsedMsPlugin {
             idempotent: true,
             safe_for_rewrite: true,
             arg_names: &[],
+            replacement: None,
         }
     }
 }
@@ -71,7 +73,7 @@ pub struct ScopeMessageCountPlugin;
 
 impl Plugin for ScopeMessageCountPlugin {
     fn name(&self) -> &str {
-        "scope_message_count"
+        "scope.message_count"
     }
 
     fn description(&self) -> &str {
@@ -81,7 +83,7 @@ impl Plugin for ScopeMessageCountPlugin {
     fn execute(&self, _args: &[Value], context: &PluginContext) -> Result<PluginResult> {
         let timing = context
             .timing
-            .ok_or_else(|| anyhow!("timing context is unavailable for @scope_message_count()"))?;
+            .ok_or_else(|| anyhow!("timing context is unavailable for @scope.message_count()"))?;
 
         Ok(PluginResult::Value(Value::from(timing.scope_message_count)))
     }
@@ -95,6 +97,7 @@ impl Plugin for ScopeMessageCountPlugin {
             idempotent: true,
             safe_for_rewrite: true,
             arg_names: &[],
+            replacement: None,
         }
     }
 }
@@ -103,7 +106,7 @@ pub struct ScopeIndexPlugin;
 
 impl Plugin for ScopeIndexPlugin {
     fn name(&self) -> &str {
-        "scope_index"
+        "scope.index"
     }
 
     fn description(&self) -> &str {
@@ -113,7 +116,7 @@ impl Plugin for ScopeIndexPlugin {
     fn execute(&self, _args: &[Value], context: &PluginContext) -> Result<PluginResult> {
         let timing = context
             .timing
-            .ok_or_else(|| anyhow!("timing context is unavailable for @scope_index()"))?;
+            .ok_or_else(|| anyhow!("timing context is unavailable for @scope.index()"))?;
 
         Ok(PluginResult::Value(Value::from(timing.scope_index)))
     }
@@ -127,6 +130,7 @@ impl Plugin for ScopeIndexPlugin {
             idempotent: true,
             safe_for_rewrite: true,
             arg_names: &[],
+            replacement: None,
         }
     }
 }

@@ -163,3 +163,114 @@ impl Diagnostic {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_diagnostic_error() {
+        let d = Diagnostic::error("test.gctf", "E001", "error msg", 5);
+        assert_eq!(d.severity, DiagnosticSeverity::Error);
+        assert_eq!(d.file, "test.gctf");
+        assert_eq!(d.code, "E001");
+        assert_eq!(d.range.start.line, 5);
+    }
+
+    #[test]
+    fn test_diagnostic_warning() {
+        let d = Diagnostic::warning("test.gctf", "W001", "warning msg", 10);
+        assert_eq!(d.severity, DiagnosticSeverity::Warning);
+    }
+
+    #[test]
+    fn test_diagnostic_info() {
+        let d = Diagnostic::info("test.gctf", "I001", "info msg", 15);
+        assert_eq!(d.severity, DiagnosticSeverity::Info);
+    }
+
+    #[test]
+    fn test_diagnostic_hint() {
+        let d = Diagnostic::hint("test.gctf", "H001", "hint msg", 20);
+        assert_eq!(d.severity, DiagnosticSeverity::Hint);
+    }
+
+    #[test]
+    fn test_diagnostic_with_hint() {
+        let d = Diagnostic::error("test.gctf", "E001", "msg", 1).with_hint("try fixing X");
+        assert_eq!(d.hint, Some("try fixing X".into()));
+    }
+
+    #[test]
+    fn test_diagnostic_serialization() {
+        let d = Diagnostic::error("test.gctf", "E001", "msg", 5).with_hint("hint");
+        let json = serde_json::to_string(&d).unwrap();
+        assert!(json.contains("E001"));
+        assert!(json.contains("hint"));
+    }
+
+    #[test]
+    fn test_diagnostic_deserialization() {
+        let json = r#"{
+            "file": "test.gctf",
+            "range": {
+                "start": {"line": 1, "column": 1},
+                "end": {"line": 1, "column": 1000}
+            },
+            "severity": "Error",
+            "code": "E001",
+            "message": "test"
+        }"#;
+        let d: Diagnostic = serde_json::from_str(json).unwrap();
+        assert_eq!(d.file, "test.gctf");
+        assert_eq!(d.severity, DiagnosticSeverity::Error);
+        assert!(d.hint.is_none());
+    }
+
+    #[test]
+    fn test_check_report() {
+        let report = CheckReport {
+            diagnostics: vec![Diagnostic::error("f.gctf", "E1", "msg", 1)],
+            summary: CheckSummary {
+                total_files: 1,
+                files_with_errors: 1,
+                total_errors: 1,
+                total_warnings: 0,
+            },
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("total_files"));
+    }
+
+    #[test]
+    fn test_inspect_report() {
+        let report = InspectReport {
+            file: "test.gctf".into(),
+            parse_time_ms: 1.5,
+            validation_time_ms: 0.5,
+            ast: AstOverview { sections: vec![] },
+            diagnostics: vec![],
+            semantic_diagnostics: vec![],
+            optimization_hints: vec![],
+            inferred_rpc_mode: Some("unary".into()),
+            effective_runtime: None,
+            bench_resolved: None,
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("test.gctf"));
+        assert!(json.contains("unary"));
+    }
+
+    #[test]
+    fn test_range_and_position() {
+        let range = DiagnosticRange {
+            start: Position { line: 1, column: 5 },
+            end: Position {
+                line: 1,
+                column: 10,
+            },
+        };
+        assert_eq!(range.start.line, 1);
+        assert_eq!(range.end.column, 10);
+    }
+}

@@ -1,5 +1,8 @@
 use anyhow::Result;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Span {
@@ -10,12 +13,6 @@ pub struct Span {
 impl Span {
     pub fn new(start: usize, end: usize) -> Self {
         Self { start, end }
-    }
-    pub fn len(&self) -> usize {
-        self.end - self.start
-    }
-    pub fn is_empty(&self) -> bool {
-        self.start == self.end
     }
 }
 
@@ -113,8 +110,6 @@ impl Lexer<'_> {
     }
 
     fn read_string(&mut self, quote: char) -> String {
-        let _start = self.pos;
-        self.advance();
         let mut result = String::new();
         while let Some(c) = self.advance() {
             if c == quote {
@@ -421,32 +416,131 @@ impl FilterExpr {
         match &self.op {
             FilterOp::Eq(v) => value == v,
             FilterOp::Ne(v) => value != v,
-            FilterOp::Gte(v) => value >= v,
-            FilterOp::Lte(v) => value <= v,
-            FilterOp::Gt(v) => value > v,
-            FilterOp::Lt(v) => value < v,
-            FilterOp::Like(pattern) => glob_match(pattern, value),
+            FilterOp::Gte(v) => compare_values(value, ">=", v),
+            FilterOp::Lte(v) => compare_values(value, "<=", v),
+            FilterOp::Gt(v) => compare_values(value, ">", v),
+            FilterOp::Lt(v) => compare_values(value, "<", v),
+            FilterOp::Like(pattern) => like_match(pattern, value),
             FilterOp::Regex(pattern) => regex_match(pattern, value),
             FilterOp::In(vals) => vals.contains(value),
-            FilterOp::Between { min, max } => value >= min && value <= max,
+            FilterOp::Between { min, max } => {
+                compare_values(value, ">=", min) && compare_values(value, "<=", max)
+            }
         }
     }
 }
 
-fn glob_match(pattern: &str, value: &str) -> bool {
-    let pattern = pattern.replace('*', ".*").replace('?', ".");
-    if let Ok(re) = regex::Regex::new(&format!("^{}$", pattern)) {
-        re.is_match(value)
-    } else {
-        false
+thread_local! {
+    static REGEX_CACHE: RefCell<std::collections::HashMap<String, std::result::Result<Rc<Regex>, String>>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+fn cached_regex(pattern: &str) -> std::result::Result<Rc<Regex>, String> {
+    if let Some(cached) = REGEX_CACHE.with(|cache| cache.borrow().get(pattern).cloned()) {
+        return cached;
+    }
+    let compiled = Regex::new(pattern).map(Rc::new).map_err(|e| e.to_string());
+    REGEX_CACHE.with(|cache| {
+        cache
+            .borrow_mut()
+            .insert(pattern.to_string(), compiled.clone());
+    });
+    compiled
+}
+
+fn like_match(pattern: &str, value: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if !pattern.contains('*') && !pattern.contains('?') {
+        return value == pattern;
+    }
+
+    let has_start_star = pattern.starts_with('*');
+    let has_end_star = pattern.ends_with('*');
+
+    if has_start_star && has_end_star {
+        // *literal* — contains check
+        let mid = &pattern[1..pattern.len() - 1];
+        if !mid.contains('*') && !mid.contains('?') {
+            return value.contains(mid);
+        }
+    } else if has_start_star {
+        // *literal — ends_with check
+        let suffix = &pattern[1..];
+        if !suffix.contains('*') && !suffix.contains('?') {
+            return value.ends_with(suffix);
+        }
+    } else if has_end_star {
+        // literal* — starts_with check
+        let prefix = &pattern[..pattern.len() - 1];
+        if !prefix.contains('*') && !prefix.contains('?') {
+            return value.starts_with(prefix);
+        }
+    }
+
+    // body has wildcards inside (e.g. "te*t") — needs regex
+    let re_pat = pattern.replace('*', ".*").replace('?', ".");
+    match cached_regex(&format!("^(?:{})$", re_pat)) {
+        Ok(re) => re.is_match(value),
+        Err(_) => false,
     }
 }
 
-fn regex_match(pattern: &str, value: &str) -> bool {
-    if let Ok(re) = regex::Regex::new(pattern) {
-        re.is_match(value)
-    } else {
-        false
+pub fn glob_match(pattern: &str, value: &str) -> bool {
+    like_match(pattern, value)
+}
+
+pub fn regex_match(pattern: &str, value: &str) -> bool {
+    match cached_regex(pattern) {
+        Ok(re) => re.is_match(value),
+        Err(_) => false,
+    }
+}
+
+pub fn compare_values(left: &str, op: &str, right: &str) -> bool {
+    if let (Ok(l), Ok(r)) = (left.parse::<f64>(), right.parse::<f64>()) {
+        return match op {
+            ">=" => l >= r,
+            "<=" => l <= r,
+            ">" => l > r,
+            "<" => l < r,
+            _ => false,
+        };
+    }
+    match op {
+        ">=" => left >= right,
+        "<=" => left <= right,
+        ">" => left > right,
+        "<" => left < right,
+        _ => false,
+    }
+}
+
+impl FilterOp {
+    fn selectivity_rank(&self) -> u8 {
+        match self {
+            FilterOp::Eq(_) => 0,
+            FilterOp::Ne(_) => 1,
+            FilterOp::Gte(_)
+            | FilterOp::Lte(_)
+            | FilterOp::Gt(_)
+            | FilterOp::Lt(_)
+            | FilterOp::Between { .. } => 2,
+            FilterOp::In(_) => 3,
+            FilterOp::Like(_) => 4,
+            FilterOp::Regex(_) => 5,
+        }
+    }
+}
+
+impl Query {
+    pub fn optimize(&mut self) {
+        self.filters.sort_by_key(|f| f.op.selectivity_rank());
+    }
+
+    pub fn matches_all(&self, row: &std::collections::HashMap<String, String>) -> bool {
+        self.filters.iter().all(|f| f.matches(row))
     }
 }
 
@@ -528,6 +622,77 @@ mod tests {
     }
 
     #[test]
+    fn test_glob_match() {
+        assert!(glob_match("*John*", "Hello John Doe"));
+        assert!(!glob_match("*Jane*", "Hello John Doe"));
+        assert!(glob_match("hello", "hello"));
+        assert!(!glob_match("hello", "world"));
+        // Invalid pattern should return false
+        assert!(!glob_match("[invalid", "test"));
+    }
+
+    #[test]
+    fn test_regex_match() {
+        assert!(regex_match(r"^\d{3}-\d{4}$", "123-4567"));
+        assert!(!regex_match(r"^\d{3}-\d{4}$", "12-34567"));
+        // Invalid regex should return false
+        assert!(!regex_match(r"[invalid", "test"));
+    }
+
+    #[test]
+    fn test_filter_matches_like() {
+        let row: std::collections::HashMap<String, String> =
+            std::collections::HashMap::from([("name".into(), "Alice Johnson".into())]);
+        let query = parse_query(r#"users name~glob"*John*""#).unwrap();
+        assert_eq!(query.filters.len(), 1);
+        assert_eq!(query.filters[0].column, "name");
+        match &query.filters[0].op {
+            FilterOp::Like(pattern) => {
+                assert_eq!(pattern, "*John*");
+                assert!(glob_match(pattern, "Alice Johnson"), "glob_match");
+            }
+            other => panic!("expected Like, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_filter_matches_regex() {
+        let row: std::collections::HashMap<String, String> =
+            std::collections::HashMap::from([("msg".into(), "error: timeout".into())]);
+        let query = parse_query(r#"users msg~re:"error|warn""#).unwrap();
+        assert_eq!(query.filters.len(), 1);
+        match &query.filters[0].op {
+            FilterOp::Regex(pattern) => {
+                assert_eq!(pattern, "error|warn");
+                assert!(regex_match(pattern, "error: timeout"), "regex_match");
+            }
+            other => panic!("expected Regex, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_filter_matches_between() {
+        let row: std::collections::HashMap<String, String> =
+            std::collections::HashMap::from([("age".into(), "25".into())]);
+        let query = parse_query("users age>=18 age<=30").unwrap();
+        assert!(query.filters[0].matches(&row));
+        assert!(query.filters[1].matches(&row));
+        // Numeric comparison: 100.0 > 30.0, so 100 <= 30 is false
+        let row2: std::collections::HashMap<String, String> =
+            std::collections::HashMap::from([("age".into(), "100".into())]);
+        assert!(
+            !query.filters[1].matches(&row2),
+            "numeric 100 <= 30 should be false"
+        );
+
+        // Non-numeric strings still use lexicographic comparison
+        let row3: std::collections::HashMap<String, String> =
+            std::collections::HashMap::from([("name".into(), "xyz".into())]);
+        let q3 = parse_query("users name>=abc").unwrap();
+        assert!(q3.filters[0].matches(&row3), "lexicographic xyz >= abc");
+    }
+
+    #[test]
     fn test_multiple_filters() {
         let row: HashMap<String, String> = HashMap::from([
             ("status".into(), "active".into()),
@@ -538,5 +703,144 @@ mod tests {
         assert_eq!(query.filters.len(), 2);
         assert!(query.filters[0].matches(&row));
         assert!(query.filters[1].matches(&row));
+    }
+
+    #[test]
+    fn test_like_match_literal_starts_with() {
+        assert!(like_match("foo*", "foobar"));
+        assert!(!like_match("foo*", "barfoo"));
+    }
+
+    #[test]
+    fn test_like_match_literal_ends_with() {
+        assert!(like_match("*bar", "foobar"));
+        assert!(!like_match("*bar", "foobaz"));
+    }
+
+    #[test]
+    fn test_like_match_literal_contains() {
+        assert!(like_match("*oba*", "foobar"));
+        assert!(!like_match("*xyz*", "foobar"));
+    }
+
+    #[test]
+    fn test_like_match_exact() {
+        assert!(like_match("hello", "hello"));
+        assert!(!like_match("hello", "world"));
+    }
+
+    #[test]
+    fn test_like_match_wildcard_all() {
+        assert!(like_match("*", "anything"));
+        assert!(like_match("*", ""));
+    }
+
+    #[test]
+    fn test_like_match_regex_fallback() {
+        // Patterns with wildcards in the middle need regex
+        assert!(like_match("te*t", "test"));
+        assert!(like_match("te*t", "tent"), "te*t matches tent (te+n+t)");
+        // But does not match if prefix/suffix don't match
+        assert!(!like_match("te*t", "xyz"));
+        // Complex pattern
+        assert!(like_match("a*b*c", "axbyc"));
+        assert!(!like_match("a*b*c", "axbyz"));
+    }
+
+    #[test]
+    fn test_compare_values_numeric() {
+        assert!(compare_values("500", ">=", "100"));
+        assert!(!compare_values("50", ">=", "100"));
+        assert!(compare_values("100", "<=", "100"));
+        assert!(compare_values("50", "<", "100"));
+        assert!(!compare_values("100", "<", "50"));
+    }
+
+    #[test]
+    fn test_compare_values_string_fallback() {
+        assert!(compare_values("xyz", ">=", "abc"));
+        assert!(!compare_values("abc", ">=", "xyz"));
+    }
+
+    #[test]
+    fn test_compare_values_bad_op() {
+        assert!(!compare_values("1", "??", "2"));
+    }
+
+    #[test]
+    fn test_cached_regex() {
+        let r1 = cached_regex(r"^\d+$").unwrap();
+        assert!(r1.is_match("123"));
+        // Same pattern should use cache
+        let r2 = cached_regex(r"^\d+$").unwrap();
+        assert!(r2.is_match("456"));
+        // Invalid regex
+        assert!(cached_regex(r"[").is_err());
+    }
+
+    #[test]
+    fn test_selectivity_rank_ordering() {
+        assert!(
+            FilterOp::Eq("".into()).selectivity_rank() < FilterOp::Ne("".into()).selectivity_rank()
+        );
+        assert!(
+            FilterOp::Ne("".into()).selectivity_rank()
+                < FilterOp::Gte("".into()).selectivity_rank()
+        );
+        assert!(
+            FilterOp::Gte("".into()).selectivity_rank() < FilterOp::In(vec![]).selectivity_rank()
+        );
+        assert!(
+            FilterOp::In(vec![]).selectivity_rank() < FilterOp::Like("".into()).selectivity_rank()
+        );
+        assert!(
+            FilterOp::Like("".into()).selectivity_rank()
+                < FilterOp::Regex("".into()).selectivity_rank()
+        );
+    }
+
+    #[test]
+    fn test_query_optimize_reorders_filters() {
+        let mut q = parse_query("users name~glob\"*abc*\" status=active age>=18").unwrap();
+        assert_eq!(q.filters[0].column, "name");
+        assert_eq!(q.filters[1].column, "status");
+        assert_eq!(q.filters[2].column, "age");
+        q.optimize();
+        // Eq should come first, then range, then Like
+        assert_eq!(q.filters[0].column, "status", "eq should be first");
+        assert_eq!(q.filters[1].column, "age", "range should be second");
+        assert_eq!(q.filters[2].column, "name", "like should be last");
+    }
+
+    #[test]
+    fn test_query_matches_all() {
+        let row: HashMap<String, String> = HashMap::from([
+            ("status".into(), "active".into()),
+            ("age".into(), "25".into()),
+        ]);
+        let q = parse_query("users status=active age>=18").unwrap();
+        assert!(q.matches_all(&row));
+        let row2: HashMap<String, String> = HashMap::from([("status".into(), "inactive".into())]);
+        assert!(!q.matches_all(&row2));
+    }
+
+    #[test]
+    fn test_missing_column_returns_false() {
+        let row: HashMap<String, String> = HashMap::new();
+        let q = parse_query("users missing=value").unwrap();
+        assert!(!q.filters[0].matches(&row));
+    }
+
+    #[test]
+    fn test_parse_query_source_only() {
+        let q = parse_query("users").unwrap();
+        assert_eq!(q.source, "users");
+        assert!(q.filters.is_empty());
+    }
+
+    #[test]
+    fn test_parse_query_string_literal_source() {
+        let q = parse_query(r#""my source" status=active"#).unwrap();
+        assert_eq!(q.source, "my source");
     }
 }

@@ -142,10 +142,118 @@ impl Reporter for JunitReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Reporter;
+    use apif_state::{TestMeta, TestResult};
 
     #[test]
     fn test_junit_reporter_new() {
         let reporter = JunitReporter::new(PathBuf::from("test.xml"));
         assert_eq!(reporter.output_path.to_str(), Some("test.xml"));
+    }
+
+    #[test]
+    fn test_escape_xml() {
+        assert_eq!(escape_xml("a&b"), "a&amp;b");
+        assert_eq!(escape_xml("a<b"), "a&lt;b");
+        assert_eq!(escape_xml("a>b"), "a&gt;b");
+        assert_eq!(escape_xml("a\"b"), "a&quot;b");
+        assert_eq!(escape_xml("a'b"), "a&apos;b");
+        assert_eq!(escape_xml("plain"), "plain");
+    }
+
+    #[test]
+    fn test_test_case_builder_to_xml_pass() {
+        let tc = TestCaseBuilder {
+            name: "test1".into(),
+            classname: "suite".into(),
+            duration_ms: 100,
+            status: TestStatus::Pass,
+            error_message: None,
+            tags: vec![],
+            extra_properties: vec![],
+        };
+        let xml = tc.to_xml();
+        assert!(xml.contains("testcase"), "xml: {}", xml);
+        assert!(
+            !xml.contains("failure"),
+            "pass should not have failure: {}",
+            xml
+        );
+        assert!(
+            !xml.contains("skipped"),
+            "pass should not have skipped: {}",
+            xml
+        );
+        assert!(xml.contains("0.100"), "xml: {}", xml);
+    }
+
+    #[test]
+    fn test_test_case_builder_to_xml_fail() {
+        let tc = TestCaseBuilder {
+            name: "test2".into(),
+            classname: "suite".into(),
+            duration_ms: 200,
+            status: TestStatus::Fail,
+            error_message: Some("assertion failed".into()),
+            tags: vec![],
+            extra_properties: vec![],
+        };
+        let xml = tc.to_xml();
+        assert!(xml.contains("failure"));
+        assert!(xml.contains("assertion failed"));
+    }
+
+    #[test]
+    fn test_test_case_builder_to_xml_skip() {
+        let tc = TestCaseBuilder {
+            name: "test3".into(),
+            classname: "suite".into(),
+            duration_ms: 50,
+            status: TestStatus::Skip,
+            error_message: Some("not ready".into()),
+            tags: vec![],
+            extra_properties: vec![],
+        };
+        let xml = tc.to_xml();
+        assert!(xml.contains("skipped"));
+    }
+
+    #[test]
+    fn test_test_case_builder_with_tags() {
+        let tc = TestCaseBuilder {
+            name: "test".into(),
+            classname: "suite".into(),
+            duration_ms: 100,
+            status: TestStatus::Pass,
+            error_message: None,
+            tags: vec!["api".into(), "smoke".into()],
+            extra_properties: vec![("env".into(), "prod".into())],
+        };
+        let xml = tc.to_xml();
+        assert!(xml.contains("properties"));
+        assert!(xml.contains("api"));
+        assert!(xml.contains("env"));
+    }
+
+    #[test]
+    fn test_junit_reporter_lifecycle() {
+        let reporter = JunitReporter::new(PathBuf::from("/tmp/test_junit_output.xml"));
+        let mut results = TestResults::new();
+        results.add(TestResult::pass("test.gctf", 100, None));
+        assert!(reporter.on_suite_end(&results).is_ok());
+        assert!(std::path::Path::new("/tmp/test_junit_output.xml").exists());
+        let _ = std::fs::remove_file("/tmp/test_junit_output.xml");
+    }
+
+    #[test]
+    fn test_junit_reporter_with_failure() {
+        let reporter = JunitReporter::new(PathBuf::from("/tmp/test_junit_fail.xml"));
+        let mut results = TestResults::new();
+        results.add(TestResult::fail("test.gctf", "error msg".into(), 100, None));
+        assert!(reporter.on_suite_end(&results).is_ok());
+        let content = std::fs::read_to_string("/tmp/test_junit_fail.xml").unwrap();
+        assert!(content.contains("failure"));
+        assert!(content.contains("error msg"));
+        let _ = std::fs::remove_file("/tmp/test_junit_fail.xml");
     }
 }

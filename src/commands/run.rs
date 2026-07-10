@@ -445,7 +445,7 @@ async fn run_single_test(
 
     // Update file if requested
     if let Some(resp) = &result.captured_response
-        && let Err(e) = FileUtils::update_test_file(file, &doc, resp)
+        && let Err(e) = crate::utils::file::update_test_file(file, &doc, resp)
     {
         return Ok(execution::TestExecutionResult::fail(
             format!("Failed to update test file: {}", e),

@@ -13,6 +13,7 @@ use crate::bench::schema::{
     bench_keys_canonical_order,
 };
 use crate::config;
+use crate::optimizer;
 use crate::parser::{self, ast::SectionType};
 use crate::plugins::{PluginManager, PluginPurity};
 
@@ -29,7 +30,7 @@ pub fn get_section_hover(section_type: &SectionType) -> Option<String> {
         SectionType::Proto => Some("**PROTO**\n\nProto file configuration.\n\nKeys:\n- `descriptor` - Path to .desc file\n- `files` - Comma-separated proto files\n- `import_paths` - Import paths".to_string()),
         SectionType::Options => Some("**OPTIONS**\n\nTest execution options.".to_string()),
         SectionType::Extract => Some("**EXTRACT**\n\nVariable extraction using JQ paths.\n\nExample:\n```\nuser_id: .id\ntoken: .auth.token\n```\n\nUse in REQUEST: `${user_id}`".to_string()),
-        SectionType::Asserts => Some("**ASSERTS**\n\nAssertion expressions.\n\nOperators: `==`, `!=`, `>`, `<`, `contains`, `matches`\nPlugins: `@uuid`, `@email`, `@ip`, `@url`, `@timestamp`, `@elapsed_ms`, `@total_elapsed_ms`\nJQ: `select`, `length`, `startswith`".to_string()),
+        SectionType::Asserts => Some("**ASSERTS**\n\nAssertion expressions.\n\nOperators: `==`, `!=`, `>`, `<`, `>=`, `<=`, `contains`, `matches`, `startsWith`, `endsWith`\nValidators: `@is_uuid`, `@is_email`, `@is_ip`, `@is_url`, `@is_timestamp`, `@is_base64`, `@is_json`\nState: `@is_empty`, `@has_value`, `@len`\nScope: `@scope.index`, `@scope.message_count`\nTiming: `@elapsed_ms`, `@total_elapsed_ms`\nMetadata: `@header`, `@has_header`, `@trailer`, `@has_trailer`, `@env`\nType methods: `@url.*`, `@email.*`, `@ip.version`, `@uuid.version`, `@json.key`\nJQ: `select`, `length`, `startswith`".to_string()),
         SectionType::Meta => Some("**META**\n\nFile-level metadata (YAML).\n\nMust be first section in file.\n\nOnly 0 or 1 per file.".to_string()),
         SectionType::Bench => Some(bench_hover_doc()),
     }
@@ -136,10 +137,22 @@ pub fn get_assertion_completions() -> Vec<CompletionItem> {
         };
         let label = format!("@{}(...)", name);
         let detail = format!("{} [{}]", plugin.description(), purity);
+        let detail = if let Some(repl) = signature.replacement {
+            format!(
+                "{} (deprecated, use @{}) [{}]",
+                plugin.description(),
+                repl,
+                purity
+            )
+        } else {
+            detail
+        };
+        let deprecated = signature.replacement.map(|_| true);
         items.push(CompletionItem {
             label,
             kind: Some(CompletionItemKind::FUNCTION),
             detail: Some(detail),
+            deprecated,
             ..CompletionItem::default()
         });
     }
@@ -485,6 +498,86 @@ pub fn get_var_hover(
     })
 }
 
+/// Get hover information for a plugin call (@name or @type.method)
+pub fn get_plugin_hover(
+    doc: &crate::parser::GctfDocument,
+    line_0based: usize,
+    character: u32,
+) -> Option<tower_lsp::lsp_types::Hover> {
+    use tower_lsp::lsp_types::{Hover, HoverContents, MarkedString};
+
+    let line_str = doc.metadata.source.as_deref()?.lines().nth(line_0based)?;
+    if !line_str.contains('@') {
+        return None;
+    }
+
+    let col = character as usize;
+    let at_pos = line_str[..=col.min(line_str.len().saturating_sub(1))].rfind('@')?;
+
+    let rest = &line_str[at_pos..];
+    let name_end = rest[1..]
+        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '.')
+        .map(|i| i + 1)
+        .unwrap_or(rest.len());
+    let plugin_name = &rest[1..name_end];
+    if plugin_name.is_empty() {
+        return None;
+    }
+
+    let manager = PluginManager::new();
+    let plugin = manager.get(plugin_name)?;
+
+    let sig = plugin.signature();
+    let purity_str = match sig.purity {
+        PluginPurity::Pure => "pure",
+        PluginPurity::ContextDependent => "context-dependent",
+        PluginPurity::Impure => "impure (side effects)",
+    };
+
+    let return_type_str = format!("**Return type:** `{}`", sig.return_type.display_name());
+    let args_str = if sig.arg_names.is_empty() {
+        String::new()
+    } else {
+        let args: Vec<String> = sig
+            .arg_types
+            .iter()
+            .zip(sig.arg_names.iter())
+            .map(|(t, n)| {
+                format!(
+                    "`{}`: `{}`{}",
+                    n,
+                    t.expected.display_name(),
+                    if t.required { "" } else { " (optional)" }
+                )
+            })
+            .collect();
+        format!("\n\n**Arguments:**\n{}", args.join("\n"))
+    };
+
+    let deprecation = if let Some(replacement) = &sig.replacement {
+        format!("\n\n⚠️ **Deprecated:** Use `@{}` instead.", replacement)
+    } else {
+        String::new()
+    };
+
+    let hover_text = format!(
+        "**`@{}(...)`** — {}\n\n{}| **Purity:** {}| **Deterministic:** {}| **Idempotent:** {}{}{}",
+        plugin_name,
+        plugin.description(),
+        return_type_str,
+        purity_str,
+        sig.deterministic,
+        sig.idempotent,
+        args_str,
+        deprecation,
+    );
+
+    Some(Hover {
+        contents: HoverContents::Scalar(MarkedString::String(hover_text)),
+        range: None,
+    })
+}
+
 /// Convert validation error to LSP diagnostic
 pub fn validation_error_to_diagnostic(
     error: &crate::parser::validator::ValidationError,
@@ -634,7 +727,8 @@ fn collect_optimizer_rewrites_with_ranges(
     doc: &crate::parser::GctfDocument,
     content: &str,
 ) -> Vec<(Range, String, String, String)> {
-    let hints = crate::optimizer::collect_assertion_optimizations(doc);
+    let hints =
+        crate::optimizer::collect_assertion_optimizations(doc, optimizer::OptimizeLevel::Safe);
     let lines: Vec<&str> = content.lines().collect();
     let mut rewrites = Vec::new();
 
@@ -1226,20 +1320,21 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_optimizer_diagnostics_has_header_true() {
+    fn test_collect_optimizer_diagnostics_safe_level_rename() {
+        // Safe level: deprecated plugin rename still fires
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
 --- ASSERTS ---
-@has_header("x") == true
+@uuid(.id)
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
         let diagnostics = collect_optimizer_diagnostics(&doc, content);
-        assert_eq!(diagnostics.len(), 1);
+        assert!(!diagnostics.is_empty(), "R001 should fire at Safe level");
         assert_eq!(
             diagnostics[0].code,
-            Some(NumberOrString::String(rule_ids::B001.as_str().to_string()))
+            Some(NumberOrString::String(rule_ids::R001.as_str().to_string()))
         );
     }
 
@@ -1249,7 +1344,7 @@ test.Service/Method
 test.Service/Method
 
 --- ASSERTS ---
-@has_header("x") == true
+@uuid(.id)
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
@@ -1260,13 +1355,13 @@ test.Service/Method
         let expected = json!({
             "range": {
                 "start": {"line": 4, "character": 0},
-                "end": {"line": 4, "character": 24}
+                "end": {"line": 4, "character": 10}
             },
             "severity": 4,
-            "code": rule_ids::B001.as_str(),
+            "code": rule_ids::R001.as_str(),
             "source": "grpctestify-optimizer",
-            "message": "Optimizer hint: @has_header(\"x\") == true -> @has_header(\"x\")",
-            "data": {"replacement": "@has_header(\"x\")"}
+            "message": "Optimizer hint: @uuid(.id) -> @is_uuid(.id)",
+            "data": {"replacement": "@is_uuid(.id)"}
         });
         assert_eq!(actual, expected);
     }
@@ -1292,13 +1387,13 @@ test.Service/Method
 test.Service/Method
 
 --- ASSERTS ---
-@has_header("x") == true
+@uuid(.id)
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
         let edits = collect_optimizer_rewrite_edits(&doc, content);
-        assert_eq!(edits.len(), 1);
-        assert_eq!(edits[0].new_text, "@has_header(\"x\")");
+        assert!(!edits.is_empty(), "R001 should produce edits at Safe level");
+        assert!(edits[0].new_text.contains("@is_uuid"));
     }
 
     #[test]
@@ -1462,12 +1557,12 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_optimizer_diagnostics_constant_fold_rule() {
+    fn test_collect_optimizer_diagnostics_deprecated_plugin_rename() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
 --- ASSERTS ---
-3 > 2
+@uuid(.id)
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
@@ -1475,8 +1570,23 @@ test.Service/Method
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(
             diagnostics[0].code,
-            Some(NumberOrString::String(rule_ids::B006.as_str().to_string()))
+            Some(NumberOrString::String(rule_ids::R001.as_str().to_string()))
         );
+    }
+
+    #[test]
+    fn test_collect_optimizer_diagnostics_empty_to_is_empty() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+@empty(.x)
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let diagnostics = collect_optimizer_diagnostics(&doc, content);
+        assert_eq!(diagnostics.len(), 1, "should rewrite @empty to @is_empty");
+        assert!(diagnostics[0].message.contains("@is_empty"));
     }
 
     #[test]

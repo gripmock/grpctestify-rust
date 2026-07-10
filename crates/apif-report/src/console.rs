@@ -292,6 +292,17 @@ impl super::Reporter for ConsoleReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Reporter;
+    use apif_state::TestResult;
+
+    fn env_info() -> EnvironmentInfo {
+        EnvironmentInfo {
+            address: "localhost:8080".into(),
+            parallel_jobs: 4,
+            sort_mode: "name".into(),
+            dry_run: false,
+        }
+    }
 
     #[test]
     fn test_console_mode_debug() {
@@ -302,16 +313,46 @@ mod tests {
 
     #[test]
     fn test_console_reporter_new() {
-        let reporter = ConsoleReporter::new(
-            ConsoleMode::Silent,
-            10,
-            EnvironmentInfo {
-                address: "localhost:8080".into(),
-                parallel_jobs: 4,
-                sort_mode: "name".into(),
-                dry_run: false,
-            },
-        );
+        let reporter = ConsoleReporter::new(ConsoleMode::Silent, 10, env_info());
         assert!(matches!(reporter.mode, ConsoleMode::Silent));
+    }
+
+    #[test]
+    fn test_console_reporter_lifecycle_silent() {
+        let reporter = ConsoleReporter::new(ConsoleMode::Silent, 2, env_info());
+        reporter.on_test_start("test1");
+        let pass = TestResult::pass("test1.gctf", 100, Some(50));
+        reporter.on_test_end("test1", &pass);
+        let fail = TestResult::fail("test2.gctf", "error".into(), 200, Some(100));
+        reporter.on_test_end("test2", &fail);
+        let results = apif_state::TestResults::new();
+        assert!(reporter.on_suite_end(&results).is_ok());
+    }
+
+    #[test]
+    fn test_console_reporter_print_summary() {
+        let metrics = apif_state::ExecutionMetrics::default();
+        let reporter = ConsoleReporter::new(ConsoleMode::Verbose, 5, env_info());
+        reporter.print_summary(5, 3, 1, 1, 1000, &["err msg".into()], &metrics);
+    }
+
+    #[test]
+    fn test_console_reporter_print_slowest_tests() {
+        let reporter = ConsoleReporter::new(ConsoleMode::Verbose, 3, env_info());
+        let results = vec![
+            TestResult::pass("slow.gctf", 500, None),
+            TestResult::pass("fast.gctf", 50, None),
+        ];
+        reporter.print_slowest_tests(&results, 5);
+        // Silent mode should skip output
+        let silent = ConsoleReporter::new(ConsoleMode::Silent, 0, env_info());
+        silent.print_slowest_tests(&[], 5);
+    }
+
+    #[test]
+    fn test_console_reporter_empty_results() {
+        let reporter = ConsoleReporter::new(ConsoleMode::Dots, 0, env_info());
+        let results = apif_state::TestResults::new();
+        assert!(reporter.on_suite_end(&results).is_ok());
     }
 }

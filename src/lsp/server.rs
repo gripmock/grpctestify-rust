@@ -629,16 +629,31 @@ impl GrpctestifyLsp {
                     }
 
                     // Semantic diagnostics
-                    let semantic_diags = handlers::collect_semantic_diagnostics(d, content);
-                    for mut diag in semantic_diags {
+                    // Semantic diagnostics
+                    let mut semantic_diags = handlers::collect_semantic_diagnostics(d, content);
+                    for diag in &mut semantic_diags {
                         if let Some(n) = doc_label {
                             diag.message = format!("Document {}: {}", n, diag.message);
                         }
-                        lsp_diags.push(diag);
                     }
 
-                    // Optimizer diagnostics
+                    // Optimizer diagnostics (Safe-level rewrites)
                     let opt_diags = handlers::collect_optimizer_diagnostics(d, content);
+
+                    // Deduplicate: suppress SEM_D001 if R001 (auto-fix) exists on same line
+                    let r001_lines: std::collections::HashSet<u32> = opt_diags
+                        .iter()
+                        .filter(|d| d.code == Some(NumberOrString::String("OPT_R001".into())))
+                        .map(|d| d.range.start.line)
+                        .collect();
+                    semantic_diags.retain(|d| {
+                        !(d.code == Some(NumberOrString::String("SEM_D001".into()))
+                            && r001_lines.contains(&d.range.start.line))
+                    });
+
+                    for diag in semantic_diags {
+                        lsp_diags.push(diag);
+                    }
                     for diag in opt_diags {
                         lsp_diags.push(diag);
                     }
@@ -978,6 +993,13 @@ impl LanguageServer for GrpctestifyLsp {
             if let Some(var_hover) = get_var_hover(&doc, position.line as usize, position.character)
             {
                 return Ok(Some(var_hover));
+            }
+
+            // Check for plugin hover (cursor on @plugin or @type.method)
+            if let Some(plugin_hover) =
+                handlers::get_plugin_hover(&doc, position.line as usize, position.character)
+            {
+                return Ok(Some(plugin_hover));
             }
 
             // Fall back to section hover

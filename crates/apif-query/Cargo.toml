@@ -9,3 +9,10 @@ license = "MIT"
 anyhow = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+criterion = "0.8"
+
+[[bench]]
+name = "query"
+harness = false

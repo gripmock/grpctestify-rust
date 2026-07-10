@@ -351,3 +351,120 @@ impl DiagnosticCollection {
             .filter(|d| d.severity == DiagnosticSeverity::Warning)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_diagnostic_code_as_str() {
+        assert_eq!(DiagnosticCode::JsonParseError.as_str(), "json_parse_error");
+        assert_eq!(DiagnosticCode::MissingSection.as_str(), "missing_section");
+        assert_eq!(DiagnosticCode::InvalidSyntax.as_str(), "invalid_syntax");
+        assert_eq!(
+            DiagnosticCode::UndefinedVariable.as_str(),
+            "undefined_variable"
+        );
+        assert_eq!(
+            DiagnosticCode::MissingRequiredField.as_str(),
+            "missing_required_field"
+        );
+        assert_eq!(DiagnosticCode::UndefinedSymbol.as_str(), "undefined_symbol");
+    }
+
+    #[test]
+    fn test_diagnostic_collection_new() {
+        let coll = DiagnosticCollection::new();
+        assert!(coll.is_empty());
+    }
+
+    #[test]
+    fn test_diagnostic_collection_push() {
+        let mut coll = DiagnosticCollection::new();
+        let diag = Diagnostic::error(DiagnosticCode::JsonParseError, "err", Range::default());
+        coll.push(diag);
+        assert!(!coll.is_empty());
+    }
+
+    #[test]
+    fn test_diagnostic_collection_error() {
+        let mut coll = DiagnosticCollection::new();
+        coll.error(DiagnosticCode::JsonParseError, "err", Range::default());
+        assert!(coll.has_errors());
+        assert!(!coll.has_warnings());
+        assert_eq!(coll.errors().count(), 1);
+    }
+
+    #[test]
+    fn test_diagnostic_collection_warning() {
+        let mut coll = DiagnosticCollection::new();
+        coll.warning(DiagnosticCode::DuplicateSection, "warn", Range::default());
+        assert!(!coll.has_errors());
+        assert!(coll.has_warnings());
+        assert_eq!(coll.warnings().count(), 1);
+    }
+
+    #[test]
+    fn test_diagnostic_collection_info() {
+        let mut coll = DiagnosticCollection::new();
+        coll.info(DiagnosticCode::EmptySection, "info", Range::default());
+        assert!(!coll.is_empty());
+    }
+
+    #[test]
+    fn test_diagnostic_collection_hint() {
+        let mut coll = DiagnosticCollection::new();
+        coll.hint(DiagnosticCode::UnusedVariable, "hint", Range::default());
+        assert!(!coll.is_empty());
+    }
+
+    #[test]
+    fn test_diagnostic_collection_default() {
+        let coll = DiagnosticCollection::default();
+        assert!(coll.is_empty());
+    }
+
+    #[test]
+    fn test_diagnostic_collection_mixed_severities() {
+        let mut coll = DiagnosticCollection::new();
+        coll.error(DiagnosticCode::JsonParseError, "err", Range::default());
+        coll.warning(DiagnosticCode::DuplicateSection, "warn", Range::default());
+        assert!(coll.has_errors());
+        assert!(coll.has_warnings());
+        assert_eq!(coll.errors().count(), 1);
+        assert_eq!(coll.warnings().count(), 1);
+    }
+
+    #[test]
+    fn test_diagnostic_with_suggestions() {
+        let diag = Diagnostic::error(DiagnosticCode::JsonParseError, "err", Range::default())
+            .with_suggestions(vec!["fix1".into(), "fix2".into()]);
+        assert_eq!(diag.suggestions.len(), 2);
+
+        // Builder-style with context
+        let diag2 = Diagnostic::error(DiagnosticCode::JsonParseError, "err", Range::default())
+            .with_context("ctx")
+            .with_suggestion("fix");
+        assert_eq!(diag2.context, Some("ctx".into()));
+    }
+
+    #[test]
+    fn test_diagnostic_file_and_source() {
+        let diag = Diagnostic::error(DiagnosticCode::JsonParseError, "err", Range::default())
+            .with_file("test.gctf");
+        assert_eq!(diag.file, Some("test.gctf".into()));
+        assert_eq!(diag.source, Some("grpctestify".into()));
+    }
+
+    #[test]
+    fn test_diagnostic_with_related_info() {
+        let loc = DiagnosticLocation {
+            file: "ref.gctf".into(),
+            range: Range::at_line(5),
+        };
+        let diag = Diagnostic::error(DiagnosticCode::JsonParseError, "err", Range::default())
+            .with_related_info(loc, "related message");
+        assert_eq!(diag.related_information.len(), 1);
+        assert_eq!(diag.related_information[0].message, "related message");
+    }
+}

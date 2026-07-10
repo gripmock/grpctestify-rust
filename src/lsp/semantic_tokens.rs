@@ -71,7 +71,16 @@ fn tokenize_line_as_assertion(line: &str, line_num: u32, tokens: &mut Vec<SrcTok
             && let TokenKind::Ident(_name) = &next.kind
         {
             let start = tok.span.start;
-            let end = next.span.end;
+            let mut end = next.span.end;
+            let mut j = i + 2;
+            // Consume .method for @type.method syntax
+            while j + 1 < toks.len()
+                && matches!(toks[j].kind, TokenKind::Dot)
+                && matches!(toks[j + 1].kind, TokenKind::Ident(_))
+            {
+                end = toks[j + 1].span.end;
+                j += 2;
+            }
             tokens.push(SrcToken {
                 line: line_num,
                 start: start as u32,

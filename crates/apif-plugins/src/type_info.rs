@@ -45,6 +45,7 @@ impl TypeInfo {
             "time" | "timestamp" | "duration" => TypeInfo::Time,
             "json" => TypeInfo::Json,
             "yaml" => TypeInfo::Yaml,
+            "regex" => TypeInfo::String,
             _ => return None,
         })
     }
@@ -67,6 +68,10 @@ impl TypeInfo {
     }
 
     pub fn supports_operator(&self, op: &str) -> (bool, Option<&'static str>) {
+        // Any supports all operators — runtime will validate the actual value.
+        if self == &TypeInfo::Any {
+            return (true, None);
+        }
         match op {
             "==" | "!=" => (true, None),
             ">" | "<" | ">=" | "<=" => {
@@ -142,103 +147,6 @@ impl TypedPluginSignature {
     pub fn arg_type(&self, idx: usize) -> Option<TypeInfo> {
         self.arg_types.get(idx).map(|a| a.expected)
     }
-}
-
-pub fn typed_plugin_signatures() -> std::collections::HashMap<String, TypedPluginSignature> {
-    use crate::PluginPurity;
-    let mut map = std::collections::HashMap::new();
-
-    macro_rules! plugin_sig {
-        ($name:expr, $return_type:expr, purity: $purity:expr, deterministic: $det:expr, idempotent: $idem:expr, rewrite: $rewrite:expr, args: [$($arg:expr),* $(,)?]) => {
-            map.insert(
-                $name.to_string(),
-                TypedPluginSignature {
-                    return_type: $return_type,
-                    arg_types: &[$($arg),*],
-                    purity: $purity,
-                    deterministic: $det,
-                    idempotent: $idem,
-                    safe_for_rewrite: $rewrite,
-                },
-            );
-        };
-    }
-
-    plugin_sig!("@uuid", TypeInfo::Bool,
-        purity: PluginPurity::Pure, deterministic: true, idempotent: true, rewrite: true,
-        args: [ArgTypeInfo { expected: TypeInfo::String, required: true, default: None }]);
-
-    plugin_sig!("@email", TypeInfo::Bool,
-        purity: PluginPurity::Pure, deterministic: true, idempotent: true, rewrite: true,
-        args: [ArgTypeInfo { expected: TypeInfo::String, required: true, default: None }]);
-
-    plugin_sig!("@ip", TypeInfo::Bool,
-        purity: PluginPurity::Pure, deterministic: true, idempotent: true, rewrite: true,
-        args: [ArgTypeInfo { expected: TypeInfo::String, required: true, default: None }]);
-
-    plugin_sig!("@url", TypeInfo::Bool,
-        purity: PluginPurity::Pure, deterministic: true, idempotent: true, rewrite: true,
-        args: [ArgTypeInfo { expected: TypeInfo::String, required: true, default: None }]);
-
-    plugin_sig!("@timestamp", TypeInfo::Bool,
-        purity: PluginPurity::Pure, deterministic: true, idempotent: true, rewrite: true,
-        args: [ArgTypeInfo { expected: TypeInfo::Any, required: true, default: None }]);
-
-    plugin_sig!("@regex", TypeInfo::Bool,
-    purity: PluginPurity::Pure, deterministic: true, idempotent: true, rewrite: false,
-    args: [
-        ArgTypeInfo { expected: TypeInfo::String, required: true, default: None },
-        ArgTypeInfo { expected: TypeInfo::String, required: true, default: None },
-    ]);
-
-    plugin_sig!("@len", TypeInfo::UInt,
-        purity: PluginPurity::Pure, deterministic: true, idempotent: true, rewrite: true,
-        args: [ArgTypeInfo { expected: TypeInfo::Any, required: true, default: None }]);
-
-    plugin_sig!("@empty", TypeInfo::Bool,
-        purity: PluginPurity::Pure, deterministic: true, idempotent: true, rewrite: true,
-        args: [ArgTypeInfo { expected: TypeInfo::Any, required: true, default: None }]);
-
-    plugin_sig!("@header", TypeInfo::String,
-        purity: PluginPurity::ContextDependent, deterministic: false, idempotent: true, rewrite: false,
-        args: [ArgTypeInfo { expected: TypeInfo::String, required: true, default: None }]);
-
-    plugin_sig!("@has_header", TypeInfo::Bool,
-        purity: PluginPurity::ContextDependent, deterministic: false, idempotent: true, rewrite: true,
-        args: [ArgTypeInfo { expected: TypeInfo::String, required: true, default: None }]);
-
-    plugin_sig!("@trailer", TypeInfo::String,
-        purity: PluginPurity::ContextDependent, deterministic: false, idempotent: true, rewrite: false,
-        args: [ArgTypeInfo { expected: TypeInfo::String, required: true, default: None }]);
-
-    plugin_sig!("@has_trailer", TypeInfo::Bool,
-        purity: PluginPurity::ContextDependent, deterministic: false, idempotent: true, rewrite: true,
-        args: [ArgTypeInfo { expected: TypeInfo::String, required: true, default: None }]);
-
-    plugin_sig!("@env", TypeInfo::String,
-    purity: PluginPurity::Impure, deterministic: false, idempotent: false, rewrite: false,
-    args: [
-        ArgTypeInfo { expected: TypeInfo::String, required: true, default: None },
-        ArgTypeInfo { expected: TypeInfo::String, required: false, default: None },
-    ]);
-
-    plugin_sig!("@elapsed_ms", TypeInfo::UInt,
-        purity: PluginPurity::ContextDependent, deterministic: false, idempotent: true, rewrite: false,
-        args: []);
-
-    plugin_sig!("@total_elapsed_ms", TypeInfo::UInt,
-        purity: PluginPurity::ContextDependent, deterministic: false, idempotent: true, rewrite: false,
-        args: []);
-
-    plugin_sig!("@scope_message_count", TypeInfo::UInt,
-        purity: PluginPurity::ContextDependent, deterministic: false, idempotent: true, rewrite: false,
-        args: []);
-
-    plugin_sig!("@scope_index", TypeInfo::UInt,
-        purity: PluginPurity::ContextDependent, deterministic: false, idempotent: true, rewrite: false,
-        args: []);
-
-    map
 }
 
 #[cfg(test)]
@@ -345,7 +253,9 @@ mod tests {
         assert!(!TypeInfo::String.supports_operator(">=").0);
 
         assert!(TypeInfo::Any.supports_operator("==").0);
-        assert!(!TypeInfo::Any.supports_operator(">=").0);
+        assert!(TypeInfo::Any.supports_operator(">=").0);
+        assert!(TypeInfo::Any.supports_operator("contains").0);
+        assert!(TypeInfo::Any.supports_operator("startsWith").0);
     }
 
     #[test]
@@ -401,20 +311,5 @@ mod tests {
         assert_eq!(sig.arg_type(0), Some(TypeInfo::String));
         assert_eq!(sig.arg_type(1), Some(TypeInfo::String));
         assert_eq!(sig.arg_type(2), None);
-    }
-
-    #[test]
-    fn test_typed_plugin_signatures_keys() {
-        let sigs = typed_plugin_signatures();
-        assert!(sigs.contains_key("@uuid"));
-        assert!(sigs.contains_key("@email"));
-        assert!(sigs.contains_key("@ip"));
-        assert!(sigs.contains_key("@url"));
-        assert!(sigs.contains_key("@len"));
-        assert!(sigs.contains_key("@empty"));
-        assert!(sigs.contains_key("@header"));
-        assert!(sigs.contains_key("@trailer"));
-        assert!(sigs.contains_key("@env"));
-        assert!(sigs.contains_key("@elapsed_ms"));
     }
 }

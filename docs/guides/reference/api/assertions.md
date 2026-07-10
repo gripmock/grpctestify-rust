@@ -45,15 +45,14 @@ Timing helpers are available inside `ASSERTS` and are most useful with `RESPONSE
 }
 
 --- ASSERTS ---
-@scope_message_count() == 2
+@scope.message_count() == 2
 @elapsed_ms() >= 10
 @total_elapsed_ms() >= 10
 ```
-
 - `@elapsed_ms()` - elapsed for current assertion scope.
 - `@total_elapsed_ms()` - cumulative elapsed across completed assertion scopes.
-- `@scope_message_count()` - number of response messages in current scope.
-- `@scope_index()` - current scope index (1-based).
+- `@scope.message_count()` - number of response messages in current scope.
+- `@scope.index()` - current scope index (1-based).
 
 Scope behavior:
 
@@ -80,41 +79,51 @@ Preferred canonical operators:
 - `startsWith`
 - `endsWith`
 
-## Type annotations
+## Regex literals
 
-Some operators only work with specific types: `>`, `>=`, `<`, `<=` require numbers;
-`contains`, `startsWith` require strings. When the type is unknown — typically
-because there's no running gRPC server to provide protobuf schemas — add a `:type`
-annotation:
+Use `/pattern/flags` for inline regex in assertions:
 
 ```gctf
 --- ASSERTS ---
-.price:number >= 0
+.name matches /^hello/
+.email matches /^.*@example\.com$/i
+```
+
+The `matches` operator treats the RHS as a regex pattern. Slash-delimited
+literals are compiled at runtime; invalid patterns produce a clear error.
+
+## Type annotations
+
+Type annotations are optional — `Any` type supports all operators. Use a `:type`
+annotation when you want to make the intent explicit:
+
+```gctf
+--- ASSERTS ---
+.price >= 0                  # Any allows ordering — works without annotation
+.price:number >= 0           # explicit annotation (optional, same result)
 .name:string contains "hello"
-@len(.items):uint > 0
-.active:bool == true
 .created_at:timestamp >= "2024-01-01"
 ```
 
 ### Variables from EXTRACT
 
-Variables extracted from responses carry their annotated type into assertions:
+Variables extracted from responses carry their annotated type:
 
 ```gctf
 --- EXTRACT ---
 total:number = .price
 
 --- ASSERTS ---
-$total >= 0          # type :number already known from EXTRACT
-$total:number >= 0   # explicit annotation (optional, same result)
+$total >= 0          # Any allows ordering — works without annotation
+$total:number >= 0   # explicit annotation (optional)
 ```
 
 Use `$name` to reference an EXTRACT variable inside assertions:
 
 ```gctf
 --- ASSERTS ---
-$total:number >= 0
-$name:string contains "hello"
+$total >= 0
+$name contains "hello"
 ```
 
 Inside `REQUEST` / `RESPONSE` / `ERROR` payloads use `"{{var}}"` — the template
@@ -133,11 +142,13 @@ engine substitutes the value preserving its JSON type:
 | `:uint` | non-negative integer |
 | `:number` | any number |
 | `:time`, `:timestamp`, `:duration` | time or duration value |
-| `:string` | string |
+| `:string`, `:regex` | string |
 | `:json` | JSON object or array |
 | `:yaml` | YAML document |
 
-`uuid`, `email`, `url`, `ip` are treated as `string`.
+`uuid`, `email`, `url`, `ip` are treated as `string`. Runtime validation
+catches actual type mismatches — a `:number` annotation on a string value
+produces a cast error at runtime.
 
 ## Notes
 

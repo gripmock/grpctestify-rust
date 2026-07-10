@@ -29,6 +29,7 @@ macro_rules! define_validation_plugin {
                     idempotent: true,
                     safe_for_rewrite: true,
                     arg_names: &["value"],
+                replacement: None,
                 }
             }
 
