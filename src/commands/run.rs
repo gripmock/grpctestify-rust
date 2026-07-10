@@ -210,7 +210,6 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
         let mode = match cli.progress_mode() {
             crate::cli::args::ProgressMode::Dots => report::ConsoleMode::Dots,
             crate::cli::args::ProgressMode::Verbose => report::ConsoleMode::Verbose,
-            crate::cli::args::ProgressMode::Bar => report::ConsoleMode::Dots,
             crate::cli::args::ProgressMode::None => report::ConsoleMode::Silent,
         };
         reporters.push(Box::new(report::ConsoleReporter::new(

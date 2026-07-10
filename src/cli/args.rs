@@ -7,7 +7,6 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProgressMode {
     Dots,
-    Bar,
     None,
     Verbose,
 }
@@ -18,7 +17,7 @@ impl std::str::FromStr for ProgressMode {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "dots" => Ok(Self::Dots),
-            "bar" => Ok(Self::Bar),
+            "bar" => Ok(Self::Dots),
             "none" => Ok(Self::None),
             _ => Ok(Self::Dots),
         }
@@ -689,7 +688,7 @@ impl Cli {
 
         match progress.as_str() {
             "dots" => ProgressMode::Dots,
-            "bar" => ProgressMode::Bar,
+            "bar" => ProgressMode::Dots,
             "none" => ProgressMode::None,
             "auto" => {
                 if self.verbose {

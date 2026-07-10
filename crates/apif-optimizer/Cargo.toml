@@ -1,0 +1,18 @@
+[package]
+name = "apif-optimizer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Assertion rewriting engine for .gctf test files"
+
+[dependencies]
+apif-parser = { path = "../apif-parser" }
+apif-plugins = { path = "../apif-plugins" }
+apif-semantics = { path = "../apif-semantics" }
+apif-utils = { path = "../apif-utils" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+apif-assert = { path = "../apif-assert" }

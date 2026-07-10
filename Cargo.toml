@@ -6,6 +6,8 @@ members = [
   "crates/source-error",
   "crates/cfg-runtime",
   "crates/apif-query",
+  "crates/apif-semantics",
+  "crates/apif-optimizer",
   "crates/apif-diagnostics",
   "crates/apif-ast",
   "crates/apif-parser",
@@ -192,6 +194,8 @@ apif-plugins = { path = "crates/apif-plugins" }
 apif-execution = { path = "crates/apif-execution" }
 apif-utils = { path = "crates/apif-utils" }
 apif-report = { path = "crates/apif-report" }
+apif-semantics = { path = "crates/apif-semantics" }
+apif-optimizer = { path = "crates/apif-optimizer" }
 apif-query = { path = "crates/apif-query" }
 csv = "1.3"
 rand = "0.10"

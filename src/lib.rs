@@ -15,7 +15,7 @@ pub mod polyfill;
 pub mod report;
 pub mod semantics;
 pub mod state;
-pub mod time;
+
 pub mod utils;
 
 pub use parser::parse_gctf;

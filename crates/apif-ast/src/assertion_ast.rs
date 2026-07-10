@@ -608,6 +608,10 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
                                 path.push_str(n);
                             } else if let TokenKind::Ident(s) = &ts[*p].kind {
                                 path.push_str(s);
+                            } else if let TokenKind::StringLit(s) = &ts[*p].kind {
+                                path.push('"');
+                                path.push_str(s);
+                                path.push('"');
                             }
                             *p += 1;
                         }
@@ -1380,6 +1384,12 @@ mod tests {
 
     #[test]
     fn test_parse_type_cast_compound() {
+        let expr = parse_assertion(r#".ips_to_decorations["10.0.0.1"].environment == "production""#);
+        assert_eq!(
+            assertion_to_string(&expr),
+            r#".ips_to_decorations["10.0.0.1"].environment == "production""#
+        );
+
         let expr = parse_assertion(".items:json == {\"key\": \"value\"}");
         if let AssertionExpr::Binary { op, left, right } = expr {
             assert_eq!(op, BinaryOp::Eq);

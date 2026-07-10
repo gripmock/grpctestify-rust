@@ -220,7 +220,7 @@ impl Reporter for AllureReporter {
             None
         };
 
-        let now = crate::time::now_unix_millis();
+        let now = crate::polyfill::runtime::now_unix_millis();
         let duration = result.duration_ms as u128;
         let start = now.saturating_sub(duration);
 

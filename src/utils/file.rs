@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use crate::utils::gctf_style::trailing_blank_line_count;
+use apif_utils::trailing_blank_line_count;
 
 /// File utilities for cross-platform operations
 pub struct FileUtils;
