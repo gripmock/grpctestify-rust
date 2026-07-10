@@ -6,12 +6,12 @@ users.UserService/GetUser
   "id": 123
 }
 
---- RESPONSE with_asserts=true ---
+--- RESPONSE with_asserts ---
 {
-  "id": 123,
-  "name": "John Doe",
+  "active": true,
   "email": "john@example.com",
-  "active": true
+  "id": 123,
+  "name": "John Doe"
 }
 
 --- ASSERTS ---

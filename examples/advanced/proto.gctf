@@ -1,0 +1,23 @@
+--- META ---
+name: Proto configuration example
+tags: [proto]
+
+--- PROTO ---
+files: api.proto, types.proto
+import_paths: ./protos
+
+--- ADDRESS ---
+localhost:50051
+
+--- ENDPOINT ---
+helloworld.Greeter/SayHello
+
+--- REQUEST ---
+{
+  "name": "Proto World"
+}
+
+--- RESPONSE ---
+{
+  "message": "Hello, Proto World!"
+}

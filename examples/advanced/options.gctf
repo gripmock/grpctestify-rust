@@ -1,0 +1,22 @@
+--- META ---
+name: Options override example
+tags: [options]
+
+--- ENDPOINT ---
+helloworld.Greeter/SayHello
+
+--- OPTIONS ---
+no_retry: false
+retry: 3
+retry_delay: 0.5
+timeout: 10
+
+--- REQUEST ---
+{
+  "name": "World"
+}
+
+--- RESPONSE ---
+{
+  "message": "Hello, World!"
+}

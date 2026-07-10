@@ -201,7 +201,7 @@ impl Workflow {
     /// Build workflow from ExecutionPlan
     pub fn from_plan(plan: &crate::execution::ExecutionPlan) -> Self {
         let mut events = Vec::new();
-        let backend = "default".to_string(); // In future, support multiple backends
+        let backend = plan.connection.backend.clone();
 
         // Test loaded
         events.push(WorkflowEvent::TestLoaded {
@@ -280,7 +280,7 @@ impl Workflow {
         for extraction in &plan.extractions {
             events.push(WorkflowEvent::Extract {
                 variables: extraction.variables.keys().cloned().collect(),
-                source_response_index: None, // In future, track which response
+                source_response_index: extraction.response_index,
                 line_range: (extraction.line_start, extraction.line_end),
             });
             events.push(WorkflowEvent::Extracted {
@@ -292,7 +292,7 @@ impl Workflow {
         for assertion in &plan.assertions {
             events.push(WorkflowEvent::Assert {
                 count: assertion.assertions.len(),
-                target_response_index: None, // In future, track which response
+                target_response_index: assertion.response_index,
                 line_range: (assertion.line_start, assertion.line_end),
             });
             events.push(WorkflowEvent::Asserted {
@@ -673,7 +673,7 @@ impl Workflow {
         for extraction in &plan.extractions {
             events.push(WorkflowEvent::Extract {
                 variables: extraction.variables.keys().cloned().collect(),
-                source_response_index: None,
+                source_response_index: extraction.response_index,
                 line_range: (extraction.line_start, extraction.line_end),
             });
             events.push(WorkflowEvent::Extracted {
@@ -685,7 +685,7 @@ impl Workflow {
         for assertion in &plan.assertions {
             events.push(WorkflowEvent::Assert {
                 count: assertion.assertions.len(),
-                target_response_index: None,
+                target_response_index: assertion.response_index,
                 line_range: (assertion.line_start, assertion.line_end),
             });
             events.push(WorkflowEvent::Asserted {
@@ -746,6 +746,7 @@ mod tests {
             connection: ConnectionInfo {
                 address: "localhost:50051".to_string(),
                 source: "test".to_string(),
+                backend: "default".to_string(),
             },
             target: TargetInfo {
                 endpoint: "test.Service/Method".to_string(),

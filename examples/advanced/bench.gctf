@@ -1,0 +1,28 @@
+--- META ---
+name: Benchmark smoke test
+tags: [bench, smoke]
+
+--- BENCH ---
+assert_mode: sampled
+concurrency: 4
+duration: 30s
+mode: fixed
+profile: smoke
+requests: 1000
+sample_rate: 0.1
+thresholds.error_rate_pct: <1.0
+thresholds.latency_ms.p(95): <200
+warmup: 3s
+
+--- ENDPOINT ---
+helloworld.Greeter/SayHello
+
+--- REQUEST ---
+{
+  "name": "World"
+}
+
+--- RESPONSE ---
+{
+  "message": "Hello, World!"
+}

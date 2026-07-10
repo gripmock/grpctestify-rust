@@ -80,6 +80,65 @@ Preferred canonical operators:
 - `startsWith`
 - `endsWith`
 
+## Type annotations
+
+Some operators only work with specific types: `>`, `>=`, `<`, `<=` require numbers;
+`contains`, `startsWith` require strings. When the type is unknown — typically
+because there's no running gRPC server to provide protobuf schemas — add a `:type`
+annotation:
+
+```gctf
+--- ASSERTS ---
+.price:number >= 0
+.name:string contains "hello"
+@len(.items):uint > 0
+.active:bool == true
+.created_at:timestamp >= "2024-01-01"
+```
+
+### Variables from EXTRACT
+
+Variables extracted from responses carry their annotated type into assertions:
+
+```gctf
+--- EXTRACT ---
+total:number = .price
+
+--- ASSERTS ---
+$total >= 0          # type :number already known from EXTRACT
+$total:number >= 0   # explicit annotation (optional, same result)
+```
+
+Use `$name` to reference an EXTRACT variable inside assertions:
+
+```gctf
+--- ASSERTS ---
+$total:number >= 0
+$name:string contains "hello"
+```
+
+Inside `REQUEST` / `RESPONSE` / `ERROR` payloads use `"{{var}}"` — the template
+engine substitutes the value preserving its JSON type:
+
+```json
+{"price": "{{total}}"}        # replaced with 42 (number)
+{"name": "{{prefix}}-suffix"} # string interpolation: "val-suffix"
+```
+
+### Available types
+
+| Annotation | Meaning |
+| ---------- | ------- |
+| `:bool` | boolean |
+| `:uint` | non-negative integer |
+| `:number` | any number |
+| `:time`, `:timestamp`, `:duration` | time or duration value |
+| `:string` | string |
+| `:json` | JSON object or array |
+| `:yaml` | YAML document |
+
+`uuid`, `email`, `url`, `ip` are treated as `string`.
+
 ## Notes
 
 - `ASSERTS` can be used alone or together with `RESPONSE with_asserts` / `ERROR with_asserts`

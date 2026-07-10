@@ -1,5 +1,6 @@
 # Rust
 /target
+**/target/
 **/*.rs.bk
 *.pdb
 
@@ -23,3 +24,10 @@ src/proto/
 # Docs
 node_modules/
 docs/.vitepress/
+
+# Generated bench datasets
+.tmp/
+.tmp/bench-data/
+
+# Index files
+*.gcti

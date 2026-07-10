@@ -86,8 +86,10 @@ impl FileUtils {
             "size" => files.sort_by_key(|a| Self::get_file_size(a).unwrap_or(0)),
             "mtime" => files.sort_by_key(|a| Self::get_mtime(a).unwrap_or(0)),
             "random" => {
+                use rand::SeedableRng;
+                use rand::rngs::StdRng;
                 use rand::seq::SliceRandom;
-                let mut rng = rand::rng();
+                let mut rng = StdRng::from_rng(&mut rand::rng());
                 files.shuffle(&mut rng);
             }
             _ => files.sort(), // Default path sort

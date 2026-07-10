@@ -6,11 +6,13 @@ chat.ChatService/SendMessages
   "from": "Alice",
   "text": "Message 1"
 }
+
 --- REQUEST ---
 {
   "from": "Alice",
   "text": "Message 2"
 }
+
 --- REQUEST ---
 {
   "from": "Alice",
@@ -19,6 +21,6 @@ chat.ChatService/SendMessages
 
 --- RESPONSE ---
 {
-  "status": "OK",
-  "count": 3
+  "count": 3,
+  "status": "OK"
 }

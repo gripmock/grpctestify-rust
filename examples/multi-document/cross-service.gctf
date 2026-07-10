@@ -7,20 +7,18 @@ auth.AuthService/Login
 
 --- REQUEST ---
 {
-  "user": "alice",
-  "pass": "secret123"
+  "pass": "secret123",
+  "user": "alice"
 }
 
 --- RESPONSE ---
 {
-  "session_id": "sess-abc-123",
-  "expires_at": 1700000000
+  "expires_at": 1700000000,
+  "session_id": "sess-abc-123"
 }
 
 --- EXTRACT ---
-session = .session_id
 
-// Document 2: query data-server with session
 --- ADDRESS ---
 data-server:60060
 
@@ -32,24 +30,28 @@ X-Session: {{session}}
 
 --- REQUEST ---
 {
-  "query": "users",
   "filter": {
     "active": true
-  }
+  },
+  "query": "users"
 }
 
 --- RESPONSE ---
 {
   "users": [
-    { "id": 1, "name": "Alice" },
-    { "id": 2, "name": "Bob" }
+    {
+      "id": 1,
+      "name": "Alice"
+    },
+    {
+      "id": 2,
+      "name": "Bob"
+    }
   ]
 }
 
 --- EXTRACT ---
-user_ids = [.users[].id]
 
-// Document 3: fetch metrics from metrics-server (no ADDRESS, uses default)
 --- ENDPOINT ---
 metrics.MetricsService/GetCounters
 
@@ -59,10 +61,10 @@ metrics.MetricsService/GetCounters
 --- RESPONSE with_asserts ---
 {
   "counters": {
-    "requests": 1542,
-    "errors": 3
+    "errors": 3,
+    "requests": 1542
   }
 }
 
 --- ASSERTS ---
-.counters.requests > 0
+.counters.requests:number > 0

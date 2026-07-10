@@ -58,6 +58,7 @@ pub struct Cli {
     pub completion: Option<String>,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Run tests (default)
@@ -82,6 +83,37 @@ pub enum Commands {
     List(ListArgs),
     /// LSP server
     Lsp(LspArgs),
+    /// Run benchmark tests
+    Bench(BenchArgs),
+    /// Manage data source indexes
+    Index(IndexArgs),
+    /// Query data sources interactively
+    Query(QueryArgs),
+    /// Check gRPC service health
+    Health(HealthArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct HealthArgs {
+    /// Server address (host:port)
+    #[arg(required = true)]
+    pub address: String,
+
+    /// Service name to check (default: empty — checks overall server health)
+    #[arg(long, default_value = "")]
+    pub service: String,
+
+    /// Output format (text, json)
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// Skip TLS verification
+    #[arg(long, default_value_t = false)]
+    pub insecure: bool,
+
+    /// Timeout in seconds
+    #[arg(long, default_value_t = 10)]
+    pub timeout: u64,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -104,6 +136,248 @@ pub struct LspArgs {
     /// Use stdio for communication (default)
     #[arg(long, default_value_t = true)]
     pub stdio: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct BenchArgs {
+    /// Path to test file or directory to benchmark
+    #[arg(required = true)]
+    pub test_paths: Vec<PathBuf>,
+
+    /// Benchmark profile (functional, load, stress, spike, soak)
+    #[arg(long, value_name = "PROFILE")]
+    pub profile: Option<String>,
+
+    /// Benchmark mode (fixed, stepping, adaptive)
+    #[arg(long, value_name = "MODE")]
+    pub mode: Option<String>,
+
+    /// Number of concurrent workers
+    #[arg(short = 'c', long, value_name = "N")]
+    pub concurrency: Option<u32>,
+
+    /// Total number of requests to send
+    #[arg(short = 'n', long, value_name = "N")]
+    pub requests: Option<u64>,
+
+    /// Duration of benchmark (e.g., 30s, 5m)
+    #[arg(short = 'd', long, value_name = "DURATION")]
+    pub duration: Option<String>,
+
+    /// Ramp-up duration before steady-state load (e.g., 10s)
+    #[arg(long = "ramp-up", alias = "ramp_up", value_name = "DURATION")]
+    pub ramp_up: Option<String>,
+
+    /// Warmup period excluded from final metrics (e.g., 5s)
+    #[arg(long, value_name = "DURATION")]
+    pub warmup: Option<String>,
+
+    /// Maximum runtime with request-count mode (e.g., 30s, 5m)
+    #[arg(long, value_name = "DURATION")]
+    pub max_duration: Option<String>,
+
+    /// Maximum requests per second (rate limit)
+    #[arg(long, value_name = "RPS")]
+    pub max_rps: Option<f64>,
+
+    /// Load schedule strategy (const, step, line)
+    #[arg(long = "load-schedule", value_name = "SCHEDULE")]
+    pub load_schedule: Option<String>,
+
+    /// Starting RPS for step/line load schedules
+    #[arg(long = "load-start", value_name = "RPS")]
+    pub load_start: Option<f64>,
+
+    /// Step/slope RPS delta for step/line schedules
+    #[arg(long = "load-step", value_name = "RPS_DELTA")]
+    pub load_step: Option<f64>,
+
+    /// Optional ending RPS for step/line schedules
+    #[arg(long = "load-end", value_name = "RPS")]
+    pub load_end: Option<f64>,
+
+    /// Duration of each step for step schedule
+    #[arg(long = "load-step-duration", value_name = "DURATION")]
+    pub load_step_duration: Option<String>,
+
+    /// Maximum duration of load adjustments
+    #[arg(long = "load-max-duration", value_name = "DURATION")]
+    pub load_max_duration: Option<String>,
+
+    /// Number of gRPC connections to use (<= concurrency)
+    #[arg(long, value_name = "N")]
+    pub connections: Option<u32>,
+
+    /// Connection timeout (e.g., 10s)
+    #[arg(long, value_name = "DURATION")]
+    pub connect_timeout: Option<String>,
+
+    /// Keepalive interval (e.g., 30s)
+    #[arg(long, value_name = "DURATION")]
+    pub keepalive: Option<String>,
+
+    /// Number of CPU cores to use
+    #[arg(long, value_name = "N")]
+    pub cpus: Option<usize>,
+
+    /// User-defined benchmark run name
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<String>,
+
+    /// Assertion mode (fail_fast, collect_all, skip)
+    #[arg(long, visible_alias = "bench-assert-mode", value_name = "MODE")]
+    pub assert_mode: Option<String>,
+
+    /// Disable ASSERTS evaluation to measure transport baseline
+    #[arg(long, visible_alias = "bench-no-assert", default_value_t = false)]
+    pub no_assert: bool,
+
+    /// Sample rate for detailed logging (0.0-1.0)
+    #[arg(long, value_name = "RATE")]
+    pub sample_rate: Option<f64>,
+
+    /// Enable reflection/proto caching
+    #[arg(long)]
+    pub cache: Option<bool>,
+
+    /// Skip first N requests in latency metrics
+    #[arg(long, value_name = "N")]
+    pub skip_first: Option<u32>,
+
+    /// Include errors in latency calculation
+    #[arg(long)]
+    pub count_errors_in_latency: Option<bool>,
+
+    /// In-flight handling when duration limit is reached (close, wait, ignore)
+    #[arg(long, value_name = "MODE")]
+    pub duration_stop: Option<String>,
+
+    /// Latency percentiles to report (comma-separated, e.g. p50,p90,p95,p99)
+    #[arg(long, value_name = "LIST")]
+    pub latency_percentiles: Option<String>,
+
+    /// Progress heartbeat interval (e.g. 5s)
+    #[arg(long = "progress-interval", value_name = "DURATION")]
+    pub progress_interval: Option<String>,
+
+    /// Output format (console, json, csv, ndjson, prometheus)
+    #[arg(
+        long = "log-format",
+        visible_alias = "bench-format",
+        default_value = "console"
+    )]
+    pub format: String,
+
+    /// Output file for benchmark report
+    #[arg(
+        short = 'o',
+        long = "log-output",
+        visible_alias = "bench-output",
+        value_name = "OUTPUT_FILE"
+    )]
+    pub output: Option<PathBuf>,
+
+    /// Custom MiniJinja template file for benchmark report
+    #[arg(long, value_name = "TEMPLATE_FILE")]
+    pub report_template: Option<PathBuf>,
+
+    /// Allure output directory for benchmark attachments
+    #[arg(long, value_name = "DIR")]
+    pub allure_output_dir: Option<PathBuf>,
+
+    /// Compact console output (omit histogram)
+    #[arg(long, default_value_t = false)]
+    pub compact: bool,
+
+    /// Filter by tags (AND - file must have ALL tags)
+    #[arg(long = "tags", value_name = "TAGS")]
+    pub tags: Vec<String>,
+
+    /// Skip files with these tags (NOT OR - exclude if ANY matches)
+    #[arg(long = "skip-tags", value_name = "TAGS")]
+    pub skip_tags: Vec<String>,
+
+    /// Exclude files/directories matching the given glob pattern (can be used multiple times)
+    #[arg(long, value_name = "PATTERN")]
+    pub exclude: Vec<String>,
+
+    /// List available benchmark profiles and exit
+    #[arg(long, default_value_t = false)]
+    pub list_profiles: bool,
+
+    /// Path to custom profile YAML file
+    #[arg(long, value_name = "FILE")]
+    pub profile_file: Option<PathBuf>,
+
+    /// Direct gRPC method call (service/method) — no .gctf file needed
+    #[arg(long, value_name = "SERVICE/METHOD")]
+    pub call: Option<String>,
+
+    /// Inline JSON request body (used with --call)
+    #[arg(long, value_name = "JSON")]
+    pub data: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct IndexArgs {
+    /// .gctf file(s) or directory with BENCH.sources definitions
+    #[arg(required = true)]
+    pub sources: Vec<PathBuf>,
+
+    /// Force rebuild of all required indexes
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
+
+    /// Show index file statistics
+    #[arg(long, default_value_t = false)]
+    pub stats: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct QueryArgs {
+    /// Files or directories to query (default: interactive shell)
+    #[arg(required = false)]
+    pub files: Vec<PathBuf>,
+
+    /// Query expression to execute
+    #[arg(short = 'q', long, value_name = "EXPR")]
+    pub query: Option<String>,
+
+    /// Run in interactive shell mode
+    #[arg(short = 's', long, default_value_t = false)]
+    pub shell: bool,
+
+    /// Index column for direct file mode
+    #[arg(short = 'i', long, value_name = "COLUMN")]
+    pub indexed_by: Option<String>,
+
+    /// Output format (json, csv, table, line, tsv)
+    #[arg(short = 'f', long, default_value = "table")]
+    pub format: String,
+
+    /// Maximum number of rows to return
+    #[arg(short = 'n', long, value_name = "N")]
+    pub limit: Option<usize>,
+
+    /// Skip N rows
+    #[arg(short = 'o', long, value_name = "N")]
+    pub offset: Option<usize>,
+
+    /// Output columns (comma-separated)
+    #[arg(short = 'c', long, value_name = "COLS")]
+    pub columns: Option<String>,
+
+    /// Sort by column (prefix with - for DESC)
+    #[arg(long, value_name = "COLUMN")]
+    pub order_by: Option<String>,
+
+    /// Output file (format auto-detected from extension: .csv, .tsv, .ndjson, .json)
+    #[arg(long, value_name = "FILE")]
+    pub output: Option<PathBuf>,
+
+    /// Skip header row in output
+    #[arg(long, default_value_t = false)]
+    pub no_header: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -152,6 +426,10 @@ pub struct CheckArgs {
     /// Output format (text, json)
     #[arg(long, default_value = "text")]
     pub format: String,
+
+    /// Validate BENCH section configuration
+    #[arg(long, default_value_t = false)]
+    pub bench: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -251,6 +529,30 @@ pub struct ReflectArgs {
     /// Plaintext connection (no TLS). If omitted, localhost/http addresses default to plaintext.
     #[arg(long, default_value_t = false)]
     pub plaintext: bool,
+
+    /// Output format (text, json)
+    #[arg(long, default_value = "text")]
+    pub format: String,
+
+    /// List all methods with full signatures
+    #[arg(long, default_value_t = false)]
+    pub list_methods: bool,
+
+    /// Describe a method's request and response message fields
+    #[arg(long, value_name = "SERVICE/METHOD")]
+    pub describe: Option<String>,
+
+    /// CA certificate path for TLS
+    #[arg(long)]
+    pub tls_ca: Option<String>,
+
+    /// Client certificate path for TLS
+    #[arg(long)]
+    pub tls_cert: Option<String>,
+
+    /// Client key path for TLS
+    #[arg(long)]
+    pub tls_key: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -306,9 +608,29 @@ pub struct CallArgs {
     #[arg(long, default_value_t = 30)]
     pub connect_timeout: u64,
 
+    /// Skip TLS certificate verification
+    #[arg(long, default_value_t = false)]
+    pub insecure: bool,
+
     /// Request timeout in seconds
     #[arg(long, default_value_t = 60)]
     pub max_time: u64,
+
+    /// Run as benchmark instead of single call
+    #[arg(long, default_value_t = false)]
+    pub bench: bool,
+
+    /// Benchmark concurrency (with --bench)
+    #[arg(long, requires = "bench")]
+    pub concurrency: Option<u32>,
+
+    /// Benchmark requests (with --bench)
+    #[arg(long, requires = "bench")]
+    pub requests: Option<u64>,
+
+    /// Benchmark duration (with --bench), e.g. "30s"
+    #[arg(long, requires = "bench")]
+    pub duration: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -447,6 +769,12 @@ impl HasFormat for CheckArgs {
     }
 }
 
+impl HasFormat for BenchArgs {
+    fn format(&self) -> &str {
+        &self.format
+    }
+}
+
 impl RunArgs {
     pub fn is_json_coverage(&self) -> bool {
         is_json_format(&self.coverage_format)
@@ -565,5 +893,141 @@ mod tests {
         assert_eq!(grpcurl.grpcurl_args[2], "-d");
         assert_eq!(grpcurl.grpcurl_args[3], "{}");
         assert_eq!(grpcurl.grpcurl_args[4], "localhost:4770");
+    }
+
+    #[test]
+    fn parse_bench_extended_options() {
+        let cli = Cli::parse_from([
+            "grpctestify",
+            "bench",
+            "tests/",
+            "-c",
+            "8",
+            "-n",
+            "1000",
+            "--max-duration",
+            "30s",
+            "--connections",
+            "4",
+            "--connect-timeout",
+            "2s",
+            "--keepalive",
+            "10s",
+            "--cpus",
+            "2",
+            "--name",
+            "smoke-bench",
+        ]);
+
+        let Some(Commands::Bench(args)) = cli.command else {
+            panic!("expected bench command");
+        };
+
+        assert_eq!(args.test_paths, vec![PathBuf::from("tests/")]);
+        assert_eq!(args.concurrency, Some(8));
+        assert_eq!(args.requests, Some(1000));
+        assert_eq!(args.max_duration.as_deref(), Some("30s"));
+        assert_eq!(args.connections, Some(4));
+        assert_eq!(args.connect_timeout.as_deref(), Some("2s"));
+        assert_eq!(args.keepalive.as_deref(), Some("10s"));
+        assert_eq!(args.cpus, Some(2));
+        assert_eq!(args.name.as_deref(), Some("smoke-bench"));
+    }
+
+    #[test]
+    fn parse_bench_run_style_option_names() {
+        let cli = Cli::parse_from([
+            "grpctestify",
+            "bench",
+            "tests/",
+            "--no-assert",
+            "--assert-mode",
+            "sampled",
+            "--log-format",
+            "json",
+            "--log-output",
+            "bench.json",
+            "--latency-percentiles",
+            "p50,p90,p99",
+            "--duration-stop",
+            "wait",
+            "--progress-interval",
+            "3s",
+            "--ramp-up",
+            "3s",
+            "--warmup",
+            "1s",
+        ]);
+
+        let Some(Commands::Bench(args)) = cli.command else {
+            panic!("expected bench command");
+        };
+
+        assert!(args.no_assert);
+        assert_eq!(args.assert_mode.as_deref(), Some("sampled"));
+        assert_eq!(args.format, "json");
+        assert_eq!(args.output, Some(PathBuf::from("bench.json")));
+        assert_eq!(args.latency_percentiles.as_deref(), Some("p50,p90,p99"));
+        assert_eq!(args.duration_stop.as_deref(), Some("wait"));
+        assert_eq!(args.progress_interval.as_deref(), Some("3s"));
+        assert_eq!(args.ramp_up.as_deref(), Some("3s"));
+        assert_eq!(args.warmup.as_deref(), Some("1s"));
+    }
+
+    #[test]
+    fn parse_bench_load_schedule_options() {
+        let cli = Cli::parse_from([
+            "grpctestify",
+            "bench",
+            "tests/",
+            "-c",
+            "10",
+            "-n",
+            "10000",
+            "--load-schedule",
+            "step",
+            "--load-start",
+            "50",
+            "--load-end",
+            "150",
+            "--load-step",
+            "10",
+            "--load-step-duration",
+            "5s",
+            "--load-max-duration",
+            "40s",
+        ]);
+
+        let Some(Commands::Bench(args)) = cli.command else {
+            panic!("expected bench command");
+        };
+
+        assert_eq!(args.concurrency, Some(10));
+        assert_eq!(args.requests, Some(10000));
+        assert_eq!(args.load_schedule.as_deref(), Some("step"));
+        assert_eq!(args.load_start, Some(50.0));
+        assert_eq!(args.load_end, Some(150.0));
+        assert_eq!(args.load_step, Some(10.0));
+        assert_eq!(args.load_step_duration.as_deref(), Some("5s"));
+        assert_eq!(args.load_max_duration.as_deref(), Some("40s"));
+    }
+
+    #[test]
+    fn parse_index_command() {
+        let cli = Cli::parse_from([
+            "grpctestify",
+            "index",
+            "tests/bench/user_lookup.gctf",
+            "--force",
+        ]);
+
+        let Some(Commands::Index(args)) = cli.command else {
+            panic!("expected index command");
+        };
+        assert_eq!(
+            args.sources,
+            vec![PathBuf::from("tests/bench/user_lookup.gctf")]
+        );
+        assert!(args.force);
     }
 }

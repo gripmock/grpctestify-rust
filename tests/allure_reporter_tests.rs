@@ -12,7 +12,7 @@ fn test_allure_reporter_passing_test() {
         name: "/path/to/test_pass.gctf".to_string(),
         status: TestStatus::Pass,
         duration_ms: 100,
-        grpc_duration_ms: Some(80),
+        call_duration_ms: Some(80),
         error_message: None,
         execution_time: 1700000000,
         meta: TestMeta::default(),
@@ -99,7 +99,7 @@ fn test_allure_reporter_mixed_results() {
             name: "/path/test_pass.gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 10,
-            grpc_duration_ms: Some(5),
+            call_duration_ms: Some(5),
             error_message: None,
             execution_time: 1700000000,
             meta: TestMeta::default(),
@@ -115,7 +115,7 @@ fn test_allure_reporter_mixed_results() {
             name: "/path/test_skip.gctf".to_string(),
             status: TestStatus::Skip,
             duration_ms: 0,
-            grpc_duration_ms: None,
+            call_duration_ms: None,
             error_message: Some("Skipped".to_string()),
             execution_time: 1700000001,
             meta: TestMeta::default(),
@@ -148,7 +148,7 @@ fn test_allure_reporter_labels_present() {
             name: "test_labels.gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 10,
-            grpc_duration_ms: None,
+            call_duration_ms: None,
             error_message: None,
             execution_time: 1700000000,
             meta: TestMeta::default(),
@@ -190,7 +190,7 @@ fn test_allure_reporter_test_name_from_path() {
             name: "/workspace/tests/projects/search/case_tech_search.gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 50,
-            grpc_duration_ms: Some(40),
+            call_duration_ms: Some(40),
             error_message: None,
             execution_time: 1700000000,
             meta: TestMeta::default(),
@@ -224,7 +224,7 @@ fn test_allure_reporter_timestamps() {
             name: "test_timestamps.gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 100,
-            grpc_duration_ms: Some(80),
+            call_duration_ms: Some(80),
             error_message: None,
             execution_time: 1700000000,
             meta: TestMeta::default(),
@@ -261,7 +261,7 @@ fn test_allure_reporter_tags_and_owner_labels() {
             name: "test_labels.gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 10,
-            grpc_duration_ms: None,
+            call_duration_ms: None,
             error_message: None,
             execution_time: 1700000000,
             meta,
@@ -286,6 +286,149 @@ fn test_allure_reporter_tags_and_owner_labels() {
 }
 
 #[test]
+fn test_allure_reporter_grpc_labels_for_filtering() {
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
+
+    let test_file = temp_dir.path().join("multi.gctf");
+    std::fs::write(
+        &test_file,
+        r#"--- ENDPOINT ---
+tasktracker.TaskService/CompleteTask
+
+--- REQUEST ---
+{"task_id":"task-42"}
+
+--- RESPONSE ---
+{"ok":true}
+
+--- ENDPOINT ---
+tasktracker.TaskService/GetTask
+
+--- REQUEST ---
+{"task_id":"task-42"}
+
+--- RESPONSE ---
+{"ok":true}
+"#,
+    )
+    .expect("write gctf");
+
+    reporter.on_test_end(
+        test_file.to_string_lossy().as_ref(),
+        &TestResult {
+            name: test_file.to_string_lossy().to_string(),
+            status: TestStatus::Pass,
+            duration_ms: 20,
+            call_duration_ms: Some(10),
+            error_message: None,
+            execution_time: 1700000000,
+            meta: TestMeta::default(),
+        },
+    );
+
+    let mut found = false;
+    for entry in std::fs::read_dir(temp_dir.path()).unwrap() {
+        let entry = entry.unwrap();
+        if entry.path().extension().is_some_and(|ext| ext == "json") {
+            let content = std::fs::read_to_string(entry.path()).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+            let labels = json["labels"].as_array().expect("labels array");
+
+            let has_service = labels
+                .iter()
+                .any(|l| l["name"] == "grpc_service" && l["value"] == "TaskService");
+            let has_method_complete = labels
+                .iter()
+                .any(|l| l["name"] == "grpc_method" && l["value"] == "CompleteTask");
+            let has_method_get = labels
+                .iter()
+                .any(|l| l["name"] == "grpc_method" && l["value"] == "GetTask");
+            let has_endpoint = labels.iter().any(|l| {
+                l["name"] == "grpc_endpoint" && l["value"] == "tasktracker.TaskService/CompleteTask"
+            });
+
+            if has_service && has_method_complete && has_method_get && has_endpoint {
+                found = true;
+            }
+        }
+    }
+
+    assert!(found, "expected grpc_* labels in allure report");
+}
+
+#[test]
+fn test_allure_reporter_runtime_parameters_present() {
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
+
+    let test_file = temp_dir.path().join("params.gctf");
+    std::fs::write(
+        &test_file,
+        r#"--- OPTIONS ---
+timeout: 15
+retry: 2
+retry-delay: 0.3
+no-retry: false
+compression: gzip
+
+--- ENDPOINT ---
+tasktracker.TaskService/GetTask
+
+--- REQUEST ---
+{"task_id":"task-42"}
+
+--- RESPONSE ---
+{"ok":true}
+"#,
+    )
+    .expect("write gctf");
+
+    reporter.on_test_end(
+        test_file.to_string_lossy().as_ref(),
+        &TestResult {
+            name: test_file.to_string_lossy().to_string(),
+            status: TestStatus::Pass,
+            duration_ms: 10,
+            call_duration_ms: Some(5),
+            error_message: None,
+            execution_time: 1700000000,
+            meta: TestMeta::default(),
+        },
+    );
+
+    let mut found = false;
+    for entry in std::fs::read_dir(temp_dir.path()).unwrap() {
+        let entry = entry.unwrap();
+        if entry.path().extension().is_some_and(|ext| ext == "json") {
+            let content = std::fs::read_to_string(entry.path()).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+            let params = json["parameters"].as_array().expect("parameters array");
+
+            let has_version = params.iter().any(|p| p["name"] == "grpctestify.version");
+            let has_timeout = params
+                .iter()
+                .any(|p| p["name"] == "runtime.timeout" && p["value"] == "15");
+            let has_retry = params
+                .iter()
+                .any(|p| p["name"] == "runtime.retry" && p["value"] == "2");
+            let has_docs = params
+                .iter()
+                .any(|p| p["name"] == "documents.count" && p["value"] == "1");
+
+            if has_version && has_timeout && has_retry && has_docs {
+                found = true;
+            }
+        }
+    }
+
+    assert!(
+        found,
+        "expected runtime/version parameters in allure report"
+    );
+}
+
+#[test]
 fn test_allure_reporter_display_name_from_meta() {
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
@@ -301,7 +444,7 @@ fn test_allure_reporter_display_name_from_meta() {
             name: "test.gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 10,
-            grpc_duration_ms: None,
+            call_duration_ms: None,
             error_message: None,
             execution_time: 1700000000,
             meta,

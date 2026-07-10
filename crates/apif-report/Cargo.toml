@@ -1,0 +1,18 @@
+[package]
+name = "apif-report"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Reporters for .apif/.gctf test results"
+
+[dependencies]
+apif-state = { path = "../apif-state" }
+anyhow = { workspace = true }
+cfg-runtime = { path = "../cfg-runtime" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+indicatif = "0.18"
+
+[dev-dependencies]

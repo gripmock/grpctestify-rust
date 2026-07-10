@@ -93,14 +93,6 @@ fn file_matches_meta(path: &Path, tags_include: &[String], skip_tags: &[String])
     true
 }
 
-fn parse_bool_option(value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "true" | "1" | "yes" | "on" => Some(true),
-        "false" | "0" | "no" | "off" => Some(false),
-        _ => None,
-    }
-}
-
 fn should_retry_message(message: &str) -> bool {
     let msg = message.to_ascii_lowercase();
     msg.contains("deadline")
@@ -215,8 +207,14 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
         )));
     } else {
         // Always add console reporter (unless streaming)
+        let mode = match cli.progress_mode() {
+            crate::cli::args::ProgressMode::Dots => report::ConsoleMode::Dots,
+            crate::cli::args::ProgressMode::Verbose => report::ConsoleMode::Verbose,
+            crate::cli::args::ProgressMode::Bar => report::ConsoleMode::Dots,
+            crate::cli::args::ProgressMode::None => report::ConsoleMode::Silent,
+        };
         reporters.push(Box::new(report::ConsoleReporter::new(
-            cli.progress_mode(),
+            mode,
             test_files.len() as u64,
             env_info,
         )));
@@ -293,13 +291,13 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
                 .await
                 {
                     Ok(res) => {
-                        let grpc_duration = res.grpc_duration_ms;
+                        let call_duration = res.call_duration_ms;
                         let meta = res.meta;
                         match res.status {
                             execution::TestExecutionStatus::Pass => TestResult::pass_with_meta(
                                 file_path_str.clone(),
                                 0,
-                                grpc_duration,
+                                call_duration,
                                 meta,
                             ),
                             execution::TestExecutionStatus::Fail(msg) => {
@@ -307,7 +305,7 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
                                     file_path_str.clone(),
                                     msg,
                                     0,
-                                    grpc_duration,
+                                    call_duration,
                                     meta,
                                 )
                             }
@@ -399,63 +397,29 @@ async fn run_single_test(
         );
     }
 
-    let options = doc.get_options().unwrap_or_default();
-
-    let effective_no_retry = match options.get("no-retry").or_else(|| options.get("no_retry")) {
-        Some(value) => match parse_bool_option(value) {
-            Some(v) => v,
-            None => {
-                return Ok(execution::TestExecutionResult::fail(
-                    format!("OPTIONS.no_retry must be a boolean, got '{}'", value),
-                    None,
-                )
-                .with_meta(test_meta));
-            }
+    let effective_runtime = match execution::runner_helpers::resolve_effective_runtime_options(
+        &doc,
+        execution::runner_helpers::CliRuntimeDefaults {
+            timeout_seconds: 30,
+            retry,
+            retry_delay_seconds: retry_delay,
+            no_retry,
         },
-        None => no_retry,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            return Ok(execution::TestExecutionResult::fail(
+                format!("Validation error: {}", e),
+                None,
+            )
+            .with_meta(test_meta));
+        }
     };
 
-    let effective_retry = match options.get("retry") {
-        Some(value) => match value.trim().parse::<u32>() {
-            Ok(v) => v,
-            Err(_) => {
-                return Ok(execution::TestExecutionResult::fail(
-                    format!(
-                        "OPTIONS.retry must be a non-negative integer, got '{}'",
-                        value
-                    ),
-                    None,
-                )
-                .with_meta(test_meta));
-            }
-        },
-        None => retry,
-    };
-
-    let effective_retry_delay = match options
-        .get("retry-delay")
-        .or_else(|| options.get("retry_delay"))
-    {
-        Some(value) => match value.trim().parse::<f64>() {
-            Ok(v) if v >= 0.0 => v,
-            _ => {
-                return Ok(execution::TestExecutionResult::fail(
-                    format!(
-                        "OPTIONS.retry_delay must be a non-negative number, got '{}'",
-                        value
-                    ),
-                    None,
-                )
-                .with_meta(test_meta));
-            }
-        },
-        None => retry_delay,
-    };
-
-    let max_retries = if effective_no_retry {
+    let max_retries = if effective_runtime.no_retry.value {
         0
     } else {
-        effective_retry
+        effective_runtime.retry.value
     };
 
     let mut attempt = 0u32;
@@ -472,8 +436,11 @@ async fn run_single_test(
         }
 
         attempt += 1;
-        if effective_retry_delay > 0.0 {
-            tokio::time::sleep(std::time::Duration::from_secs_f64(effective_retry_delay)).await;
+        if effective_runtime.retry_delay_seconds.value > 0.0 {
+            tokio::time::sleep(std::time::Duration::from_secs_f64(
+                effective_runtime.retry_delay_seconds.value,
+            ))
+            .await;
         }
     };
 
@@ -483,7 +450,7 @@ async fn run_single_test(
     {
         return Ok(execution::TestExecutionResult::fail(
             format!("Failed to update test file: {}", e),
-            result.grpc_duration_ms,
+            result.call_duration_ms,
         )
         .with_meta(test_meta));
     }

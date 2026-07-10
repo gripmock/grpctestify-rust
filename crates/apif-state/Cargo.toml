@@ -1,0 +1,14 @@
+[package]
+name = "apif-state"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Test state and result types for .apif/.gctf test files"
+
+[dependencies]
+apif-ast = { path = "../apif-ast" }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

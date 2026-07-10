@@ -1,10 +1,12 @@
 use grpctestify::assert::engine::{AssertionEngine, AssertionResult};
+use grpctestify::plugins::PluginManager;
 use serde_json::json;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[test]
 fn test_uuid_plugin() {
-    let engine = AssertionEngine::new();
+    let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({
         "id": "123e4567-e89b-12d3-a456-426614174000",
         "bad_id": "not-a-uuid"
@@ -29,7 +31,7 @@ fn test_uuid_plugin() {
 
 #[test]
 fn test_email_plugin() {
-    let engine = AssertionEngine::new();
+    let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({
         "email": "test@example.com",
         "bad_email": "invalid-email"
@@ -48,7 +50,7 @@ fn test_email_plugin() {
 
 #[test]
 fn test_ip_plugin() {
-    let engine = AssertionEngine::new();
+    let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({
         "ip": "192.168.1.1",
         "bad_ip": "999.999.999.999"
@@ -65,7 +67,7 @@ fn test_ip_plugin() {
 
 #[test]
 fn test_url_plugin() {
-    let engine = AssertionEngine::new();
+    let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({
         "url": "https://example.com",
         "bad_url": "not-a-url"
@@ -84,7 +86,7 @@ fn test_url_plugin() {
 
 #[test]
 fn test_timestamp_plugin() {
-    let engine = AssertionEngine::new();
+    let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({
         "ts": "2023-10-01T12:00:00Z",
         "bad_ts": "tomorrow"
@@ -103,7 +105,7 @@ fn test_timestamp_plugin() {
 
 #[test]
 fn test_len_plugin() {
-    let engine = AssertionEngine::new();
+    let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({
         "list": [1, 2, 3],
         "text": "hello"
@@ -130,7 +132,7 @@ fn test_len_plugin() {
 
 #[test]
 fn test_header_plugin() {
-    let engine = AssertionEngine::new();
+    let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({});
     let mut headers = HashMap::new();
     headers.insert("content-type".to_string(), "application/json".to_string());
@@ -152,7 +154,7 @@ fn test_header_plugin() {
 
 #[test]
 fn test_uuid_edge_cases() {
-    let engine = AssertionEngine::new();
+    let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
 
     // UUID v4 format
     let response = json!({"uuid": "550e8400-e29b-41d4-a716-446655440000"});
@@ -193,7 +195,7 @@ fn test_uuid_edge_cases() {
 
 #[test]
 fn test_email_edge_cases() {
-    let engine = AssertionEngine::new();
+    let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
 
     // Email with subdomain
     let response = json!({"email": "user@mail.example.com"});
@@ -243,7 +245,7 @@ fn test_email_edge_cases() {
 
 #[test]
 fn test_ip_edge_cases() {
-    let engine = AssertionEngine::new();
+    let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
 
     // IPv6 loopback
     let response = json!({"ip": "::1"});
@@ -283,7 +285,7 @@ fn test_ip_edge_cases() {
 
 #[test]
 fn test_url_edge_cases() {
-    let engine = AssertionEngine::new();
+    let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
 
     // URL with port
     let response = json!({"url": "https://example.com:8080/path"});
@@ -333,7 +335,7 @@ fn test_url_edge_cases() {
 
 #[test]
 fn test_timestamp_edge_cases() {
-    let engine = AssertionEngine::new();
+    let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
 
     // Timestamp with timezone offset
     let response = json!({"ts": "2024-01-15T10:30:00+03:00"});
@@ -383,7 +385,7 @@ fn test_timestamp_edge_cases() {
 
 #[test]
 fn test_len_edge_cases() {
-    let engine = AssertionEngine::new();
+    let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
 
     // Empty array
     let response = json!({"list": []});
@@ -442,7 +444,7 @@ fn test_len_edge_cases() {
 
 #[test]
 fn test_header_case_insensitive() {
-    let engine = AssertionEngine::new();
+    let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({});
     let mut headers = HashMap::new();
     headers.insert("Content-Type".to_string(), "application/json".to_string());
@@ -462,7 +464,7 @@ fn test_header_case_insensitive() {
 
 #[test]
 fn test_trailer_plugin_basic() {
-    let engine = AssertionEngine::new();
+    let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({});
     let mut trailers = HashMap::new();
     trailers.insert("grpc-status".to_string(), "0".to_string());
@@ -485,7 +487,7 @@ fn test_trailer_plugin_basic() {
 
 #[test]
 fn test_multiple_plugins_in_one_assertion() {
-    let engine = AssertionEngine::new();
+    let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({
         "id": "550e8400-e29b-41d4-a716-446655440000",
         "email": "test@example.com",

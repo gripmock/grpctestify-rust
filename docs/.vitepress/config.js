@@ -25,9 +25,10 @@ export default defineConfig({
     nav: [
       { text: 'Home', link: '/' },
       { text: 'Get Started', link: '/guides/getting-started/installation' },
-      { text: 'Test Files', link: '/guides/reference/api/test-files' },
+      { text: 'Features', link: '/guides/query' },
       { text: 'CLI', link: '/guides/reference/api/command-line' },
-      { text: 'Sections', link: '/guides/reference/sections/' }
+      { text: 'Dev Guide', link: '/dev/architecture' },
+      { text: 'Changelog', link: '/changelog/' }
     ],
 
     sidebar: {
@@ -43,15 +44,7 @@ export default defineConfig({
           ]
         },
         {
-          text: 'CLI and Workflow',
-          items: [
-            { text: 'API Overview', link: '/guides/reference/api/' },
-            { text: 'Command Line', link: '/guides/reference/api/command-line' },
-            { text: 'Report Formats', link: '/guides/reference/api/report-formats' }
-          ]
-        },
-        {
-          text: 'Test Format',
+          text: 'Core Concepts',
           items: [
             { text: 'Test Files', link: '/guides/reference/api/test-files' },
             { text: 'Assertions', link: '/guides/reference/api/assertions' },
@@ -59,7 +52,24 @@ export default defineConfig({
           ]
         },
         {
+          text: 'Features',
+          items: [
+            { text: 'Data Sources', link: '/guides/bench-sources' },
+            { text: 'Query', link: '/guides/query' },
+            { text: 'Indexes', link: '/guides/features/indexes' },
+            { text: 'LSP Support', link: '/guides/features/lsp' }
+          ]
+        },
+        {
+          text: 'CLI Reference',
+          items: [
+            { text: 'Command Line', link: '/guides/reference/api/command-line' },
+            { text: 'Report Formats', link: '/guides/reference/api/report-formats' }
+          ]
+        },
+        {
           text: 'Section Reference',
+          collapsed: true,
           items: [
             { text: 'Overview', link: '/guides/reference/sections/' },
             { text: 'META', link: '/guides/reference/sections/meta' },
@@ -74,7 +84,19 @@ export default defineConfig({
             { text: 'TLS', link: '/guides/reference/sections/tls' },
             { text: 'PROTO', link: '/guides/reference/sections/proto' },
             { text: 'OPTIONS', link: '/guides/reference/sections/options' },
+            { text: 'BENCH', link: '/guides/reference/sections/bench' },
             { text: 'Attributes', link: '/guides/reference/sections/attributes' }
+          ]
+        }
+      ],
+      '/dev/': [
+        {
+          text: 'Developer Guide',
+          items: [
+            { text: 'Architecture', link: '/dev/architecture' },
+            { text: 'Building', link: '/dev/building' },
+            { text: 'Testing', link: '/dev/testing' },
+            { text: 'Contributing', link: '/dev/contributing' }
           ]
         }
       ]

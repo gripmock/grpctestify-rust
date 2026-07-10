@@ -7,22 +7,20 @@ api.UserService/CreateUser
 
 --- REQUEST ---
 {
-  "name": "testuser",
-  "email": "test@example.com"
+  "email": "test@example.com",
+  "name": "testuser"
 }
 
 --- RESPONSE ---
 {
-  "id": "usr-123",
-  "name": "testuser",
+  "created_at": "2024-01-01T00:00:00Z",
   "email": "test@example.com",
-  "created_at": "2024-01-01T00:00:00Z"
+  "id": "usr-123",
+  "name": "testuser"
 }
 
 --- EXTRACT ---
-user_id = .id
 
-// Document 2: Read - fetch the created user
 --- ENDPOINT ---
 api.UserService/GetUser
 
@@ -37,8 +35,8 @@ api.UserService/GetUser
   "name": "testuser",
   "email": "test@example.com"
 }
-
 // Document 3: Update - change the user's name
+
 --- ENDPOINT ---
 api.UserService/UpdateUser
 
@@ -54,8 +52,8 @@ api.UserService/UpdateUser
   "name": "updated_name",
   "email": "test@example.com"
 }
-
 // Document 4: Verify - confirm the update persisted
+
 --- ENDPOINT ---
 api.UserService/GetUser
 
@@ -70,8 +68,8 @@ api.UserService/GetUser
   "name": "updated_name",
   "email": "test@example.com"
 }
-
 // Document 5: Delete - remove the user
+
 --- ENDPOINT ---
 api.UserService/DeleteUser
 

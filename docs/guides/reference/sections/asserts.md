@@ -16,6 +16,26 @@ Expression-based checks for response or error data.
 @has_header("x-request-id")
 ```
 
+## Type annotations
+
+When the type of a field is unknown, annotate it with `:type` to allow ordering operators:
+
+```gctf
+--- ASSERTS ---
+.price:number >= 0
+.name:string contains "hello"
+```
+
+## Variables from EXTRACT
+
+Use `$name` to reference extracted variables — their type propagates automatically:
+
+```gctf
+--- ASSERTS ---
+$price >= 0            # type from EXTRACT
+$name:string contains "hello"
+```
+
 ## Rules
 
 - Each line is evaluated as a boolean expression
@@ -24,3 +44,4 @@ Expression-based checks for response or error data.
 ## Related
 
 - [Assertions API Reference](../api/assertions)
+- [EXTRACT section](./extract)

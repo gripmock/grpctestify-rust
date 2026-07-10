@@ -457,7 +457,7 @@ async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<DescriptorPoo
     };
 
     {
-        let cache = DESCRIPTOR_CACHE.read().unwrap_or_else(|e| e.into_inner());
+        let cache = DESCRIPTOR_CACHE.read().expect("lock poisoned");
         if let Some(pool) = cache.get(&cache_key) {
             tracing::debug!("Cache hit for descriptors from {}", cache_key);
             return Ok(pool.clone());
@@ -467,7 +467,7 @@ async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<DescriptorPoo
     let _load_guard = DESCRIPTOR_LOAD_MUTEX.lock().await;
 
     {
-        let cache = DESCRIPTOR_CACHE.read().unwrap_or_else(|e| e.into_inner());
+        let cache = DESCRIPTOR_CACHE.read().expect("lock poisoned");
         if let Some(pool) = cache.get(&cache_key) {
             tracing::debug!("Cache hit for descriptors from {}", cache_key);
             return Ok(pool.clone());
@@ -488,7 +488,7 @@ async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<DescriptorPoo
     let pool_arc = Arc::new(pool);
 
     {
-        let mut cache = DESCRIPTOR_CACHE.write().unwrap_or_else(|e| e.into_inner());
+        let mut cache = DESCRIPTOR_CACHE.write().expect("lock poisoned");
         cache.insert(cache_key, pool_arc.clone());
     }
 

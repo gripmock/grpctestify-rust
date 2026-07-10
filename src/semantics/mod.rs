@@ -124,10 +124,64 @@ fn best_plugin_suggestion(unknown: &str, known_plugins: &[String]) -> Option<Str
     })
 }
 
+/// Extract variable type annotations from EXTRACT sections across a document chain.
+/// Returns a map of variable name → TypeInfo parsed from `name:Type = .path` lines.
+pub fn extract_variable_types(doc: &parser::GctfDocument) -> HashMap<String, TypeInfo> {
+    let mut var_types = HashMap::new();
+    for d in doc.iter_chain() {
+        for section in &d.sections {
+            if section.section_type != parser::ast::SectionType::Extract {
+                continue;
+            }
+            for line in section.raw_content.lines() {
+                if let Some((name, Some(type_name), _)) =
+                    parser::gctf_tokenizer::tokenize_extract_line_full(line)
+                    && let Some(ti) = TypeInfo::parse_type_name(&type_name)
+                {
+                    var_types.insert(name, ti);
+                }
+            }
+        }
+    }
+    var_types
+}
+
 fn infer_type_from_tokens(
     tokens: &[parser::tokenizer::Token],
     signatures: &HashMap<String, PluginSignature>,
+    var_types: &HashMap<String, TypeInfo>,
 ) -> TypeInfo {
+    // Check for $var_name or {{var_name}} pattern — look up variable type
+    let var_name = if tokens.len() == 1
+        && let TokenKind::Ident(name) = &tokens[0].kind
+        && name.starts_with('$')
+    {
+        Some(&name[1..])
+    } else if tokens.len() == 3
+        && matches!(&tokens[0].kind, TokenKind::VarDelim)
+        && matches!(&tokens[2].kind, TokenKind::VarDelim)
+        && let TokenKind::Ident(var_name) = &tokens[1].kind
+    {
+        Some(var_name.as_str())
+    } else {
+        None
+    };
+
+    if let Some(var_name) = var_name
+        && let Some(var_type) = var_types.get(var_name)
+    {
+        return *var_type;
+    }
+
+    // Check for `:TypeName` type annotation: `expr:number`
+    if tokens.len() >= 2
+        && let Some(TokenKind::Ident(name)) = tokens.last().map(|t| &t.kind)
+        && let Some(cast_type) = TypeInfo::parse_type_name(name)
+        && tokens[tokens.len() - 2].kind == TokenKind::Colon
+    {
+        return cast_type;
+    }
+
     if tokens.len() == 1 {
         return match &tokens[0].kind {
             TokenKind::StringLit(_) => TypeInfo::String,
@@ -163,6 +217,7 @@ fn infer_type_from_tokens(
 fn detect_type_mismatch(
     expr: &str,
     signatures: &HashMap<String, PluginSignature>,
+    var_types: &HashMap<String, TypeInfo>,
 ) -> Option<AssertionTypeMismatch> {
     let tokens = tokenize_assertion(expr);
     let (op, op_idx, op_len) = operator_from_tokens(&tokens)?;
@@ -174,8 +229,8 @@ fn detect_type_mismatch(
 
     let lhs_tokens = tokenize_assertion(lhs);
     let rhs_tokens = tokenize_assertion(rhs);
-    let lhs_type = infer_type_from_tokens(&lhs_tokens, signatures);
-    let rhs_type = infer_type_from_tokens(&rhs_tokens, signatures);
+    let lhs_type = infer_type_from_tokens(&lhs_tokens, signatures, var_types);
+    let rhs_type = infer_type_from_tokens(&rhs_tokens, signatures, var_types);
 
     // Check if the operator is valid for the left-hand side type
     let (valid, reason) = lhs_type.supports_operator(op);
@@ -219,19 +274,23 @@ fn detect_type_mismatch(
         }
     }
 
-    if matches!(op, ">" | "<" | ">=" | "<=") && !rhs_type.is_numeric() && rhs_type != TypeInfo::Any
+    if matches!(op, ">" | "<" | ">=" | "<=")
+        && !rhs_type.is_numeric()
+        && !rhs_type.is_stringy()
+        && rhs_type != TypeInfo::Any
+        && lhs_type != TypeInfo::Time
     {
         return Some(AssertionTypeMismatch {
             rule_id: "SEM_T002".to_string(),
             line: 0,
             expression: expr.to_string(),
             message: format!(
-                "Ordering operator '{}' requires a number on the right, but {} is {}",
+                "Ordering operator '{}' requires a number or time string on the right, but {} is {}",
                 op,
                 rhs,
                 rhs_type.display_name()
             ),
-            expected: "number".to_string(),
+            expected: "number or string".to_string(),
             actual: rhs_type.display_name().to_string(),
         });
     }
@@ -267,14 +326,12 @@ fn types_compatible(a: TypeInfo, b: TypeInfo) -> bool {
     if a.is_numeric() && b.is_numeric() {
         return true;
     }
-    // String-like types are compatible
-    if a.is_stringy() && b.is_stringy() {
+    // Time is compatible with numeric (both support ordering)
+    if a == TypeInfo::Time && b.is_numeric() || b == TypeInfo::Time && a.is_numeric() {
         return true;
     }
-    // Bool is compatible with BoolOrNull
-    if matches!(a, TypeInfo::Bool | TypeInfo::BoolOrNull)
-        && matches!(b, TypeInfo::Bool | TypeInfo::BoolOrNull)
-    {
+    // String-like types are compatible
+    if a.is_stringy() && b.is_stringy() {
         return true;
     }
     // Unknown (Any) is compatible with anything
@@ -300,6 +357,7 @@ pub fn validate_plugin_semantics_completeness() -> Vec<String> {
 
 pub fn collect_assertion_type_mismatches(doc: &parser::GctfDocument) -> Vec<AssertionTypeMismatch> {
     let signatures = plugin_signatures();
+    let var_types = extract_variable_types(doc);
     let mut mismatches = Vec::new();
 
     for section in &doc.sections {
@@ -313,7 +371,7 @@ pub fn collect_assertion_type_mismatches(doc: &parser::GctfDocument) -> Vec<Asse
                 None => continue,
             };
 
-            if let Some(mut mismatch) = detect_type_mismatch(&trimmed, signatures) {
+            if let Some(mut mismatch) = detect_type_mismatch(&trimmed, signatures, &var_types) {
                 mismatch.line = section_content_line(section.start_line, idx);
                 mismatches.push(mismatch);
             }
@@ -455,5 +513,359 @@ test.Service/Method
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
         let unknown = collect_unknown_plugin_calls(&doc);
         assert!(unknown.is_empty());
+    }
+
+    // ─── Type cast semantics tests ────────────────────────────────────
+
+    #[test]
+    fn test_semantics_type_cast_number_allows_ordering() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.price:number >= 0
+.price:number > 0
+.price:number <= 100
+.price:number < 200
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let mismatches = collect_assertion_type_mismatches(&doc);
+        assert!(
+            mismatches.is_empty(),
+            "Expected no mismatches, got: {:?}",
+            mismatches
+        );
+    }
+
+    #[test]
+    fn test_semantics_type_cast_string_allows_contains() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.name:string contains "hello"
+.name:string startsWith "he"
+.name:string endsWith "lo"
+.name:string matches "^he.*lo$"
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let mismatches = collect_assertion_type_mismatches(&doc);
+        assert!(
+            mismatches.is_empty(),
+            "Expected no mismatches, got: {:?}",
+            mismatches
+        );
+    }
+
+    #[test]
+    fn test_semantics_type_cast_uint_allows_ordering() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+@len(.items):uint >= 0
+@len(.items):uint > 0
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let mismatches = collect_assertion_type_mismatches(&doc);
+        assert!(
+            mismatches.is_empty(),
+            "Expected no mismatches, got: {:?}",
+            mismatches
+        );
+    }
+
+    #[test]
+    fn test_semantics_type_cast_bool_allows_equal() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.active:bool == true
+.active:bool != false
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let mismatches = collect_assertion_type_mismatches(&doc);
+        assert!(
+            mismatches.is_empty(),
+            "Expected no mismatches, got: {:?}",
+            mismatches
+        );
+    }
+
+    #[test]
+    fn test_semantics_type_cast_rejects_bool_ordering() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.active:bool > 0
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let mismatches = collect_assertion_type_mismatches(&doc);
+        assert_eq!(mismatches.len(), 1);
+        assert_eq!(mismatches[0].rule_id, "SEM_T005");
+    }
+
+    #[test]
+    fn test_semantics_type_cast_rejects_string_ordering() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.name:string >= "a"
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let mismatches = collect_assertion_type_mismatches(&doc);
+        assert_eq!(mismatches.len(), 1);
+        assert_eq!(mismatches[0].rule_id, "SEM_T005");
+    }
+
+    #[test]
+    fn test_semantics_all_types_cast() {
+        let cases = [
+            ("bool", "true"),
+            ("uint", "0"),
+            ("number", "0"),
+            ("string", "\"\""),
+            ("json", "null"),
+            ("yaml", "null"),
+            ("uuid", "\"\""),
+            ("email", "\"\""),
+            ("url", "\"\""),
+            ("ip", "\"\""),
+        ];
+        for (type_name, rhs) in &cases {
+            let content = format!(
+                r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.x:{} == {}
+"#,
+                type_name, rhs
+            );
+            let doc = parser::parse_gctf_from_str(&content, "test.gctf").unwrap();
+            let mismatches = collect_assertion_type_mismatches(&doc);
+            assert!(
+                mismatches.is_empty(),
+                "Failed for type cast ':{}': {:?}",
+                type_name,
+                mismatches
+            );
+        }
+    }
+
+    #[test]
+    fn test_semantics_type_cast_without_annotation_fails() {
+        // Without cast, jq paths are `any` and ordering ops should fail
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.price >= 0
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let mismatches = collect_assertion_type_mismatches(&doc);
+        assert_eq!(mismatches.len(), 1);
+        assert_eq!(mismatches[0].rule_id, "SEM_T005");
+    }
+
+    // ─── Variable type tracking tests ─────────────────────────────────
+
+    #[test]
+    fn test_extract_variable_types_simple() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{"price": 42}
+
+--- EXTRACT ---
+total:number = .price
+name:string = .user.name
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let var_types = extract_variable_types(&doc);
+        assert_eq!(var_types.len(), 2);
+        assert_eq!(var_types.get("total"), Some(&TypeInfo::Number));
+        assert_eq!(var_types.get("name"), Some(&TypeInfo::String));
+    }
+
+    #[test]
+    fn test_extract_variable_types_without_type_annotation() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{"price": 42}
+
+--- EXTRACT ---
+total = .price
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let var_types = extract_variable_types(&doc);
+        assert!(
+            var_types.is_empty(),
+            "No type annotations should yield empty map"
+        );
+    }
+
+    #[test]
+    fn test_variable_type_in_assertion() {
+        // When {{price}} is used and its type is known from EXTRACT,
+        // ordering operators should be allowed
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{"price": 42}
+
+--- EXTRACT ---
+price:number = .price
+
+--- ASSERTS ---
+$price >= 0
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let mismatches = collect_assertion_type_mismatches(&doc);
+        assert!(
+            mismatches.is_empty(),
+            "Expected no mismatches for typed $var with ordering op, got: {:?}",
+            mismatches
+        );
+    }
+
+    #[test]
+    fn test_variable_type_without_annotation_fails() {
+        // When {{price}} has no type annotation, ordering ops should fail
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{"price": 42}
+
+--- EXTRACT ---
+price = .price
+
+--- ASSERTS ---
+$price >= 0
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let mismatches = collect_assertion_type_mismatches(&doc);
+        assert!(
+            !mismatches.is_empty(),
+            "Expected SEM_T005 for untyped $var with ordering op"
+        );
+        assert_eq!(mismatches[0].rule_id, "SEM_T005");
+    }
+
+    #[test]
+    fn test_variable_type_string_contains() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{"name": "hello"}
+
+--- EXTRACT ---
+user_name:string = .name
+
+--- ASSERTS ---
+$user_name contains "hello"
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let mismatches = collect_assertion_type_mismatches(&doc);
+        assert!(
+            mismatches.is_empty(),
+            "Expected no mismatches for typed $var with string op, got: {:?}",
+            mismatches
+        );
+    }
+
+    #[test]
+    fn test_time_type_ordering() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.created_at:time >= "2024-01-01"
+.expires_at:timestamp > "2025-01-01"
+.duration:duration < "30s"
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let mismatches = collect_assertion_type_mismatches(&doc);
+        assert!(
+            mismatches.is_empty(),
+            "Time type should allow ordering, got: {:?}",
+            mismatches
+        );
+    }
+
+    #[test]
+    fn test_time_type_rejects_string_ops() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.created_at:time contains "2024"
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let mismatches = collect_assertion_type_mismatches(&doc);
+        assert_eq!(mismatches.len(), 1);
+        assert_eq!(mismatches[0].rule_id, "SEM_T005");
+    }
+
+    #[test]
+    fn test_time_variable_type_in_assertion() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{"ts": "2024-06-15T10:00:00Z"}
+
+--- EXTRACT ---
+created:time = .ts
+
+--- ASSERTS ---
+$created > "2024-01-01"
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let mismatches = collect_assertion_type_mismatches(&doc);
+        assert!(
+            mismatches.is_empty(),
+            "Time typed $var should allow ordering, got: {:?}",
+            mismatches
+        );
     }
 }

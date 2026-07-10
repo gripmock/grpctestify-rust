@@ -36,7 +36,7 @@ pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
     };
 
     {
-        let cache = CHANNEL_CACHE.read().unwrap_or_else(|e| e.into_inner());
+        let cache = CHANNEL_CACHE.read().expect("lock poisoned");
         if let Some(channel) = cache.get(&cache_key) {
             tracing::debug!("Cache hit for channel to {}", config.address);
             return Ok(channel.clone());
@@ -56,7 +56,7 @@ pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
     };
 
     {
-        let mut cache = CHANNEL_CACHE.write().unwrap_or_else(|e| e.into_inner());
+        let mut cache = CHANNEL_CACHE.write().expect("lock poisoned");
         cache.insert(cache_key, channel.clone());
     }
 
@@ -224,6 +224,43 @@ mod tests {
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or(""),
             "abc-123"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(not(miri))]
+    async fn profile_channel_cache_hit() {
+        let config = GrpcClientConfig {
+            address: "http://localhost:14777".to_string(),
+            timeout_seconds: 1,
+            tls_config: None,
+            proto_config: None,
+            metadata: None,
+            target_service: None,
+            compression: Default::default(),
+        };
+
+        let start = std::time::Instant::now();
+        let r1 = create_channel(&config).await;
+        let d1 = start.elapsed();
+        eprintln!(
+            "channel[miss]: {:?} ({})",
+            d1,
+            if r1.is_ok() { "ok" } else { "err" }
+        );
+
+        let start = std::time::Instant::now();
+        let r2 = create_channel(&config).await;
+        let d2 = start.elapsed();
+        eprintln!(
+            "channel[hit]:  {:?} ({})",
+            d2,
+            if r2.is_ok() { "ok" } else { "err" }
+        );
+
+        assert!(
+            d2 < d1 || d2.as_micros() < 1000,
+            "cache hit should be faster than miss"
         );
     }
 }

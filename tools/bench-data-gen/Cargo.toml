@@ -1,0 +1,9 @@
+[package]
+name = "bench-data-gen"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+
+[workspace]

@@ -9,6 +9,32 @@ use crate::parser;
 use crate::semantics;
 use crate::utils::FileUtils;
 
+/// Normalize assertion lines:
+/// - convert `#` comments to `//`
+/// - normalize `:TypeName` spacing to stuck-together form (`.x:number` not `.x : number`)
+fn normalize_assertion_lines(raw: &str) -> Vec<String> {
+    raw.lines()
+        .map(|line| {
+            let line = normalize_hash_comment_line(line).unwrap_or_else(|| line.to_string());
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.is_empty() {
+                return line;
+            }
+            // Try to parse as assertion expression for canonical formatting
+            let expr = crate::parser::assertion_ast::parse_assertion(trimmed);
+            let serialized = crate::parser::assertion_ast::assertion_to_string(&expr);
+            if !matches!(&expr, crate::parser::assertion_ast::AssertionExpr::Raw(_)) {
+                // Preserve original indentation
+                let indent_len = line.len() - trimmed.len();
+                let indent = &line[..indent_len];
+                format!("{}{}", indent, serialized)
+            } else {
+                line
+            }
+        })
+        .collect()
+}
+
 fn normalize_hash_comment_line(line: &str) -> Option<String> {
     let trimmed = line.trim_start();
     if !trimmed.starts_with('#') {
@@ -260,6 +286,36 @@ fn format_non_json_section_lines(raw: &str) -> Vec<String> {
     normalize_lines(raw)
 }
 
+/// Special formatter for EXTRACT sections.
+/// Preserves `name:Type = .jq.path` syntax without breaking the `:Type` annotation.
+fn format_extract_section(raw: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in normalize_lines(raw) {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") || trimmed.is_empty() {
+            out.push(line);
+            continue;
+        }
+
+        // Try to parse as extract line with full type info
+        if let Some((name, type_opt, value)) =
+            crate::parser::gctf_tokenizer::tokenize_extract_line_full(trimmed)
+        {
+            let formatted = if let Some(tn) = type_opt {
+                format!("{}:{} = {}", name, tn, value)
+            } else {
+                format!("{} = {}", name, value)
+            };
+            // Preserve original indentation
+            let indent_len = line.len() - trimmed.len();
+            out.push(format!("{}{}", &line[..indent_len], formatted));
+        } else {
+            out.push(line);
+        }
+    }
+    out
+}
+
 fn format_key_values_section(raw: &str, sort_keys: bool) -> Vec<String> {
     let lines = normalize_lines(raw);
 
@@ -288,6 +344,32 @@ fn format_key_values_section(raw: &str, sort_keys: bool) -> Vec<String> {
     }
 
     items.into_iter().map(|(_, _, v)| v).collect()
+}
+
+fn format_options_section(raw: &str) -> Vec<String> {
+    let lines = normalize_lines(raw);
+    let mut items: Vec<(String, String)> = Vec::new();
+
+    for line in &lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") || trimmed.is_empty() {
+            continue;
+        }
+        if let Some((key, value)) = trimmed.split_once(':') {
+            let normalized_key = match key.trim() {
+                "retry-delay" => "retry_delay",
+                "no-retry" => "no_retry",
+                other => other,
+            };
+            items.push((
+                normalized_key.to_ascii_lowercase(),
+                format!("{}: {}", normalized_key, value.trim()),
+            ));
+        }
+    }
+
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+    items.into_iter().map(|(_, v)| v).collect()
 }
 
 fn trim_trailing_blank_lines(lines: &mut Vec<String>) {
@@ -324,15 +406,19 @@ fn format_section_lines(section: &crate::parser::ast::Section) -> Vec<String> {
                 out
             }
         }
-        // ASSERTS section uses raw_content directly (optimizer already applied)
+        // ASSERTS section — normalize type annotation spacing and comments
         (crate::parser::ast::SectionType::Asserts, _) => {
-            return normalize_lines(&section.raw_content);
+            return normalize_assertion_lines(&section.raw_content);
         }
+        (
+            crate::parser::ast::SectionType::Options,
+            crate::parser::ast::SectionContent::KeyValues(_),
+        ) => format_options_section(&section.raw_content),
         (_, crate::parser::ast::SectionContent::KeyValues(_)) => {
             format_key_values_section(&section.raw_content, true)
         }
         (_, crate::parser::ast::SectionContent::Extract(_)) => {
-            format_key_values_section(&section.raw_content, true)
+            format_extract_section(&section.raw_content)
         }
         _ => format_non_json_section_lines(&section.raw_content),
     };
@@ -342,7 +428,7 @@ fn format_section_lines(section: &crate::parser::ast::Section) -> Vec<String> {
 }
 
 /// Format a GCTF document chain via AST.
-/// Walks all sections in order. `New` sections become `--- NEW ---` separators.
+/// Walks all sections in order.
 fn format_gctf_chain(head: &crate::parser::GctfDocument, source: &str) -> String {
     let eol = canonical_line_ending();
     let lines: Vec<&str> = source.lines().collect();
@@ -1445,10 +1531,45 @@ test.Service/Method
 }
 
 --- EXTRACT ---
-auth_token: .token
 user_id: .id
+auth_token: .token
 "#;
         assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_extract_with_type_annotation() {
+        let source = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{"price": 42}
+
+--- EXTRACT ---
+total:number = .price
+"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let expected = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{
+  "price": 42
+}
+
+--- EXTRACT ---
+total:number = .price
+"#;
+        assert_eq!(
+            formatted, expected,
+            "Type annotation in EXTRACT should be preserved as total:number = .price"
+        );
     }
 
     #[test]

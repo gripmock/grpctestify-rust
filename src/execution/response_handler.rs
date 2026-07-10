@@ -5,8 +5,11 @@ use crate::execution::runner::{TestExecutionResult, TestExecutionStatus};
 use crate::grpc::GrpcResponse;
 use crate::parser::GctfDocument;
 use crate::parser::ast::{InlineOptions, Section, SectionContent, SectionType};
+use crate::plugins::PluginManager;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::LazyLock;
 
 /// Response validation result
 #[derive(Debug, Clone)]
@@ -21,12 +24,15 @@ pub struct ResponseHandler {
     assertion_engine: AssertionEngine,
 }
 
+static PLUGIN_REGISTRY: LazyLock<Arc<dyn apif_assert::registry::PluginRegistry>> =
+    LazyLock::new(|| Arc::new(PluginManager::new()));
+
 impl ResponseHandler {
     /// Create new response handler
     pub fn new(no_assert: bool) -> Self {
         Self {
             no_assert,
-            assertion_engine: AssertionEngine::new(),
+            assertion_engine: AssertionEngine::with_registry(PLUGIN_REGISTRY.clone()),
         }
     }
 

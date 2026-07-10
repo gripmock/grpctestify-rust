@@ -3,27 +3,35 @@
 use crate::diagnostics::{Diagnostic, DiagnosticSeverity};
 use anyhow::Result;
 
+pub mod bench;
 pub mod call;
 pub mod check;
 pub mod explain;
 pub mod fmt;
 pub mod gen_grpcurl;
 pub mod grpcurl;
+pub mod health;
+pub mod index_cmd;
 pub mod inspect;
 pub mod list;
 pub mod lsp;
+pub mod query_cmd;
 pub mod reflect;
 pub mod run;
 
+pub use bench::handle_bench;
 pub use call::handle_call;
 pub use check::handle_check;
 pub use explain::handle_explain;
 pub use fmt::handle_fmt;
 pub use gen_grpcurl::handle_gen;
 pub use grpcurl::handle_grpcurl;
+pub use health::handle_health;
+pub use index_cmd::handle_index;
 pub use inspect::handle_inspect;
 pub use list::handle_list;
 pub use lsp::handle_lsp;
+pub use query_cmd::handle_query;
 pub use reflect::handle_reflect;
 pub use run::run_tests;
 

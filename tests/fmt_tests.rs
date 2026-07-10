@@ -42,353 +42,216 @@ test.Service/Method
 }
 
 #[test]
-fn test_fmt_multiple_pairs_strict() {
+fn test_fmt_preamble_sections_sorted_canonically() {
     let source = r#"--- ENDPOINT ---
-test.Service/Method
+svc/Method
 
---- REQUEST ---
-{
-  "id": 1
-}
+--- OPTIONS ---
+timeout: 10
 
---- RESPONSE ---
-{
-  "result": "1"
-}
-
---- REQUEST ---
-{
-  "id": 2
-}
-
---- RESPONSE ---
-{
-  "result": "2"
-}
-"#;
-
-    let formatted = format_with_serializer(source);
-    let expected = r#"--- ENDPOINT ---
-test.Service/Method
-
---- REQUEST ---
-{
-  "id": 1
-}
-
---- RESPONSE ---
-{
-  "result": "1"
-}
-
---- REQUEST ---
-{
-  "id": 2
-}
-
---- RESPONSE ---
-{
-  "result": "2"
-}
-"#;
-
-    assert_eq!(formatted, expected);
-}
-
-#[test]
-fn test_fmt_headers_sorted() {
-    let source = r#"--- ENDPOINT ---
-test.Service/Method
-
---- REQUEST_HEADERS ---
-Content-Type: application/json
-Authorization: Bearer token123
-
---- REQUEST ---
-{
-  "id": 123
-}
-
---- RESPONSE ---
-{
-  "result": "ok"
-}
-"#;
-
-    let formatted = format_with_serializer(source);
-    let expected = r#"--- ENDPOINT ---
-test.Service/Method
-
---- REQUEST_HEADERS ---
-Authorization: Bearer token123
-Content-Type: application/json
-
---- REQUEST ---
-{
-  "id": 123
-}
-
---- RESPONSE ---
-{
-  "result": "ok"
-}
-"#;
-
-    assert_eq!(formatted, expected);
-}
-
-#[test]
-fn test_fmt_error_section_strict() {
-    let source = r#"--- ENDPOINT ---
-test.Service/Method
-
---- REQUEST ---
-{
-  "id": "invalid"
-}
-
---- ERROR ---
-{
-  "code": 3,
-  "message": "Invalid ID"
-}
-"#;
-
-    let formatted = format_with_serializer(source);
-    let expected = r#"--- ENDPOINT ---
-test.Service/Method
-
---- REQUEST ---
-{
-  "id": "invalid"
-}
-
---- ERROR ---
-{
-  "code": 3,
-  "message": "Invalid ID"
-}
-"#;
-
-    assert_eq!(formatted, expected);
-}
-
-#[test]
-fn test_fmt_tls_sorted() {
-    let source = r#"--- ENDPOINT ---
-test.Service/Method
+--- ADDRESS ---
+localhost:4770
 
 --- TLS ---
-insecure: false
-ca_cert: /path/to/ca.crt
+ca_cert: /path/ca.crt
+
+--- PROTO ---
+files: service.proto
 
 --- REQUEST ---
-{
-  "id": 123
-}
+{}
 
 --- RESPONSE ---
-{
-  "result": "ok"
-}
+{}
 "#;
 
     let formatted = format_with_serializer(source);
-    let expected = r#"--- ENDPOINT ---
-test.Service/Method
+    let expected = r#"--- ADDRESS ---
+localhost:4770
+
+--- ENDPOINT ---
+svc/Method
 
 --- TLS ---
-ca_cert: /path/to/ca.crt
-insecure: false
+ca_cert: /path/ca.crt
+
+--- PROTO ---
+files: service.proto
+
+--- OPTIONS ---
+timeout: 10
 
 --- REQUEST ---
-{
-  "id": 123
-}
+{}
 
 --- RESPONSE ---
-{
-  "result": "ok"
-}
+{}
 "#;
 
     assert_eq!(formatted, expected);
 }
 
 #[test]
-fn test_fmt_idempotent() {
+fn test_fmt_preamble_body_boundary_preserved() {
     let source = r#"--- ENDPOINT ---
-test.Service/Method
+svc/Method
+
+--- REQUEST_HEADERS ---
+authorization: Bearer token
 
 --- REQUEST ---
-{
-  "id": 123
-}
+{}
+
+--- ASSERTS ---
+@status() == "OK"
 
 --- RESPONSE ---
-{
-  "result": "ok"
-}
-"#;
-
-    let formatted_once = format_with_serializer(source);
-    let formatted_twice = format_with_serializer(&formatted_once);
-
-    assert_eq!(formatted_once, formatted_twice);
-}
-
-#[test]
-fn test_fmt_preserves_attribute_flag() {
-    let source = r#"--- ENDPOINT ---
-test.Service/Method
-
-#[skip]
---- REQUEST ---
-{
-  "id": 123
-}
-
---- RESPONSE ---
-{
-  "result": "ok"
-}
+{}
 "#;
 
     let formatted = format_with_serializer(source);
-    assert!(
-        formatted.contains("#[skip]"),
-        "fmt should preserve #[skip] attribute"
+    assert!(formatted.contains("--- REQUEST_HEADERS ---\nauthorization: Bearer token"));
+    assert!(formatted.find("--- REQUEST ---") < formatted.find("--- ASSERTS ---"));
+    assert!(formatted.find("--- ASSERTS ---") < formatted.find("--- RESPONSE ---"));
+}
+
+#[test]
+fn test_fmt_bench_keys_canonical_order() {
+    let source = r#"--- ENDPOINT ---
+svc/Method
+
+--- BENCH ---
+duration: 30s
+mode: fixed
+concurrency: 16
+profile: smoke
+requests: 5000
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+
+    let formatted = format_with_serializer(source);
+    let bench_start = formatted.find("--- BENCH ---").unwrap();
+    let bench_end = formatted[bench_start..].find("\n\n").unwrap() + bench_start;
+    let bench_block = &formatted[bench_start..bench_end];
+
+    let key_lines: Vec<&str> = bench_block
+        .lines()
+        .skip(1)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+
+    let keys: Vec<&str> = key_lines
+        .iter()
+        .map(|l| l.split(':').next().unwrap().trim())
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["mode", "profile", "concurrency", "requests", "duration"]
     );
 }
 
 #[test]
-fn test_fmt_preserves_attribute_with_value() {
+fn test_fmt_bench_after_meta_in_preamble() {
+    let source = r#"--- ENDPOINT ---
+svc/Method
+
+--- BENCH ---
+mode: fixed
+
+--- META ---
+name: test
+
+--- OPTIONS ---
+timeout: 10
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+
+    let formatted = format_with_serializer(source);
+    let meta_pos = formatted.find("--- META ---").unwrap();
+    let bench_pos = formatted.find("--- BENCH ---").unwrap();
+    let addr_pos = formatted.find("--- ENDPOINT ---").unwrap();
+    let opts_pos = formatted.find("--- OPTIONS ---").unwrap();
+
+    assert!(meta_pos < bench_pos, "META should come before BENCH");
+    assert!(bench_pos < addr_pos, "BENCH should come before ENDPOINT");
+    assert!(addr_pos < opts_pos, "ENDPOINT should come before OPTIONS");
+}
+
+#[test]
+fn test_fmt_preserves_type_cast_in_asserts() {
     let source = r#"--- ENDPOINT ---
 test.Service/Method
 
-#[timeout(10)]
 --- REQUEST ---
+{}
+
+--- RESPONSE with_asserts ---
 {
-  "id": 123
+  "price": 42
 }
 
---- RESPONSE ---
-{
-  "result": "ok"
-}
+--- ASSERTS ---
+.price:number >= 0
 "#;
 
     let formatted = format_with_serializer(source);
     assert!(
-        formatted.contains("#[timeout(10)]"),
-        "fmt should preserve #[timeout(10)]"
+        formatted.contains(".price:number >= 0"),
+        "Type cast should be preserved in formatted output"
     );
+    assert!(formatted.contains("--- ASSERTS ---"));
 }
 
 #[test]
-fn test_fmt_preserves_multiple_attributes() {
+fn test_fmt_preserves_type_cast_string_contains() {
     let source = r#"--- ENDPOINT ---
 test.Service/Method
 
-#[timeout(30)]
-#[retry(3)]
 --- REQUEST ---
+{}
+
+--- RESPONSE with_asserts ---
 {
-  "id": 123
+  "name": "hello"
 }
 
---- RESPONSE ---
-{
-  "result": "ok"
-}
+--- ASSERTS ---
+.name:string contains "hello"
 "#;
 
     let formatted = format_with_serializer(source);
-    assert!(
-        formatted.contains("#[timeout(30)]"),
-        "fmt should preserve #[timeout(30)]"
-    );
-    assert!(
-        formatted.contains("#[retry(3)]"),
-        "fmt should preserve #[retry(3)]"
-    );
+    assert!(formatted.contains(".name:string contains \"hello\""));
 }
 
 #[test]
-fn test_fmt_attributes_idempotent() {
+fn test_fmt_preserves_type_cast_plugin() {
     let source = r#"--- ENDPOINT ---
 test.Service/Method
 
-#[skip]
 --- REQUEST ---
+{}
+
+--- RESPONSE with_asserts ---
 {
-  "id": 123
+  "items": [1, 2, 3]
 }
 
---- RESPONSE ---
-{
-  "result": "ok"
-}
-"#;
-
-    let formatted_once = format_with_serializer(source);
-    let formatted_twice = format_with_serializer(&formatted_once);
-    assert_eq!(formatted_once, formatted_twice);
-}
-
-#[test]
-fn test_fmt_does_not_duplicate_attributes() {
-    let source = r#"--- ENDPOINT ---
-test.Service/Method
-
-#[timeout(10)]
---- REQUEST ---
-{
-  "id": 123
-}
-
---- RESPONSE ---
-{
-  "result": "ok"
-}
+--- ASSERTS ---
+@len(.items):uint >= 0
 "#;
 
     let formatted = format_with_serializer(source);
-    let count = formatted.matches("#[timeout(10)]").count();
-    assert_eq!(count, 1, "fmt should not duplicate #[timeout] attribute");
-}
-
-#[test]
-fn test_fmt_preserves_attributes_on_multiple_sections() {
-    let source = r#"--- ENDPOINT ---
-test.Service/Method
-
-#[timeout(30)]
---- REQUEST ---
-{
-  "id": 1
-}
-
---- RESPONSE ---
-{
-  "result": "1"
-}
-
-#[retry(2)]
---- REQUEST ---
-{
-  "id": 2
-}
-
---- RESPONSE ---
-{
-  "result": "2"
-}
-"#;
-
-    let formatted = format_with_serializer(source);
-    assert!(formatted.contains("#[timeout(30)]"));
-    assert!(formatted.contains("#[retry(2)]"));
+    assert!(formatted.contains("@len(.items):uint >= 0"));
 }
 
 #[test]

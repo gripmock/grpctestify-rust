@@ -84,7 +84,7 @@ impl TestValidator {
 
     /// Get result summary
     pub fn get_result_summary(result: &TestExecutionResult) -> String {
-        let duration = result.grpc_duration_ms.unwrap_or(0);
+        let duration = result.call_duration_ms.unwrap_or(0);
         match &result.status {
             crate::execution::TestExecutionStatus::Pass => {
                 format!("✓ Passed ({}ms)", duration)
@@ -129,6 +129,7 @@ mod tests {
                 source: None,
                 mtime: None,
                 parsed_at: 0,
+                ..Default::default()
             },
             next_document: None,
         }

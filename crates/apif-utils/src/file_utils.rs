@@ -1,0 +1,132 @@
+// Cross-platform file utilities
+
+use anyhow::Result;
+use std::path::{Path, PathBuf};
+
+/// File utilities for cross-platform operations
+pub struct FileUtils;
+
+impl FileUtils {
+    /// Collect all .gctf files from a directory, optionally excluding patterns
+    pub fn collect_test_files(path: &Path, exclude_patterns: &[String]) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let walker = walkdir::WalkDir::new(path).follow_links(true).into_iter();
+        for entry in walker.flatten() {
+            let path = entry.path();
+            if path
+                .extension()
+                .is_some_and(|ext| ext == "gctf" || ext == "apif")
+                && !is_excluded(path, exclude_patterns)
+            {
+                files.push(path.to_path_buf());
+            }
+        }
+        files
+    }
+
+    /// Sort files by name or modification time
+    pub fn sort_files(files: &mut [PathBuf], sort_by: &str) {
+        match sort_by {
+            "name" => files.sort_by(|a, b| a.file_name().cmp(&b.file_name())),
+            "mtime" | "time" => files.sort_by(|a, b| {
+                Self::get_mtime(b)
+                    .unwrap_or(0)
+                    .cmp(&Self::get_mtime(a).unwrap_or(0))
+            }),
+            "random" => {
+                use rand::SeedableRng;
+                use rand::rngs::StdRng;
+                use rand::seq::SliceRandom;
+                let mut rng = StdRng::from_rng(&mut rand::rng());
+                files.shuffle(&mut rng);
+            }
+            _ => {}
+        }
+    }
+
+    /// Get file modification time as Unix timestamp
+    pub fn get_mtime(path: &Path) -> Result<i64> {
+        let metadata = std::fs::metadata(path)?;
+        let mtime = metadata
+            .modified()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        Ok(mtime)
+    }
+
+    /// Get file size in bytes
+    pub fn get_file_size(path: &Path) -> Result<u64> {
+        let metadata = std::fs::metadata(path)?;
+        Ok(metadata.len())
+    }
+
+    /// Resolve a relative path against a base file's directory
+    pub fn resolve_relative_path(base_file_path: &Path, relative_path: &str) -> PathBuf {
+        let base_dir = base_file_path.parent().unwrap_or(Path::new("."));
+        base_dir.join(relative_path)
+    }
+}
+
+fn is_excluded(path: &Path, exclude_patterns: &[String]) -> bool {
+    if exclude_patterns.is_empty() {
+        return false;
+    }
+    let path_str = path.to_string_lossy();
+    exclude_patterns.iter().any(|pattern| {
+        if let Ok(glob) = globset::Glob::new(pattern).map(|g| g.compile_matcher()) {
+            glob.is_match(path_str.as_ref())
+        } else {
+            path_str.contains(pattern.as_str())
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    #[cfg(not(miri))]
+    fn test_collect_test_files_empty_dir() {
+        let dir = std::env::temp_dir().join("gctf_test_empty");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let files = FileUtils::collect_test_files(&dir, &[]);
+        assert!(files.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn test_collect_test_files_with_gctf() {
+        let dir = std::env::temp_dir().join("gctf_test_files");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("test.gctf"), "content").unwrap();
+        fs::write(dir.join("other.txt"), "content").unwrap();
+        let files = FileUtils::collect_test_files(&dir, &[]);
+        assert_eq!(files.len(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_resolve_relative_path() {
+        let base = Path::new("/home/user/tests/test.gctf");
+        let resolved = FileUtils::resolve_relative_path(base, "data/file.csv");
+        assert_eq!(resolved, Path::new("/home/user/tests/data/file.csv"));
+    }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn test_get_file_size() {
+        let dir = std::env::temp_dir().join("gctf_test_size");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("test.gctf");
+        fs::write(&file, "hello").unwrap();
+        assert_eq!(FileUtils::get_file_size(&file).unwrap(), 5);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

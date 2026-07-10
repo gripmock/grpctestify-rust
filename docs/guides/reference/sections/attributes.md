@@ -1,12 +1,5 @@
 # Attributes
 
-::: warning Experimental
-Attributes are an **experimental feature**.
-The syntax, behavior, and available attributes may change in future releases
-without a migration path.
-This feature may be removed entirely in a future version.
-:::
-
 Per-section execution modifiers using `#[name(value)]` syntax.
 
 ## When to use
@@ -132,9 +125,13 @@ search.SearchService/Search
 - Attributes apply to the section that follows them
 - Values are strings by default; numbers are parsed from the value
 - Quoted strings are supported: `#[name("My Test")]`
+- Runtime attribute naming follows snake_case (`#[retry_delay]`, `#[no_retry]`)
 
 ## Related
 
 - [META](./meta) — file-level metadata (tags, owner, summary)
 - [OPTIONS](./options) — global execution options
+- Runtime precedence quick map:
+  - `run`: section attributes > `OPTIONS` > CLI runtime baseline/defaults
+  - `bench`: CLI bench flags > `BENCH` section > bench defaults
 - [Report Formats](../api/report-formats)

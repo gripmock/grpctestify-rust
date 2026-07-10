@@ -13,70 +13,79 @@ api.ItemService/ListItems
 
 --- RESPONSE with_asserts ---
 {
-  "items": [
-    { "id": "item-1", "name": "Laptop" },
-    { "id": "item-2", "name": "Phone" }
-  ],
   "cursor": "eyJvZmZzZXQiOjEwfQ==",
   "has_more": true,
+  "items": [
+    {
+      "id": "item-1",
+      "name": "Laptop"
+    },
+    {
+      "id": "item-2",
+      "name": "Phone"
+    }
+  ],
   "total": 42
 }
 
 --- EXTRACT ---
-next_cursor = .cursor
-item_count = .items | length
-has_more = .has_more
 
 --- ASSERTS ---
-$item_count == 2
-$has_more == true
+item_count == 2
+has_more == true
 
 // Document 2: fetch second page using cursor
+
 --- ENDPOINT ---
 api.ItemService/ListItems
 
 --- REQUEST ---
 {
   "category": "electronics",
-  "limit": 10,
-  "cursor": "{{next_cursor}}"
+  "cursor": "{{next_cursor}}",
+  "limit": 10
 }
 
 --- RESPONSE with_asserts ---
 {
-  "items": [
-    { "id": "item-3", "name": "Tablet" },
-    { "id": "item-4", "name": "Monitor" }
-  ],
   "cursor": "eyJvZmZzZXQiOjIwfQ==",
   "has_more": true,
+  "items": [
+    {
+      "id": "item-3",
+      "name": "Tablet"
+    },
+    {
+      "id": "item-4",
+      "name": "Monitor"
+    }
+  ],
   "total": 42
 }
 
 --- EXTRACT ---
-next_cursor = .cursor
-page2_count = .items | length
 
 --- ASSERTS ---
-$page2_count == 2
-$next_cursor != "{{next_cursor}}"
+page2_count == 2
+next_cursor != "{{next_cursor}}"
 
 // Document 3: fetch remaining items (last page)
+
 --- ENDPOINT ---
 api.ItemService/ListItems
 
 --- REQUEST ---
 {
   "category": "electronics",
-  "limit": 10,
-  "cursor": "{{next_cursor}}"
+  "cursor": "{{next_cursor}}",
+  "limit": 10
 }
 
 --- RESPONSE with_asserts ---
 {
-  "items": [],
   "cursor": "",
   "has_more": false,
+  "items": [],
   "total": 42
 }
 

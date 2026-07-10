@@ -213,6 +213,7 @@ rule_id_table! {
     P001 => "OPT_P001",
     P002 => "OPT_P002",
     T001 => "OPT_T001",
+    T002 => "OPT_T002",
 }
 
 impl std::fmt::Display for RuleId {
@@ -387,9 +388,15 @@ const REWRITE_RULES: &[RewriteRuleMetadata] = &[
     },
     RewriteRuleMetadata {
         id: rule_ids::T001,
-        preconditions: "UInt-returning plugin (e.g. @len) compared with 0 via >= or <=",
-        negative_cases: "plugin does not return UInt or comparison is not with 0",
-        proof_note: "Unsigned integers are always >= 0, so @uint() >= 0 = true",
+        preconditions: "lhs is UInt plugin expr and rhs is 0",
+        negative_cases: "non-zero or non-UInt plugin",
+        proof_note: "UInt is always >= 0, so the comparison is always true",
+    },
+    RewriteRuleMetadata {
+        id: rule_ids::T002,
+        preconditions: "expression has `:TypeName` suffix and the inner expression already has that type",
+        negative_cases: "expression has `:TypeName` but the inner expression has a different or unknown type",
+        proof_note: "Type annotation is redundant when the type is already known",
     },
 ];
 
@@ -682,7 +689,10 @@ fn is_idempotent_expr(expr: &str, signatures: &HashMap<String, PluginSignature>)
         return true;
     }
 
-    if (trimmed.starts_with("{{") && trimmed.ends_with("}}")) || trimmed.starts_with('.') {
+    if (trimmed.starts_with("{{") && trimmed.ends_with("}}"))
+        || trimmed.starts_with('$')
+        || trimmed.starts_with('.')
+    {
         return true;
     }
 
@@ -1052,10 +1062,9 @@ fn suggest_type_aware_numeric_comparison(expr: &str) -> Option<(RuleId, String)>
 
     let (left, right) = if let Some(idx) = trimmed.find(">=") {
         (trimmed[..idx].trim(), trimmed[idx + 2..].trim())
-    } else if let Some(idx) = trimmed.find("<=") {
-        (trimmed[..idx].trim(), trimmed[idx + 2..].trim())
     } else {
-        return None;
+        let idx = trimmed.find("<=")?;
+        (trimmed[..idx].trim(), trimmed[idx + 2..].trim())
     };
 
     let plugin_call = if right == "0" {
@@ -1113,6 +1122,102 @@ fn negate_comparison_expr(inner: &str) -> Option<String> {
     }
 
     None
+}
+
+/// Detect redundant type annotations: `@len(.x):uint` → `@len(.x)` when `@len` already returns uint.
+fn suggest_redundant_type_cast(
+    expr: &str,
+    signatures: &HashMap<String, PluginSignature>,
+) -> Option<(RuleId, String)> {
+    let colon_pos = expr.rfind(':')?;
+    if colon_pos == 0 {
+        return None;
+    }
+
+    let cast_type_name = &expr[colon_pos + 1..];
+    let inner_expr = expr[..colon_pos].trim();
+
+    // Extract the type name (stop at non-alphanumeric chars)
+    let cast_type_end = cast_type_name
+        .find(|c: char| !c.is_alphanumeric() && c != '_')
+        .unwrap_or(cast_type_name.len());
+    let cast_type_name = &cast_type_name[..cast_type_end];
+    if cast_type_name.is_empty() {
+        return None;
+    }
+
+    // Only consider casts into valid TypeInfo names
+    let cast_type = TypeInfo::parse_type_name(cast_type_name)?;
+
+    // Infer type of inner expression
+    let inner_tokens = parser::tokenizer::tokenize_assertion(inner_expr);
+    let inner_type = infer_type_from_tokens_inner(&inner_tokens, signatures);
+
+    // If inner type is unknown, cast might be useful — don't flag
+    if inner_type == TypeInfo::Any || inner_type == TypeInfo::Yaml || inner_type == TypeInfo::Json {
+        return None;
+    }
+
+    // If the cast type matches the inferred type, it's redundant
+    let cast_base = cast_type.base_type();
+    let inner_base = inner_type.base_type();
+
+    let types_match =
+        cast_base == inner_base || (cast_base.is_numeric() && inner_base.is_numeric());
+
+    if !types_match {
+        return None;
+    }
+
+    // Build the rewritten expression by removing the `:type` suffix
+    let after_colon = &expr[colon_pos + 1..];
+    let rest = after_colon[cast_type_name.len()..].trim();
+
+    let rewritten = if rest.is_empty() {
+        inner_expr.to_string()
+    } else {
+        format!("{} {}", inner_expr, rest)
+    };
+
+    Some((rule_ids::T002, rewritten))
+}
+
+/// Thin wrapper that calls `super::infer_type_from_tokens` for the optimizer context.
+fn infer_type_from_tokens_inner(
+    tokens: &[parser::tokenizer::Token],
+    signatures: &HashMap<String, PluginSignature>,
+) -> TypeInfo {
+    // Reuse the same logic as the semantics module
+    if tokens.len() == 1 {
+        return match &tokens[0].kind {
+            parser::tokenizer::TokenKind::StringLit(_) => TypeInfo::String,
+            parser::tokenizer::TokenKind::NumberLit(v) if v.parse::<f64>().is_ok() => {
+                TypeInfo::Number
+            }
+            parser::tokenizer::TokenKind::Ident(s) if s == "true" || s == "false" => TypeInfo::Bool,
+            _ => TypeInfo::Any,
+        };
+    }
+
+    if tokens.len() >= 3
+        && matches!(&tokens[0].kind, parser::tokenizer::TokenKind::At)
+        && matches!(&tokens[1].kind, parser::tokenizer::TokenKind::Ident(name) if {
+            if let Some(sig) = signatures.get(name.as_str()) {
+                return sig.return_type;
+            }
+            false
+        })
+    {
+        return TypeInfo::Any;
+    }
+
+    for token in tokens {
+        if let parser::tokenizer::TokenKind::StringLit(_) = &token.kind {
+            return TypeInfo::String;
+        }
+    }
+
+    TypeInfo::Any
 }
 
 fn rewrite_assertion_expression_with_context(
@@ -1190,6 +1295,11 @@ fn rewrite_assertion_expression_with_context(
 
     // Type-aware optimizations based on TypeInfo
     if let Some((rule_id, rewrite)) = suggest_type_aware_numeric_comparison(expr) {
+        return Some((rule_id, rewrite));
+    }
+
+    // Redundant type annotation removal
+    if let Some((rule_id, rewrite)) = suggest_redundant_type_cast(expr, signatures) {
         return Some((rule_id, rewrite));
     }
 
@@ -1491,7 +1601,7 @@ test.Service/Method
 test.Service/Method
 
 --- ASSERTS ---
-{{ user_id }} != {{ user_id }}
+$user_id != $user_id
 "#;
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
@@ -2115,7 +2225,9 @@ not not @has_header("x")
             }
         }
 
-        let engine = AssertionEngine::new();
+        let engine = AssertionEngine::with_registry(std::sync::Arc::new(
+            crate::plugins::PluginManager::new(),
+        ));
         let cases = [
             "!!@has_header(\"x\")",
             "not not @has_header(\"x\")",
@@ -2246,7 +2358,7 @@ not not @has_header("x")
 .name startswith "abc"
 3 > 2
 .user.id == .user.id
-{{ user_id }} != {{ user_id }}
+$user_id != $user_id
 if true then "always" else "never" end
 if .x > 0 then "same" else "same" end
 if @has_header("x") then true else false end
@@ -2262,7 +2374,9 @@ not (.status == 200)
         let hints = collect_assertion_optimizations(&doc);
         assert!(!hints.is_empty());
 
-        let engine = AssertionEngine::new();
+        let engine = AssertionEngine::with_registry(std::sync::Arc::new(
+            crate::plugins::PluginManager::new(),
+        ));
         let contexts = vec![
             (
                 "status_200_with_header",
@@ -2304,5 +2418,89 @@ not (.status == 200)
                 );
             }
         }
+    }
+
+    // ─── Redundant type cast tests ───────────────────────────────────
+
+    #[test]
+    fn test_suggest_redundant_type_cast_len_uint() {
+        let expr = "@len(.items):uint >= 0";
+        let signatures = plugin_signatures();
+        let result = suggest_redundant_type_cast(expr, signatures);
+        assert!(result.is_some(), "Expected redundant cast for @len(:uint)");
+        if let Some((rule_id, rewritten)) = result {
+            assert_eq!(rule_id, rule_ids::T002);
+            assert_eq!(rewritten, "@len(.items) >= 0");
+        }
+    }
+
+    #[test]
+    fn test_suggest_redundant_type_cast_header_string() {
+        // @header returns String, so :string is redundant
+        let expr = "@header(\"x\"):string != null";
+        let signatures = plugin_signatures();
+        let result = suggest_redundant_type_cast(expr, signatures);
+        assert!(
+            result.is_some(),
+            "Expected redundant cast for @header(:string)"
+        );
+        if let Some((rule_id, rewritten)) = result {
+            assert_eq!(rule_id, rule_ids::T002);
+            assert_eq!(rewritten, "@header(\"x\") != null");
+        }
+    }
+
+    #[test]
+    fn test_suggest_redundant_type_cast_len_to_number() {
+        // @len returns UInt, :number is numeric-compatible → redundant
+        let expr = "@len(.items):number >= 0";
+        let signatures = plugin_signatures();
+        let result = suggest_redundant_type_cast(expr, signatures);
+        assert!(
+            result.is_some(),
+            "Expected redundant cast for @len(:number)"
+        );
+        if let Some((_, rewritten)) = result {
+            assert_eq!(rewritten, "@len(.items) >= 0");
+        }
+    }
+
+    #[test]
+    fn test_suggest_non_redundant_type_cast_number() {
+        // .price:number is NOT redundant because .price is Any
+        let expr = ".price:number >= 0";
+        let signatures = plugin_signatures();
+        let result = suggest_redundant_type_cast(expr, signatures);
+        assert!(
+            result.is_none(),
+            "Should not flag .price:number as redundant"
+        );
+    }
+
+    #[test]
+    fn test_suggest_non_redundant_type_cast_string() {
+        // .name:string is NOT redundant because .name is Any
+        let expr = ".name:string contains \"hello\"";
+        let signatures = plugin_signatures();
+        let result = suggest_redundant_type_cast(expr, signatures);
+        assert!(
+            result.is_none(),
+            "Should not flag .name:string as redundant"
+        );
+    }
+
+    #[test]
+    fn test_collect_redundant_type_cast_optimization() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+@len(.items):uint >= 0
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let hints = collect_assertion_optimizations(&doc);
+        assert!(!hints.is_empty(), "Expected at least one optimization hint");
+        assert_eq!(hints[0].rule_id, rule_ids::T002);
+        assert_eq!(hints[0].after, "@len(.items) >= 0");
     }
 }

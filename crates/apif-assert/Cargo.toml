@@ -1,0 +1,21 @@
+[package]
+name = "apif-assert"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Assertion engine for .apif/.gctf test files"
+
+[dependencies]
+apif-ast = { path = "../apif-ast" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+jaq-core = { workspace = true }
+jaq-std = { workspace = true }
+jaq-json = { workspace = true }
+console = "0.16"
+dissimilar = "1.0"
+regex = { workspace = true }
+
+[dev-dependencies]

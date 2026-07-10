@@ -25,9 +25,59 @@ struct CallOptions<'a> {
     show_error: bool,
     connect_timeout: u64,
     max_time: u64,
+    insecure: bool,
 }
 
 pub async fn handle_call(args: &CallArgs) -> Result<()> {
+    // --bench mode: forward to benchmark
+    if args.bench {
+        let bench_args = crate::cli::args::BenchArgs {
+            test_paths: vec![args.file.clone()],
+            profile: None,
+            mode: None,
+            concurrency: args.concurrency,
+            requests: args.requests,
+            duration: args.duration.clone(),
+            ramp_up: None,
+            warmup: None,
+            max_duration: None,
+            max_rps: None,
+            load_schedule: None,
+            load_start: None,
+            load_step: None,
+            load_end: None,
+            load_step_duration: None,
+            load_max_duration: None,
+            connections: None,
+            connect_timeout: None,
+            keepalive: None,
+            cpus: None,
+            name: None,
+            assert_mode: None,
+            no_assert: false,
+            sample_rate: None,
+            cache: None,
+            skip_first: None,
+            count_errors_in_latency: None,
+            duration_stop: None,
+            latency_percentiles: None,
+            progress_interval: None,
+            format: "console".to_string(),
+            output: None,
+            report_template: None,
+            allure_output_dir: None,
+            compact: false,
+            tags: vec![],
+            skip_tags: vec![],
+            exclude: vec![],
+            list_profiles: false,
+            profile_file: None,
+            call: None,
+            data: None,
+        };
+        return crate::commands::bench::handle_bench(&bench_args).await;
+    }
+
     if args.doc_index == Some(0) {
         anyhow::bail!("--doc-index must be >= 1");
     }
@@ -80,6 +130,7 @@ pub async fn handle_call(args: &CallArgs) -> Result<()> {
             show_error: args.show_error,
             connect_timeout: args.connect_timeout,
             max_time: args.max_time,
+            insecure: args.insecure,
         };
 
         handle_call_document(d, &file_path, opts).await?;
@@ -148,7 +199,21 @@ async fn handle_call_document(
     let full_service = runner_helpers::full_service_name(&package, &service);
 
     let address = runner_helpers::effective_address(doc);
-    let tls_config = runner_helpers::build_tls_config(doc, gctf_file);
+    let mut tls_config = runner_helpers::build_tls_config(doc, gctf_file);
+    if opts.insecure {
+        tls_config = tls_config
+            .map(|mut t| {
+                t.insecure_skip_verify = true;
+                t
+            })
+            .or(Some(crate::grpc::TlsConfig {
+                ca_cert_path: None,
+                client_cert_path: None,
+                client_key_path: None,
+                server_name: None,
+                insecure_skip_verify: true,
+            }));
+    }
     let tls_label = if tls_config.is_some() {
         "TLS"
     } else {
@@ -316,22 +381,22 @@ async fn handle_call_document(
                     }
                 }
 
-                let grpc_status = trailers
+                let rpc_status = trailers
                     .get("grpc-status")
                     .and_then(|s| s.parse::<u32>().ok())
                     .unwrap_or(0);
 
                 if opts.verbose {
-                    if grpc_status == 0 {
+                    if rpc_status == 0 {
                         vinfo(opts.silent, "Connection #0 left intact");
                     } else {
-                        let grpc_msg = trailers
+                        let call_msg = trailers
                             .get("grpc-message")
                             .map(|s| s.as_str())
                             .unwrap_or("");
                         vinfo(
                             opts.silent,
-                            &format!("gRPC error: code={} message={}", grpc_status, grpc_msg),
+                            &format!("gRPC error: code={} message={}", rpc_status, call_msg),
                         );
                     }
                 }

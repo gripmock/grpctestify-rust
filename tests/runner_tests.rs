@@ -13,6 +13,7 @@ fn create_empty_doc() -> GctfDocument {
             source: None,
             mtime: None,
             parsed_at: 0,
+            ..Default::default()
         },
         next_document: None,
     }

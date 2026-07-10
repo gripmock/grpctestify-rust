@@ -8,9 +8,49 @@ use crate::grpc::{CompressionMode, ProtoConfig, TlsConfig};
 use crate::parser::ast::GctfDocument;
 use crate::polyfill::runtime;
 use crate::utils::file::FileUtils;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
+
+/// Convert apif-execution CallStreamItem + CallError to gRPC StreamItem + tonic::Status.
+/// Used by the CallClient factory path in the runner to maintain compatibility
+/// with the existing gRPC-centric error and stream handling code.
+pub fn convert_call_item(
+    item: Result<apif_execution::CallStreamItem, apif_execution::CallError>,
+) -> Result<crate::grpc::client::StreamItem, tonic::Status> {
+    match item {
+        Ok(apif_execution::CallStreamItem::Message(msg)) => {
+            Ok(crate::grpc::client::StreamItem::Message(msg))
+        }
+        Ok(apif_execution::CallStreamItem::Trailers(t)) => {
+            Ok(crate::grpc::client::StreamItem::Trailers(t))
+        }
+        Err(err) => {
+            let code = match err.code {
+                0 => tonic::Code::Ok,
+                1 => tonic::Code::Cancelled,
+                2 => tonic::Code::Unknown,
+                3 => tonic::Code::InvalidArgument,
+                4 => tonic::Code::DeadlineExceeded,
+                5 => tonic::Code::NotFound,
+                6 => tonic::Code::AlreadyExists,
+                7 => tonic::Code::PermissionDenied,
+                8 => tonic::Code::ResourceExhausted,
+                9 => tonic::Code::FailedPrecondition,
+                10 => tonic::Code::Aborted,
+                11 => tonic::Code::OutOfRange,
+                12 => tonic::Code::Unimplemented,
+                13 => tonic::Code::Internal,
+                14 => tonic::Code::Unavailable,
+                15 => tonic::Code::DataLoss,
+                16 => tonic::Code::Unauthenticated,
+                _ => tonic::Code::Unknown,
+            };
+            Err(tonic::Status::new(code, err.message))
+        }
+    }
+}
 
 /// Buffer size for the request message channel.
 /// Controls back-pressure for client streaming: larger values allow more
@@ -75,6 +115,216 @@ pub fn parse_compression_option(options: &HashMap<String, String>) -> Compressio
             _ => None,
         })
         .unwrap_or_else(CompressionMode::from_env)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeOptionSource {
+    SectionAttribute,
+    FileOptions,
+    CliDefaults,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeOptionWithSource<T> {
+    pub value: T,
+    pub source: RuntimeOptionSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectiveRuntimeOptions {
+    pub timeout_seconds: RuntimeOptionWithSource<u64>,
+    pub retry: RuntimeOptionWithSource<u32>,
+    pub retry_delay_seconds: RuntimeOptionWithSource<f64>,
+    pub no_retry: RuntimeOptionWithSource<bool>,
+    pub compression: RuntimeOptionWithSource<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CliRuntimeDefaults {
+    pub timeout_seconds: u64,
+    pub retry: u32,
+    pub retry_delay_seconds: f64,
+    pub no_retry: bool,
+}
+
+pub fn resolve_effective_runtime_options(
+    document: &GctfDocument,
+    cli: CliRuntimeDefaults,
+) -> Result<EffectiveRuntimeOptions, String> {
+    let options = document.get_options().unwrap_or_default();
+
+    let timeout_from_attr = document
+        .sections
+        .iter()
+        .filter_map(|s| s.get_timeout())
+        .find(|&v| v > 0);
+    let timeout_seconds = if let Some(v) = timeout_from_attr {
+        RuntimeOptionWithSource {
+            value: v,
+            source: RuntimeOptionSource::SectionAttribute,
+        }
+    } else if let Some(value) = options.get("timeout") {
+        match value.trim().parse::<u64>() {
+            Ok(v) if v > 0 => RuntimeOptionWithSource {
+                value: v,
+                source: RuntimeOptionSource::FileOptions,
+            },
+            _ => {
+                return Err(format!(
+                    "OPTIONS.timeout must be a positive integer, got '{}'",
+                    value
+                ));
+            }
+        }
+    } else {
+        RuntimeOptionWithSource {
+            value: cli.timeout_seconds,
+            source: RuntimeOptionSource::CliDefaults,
+        }
+    };
+
+    let no_retry_from_attr = document
+        .sections
+        .iter()
+        .filter_map(|s| {
+            s.get_attribute("no_retry")
+                .or_else(|| s.get_attribute("no-retry"))
+        })
+        .filter_map(|a| a.parse_bool())
+        .next();
+    let no_retry = if let Some(v) = no_retry_from_attr {
+        RuntimeOptionWithSource {
+            value: v,
+            source: RuntimeOptionSource::SectionAttribute,
+        }
+    } else if let Some(value) = options.get("no_retry").or_else(|| options.get("no-retry")) {
+        let parsed = match value.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Some(true),
+            "false" | "0" | "no" | "off" => Some(false),
+            _ => None,
+        };
+        match parsed {
+            Some(v) => RuntimeOptionWithSource {
+                value: v,
+                source: RuntimeOptionSource::FileOptions,
+            },
+            None => {
+                return Err(format!(
+                    "OPTIONS.no_retry must be a boolean, got '{}'",
+                    value
+                ));
+            }
+        }
+    } else {
+        RuntimeOptionWithSource {
+            value: cli.no_retry,
+            source: RuntimeOptionSource::CliDefaults,
+        }
+    };
+
+    let retry_from_attr = document
+        .sections
+        .iter()
+        .filter_map(|s| s.get_retry())
+        .next();
+    let retry = if let Some(v) = retry_from_attr {
+        RuntimeOptionWithSource {
+            value: v,
+            source: RuntimeOptionSource::SectionAttribute,
+        }
+    } else if let Some(value) = options.get("retry") {
+        match value.trim().parse::<u32>() {
+            Ok(v) => RuntimeOptionWithSource {
+                value: v,
+                source: RuntimeOptionSource::FileOptions,
+            },
+            Err(_) => {
+                return Err(format!(
+                    "OPTIONS.retry must be a non-negative integer, got '{}'",
+                    value
+                ));
+            }
+        }
+    } else {
+        RuntimeOptionWithSource {
+            value: cli.retry,
+            source: RuntimeOptionSource::CliDefaults,
+        }
+    };
+
+    let retry_delay_from_attr = document
+        .sections
+        .iter()
+        .filter_map(|s| {
+            s.get_attribute("retry_delay")
+                .or_else(|| s.get_attribute("retry-delay"))
+        })
+        .filter_map(|a| a.parse_f64())
+        .find(|v| *v >= 0.0);
+    let retry_delay_seconds = if let Some(v) = retry_delay_from_attr {
+        RuntimeOptionWithSource {
+            value: v,
+            source: RuntimeOptionSource::SectionAttribute,
+        }
+    } else if let Some(value) = options
+        .get("retry_delay")
+        .or_else(|| options.get("retry-delay"))
+    {
+        match value.trim().parse::<f64>() {
+            Ok(v) if v >= 0.0 => RuntimeOptionWithSource {
+                value: v,
+                source: RuntimeOptionSource::FileOptions,
+            },
+            _ => {
+                return Err(format!(
+                    "OPTIONS.retry_delay must be a non-negative number, got '{}'",
+                    value
+                ));
+            }
+        }
+    } else {
+        RuntimeOptionWithSource {
+            value: cli.retry_delay_seconds,
+            source: RuntimeOptionSource::CliDefaults,
+        }
+    };
+
+    let compression_from_attr = document
+        .sections
+        .iter()
+        .filter_map(|s| s.get_compression())
+        .next();
+    let compression = if let Some(v) = compression_from_attr {
+        RuntimeOptionWithSource {
+            value: v,
+            source: RuntimeOptionSource::SectionAttribute,
+        }
+    } else if options.contains_key("compression") {
+        RuntimeOptionWithSource {
+            value: match parse_compression_option(&options) {
+                CompressionMode::Gzip => "gzip".to_string(),
+                CompressionMode::None => "none".to_string(),
+            },
+            source: RuntimeOptionSource::FileOptions,
+        }
+    } else {
+        RuntimeOptionWithSource {
+            value: match CompressionMode::from_env() {
+                CompressionMode::Gzip => "gzip".to_string(),
+                CompressionMode::None => "none".to_string(),
+            },
+            source: RuntimeOptionSource::CliDefaults,
+        }
+    };
+
+    Ok(EffectiveRuntimeOptions {
+        timeout_seconds,
+        retry,
+        retry_delay_seconds,
+        no_retry,
+        compression,
+    })
 }
 
 /// Resolve a TLS file path relative to document or CWD.
@@ -301,4 +551,503 @@ pub fn metadata_map_to_hashmap(metadata: &tonic::metadata::MetadataMap) -> HashM
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::ast::{GctfAttribute, GctfDocument, Section, SectionContent, SectionType};
+
+    fn make_doc(sections: Vec<Section>) -> GctfDocument {
+        GctfDocument {
+            file_path: "test.gctf".to_string(),
+            sections,
+            metadata: Default::default(),
+            next_document: None,
+        }
+    }
+
+    fn make_section(section_type: SectionType, content: SectionContent) -> Section {
+        Section {
+            section_type,
+            content,
+            inline_options: Default::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: Vec::new(),
+        }
+    }
+
+    fn make_section_with_attrs(
+        section_type: SectionType,
+        content: SectionContent,
+        attrs: Vec<GctfAttribute>,
+    ) -> Section {
+        let mut s = make_section(section_type, content);
+        s.attributes = attrs;
+        s
+    }
+
+    fn cli_defaults() -> CliRuntimeDefaults {
+        CliRuntimeDefaults {
+            timeout_seconds: 30,
+            retry: 0,
+            retry_delay_seconds: 1.0,
+            no_retry: false,
+        }
+    }
+
+    fn kv(map: &[(&str, &str)]) -> SectionContent {
+        SectionContent::KeyValues(
+            map.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn test_resolve_defaults_only() {
+        let doc = make_doc(vec![
+            make_section(
+                SectionType::Endpoint,
+                SectionContent::Single("svc/Method".into()),
+            ),
+            make_section(SectionType::Request, SectionContent::Empty),
+        ]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults()).unwrap();
+
+        assert_eq!(result.timeout_seconds.value, 30);
+        assert_eq!(
+            result.timeout_seconds.source,
+            RuntimeOptionSource::CliDefaults
+        );
+        assert_eq!(result.retry.value, 0);
+        assert_eq!(result.retry.source, RuntimeOptionSource::CliDefaults);
+        assert_eq!(result.retry_delay_seconds.value, 1.0);
+        assert_eq!(
+            result.retry_delay_seconds.source,
+            RuntimeOptionSource::CliDefaults
+        );
+        assert!(!result.no_retry.value);
+        assert_eq!(result.no_retry.source, RuntimeOptionSource::CliDefaults);
+    }
+
+    #[test]
+    fn test_resolve_file_options_override_defaults() {
+        let doc = make_doc(vec![
+            make_section(
+                SectionType::Options,
+                kv(&[
+                    ("timeout", "10"),
+                    ("retry", "3"),
+                    ("retry_delay", "0.5"),
+                    ("no_retry", "true"),
+                ]),
+            ),
+            make_section(
+                SectionType::Endpoint,
+                SectionContent::Single("svc/Method".into()),
+            ),
+            make_section(SectionType::Request, SectionContent::Empty),
+        ]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults()).unwrap();
+
+        assert_eq!(result.timeout_seconds.value, 10);
+        assert_eq!(
+            result.timeout_seconds.source,
+            RuntimeOptionSource::FileOptions
+        );
+        assert_eq!(result.retry.value, 3);
+        assert_eq!(result.retry.source, RuntimeOptionSource::FileOptions);
+        assert_eq!(result.retry_delay_seconds.value, 0.5);
+        assert_eq!(
+            result.retry_delay_seconds.source,
+            RuntimeOptionSource::FileOptions
+        );
+        assert!(result.no_retry.value);
+        assert_eq!(result.no_retry.source, RuntimeOptionSource::FileOptions);
+    }
+
+    #[test]
+    fn test_resolve_section_attribute_overrides_file_options() {
+        let doc = make_doc(vec![
+            make_section(
+                SectionType::Options,
+                kv(&[("timeout", "10"), ("retry", "3"), ("retry_delay", "0.5")]),
+            ),
+            make_section_with_attrs(
+                SectionType::Request,
+                SectionContent::Empty,
+                vec![
+                    GctfAttribute::new("timeout", "5"),
+                    GctfAttribute::new("retry", "7"),
+                    GctfAttribute::new("retry_delay", "2.0"),
+                    GctfAttribute::flag("no_retry"),
+                ],
+            ),
+        ]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults()).unwrap();
+
+        assert_eq!(result.timeout_seconds.value, 5);
+        assert_eq!(
+            result.timeout_seconds.source,
+            RuntimeOptionSource::SectionAttribute
+        );
+        assert_eq!(result.retry.value, 7);
+        assert_eq!(result.retry.source, RuntimeOptionSource::SectionAttribute);
+        assert_eq!(result.retry_delay_seconds.value, 2.0);
+        assert_eq!(
+            result.retry_delay_seconds.source,
+            RuntimeOptionSource::SectionAttribute
+        );
+        assert!(result.no_retry.value);
+        assert_eq!(
+            result.no_retry.source,
+            RuntimeOptionSource::SectionAttribute
+        );
+    }
+
+    #[test]
+    fn test_resolve_attribute_overrides_options_only_for_present_fields() {
+        let doc = make_doc(vec![
+            make_section(
+                SectionType::Options,
+                kv(&[("timeout", "10"), ("retry", "3")]),
+            ),
+            make_section_with_attrs(
+                SectionType::Request,
+                SectionContent::Empty,
+                vec![GctfAttribute::new("retry", "5")],
+            ),
+        ]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults()).unwrap();
+
+        assert_eq!(result.timeout_seconds.value, 10);
+        assert_eq!(
+            result.timeout_seconds.source,
+            RuntimeOptionSource::FileOptions
+        );
+        assert_eq!(result.retry.value, 5);
+        assert_eq!(result.retry.source, RuntimeOptionSource::SectionAttribute);
+        assert_eq!(result.retry_delay_seconds.value, 1.0);
+        assert_eq!(
+            result.retry_delay_seconds.source,
+            RuntimeOptionSource::CliDefaults
+        );
+    }
+
+    #[test]
+    fn test_resolve_kebab_alias_in_options() {
+        let doc = make_doc(vec![
+            make_section(
+                SectionType::Options,
+                kv(&[("retry-delay", "0.2"), ("no-retry", "true")]),
+            ),
+            make_section(
+                SectionType::Endpoint,
+                SectionContent::Single("svc/Method".into()),
+            ),
+            make_section(SectionType::Request, SectionContent::Empty),
+        ]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults()).unwrap();
+
+        assert_eq!(result.retry_delay_seconds.value, 0.2);
+        assert_eq!(
+            result.retry_delay_seconds.source,
+            RuntimeOptionSource::FileOptions
+        );
+        assert!(result.no_retry.value);
+        assert_eq!(result.no_retry.source, RuntimeOptionSource::FileOptions);
+    }
+
+    #[test]
+    fn test_resolve_kebab_alias_in_attributes() {
+        let doc = make_doc(vec![make_section_with_attrs(
+            SectionType::Request,
+            SectionContent::Empty,
+            vec![
+                GctfAttribute::new("retry-delay", "0.3"),
+                GctfAttribute::new("no-retry", "true"),
+            ],
+        )]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults()).unwrap();
+
+        assert_eq!(result.retry_delay_seconds.value, 0.3);
+        assert_eq!(
+            result.retry_delay_seconds.source,
+            RuntimeOptionSource::SectionAttribute
+        );
+        assert!(result.no_retry.value);
+        assert_eq!(
+            result.no_retry.source,
+            RuntimeOptionSource::SectionAttribute
+        );
+    }
+
+    #[test]
+    fn test_resolve_error_invalid_timeout() {
+        let doc = make_doc(vec![
+            make_section(SectionType::Options, kv(&[("timeout", "abc")])),
+            make_section(
+                SectionType::Endpoint,
+                SectionContent::Single("svc/Method".into()),
+            ),
+        ]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("timeout"));
+    }
+
+    #[test]
+    fn test_resolve_error_zero_timeout() {
+        let doc = make_doc(vec![
+            make_section(SectionType::Options, kv(&[("timeout", "0")])),
+            make_section(
+                SectionType::Endpoint,
+                SectionContent::Single("svc/Method".into()),
+            ),
+        ]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_error_invalid_retry() {
+        let doc = make_doc(vec![
+            make_section(SectionType::Options, kv(&[("retry", "abc")])),
+            make_section(
+                SectionType::Endpoint,
+                SectionContent::Single("svc/Method".into()),
+            ),
+        ]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("retry"));
+    }
+
+    #[test]
+    fn test_resolve_error_invalid_retry_delay() {
+        let doc = make_doc(vec![
+            make_section(SectionType::Options, kv(&[("retry_delay", "abc")])),
+            make_section(
+                SectionType::Endpoint,
+                SectionContent::Single("svc/Method".into()),
+            ),
+        ]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("retry_delay"));
+    }
+
+    #[test]
+    fn test_resolve_error_negative_retry_delay() {
+        let doc = make_doc(vec![
+            make_section(SectionType::Options, kv(&[("retry_delay", "-1.0")])),
+            make_section(
+                SectionType::Endpoint,
+                SectionContent::Single("svc/Method".into()),
+            ),
+        ]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_error_invalid_no_retry() {
+        let doc = make_doc(vec![
+            make_section(SectionType::Options, kv(&[("no_retry", "maybe")])),
+            make_section(
+                SectionType::Endpoint,
+                SectionContent::Single("svc/Method".into()),
+            ),
+        ]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no_retry"));
+    }
+
+    #[test]
+    fn test_resolve_zero_timeout_attribute_ignored() {
+        let doc = make_doc(vec![make_section_with_attrs(
+            SectionType::Request,
+            SectionContent::Empty,
+            vec![GctfAttribute::new("timeout", "0")],
+        )]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults()).unwrap();
+
+        assert_eq!(result.timeout_seconds.value, 30);
+        assert_eq!(
+            result.timeout_seconds.source,
+            RuntimeOptionSource::CliDefaults
+        );
+    }
+
+    #[test]
+    fn test_resolve_negative_retry_delay_attribute_ignored() {
+        let doc = make_doc(vec![make_section_with_attrs(
+            SectionType::Request,
+            SectionContent::Empty,
+            vec![GctfAttribute::new("retry_delay", "-0.5")],
+        )]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults()).unwrap();
+
+        assert_eq!(result.retry_delay_seconds.value, 1.0);
+        assert_eq!(
+            result.retry_delay_seconds.source,
+            RuntimeOptionSource::CliDefaults
+        );
+    }
+
+    #[test]
+    fn test_resolve_compression_from_options() {
+        let doc = make_doc(vec![
+            make_section(SectionType::Options, kv(&[("compression", "gzip")])),
+            make_section(
+                SectionType::Endpoint,
+                SectionContent::Single("svc/Method".into()),
+            ),
+        ]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults()).unwrap();
+
+        assert_eq!(result.compression.value, "gzip");
+        assert_eq!(result.compression.source, RuntimeOptionSource::FileOptions);
+    }
+
+    #[test]
+    fn test_resolve_compression_defaults() {
+        let doc = make_doc(vec![make_section(
+            SectionType::Endpoint,
+            SectionContent::Single("svc/Method".into()),
+        )]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults()).unwrap();
+
+        assert_eq!(result.compression.source, RuntimeOptionSource::CliDefaults);
+    }
+
+    #[test]
+    fn test_resolve_json_serialization() {
+        let doc = make_doc(vec![
+            make_section(
+                SectionType::Options,
+                kv(&[("timeout", "10"), ("retry", "3")]),
+            ),
+            make_section(
+                SectionType::Endpoint,
+                SectionContent::Single("svc/Method".into()),
+            ),
+        ]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults()).unwrap();
+
+        let json = serde_json::to_value(&result).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(obj.contains_key("timeout_seconds"));
+        assert!(obj.contains_key("retry"));
+        assert!(obj.contains_key("retry_delay_seconds"));
+        assert!(obj.contains_key("no_retry"));
+        assert!(obj.contains_key("compression"));
+
+        let ts = &obj["timeout_seconds"];
+        assert_eq!(ts["value"], 10);
+        assert_eq!(ts["source"], "file_options");
+    }
+
+    #[test]
+    fn test_runtime_option_source_serde_roundtrip() {
+        let sources = vec![
+            RuntimeOptionSource::SectionAttribute,
+            RuntimeOptionSource::FileOptions,
+            RuntimeOptionSource::CliDefaults,
+        ];
+        for source in sources {
+            let json = serde_json::to_string(&source).unwrap();
+            let back: RuntimeOptionSource = serde_json::from_str(&json).unwrap();
+            assert_eq!(source, back);
+        }
+    }
+
+    #[test]
+    fn test_effective_runtime_options_clone_roundtrip() {
+        let doc = make_doc(vec![
+            make_section(SectionType::Options, kv(&[("timeout", "10")])),
+            make_section(
+                SectionType::Endpoint,
+                SectionContent::Single("svc/Method".into()),
+            ),
+        ]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults()).unwrap();
+        let cloned = result.clone();
+        assert_eq!(cloned.timeout_seconds.value, 10);
+        assert_eq!(
+            cloned.timeout_seconds.source,
+            RuntimeOptionSource::FileOptions
+        );
+    }
+
+    #[test]
+    fn test_resolve_compression_from_section_attribute() {
+        let doc = make_doc(vec![make_section_with_attrs(
+            SectionType::Request,
+            SectionContent::Empty,
+            vec![GctfAttribute::new("compression", "gzip")],
+        )]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults()).unwrap();
+
+        assert_eq!(result.compression.value, "gzip");
+        assert_eq!(
+            result.compression.source,
+            RuntimeOptionSource::SectionAttribute
+        );
+    }
+
+    #[test]
+    fn test_resolve_compression_attribute_overrides_file_options() {
+        let doc = make_doc(vec![
+            make_section(SectionType::Options, kv(&[("compression", "none")])),
+            make_section_with_attrs(
+                SectionType::Request,
+                SectionContent::Empty,
+                vec![GctfAttribute::new("compression", "gzip")],
+            ),
+        ]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults()).unwrap();
+
+        assert_eq!(result.compression.value, "gzip");
+        assert_eq!(
+            result.compression.source,
+            RuntimeOptionSource::SectionAttribute
+        );
+    }
+
+    #[test]
+    fn test_resolve_compression_attribute_none_value() {
+        let doc = make_doc(vec![make_section_with_attrs(
+            SectionType::Request,
+            SectionContent::Empty,
+            vec![GctfAttribute::new("compression", "none")],
+        )]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults()).unwrap();
+
+        assert_eq!(result.compression.value, "none");
+        assert_eq!(
+            result.compression.source,
+            RuntimeOptionSource::SectionAttribute
+        );
+    }
+
+    #[test]
+    fn test_resolve_compression_invalid_attribute_value_falls_back() {
+        let doc = make_doc(vec![
+            make_section(SectionType::Options, kv(&[("compression", "gzip")])),
+            make_section_with_attrs(
+                SectionType::Request,
+                SectionContent::Empty,
+                vec![GctfAttribute::new("compression", "invalid")],
+            ),
+        ]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults()).unwrap();
+
+        assert_eq!(result.compression.value, "gzip");
+        assert_eq!(result.compression.source, RuntimeOptionSource::FileOptions);
+    }
 }

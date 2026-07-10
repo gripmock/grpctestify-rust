@@ -1,0 +1,16 @@
+[package]
+name = "apif-utils"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Utility functions for .apif/.gctf test file processing"
+
+[dependencies]
+anyhow = { workspace = true }
+walkdir = { workspace = true }
+globset = { workspace = true }
+rand = "0.10"
+
+[dev-dependencies]
+serde_json = { workspace = true }

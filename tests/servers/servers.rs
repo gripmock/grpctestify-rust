@@ -7,7 +7,6 @@ pub mod echo;
 #[path = "validation.rs"]
 pub mod validation;
 
-use std::net::SocketAddr;
 use tokio::task::JoinHandle;
 
 /// Test server configuration
@@ -29,8 +28,6 @@ impl Default for TestServerConfig {
 /// Running test server handle
 pub struct TestServerHandle {
     pub handle: JoinHandle<Result<(), tonic::transport::Error>>,
-    #[allow(dead_code)]
-    pub address: SocketAddr,
 }
 
 impl TestServerHandle {
@@ -59,23 +56,4 @@ pub async fn start_all_test_servers(
     handles.push(validation_handle);
 
     Ok(handles)
-}
-
-/// Start a single test server on given port
-#[allow(dead_code)]
-pub async fn start_test_server(
-    server_type: &str,
-    port: u16,
-) -> Result<TestServerHandle, Box<dyn std::error::Error>> {
-    let config = TestServerConfig {
-        host: "127.0.0.1".to_string(),
-        port,
-    };
-
-    match server_type {
-        "echo" => echo::start_echo_server(config).await,
-        "auth" => auth::start_auth_server(config).await,
-        "validation" => validation::start_validation_server(config).await,
-        _ => Err(format!("Unknown server type: {}", server_type).into()),
-    }
 }

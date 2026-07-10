@@ -31,6 +31,23 @@ For unstable endpoints, run with reduced parallelism to isolate load-related fai
 grpctestify tests/ --parallel 1 --verbose
 ```
 
+If behavior is unexpected because of merged runtime settings, inspect effective values:
+
+```bash
+grpctestify inspect test.gctf --format json
+grpctestify explain test.gctf
+```
+
+Runtime precedence quick map:
+
+- `run`: section attributes > `OPTIONS` > CLI runtime baseline/defaults
+- `bench`: CLI bench flags > `BENCH` section > bench defaults
+
+If behavior differs between `run` and `bench`, verify you are reading the correct precedence model:
+
+- `run`: `section attributes > OPTIONS > CLI runtime baseline/defaults`
+- `bench`: `CLI bench flags > BENCH section > bench defaults`
+
 ## Test file problems
 
 ### JSON parse errors
@@ -65,6 +82,22 @@ grpctestify tests/ --parallel 1 --verbose
 - Verify values match expected format for `@timestamp`, `@url`, `@ip`, `@email`, `@uuid`
 - Check raw response types with `inspect` output before writing strict assertions
 
+### Ordering operators fail (`.price >= 0`)
+
+Add a `:type` annotation when the schema is unknown:
+
+```gctf
+.price:number >= 0
+.name:string contains "hello"
+```
+
+Or extract the value with a type annotation:
+
+```gctf
+price:number = .price
+$price >= 0
+```
+
 ## Debugging commands
 
 ```bash
@@ -92,3 +125,46 @@ grpctestify explain test.gctf
 - `GRPCTESTIFY_TLS_CERT_FILE`
 - `GRPCTESTIFY_TLS_KEY_FILE`
 - `GRPCTESTIFY_TLS_SERVER_NAME`
+
+## FAQ
+
+### How do I run a quick smoke test?
+
+```bash
+grpctestify call myservice.test.gctf
+```
+
+### How do I see what a test will do without running it?
+
+```bash
+grpctestify explain test.gctf
+```
+
+### What is a `.gctf` file?
+
+A gRPC Test File. It defines endpoint, request, expected response, and assertions in a plain text format. See [Test Files](reference/api/test-files).
+
+### Why does `grpctestify check` fail on my file?
+
+Run `grpctestify check --verbose` for detailed diagnostics.
+Common issues: missing required sections, JSON syntax errors,
+or incorrect assertion expressions.
+
+### Can I test streaming endpoints?
+
+Yes. gRPC Testify supports unary, server streaming, client streaming,
+and bidirectional streaming. Use inline options on `ENDPOINT`
+(e.g., `--- ENDPOINT --- with_stream`).
+
+### How do benchmark sources work?
+
+Define one or more `sources` in the `BENCH` section. Each source is a CSV/TSV/NDJSON
+file with an optional `indexed_by` column. During bench execution, rows from the
+primary source drive gRPC requests via template variables.
+See [Data Sources](bench-sources).
+
+## Related
+
+- [OPTIONS](./reference/sections/options)
+- [ATTRIBUTES](./reference/sections/attributes)
+- [BENCH](./reference/sections/bench)

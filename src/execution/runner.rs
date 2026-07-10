@@ -9,7 +9,7 @@ use crate::assert::{AssertionEngine, JsonComparator, get_json_diff};
 use crate::grpc::{GrpcClient, GrpcClientConfig};
 use crate::optimizer;
 use crate::parser::ast::{SectionContent, SectionType};
-use crate::plugins::AssertionTiming;
+use crate::plugins::{AssertionTiming, PluginManager};
 use crate::report::CoverageCollector;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -17,9 +17,14 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
+
+/// Global plugin registry used by all assertion engines.
+static PLUGIN_REGISTRY: LazyLock<Arc<dyn apif_assert::registry::PluginRegistry>> =
+    LazyLock::new(|| Arc::new(PluginManager::new()));
 
 /// Execution plan for inspect workflow visualization
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +45,7 @@ pub struct ExecutionPlan {
 pub struct ConnectionInfo {
     pub address: String,
     pub source: String,
+    pub backend: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +97,7 @@ pub struct AssertionInfo {
     pub assertions: Vec<String>,
     pub line_start: usize,
     pub line_end: usize,
+    pub response_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +106,7 @@ pub struct ExtractionInfo {
     pub variables: HashMap<String, String>,
     pub line_start: usize,
     pub line_end: usize,
+    pub response_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +124,16 @@ pub enum RpcMode {
         request_count: usize,
         response_count: usize,
     },
+    Unknown,
+}
+
+/// Actual RPC mode from proto descriptor (for runtime validation)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RpcModeInfo {
+    Unary,
+    ServerStreaming,
+    ClientStreaming,
+    BidirectionalStreaming,
     Unknown,
 }
 
@@ -150,17 +168,20 @@ impl ExecutionPlan {
                         "ADDRESS section [Line {}-{}]",
                         section.start_line, section.end_line
                     ),
+                    backend: "default".to_string(),
                 }
             } else {
                 ConnectionInfo {
                     address: "<env:GRPCTESTIFY_ADDRESS>".to_string(),
                     source: "Environment variable (implicit)".to_string(),
+                    backend: "default".to_string(),
                 }
             }
         } else {
             ConnectionInfo {
                 address: "<env:GRPCTESTIFY_ADDRESS>".to_string(),
                 source: "Environment variable (implicit)".to_string(),
+                backend: "default".to_string(),
             }
         };
 
@@ -307,6 +328,7 @@ impl ExecutionPlan {
                     assertions,
                     line_start: section.start_line,
                     line_end: section.end_line,
+                    response_index: None,
                 }
             })
             .collect();
@@ -327,6 +349,7 @@ impl ExecutionPlan {
                     variables,
                     line_start: section.start_line,
                     line_end: section.end_line,
+                    response_index: None,
                 }
             })
             .collect();
@@ -383,6 +406,109 @@ impl ExecutionPlan {
     }
 }
 
+/// Get actual RPC mode from method descriptor
+fn get_actual_rpc_mode(
+    client: &crate::grpc::GrpcClient,
+    full_service: &str,
+    method_name: &str,
+) -> RpcModeInfo {
+    client
+        .descriptor_pool()
+        .get_service_by_name(full_service)
+        .and_then(|s| s.methods().find(|m| m.name() == method_name))
+        .map(|m| {
+            if m.is_client_streaming() && m.is_server_streaming() {
+                RpcModeInfo::BidirectionalStreaming
+            } else if m.is_server_streaming() {
+                RpcModeInfo::ServerStreaming
+            } else if m.is_client_streaming() {
+                RpcModeInfo::ClientStreaming
+            } else {
+                RpcModeInfo::Unary
+            }
+        })
+        .unwrap_or(RpcModeInfo::Unknown)
+}
+
+/// Infer RPC mode from GCTF section structure (without proto descriptor)
+pub(crate) fn infer_rpc_mode_for_section_types(document: &GctfDocument) -> RpcModeInfo {
+    let request_count = document.sections_by_type(SectionType::Request).len();
+    let response_sections = document.sections_by_type(SectionType::Response);
+    let has_json_lines = response_sections
+        .iter()
+        .any(|s| matches!(&s.content, SectionContent::JsonLines(vals) if vals.len() > 1));
+    let has_error = document.first_section(SectionType::Error).is_some();
+
+    if has_error {
+        RpcModeInfo::Unary // UnaryError still uses Unary transport
+    } else if has_json_lines || response_sections.len() > 1 {
+        if request_count > 1 {
+            RpcModeInfo::BidirectionalStreaming
+        } else {
+            RpcModeInfo::ServerStreaming
+        }
+    } else if request_count > 1 {
+        RpcModeInfo::ClientStreaming
+    } else {
+        RpcModeInfo::Unary
+    }
+}
+
+/// Check compatibility between inferred and actual RPC mode
+fn check_rpc_mode_compatibility(inferred: &RpcModeInfo, actual: &RpcModeInfo) -> Option<String> {
+    match (inferred, actual) {
+        // Compatible pairs
+        (RpcModeInfo::Unary, RpcModeInfo::Unary) => None,
+        (RpcModeInfo::ServerStreaming, RpcModeInfo::ServerStreaming) => None,
+        (RpcModeInfo::ClientStreaming, RpcModeInfo::ClientStreaming) => None,
+        (RpcModeInfo::BidirectionalStreaming, RpcModeInfo::BidirectionalStreaming) => None,
+        (RpcModeInfo::Unknown, _) => None, // Can't validate unknown
+        (_, RpcModeInfo::Unknown) => None,  // Actual unknown means no descriptor
+
+        // Incompatible: inferred Unary but actual is streaming
+        (RpcModeInfo::Unary, RpcModeInfo::ServerStreaming) => {
+            Some("gCTF defines Unary RPC but proto expects Server Streaming. Client will send ONE request and expect multiple responses.".to_string())
+        }
+        (RpcModeInfo::Unary, RpcModeInfo::ClientStreaming) => {
+            Some("gCTF defines Unary RPC but proto expects Client Streaming. Client will send ONE request but server expects multiple.".to_string())
+        }
+        (RpcModeInfo::Unary, RpcModeInfo::BidirectionalStreaming) => {
+            Some("gCTF defines Unary RPC but proto expects Bidirectional Streaming. Client will send ONE request but server expects stream.".to_string())
+        }
+
+        // Incompatible: inferred streaming but actual is Unary
+        (RpcModeInfo::ServerStreaming, RpcModeInfo::Unary) => {
+            Some("gCTF defines Server Streaming (multiple RESPONSE sections) but proto expects Unary. gCTF may fail.".to_string())
+        }
+        (RpcModeInfo::ClientStreaming, RpcModeInfo::Unary) => {
+            Some("gCTF defines Client Streaming (multiple REQUEST sections) but proto expects Unary. gCTF may fail.".to_string())
+        }
+        (RpcModeInfo::BidirectionalStreaming, RpcModeInfo::Unary) => {
+            Some("gCTF defines Bidirectional Streaming but proto expects Unary. gCTF may fail.".to_string())
+        }
+
+        // Cross-streaming mismatches
+        (RpcModeInfo::ServerStreaming, RpcModeInfo::ClientStreaming) => {
+            Some("gCTF expects Server Streaming but proto declares Client Streaming. Behavior may be incorrect.".to_string())
+        }
+        (RpcModeInfo::ServerStreaming, RpcModeInfo::BidirectionalStreaming) => {
+            Some("gCTF expects Server Streaming but proto declares Bidirectional Streaming. Behavior may be incorrect.".to_string())
+        }
+        (RpcModeInfo::ClientStreaming, RpcModeInfo::ServerStreaming) => {
+            Some("gCTF expects Client Streaming but proto declares Server Streaming. Behavior may be incorrect.".to_string())
+        }
+        (RpcModeInfo::ClientStreaming, RpcModeInfo::BidirectionalStreaming) => {
+            Some("gCTF expects Client Streaming but proto declares Bidirectional Streaming. Behavior may be incorrect.".to_string())
+        }
+        (RpcModeInfo::BidirectionalStreaming, RpcModeInfo::ServerStreaming) => {
+            Some("gCTF expects Bidirectional Streaming but proto declares Server Streaming. Behavior may be incorrect.".to_string())
+        }
+        (RpcModeInfo::BidirectionalStreaming, RpcModeInfo::ClientStreaming) => {
+            Some("gCTF expects Bidirectional Streaming but proto declares Client Streaming. Behavior may be incorrect.".to_string())
+        }
+    }
+}
+
 fn infer_rpc_mode(
     requests: &[RequestInfo],
     expectations: &[ExpectationInfo],
@@ -434,7 +560,7 @@ pub enum TestExecutionStatus {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TestExecutionResult {
     pub status: TestExecutionStatus,
-    pub grpc_duration_ms: Option<u64>,
+    pub call_duration_ms: Option<u64>,
     pub captured_response: Option<crate::grpc::GrpcResponse>,
     pub meta: crate::state::TestMeta,
 }
@@ -473,19 +599,19 @@ impl AssertionScopeTimingState {
 }
 
 impl TestExecutionResult {
-    pub fn pass(grpc_duration_ms: Option<u64>) -> Self {
+    pub fn pass(call_duration_ms: Option<u64>) -> Self {
         Self {
             status: TestExecutionStatus::Pass,
-            grpc_duration_ms,
+            call_duration_ms,
             captured_response: None,
             meta: crate::state::TestMeta::default(),
         }
     }
 
-    pub fn fail(message: String, grpc_duration_ms: Option<u64>) -> Self {
+    pub fn fail(message: String, call_duration_ms: Option<u64>) -> Self {
         Self {
             status: TestExecutionStatus::Fail(message),
-            grpc_duration_ms,
+            call_duration_ms,
             captured_response: None,
             meta: crate::state::TestMeta::default(),
         }
@@ -581,7 +707,7 @@ impl TestRunner {
             no_assert,
             write_mode,
             verbose,
-            assertion_engine: AssertionEngine::new(),
+            assertion_engine: AssertionEngine::with_registry(PLUGIN_REGISTRY.clone()),
             coverage_collector: coverage_collector.clone(),
             // Initialize handler modules
             request_handler: RequestHandler::new(no_assert, verbose, coverage_collector.clone()),
@@ -594,13 +720,22 @@ impl TestRunner {
     /// Walks the `next_document` linked list, accumulating EXTRACT variables
     /// between documents. Fail-fast: stops on first failure.
     pub async fn run_test(&self, document: &GctfDocument) -> Result<TestExecutionResult> {
-        let mut variables: HashMap<String, Value> = HashMap::new();
+        self.run_test_with_variables(document, HashMap::new()).await
+    }
+
+    /// Run a test document chain with pre-populated variables (for data-driven bench).
+    pub async fn run_test_with_variables(
+        &self,
+        document: &GctfDocument,
+        initial_variables: HashMap<String, Value>,
+    ) -> Result<TestExecutionResult> {
+        let mut variables = initial_variables;
         let mut overall_status = TestExecutionStatus::Pass;
         let mut total_duration_ms = 0.0;
 
         for doc in document.iter_chain() {
             let result = self.run_one(doc, &mut variables).await?;
-            if let Some(dur) = result.grpc_duration_ms {
+            if let Some(dur) = result.call_duration_ms {
                 total_duration_ms += dur as f64;
             }
 
@@ -613,7 +748,7 @@ impl TestRunner {
         // Build summary result
         Ok(TestExecutionResult {
             status: overall_status,
-            grpc_duration_ms: Some(total_duration_ms as u64),
+            call_duration_ms: Some(total_duration_ms as u64),
             captured_response: None,
             meta: crate::state::TestMeta::default(),
         })
@@ -728,6 +863,13 @@ impl TestRunner {
             .get_service_by_name(&full_service)
             .and_then(|s| s.methods().find(|m| m.name() == method))
             .map(|m| m.output().full_name().to_string());
+
+        // Phase 1: RPC mode validation - runtime warning if inferred != actual
+        let inferred_rpc_mode = infer_rpc_mode_for_section_types(document);
+        let actual_rpc_mode = get_actual_rpc_mode(&client, &full_service, &method);
+        if let Some(warning) = check_rpc_mode_compatibility(&inferred_rpc_mode, &actual_rpc_mode) {
+            tracing::debug!("{} (service={}, method={})", warning, full_service, method);
+        }
 
         // Setup Streaming
         let (tx, rx) = mpsc::channel::<Value>(runner_helpers::REQUEST_CHANNEL_BUFFER);
@@ -845,6 +987,11 @@ impl TestRunner {
                     .filter(|&v| v > 0)
             };
             let get_retry = || -> Option<u32> { get_attr("retry").and_then(|a| a.parse_u32()) };
+            let get_repeat = || -> Option<u32> {
+                get_attr("repeat")
+                    .and_then(|a| a.parse_u32())
+                    .filter(|&v| v >= 1)
+            };
             let get_skip = || -> bool {
                 get_attr("skip")
                     .and_then(|a| a.parse_bool())
@@ -860,190 +1007,387 @@ impl TestRunner {
                 continue;
             }
 
-            match section.section_type {
-                SectionType::Request => {
-                    // Build request using RequestHandler
-                    let request_value = match &section.content {
-                        SectionContent::Json(req_json) => {
-                            let mut req = req_json.clone();
-                            self.substitute_variables(&mut req, variables);
-                            req
-                        }
-                        SectionContent::Empty => Value::Object(serde_json::Map::new()),
-                        _ => continue,
-                    };
+            let repeat_count = get_repeat().unwrap_or(1);
+            for repeat_iter in 0..repeat_count {
+                if repeat_count > 1 {
+                    eprintln!(
+                        "   [repeat] section at line {} — iteration {}/{}",
+                        section.start_line,
+                        repeat_iter + 1,
+                        repeat_count
+                    );
+                }
 
-                    // Coverage: record request fields
-                    if let (Some(collector), Some(msg_type)) =
-                        (&self.coverage_collector, &input_message_type)
-                    {
-                        collector.record_fields_from_json(msg_type, &request_value);
-                    }
-
-                    // Send request using RequestHandler
-                    let Some(tx_ref) = tx.as_mut() else {
-                        failure_reasons.push(format!(
-                            "Failed to send request at line {}: request stream already closed",
-                            section.start_line
-                        ));
-                        break;
-                    };
-
-                    let section_timeout = get_timeout();
-                    let effective_timeout = section_timeout.unwrap_or(effective_timeout_seconds);
-                    let max_retries = get_retry().unwrap_or(0);
-                    let mut attempt = 0;
-
-                    let send_with_timeout = || async {
-                        if effective_timeout > 0 {
-                            let send_fut = self.request_handler.send_request(
-                                tx_ref,
-                                request_value.clone(),
-                                section.start_line,
-                                None,
-                            );
-                            match tokio::time::timeout(
-                                std::time::Duration::from_secs(effective_timeout),
-                                send_fut,
-                            )
-                            .await
-                            {
-                                Ok(r) => r,
-                                Err(_) => RequestSendResult {
-                                    success: false,
-                                    error_message: Some(format!(
-                                        "Request timed out after {}s (section timeout)",
-                                        effective_timeout
-                                    )),
-                                },
+                match section.section_type {
+                    SectionType::Request => {
+                        // Build request using RequestHandler
+                        let request_value = match &section.content {
+                            SectionContent::Json(req_json) => {
+                                let mut req = req_json.clone();
+                                self.substitute_variables(&mut req, variables);
+                                req
                             }
-                        } else {
-                            self.request_handler
-                                .send_request(
+                            SectionContent::Empty => Value::Object(serde_json::Map::new()),
+                            _ => continue,
+                        };
+
+                        // Coverage: record request fields
+                        if let (Some(collector), Some(msg_type)) =
+                            (&self.coverage_collector, &input_message_type)
+                        {
+                            collector.record_fields_from_json(msg_type, &request_value);
+                        }
+
+                        // Send request using RequestHandler
+                        let Some(tx_ref) = tx.as_mut() else {
+                            failure_reasons.push(format!(
+                                "Failed to send request at line {}: request stream already closed",
+                                section.start_line
+                            ));
+                            break;
+                        };
+
+                        let section_timeout = get_timeout();
+                        let effective_timeout =
+                            section_timeout.unwrap_or(effective_timeout_seconds);
+                        let max_retries = get_retry().unwrap_or(0);
+                        let mut attempt = 0;
+
+                        let send_with_timeout = || async {
+                            if effective_timeout > 0 {
+                                let send_fut = self.request_handler.send_request(
                                     tx_ref,
                                     request_value.clone(),
                                     section.start_line,
                                     None,
+                                );
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_secs(effective_timeout),
+                                    send_fut,
                                 )
                                 .await
-                        }
-                    };
+                                {
+                                    Ok(r) => r,
+                                    Err(_) => RequestSendResult {
+                                        success: false,
+                                        error_message: Some(format!(
+                                            "Request timed out after {}s (section timeout)",
+                                            effective_timeout
+                                        )),
+                                    },
+                                }
+                            } else {
+                                self.request_handler
+                                    .send_request(
+                                        tx_ref,
+                                        request_value.clone(),
+                                        section.start_line,
+                                        None,
+                                    )
+                                    .await
+                            }
+                        };
 
-                    let result = loop {
-                        if attempt > 0 {
-                            tokio::time::sleep(std::time::Duration::from_millis(
-                                100 * attempt as u64,
-                            ))
-                            .await;
+                        let result = loop {
+                            if attempt > 0 {
+                                tokio::time::sleep(std::time::Duration::from_millis(
+                                    100 * attempt as u64,
+                                ))
+                                .await;
+                            }
+                            let r = send_with_timeout().await;
+                            if r.success || attempt >= max_retries {
+                                break r;
+                            }
+                            attempt += 1;
+                        };
+                        if !result.success
+                            && let Some(error) = result.error_message
+                        {
+                            failure_reasons.push(error);
                         }
-                        let r = send_with_timeout().await;
-                        if r.success || attempt >= max_retries {
-                            break r;
-                        }
-                        attempt += 1;
-                    };
-                    if !result.success
-                        && let Some(error) = result.error_message
-                    {
-                        failure_reasons.push(error);
                     }
-                }
-                SectionType::Response => {
-                    let scope_start_ms = assertion_timing.last_message_elapsed_ms.unwrap_or(0);
-                    let mut scope_end_ms = scope_start_ms;
-                    let mut scope_message_count = 0usize;
+                    SectionType::Response => {
+                        let scope_start_ms = assertion_timing.last_message_elapsed_ms.unwrap_or(0);
+                        let mut scope_end_ms = scope_start_ms;
+                        let mut scope_message_count = 0usize;
 
-                    if i >= last_request_idx.unwrap_or(usize::MAX) {
-                        drop(tx.take());
-                    }
+                        if i >= last_request_idx.unwrap_or(usize::MAX) {
+                            drop(tx.take());
+                        }
 
-                    ensure_stream_ready!();
+                        ensure_stream_ready!();
 
-                    let mut received_messages_for_section: Vec<Value> = Vec::new();
-                    let expected_values = Self::expected_values_for_response_section(section);
+                        let mut received_messages_for_section: Vec<Value> = Vec::new();
+                        let expected_values = Self::expected_values_for_response_section(section);
 
-                    let Some(stream) = response_stream.as_mut() else {
-                        failure_reasons.push(format!(
-                            "No response stream available for RESPONSE section at line {}",
-                            section.start_line
-                        ));
-                        break;
-                    };
+                        let Some(stream) = response_stream.as_mut() else {
+                            failure_reasons.push(format!(
+                                "No response stream available for RESPONSE section at line {}",
+                                section.start_line
+                            ));
+                            break;
+                        };
 
-                    for expected_template in expected_values {
-                        match stream.next().await {
-                            Some(Ok(item)) => {
-                                match item {
-                                    crate::grpc::client::StreamItem::Message(msg) => {
-                                        let now_elapsed_ms =
-                                            start_time.elapsed().as_millis() as u64;
+                        for expected_template in expected_values {
+                            match stream.next().await {
+                                Some(Ok(item)) => {
+                                    match item {
+                                        crate::grpc::client::StreamItem::Message(msg) => {
+                                            let now_elapsed_ms =
+                                                start_time.elapsed().as_millis() as u64;
 
-                                        let msg_for_state = msg.clone();
-                                        last_message = Some(msg_for_state.clone());
-                                        if section.inline_options.with_asserts {
-                                            received_messages_for_section
-                                                .push(msg_for_state.clone());
-                                        }
-                                        scope_end_ms = now_elapsed_ms;
-                                        scope_message_count += 1;
-                                        assertion_timing.last_message_elapsed_ms =
-                                            Some(now_elapsed_ms);
-                                        if let Some(resp) = &mut captured_response {
-                                            resp.messages.push(msg_for_state);
-                                        }
-
-                                        Self::log_response_message(
-                                            &msg,
-                                            effective_no_assert,
-                                            self.verbose,
-                                        );
-
-                                        if !effective_no_assert {
-                                            let mut expected = expected_template.clone();
-                                            self.substitute_variables(&mut expected, variables);
-
-                                            // Coverage: record expected response fields
-                                            if let (Some(collector), Some(msg_type)) =
-                                                (&self.coverage_collector, &output_message_type)
-                                            {
-                                                collector
-                                                    .record_fields_from_json(msg_type, &expected);
+                                            let msg_for_state = msg.clone();
+                                            last_message = Some(msg_for_state.clone());
+                                            if section.inline_options.with_asserts {
+                                                received_messages_for_section
+                                                    .push(msg_for_state.clone());
+                                            }
+                                            scope_end_ms = now_elapsed_ms;
+                                            scope_message_count += 1;
+                                            assertion_timing.last_message_elapsed_ms =
+                                                Some(now_elapsed_ms);
+                                            if let Some(resp) = &mut captured_response {
+                                                resp.messages.push(msg_for_state);
                                             }
 
-                                            let diffs = JsonComparator::compare(
+                                            Self::log_response_message(
                                                 &msg,
-                                                &expected,
-                                                &section.inline_options,
+                                                effective_no_assert,
+                                                self.verbose,
                                             );
 
-                                            if !diffs.is_empty() {
-                                                self.append_response_diffs(
-                                                    diffs,
-                                                    section.start_line,
-                                                    &expected,
+                                            if !effective_no_assert {
+                                                let mut expected = expected_template.clone();
+                                                self.substitute_variables(&mut expected, variables);
+
+                                                // Coverage: record expected response fields
+                                                if let (Some(collector), Some(msg_type)) =
+                                                    (&self.coverage_collector, &output_message_type)
+                                                {
+                                                    collector.record_fields_from_json(
+                                                        msg_type, &expected,
+                                                    );
+                                                }
+
+                                                let diffs = JsonComparator::compare(
                                                     &msg,
-                                                    &mut failure_reasons,
+                                                    &expected,
+                                                    &section.inline_options,
                                                 );
+
+                                                if !diffs.is_empty() {
+                                                    self.append_response_diffs(
+                                                        diffs,
+                                                        section.start_line,
+                                                        &expected,
+                                                        &msg,
+                                                        &mut failure_reasons,
+                                                    );
+                                                }
                                             }
                                         }
-                                    }
-                                    crate::grpc::client::StreamItem::Trailers(t) => {
-                                        if let Some(resp) = &mut captured_response {
-                                            captured_trailers.extend(
-                                                t.iter().map(|(k, v)| (k.clone(), v.clone())),
-                                            );
-                                            resp.trailers.extend(t);
-                                        } else {
-                                            captured_trailers.extend(t);
-                                        }
-                                        if !effective_no_assert {
-                                            failure_reasons.push(format!(
+                                        crate::grpc::client::StreamItem::Trailers(t) => {
+                                            if let Some(resp) = &mut captured_response {
+                                                captured_trailers.extend(
+                                                    t.iter().map(|(k, v)| (k.clone(), v.clone())),
+                                                );
+                                                resp.trailers.extend(t);
+                                            } else {
+                                                captured_trailers.extend(t);
+                                            }
+                                            if !effective_no_assert {
+                                                failure_reasons.push(format!(
                                                 "Expected message for RESPONSE section at line {}, but received Trailers (End of Stream)",
                                                 section.start_line
                                             ));
+                                            }
+                                            break;
                                         }
-                                        break;
                                     }
+                                }
+                                Some(Err(status)) => {
+                                    let scope_start_ms =
+                                        assertion_timing.last_message_elapsed_ms.unwrap_or(0);
+                                    let scope_end_ms = start_time.elapsed().as_millis() as u64;
+                                    assertion_timing.last_message_elapsed_ms = Some(scope_end_ms);
+                                    last_error_timing = assertion_timing.finish_scope(
+                                        scope_start_ms,
+                                        scope_end_ms,
+                                        1,
+                                    );
+                                    last_error_message = Some(status.message().to_string());
+
+                                    if let Some(resp) = &mut captured_response {
+                                        resp.error = Some(status.message().to_string());
+                                    }
+                                    if !effective_no_assert {
+                                        failure_reasons.push(format!(
+                                        "Expected message for RESPONSE section at line {}, but received Error: {}",
+                                        section.start_line,
+                                        status.message()
+                                    ));
+                                    } else {
+                                        println!("--- RESPONSE (Error) ---");
+                                        println!("{}", status.message());
+                                    }
+                                    break;
+                                }
+                                None => {
+                                    if !effective_no_assert {
+                                        failure_reasons.push(format!(
+                                        "Expected message for RESPONSE section at line {}, but stream ended",
+                                        section.start_line
+                                    ));
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+
+                        if section.inline_options.with_asserts
+                            && let Some(next_section) = sections.get(i + 1)
+                            && next_section.section_type == SectionType::Asserts
+                        {
+                            if !effective_no_assert
+                                && let SectionContent::Assertions(lines) = &next_section.content
+                            {
+                                let scope_timing = assertion_timing.finish_scope(
+                                    scope_start_ms,
+                                    scope_end_ms,
+                                    scope_message_count,
+                                );
+
+                                for msg in &received_messages_for_section {
+                                    self.run_assertions(
+                                        lines,
+                                        msg,
+                                        &mut failure_reasons,
+                                        format!(
+                                            "(attached to RESPONSE at line {})",
+                                            section.start_line
+                                        ),
+                                        section.start_line,
+                                        AssertionContext {
+                                            headers: &captured_headers,
+                                            trailers: &captured_trailers,
+                                            timing: scope_timing.as_ref(),
+                                        },
+                                    );
+                                }
+                            }
+                            skip_next_section = true;
+                        } else if section.inline_options.with_asserts && !effective_no_assert {
+                            failure_reasons.push(format!(
+                            "RESPONSE at line {} has 'with_asserts' but is not followed by ASSERTS",
+                            section.start_line
+                        ));
+                        }
+                    }
+                    SectionType::Asserts => {
+                        if i >= last_request_idx.unwrap_or(usize::MAX) {
+                            drop(tx.take());
+                        }
+
+                        ensure_stream_ready!();
+
+                        // Standalone ASSERTS usually consumes a new message.
+                        // If stream is unavailable but we already captured an ERROR,
+                        // evaluate assertions against that error context.
+                        let Some(stream) = response_stream.as_mut() else {
+                            if !effective_no_assert
+                                && let SectionContent::Assertions(lines) = &section.content
+                            {
+                                if let Some(error_value) = &last_error_json {
+                                    self.run_assertions(
+                                        lines,
+                                        error_value,
+                                        &mut failure_reasons,
+                                        format!("after ERROR at line {}", section.start_line),
+                                        section.start_line,
+                                        AssertionContext {
+                                            headers: &captured_headers,
+                                            trailers: &captured_trailers,
+                                            timing: last_error_timing.as_ref(),
+                                        },
+                                    );
+                                } else if let Some(error_message) = &last_error_message {
+                                    let error_value = Value::String(error_message.clone());
+                                    self.run_assertions(
+                                        lines,
+                                        &error_value,
+                                        &mut failure_reasons,
+                                        format!("after ERROR at line {}", section.start_line),
+                                        section.start_line,
+                                        AssertionContext {
+                                            headers: &captured_headers,
+                                            trailers: &captured_trailers,
+                                            timing: last_error_timing.as_ref(),
+                                        },
+                                    );
+                                } else {
+                                    failure_reasons.push(format!(
+                                    "ASSERTS section at line {} has no active response/error context",
+                                    section.start_line
+                                ));
+                                }
+                            }
+                            continue;
+                        };
+
+                        match stream.next().await {
+                            Some(Ok(crate::grpc::client::StreamItem::Message(msg))) => {
+                                let scope_start_ms =
+                                    assertion_timing.last_message_elapsed_ms.unwrap_or(0);
+                                let scope_end_ms = start_time.elapsed().as_millis() as u64;
+                                assertion_timing.last_message_elapsed_ms = Some(scope_end_ms);
+                                let scope_timing =
+                                    assertion_timing.finish_scope(scope_start_ms, scope_end_ms, 1);
+
+                                last_message = Some(msg.clone());
+
+                                let should_format_message =
+                                    tracing::enabled!(tracing::Level::DEBUG) || effective_no_assert;
+                                let msg_pretty = should_format_message
+                                    .then(|| runner_helpers::format_json_pretty(&msg));
+
+                                if let Some(pretty) = msg_pretty.as_deref()
+                                    && tracing::enabled!(tracing::Level::DEBUG)
+                                {
+                                    tracing::debug!("Received Response (for Asserts):\n{}", pretty);
+                                }
+
+                                if effective_no_assert {
+                                    println!("--- RESPONSE (Raw) ---");
+                                    if let Some(pretty) = msg_pretty.as_deref() {
+                                        println!("{}", pretty);
+                                    }
+                                }
+
+                                if !effective_no_assert
+                                    && let SectionContent::Assertions(lines) = &section.content
+                                {
+                                    self.run_assertions(
+                                        lines,
+                                        &msg,
+                                        &mut failure_reasons,
+                                        format!("at line {}", section.start_line),
+                                        section.start_line,
+                                        AssertionContext {
+                                            headers: &captured_headers,
+                                            trailers: &captured_trailers,
+                                            timing: scope_timing.as_ref(),
+                                        },
+                                    );
+                                }
+                            }
+                            Some(Ok(crate::grpc::client::StreamItem::Trailers(t))) => {
+                                captured_trailers.extend(t);
+                                if !effective_no_assert {
+                                    failure_reasons.push(format!(
+                                    "Expected message for ASSERTS section at line {}, but received Trailers",
+                                    section.start_line
+                                ));
                                 }
                             }
                             Some(Err(status)) => {
@@ -1053,303 +1397,130 @@ impl TestRunner {
                                 assertion_timing.last_message_elapsed_ms = Some(scope_end_ms);
                                 last_error_timing =
                                     assertion_timing.finish_scope(scope_start_ms, scope_end_ms, 1);
-                                last_error_message = Some(status.message().to_string());
 
-                                if let Some(resp) = &mut captured_response {
-                                    resp.error = Some(status.message().to_string());
-                                }
-                                if !effective_no_assert {
-                                    failure_reasons.push(format!(
-                                        "Expected message for RESPONSE section at line {}, but received Error: {}",
+                                last_error_message = Some(status.message().to_string());
+                                let error_json =
+                                    super::error_handler::ErrorHandler::status_to_json(&status);
+                                last_error_json = Some(error_json.clone());
+                                captured_trailers.extend(runner_helpers::metadata_map_to_hashmap(
+                                    status.metadata(),
+                                ));
+                                if !effective_no_assert
+                                    && let SectionContent::Assertions(lines) = &section.content
+                                {
+                                    self.run_assertions(
+                                        lines,
+                                        &error_json,
+                                        &mut failure_reasons,
+                                        format!("after ERROR at line {}", section.start_line),
                                         section.start_line,
-                                        status.message()
-                                    ));
+                                        AssertionContext {
+                                            headers: &captured_headers,
+                                            trailers: &captured_trailers,
+                                            timing: last_error_timing.as_ref(),
+                                        },
+                                    );
                                 } else {
                                     println!("--- RESPONSE (Error) ---");
                                     println!("{}", status.message());
                                 }
-                                break;
                             }
                             None => {
                                 if !effective_no_assert {
                                     failure_reasons.push(format!(
-                                        "Expected message for RESPONSE section at line {}, but stream ended",
-                                        section.start_line
-                                    ));
-                                }
-                                break;
-                            }
-                        }
-                    }
-
-                    if section.inline_options.with_asserts
-                        && let Some(next_section) = sections.get(i + 1)
-                        && next_section.section_type == SectionType::Asserts
-                    {
-                        if !effective_no_assert
-                            && let SectionContent::Assertions(lines) = &next_section.content
-                        {
-                            let scope_timing = assertion_timing.finish_scope(
-                                scope_start_ms,
-                                scope_end_ms,
-                                scope_message_count,
-                            );
-
-                            for msg in &received_messages_for_section {
-                                self.run_assertions(
-                                    lines,
-                                    msg,
-                                    &mut failure_reasons,
-                                    format!(
-                                        "(attached to RESPONSE at line {})",
-                                        section.start_line
-                                    ),
-                                    section.start_line,
-                                    AssertionContext {
-                                        headers: &captured_headers,
-                                        trailers: &captured_trailers,
-                                        timing: scope_timing.as_ref(),
-                                    },
-                                );
-                            }
-                        }
-                        skip_next_section = true;
-                    } else if section.inline_options.with_asserts && !effective_no_assert {
-                        failure_reasons.push(format!(
-                            "RESPONSE at line {} has 'with_asserts' but is not followed by ASSERTS",
-                            section.start_line
-                        ));
-                    }
-                }
-                SectionType::Asserts => {
-                    if i >= last_request_idx.unwrap_or(usize::MAX) {
-                        drop(tx.take());
-                    }
-
-                    ensure_stream_ready!();
-
-                    // Standalone ASSERTS usually consumes a new message.
-                    // If stream is unavailable but we already captured an ERROR,
-                    // evaluate assertions against that error context.
-                    let Some(stream) = response_stream.as_mut() else {
-                        if !effective_no_assert
-                            && let SectionContent::Assertions(lines) = &section.content
-                        {
-                            if let Some(error_value) = &last_error_json {
-                                self.run_assertions(
-                                    lines,
-                                    error_value,
-                                    &mut failure_reasons,
-                                    format!("after ERROR at line {}", section.start_line),
-                                    section.start_line,
-                                    AssertionContext {
-                                        headers: &captured_headers,
-                                        trailers: &captured_trailers,
-                                        timing: last_error_timing.as_ref(),
-                                    },
-                                );
-                            } else if let Some(error_message) = &last_error_message {
-                                let error_value = Value::String(error_message.clone());
-                                self.run_assertions(
-                                    lines,
-                                    &error_value,
-                                    &mut failure_reasons,
-                                    format!("after ERROR at line {}", section.start_line),
-                                    section.start_line,
-                                    AssertionContext {
-                                        headers: &captured_headers,
-                                        trailers: &captured_trailers,
-                                        timing: last_error_timing.as_ref(),
-                                    },
-                                );
-                            } else {
-                                failure_reasons.push(format!(
-                                    "ASSERTS section at line {} has no active response/error context",
-                                    section.start_line
-                                ));
-                            }
-                        }
-                        continue;
-                    };
-
-                    match stream.next().await {
-                        Some(Ok(crate::grpc::client::StreamItem::Message(msg))) => {
-                            let scope_start_ms =
-                                assertion_timing.last_message_elapsed_ms.unwrap_or(0);
-                            let scope_end_ms = start_time.elapsed().as_millis() as u64;
-                            assertion_timing.last_message_elapsed_ms = Some(scope_end_ms);
-                            let scope_timing =
-                                assertion_timing.finish_scope(scope_start_ms, scope_end_ms, 1);
-
-                            last_message = Some(msg.clone());
-
-                            let should_format_message =
-                                tracing::enabled!(tracing::Level::DEBUG) || effective_no_assert;
-                            let msg_pretty = should_format_message
-                                .then(|| runner_helpers::format_json_pretty(&msg));
-
-                            if let Some(pretty) = msg_pretty.as_deref()
-                                && tracing::enabled!(tracing::Level::DEBUG)
-                            {
-                                tracing::debug!("Received Response (for Asserts):\n{}", pretty);
-                            }
-
-                            if effective_no_assert {
-                                println!("--- RESPONSE (Raw) ---");
-                                if let Some(pretty) = msg_pretty.as_deref() {
-                                    println!("{}", pretty);
-                                }
-                            }
-
-                            if !effective_no_assert
-                                && let SectionContent::Assertions(lines) = &section.content
-                            {
-                                self.run_assertions(
-                                    lines,
-                                    &msg,
-                                    &mut failure_reasons,
-                                    format!("at line {}", section.start_line),
-                                    section.start_line,
-                                    AssertionContext {
-                                        headers: &captured_headers,
-                                        trailers: &captured_trailers,
-                                        timing: scope_timing.as_ref(),
-                                    },
-                                );
-                            }
-                        }
-                        Some(Ok(crate::grpc::client::StreamItem::Trailers(t))) => {
-                            captured_trailers.extend(t);
-                            if !effective_no_assert {
-                                failure_reasons.push(format!(
-                                    "Expected message for ASSERTS section at line {}, but received Trailers",
-                                    section.start_line
-                                ));
-                            }
-                        }
-                        Some(Err(status)) => {
-                            let scope_start_ms =
-                                assertion_timing.last_message_elapsed_ms.unwrap_or(0);
-                            let scope_end_ms = start_time.elapsed().as_millis() as u64;
-                            assertion_timing.last_message_elapsed_ms = Some(scope_end_ms);
-                            last_error_timing =
-                                assertion_timing.finish_scope(scope_start_ms, scope_end_ms, 1);
-
-                            last_error_message = Some(status.message().to_string());
-                            let error_json =
-                                super::error_handler::ErrorHandler::status_to_json(&status);
-                            last_error_json = Some(error_json.clone());
-                            captured_trailers
-                                .extend(runner_helpers::metadata_map_to_hashmap(status.metadata()));
-                            if !effective_no_assert
-                                && let SectionContent::Assertions(lines) = &section.content
-                            {
-                                self.run_assertions(
-                                    lines,
-                                    &error_json,
-                                    &mut failure_reasons,
-                                    format!("after ERROR at line {}", section.start_line),
-                                    section.start_line,
-                                    AssertionContext {
-                                        headers: &captured_headers,
-                                        trailers: &captured_trailers,
-                                        timing: last_error_timing.as_ref(),
-                                    },
-                                );
-                            } else {
-                                println!("--- RESPONSE (Error) ---");
-                                println!("{}", status.message());
-                            }
-                        }
-                        None => {
-                            if !effective_no_assert {
-                                failure_reasons.push(format!(
                                     "Expected message for ASSERTS section at line {}, but stream ended",
                                     section.start_line
                                 ));
+                                }
                             }
                         }
                     }
-                }
 
-                SectionType::Extract => {
-                    if let Some(msg) = &last_message {
-                        if let SectionContent::Extract(extractions) = &section.content {
-                            for (key, query) in extractions {
-                                match self.assertion_engine.query(query, msg) {
-                                    Ok(results) => {
-                                        if let Some(val) = results.first() {
-                                            variables.insert(key.clone(), val.clone());
-                                        } else {
-                                            failure_reasons.push(format!(
+                    SectionType::Extract => {
+                        if let Some(msg) = &last_message {
+                            if let SectionContent::Extract(extractions) = &section.content {
+                                for (key, query) in extractions {
+                                    match self.assertion_engine.query(query, msg) {
+                                        Ok(results) => {
+                                            if let Some(val) = results.first() {
+                                                variables.insert(key.clone(), val.clone());
+                                            } else {
+                                                failure_reasons.push(format!(
                                                  "Extraction failed at line {}: Query '{}' returned no results",
                                                  section.start_line, query
                                              ));
+                                            }
+                                        }
+                                        Err(e) => {
+                                            failure_reasons.push(format!(
+                                                "Extraction error at line {}: {}",
+                                                section.start_line, e
+                                            ));
                                         }
                                     }
-                                    Err(e) => {
-                                        failure_reasons.push(format!(
-                                            "Extraction error at line {}: {}",
-                                            section.start_line, e
-                                        ));
-                                    }
                                 }
                             }
+                        } else {
+                            failure_reasons.push(format!(
+                                "EXTRACT at line {} requires a previous response message",
+                                section.start_line
+                            ));
                         }
-                    } else {
-                        failure_reasons.push(format!(
-                            "EXTRACT at line {} requires a previous response message",
-                            section.start_line
-                        ));
                     }
-                }
-                SectionType::Error => {
-                    if i >= last_request_idx.unwrap_or(usize::MAX) {
-                        drop(tx.take());
-                    }
+                    SectionType::Error => {
+                        if i >= last_request_idx.unwrap_or(usize::MAX) {
+                            drop(tx.take());
+                        }
 
-                    if response_stream.is_none()
-                        && let Some(handle) = call_handle.take()
-                    {
-                        match handle.await {
-                            Ok(Ok((h, stream))) => {
-                                if let Some(resp) = &mut captured_response {
-                                    captured_headers = h.clone();
-                                    resp.headers = h;
-                                } else {
-                                    captured_headers = h;
+                        if response_stream.is_none()
+                            && let Some(handle) = call_handle.take()
+                        {
+                            match handle.await {
+                                Ok(Ok((h, stream))) => {
+                                    if let Some(resp) = &mut captured_response {
+                                        captured_headers = h.clone();
+                                        resp.headers = h;
+                                    } else {
+                                        captured_headers = h;
+                                    }
+                                    response_stream = Some(stream);
                                 }
-                                response_stream = Some(stream);
-                            }
-                            Ok(Err(_e)) => {
-                                let e = _e;
-                                let mut error_assert_target: Option<Value> = None;
-                                if !effective_no_assert {
-                                    if let SectionContent::Json(expected_json) = &section.content {
-                                        let mut expected = expected_json.clone();
-                                        self.substitute_variables(&mut expected, variables);
-
-                                        // Try to extract tonic Status from anyhow::Error
-                                        let (matches, got, mismatch_reason) = if let Some(status) =
-                                            e.downcast_ref::<tonic::Status>()
+                                Ok(Err(_e)) => {
+                                    let e = _e;
+                                    let mut error_assert_target: Option<Value> = None;
+                                    if !effective_no_assert {
+                                        if let SectionContent::Json(expected_json) =
+                                            &section.content
                                         {
-                                            last_error_message = Some(status.message().to_string());
-                                            let actual_error_json =
+                                            let mut expected = expected_json.clone();
+                                            self.substitute_variables(&mut expected, variables);
+
+                                            // Try to extract tonic Status from anyhow::Error
+                                            let (matches, got, mismatch_reason) = if let Some(
+                                                status,
+                                            ) =
+                                                e.downcast_ref::<tonic::Status>()
+                                            {
+                                                last_error_message =
+                                                    Some(status.message().to_string());
+                                                let actual_error_json =
                                                 super::error_handler::ErrorHandler::status_to_json(
                                                     status,
                                                 );
-                                            last_error_json = Some(actual_error_json.clone());
-                                            error_assert_target = Some(actual_error_json.clone());
-                                            captured_trailers.extend(
-                                                runner_helpers::metadata_map_to_hashmap(
-                                                    status.metadata(),
-                                                ),
-                                            );
-                                            let status_name = Self::grpc_code_name_from_numeric(
-                                                status.code() as i64,
-                                            )
-                                            .unwrap_or("Unknown");
-                                            (
+                                                last_error_json = Some(actual_error_json.clone());
+                                                error_assert_target =
+                                                    Some(actual_error_json.clone());
+                                                captured_trailers.extend(
+                                                    runner_helpers::metadata_map_to_hashmap(
+                                                        status.metadata(),
+                                                    ),
+                                                );
+                                                let status_name =
+                                                    Self::grpc_code_name_from_numeric(
+                                                        status.code() as i64,
+                                                    )
+                                                    .unwrap_or("Unknown");
+                                                (
                                                 super::error_handler::ErrorHandler::status_matches_expected_with_options(
                                                     status,
                                                     &expected,
@@ -1366,181 +1537,193 @@ impl TestRunner {
                                                     section.inline_options.partial,
                                                 ),
                                             )
-                                        } else {
-                                            // Fallback to error string representation
-                                            let text = e.to_string();
-                                            error_assert_target = Some(Value::String(text.clone()));
-                                            (
-                                                Self::error_matches_expected(&text, &expected),
-                                                text,
-                                                None,
-                                            )
-                                        };
+                                            } else {
+                                                // Fallback to error string representation
+                                                let text = e.to_string();
+                                                error_assert_target =
+                                                    Some(Value::String(text.clone()));
+                                                (
+                                                    Self::error_matches_expected(&text, &expected),
+                                                    text,
+                                                    None,
+                                                )
+                                            };
 
-                                        if self.verbose {
-                                            println!("🔍 gRPC error received: '{}'", got);
-                                            if let Some(status) = e.downcast_ref::<tonic::Status>()
-                                            {
-                                                let details_json = super::error_handler::ErrorHandler::status_details_json(status);
-                                                if details_json != Value::Null
-                                                    && details_json
-                                                        .as_array()
-                                                        .is_some_and(|arr| !arr.is_empty())
+                                            if self.verbose {
+                                                println!("🔍 gRPC error received: '{}'", got);
+                                                if let Some(status) =
+                                                    e.downcast_ref::<tonic::Status>()
                                                 {
-                                                    println!(
-                                                        "🔍 gRPC error details: {}",
-                                                        details_json
-                                                    );
+                                                    let details_json = super::error_handler::ErrorHandler::status_details_json(status);
+                                                    if details_json != Value::Null
+                                                        && details_json
+                                                            .as_array()
+                                                            .is_some_and(|arr| !arr.is_empty())
+                                                    {
+                                                        println!(
+                                                            "🔍 gRPC error details: {}",
+                                                            details_json
+                                                        );
+                                                    }
                                                 }
                                             }
-                                        }
 
-                                        if !matches {
-                                            failure_reasons.push(format!(
-                                                "Error mismatch at line {}:",
-                                                section.start_line
-                                            ));
-                                            if let Some(reason) = mismatch_reason {
-                                                failure_reasons.push(format!("  - {}", reason));
-                                            }
-                                            if let Some(status) = e.downcast_ref::<tonic::Status>()
-                                            {
-                                                let actual_json =
+                                            if !matches {
+                                                failure_reasons.push(format!(
+                                                    "Error mismatch at line {}:",
+                                                    section.start_line
+                                                ));
+                                                if let Some(reason) = mismatch_reason {
+                                                    failure_reasons.push(format!("  - {}", reason));
+                                                }
+                                                if let Some(status) =
+                                                    e.downcast_ref::<tonic::Status>()
+                                                {
+                                                    let actual_json =
                                                     super::error_handler::ErrorHandler::status_to_json(
                                                         status,
                                                     );
-                                                failure_reasons
-                                                    .push(get_json_diff(&expected, &actual_json));
-                                            } else {
-                                                failure_reasons.push(format!(
-                                                    "  - expected {}, got '{}'",
-                                                    expected, got
-                                                ));
+                                                    failure_reasons.push(get_json_diff(
+                                                        &expected,
+                                                        &actual_json,
+                                                    ));
+                                                } else {
+                                                    failure_reasons.push(format!(
+                                                        "  - expected {}, got '{}'",
+                                                        expected, got
+                                                    ));
+                                                }
                                             }
                                         }
+                                    } else {
+                                        println!("--- RESPONSE (Error) ---");
+                                        println!("{}", e);
                                     }
-                                } else {
-                                    println!("--- RESPONSE (Error) ---");
-                                    println!("{}", e);
-                                }
 
-                                if Self::has_required_followup_asserts(
-                                    section,
-                                    sections,
-                                    i,
-                                    effective_no_assert,
-                                    &mut failure_reasons,
-                                ) && let Some(next_section) = sections.get(i + 1)
-                                    && next_section.section_type == SectionType::Asserts
-                                {
-                                    if !effective_no_assert
-                                        && let SectionContent::Assertions(lines) =
-                                            &next_section.content
+                                    if Self::has_required_followup_asserts(
+                                        section,
+                                        sections,
+                                        i,
+                                        effective_no_assert,
+                                        &mut failure_reasons,
+                                    ) && let Some(next_section) = sections.get(i + 1)
+                                        && next_section.section_type == SectionType::Asserts
                                     {
-                                        if error_assert_target.is_none()
-                                            && let Some(status) = e.downcast_ref::<tonic::Status>()
+                                        if !effective_no_assert
+                                            && let SectionContent::Assertions(lines) =
+                                                &next_section.content
                                         {
-                                            let actual_error_json =
+                                            if error_assert_target.is_none()
+                                                && let Some(status) =
+                                                    e.downcast_ref::<tonic::Status>()
+                                            {
+                                                let actual_error_json =
                                                 super::error_handler::ErrorHandler::status_to_json(
                                                     status,
                                                 );
-                                            last_error_json = Some(actual_error_json.clone());
-                                            error_assert_target = Some(actual_error_json);
-                                        }
+                                                last_error_json = Some(actual_error_json.clone());
+                                                error_assert_target = Some(actual_error_json);
+                                            }
 
-                                        if let Some(target) = error_assert_target.as_ref() {
-                                            self.run_assertions(
-                                                lines,
-                                                target,
-                                                &mut failure_reasons,
-                                                format!(
-                                                    "(attached to ERROR at line {})",
-                                                    section.start_line
-                                                ),
-                                                section.start_line,
-                                                AssertionContext {
-                                                    headers: &captured_headers,
-                                                    trailers: &captured_trailers,
-                                                    timing: last_error_timing.as_ref(),
-                                                },
-                                            );
+                                            if let Some(target) = error_assert_target.as_ref() {
+                                                self.run_assertions(
+                                                    lines,
+                                                    target,
+                                                    &mut failure_reasons,
+                                                    format!(
+                                                        "(attached to ERROR at line {})",
+                                                        section.start_line
+                                                    ),
+                                                    section.start_line,
+                                                    AssertionContext {
+                                                        headers: &captured_headers,
+                                                        trailers: &captured_trailers,
+                                                        timing: last_error_timing.as_ref(),
+                                                    },
+                                                );
+                                            }
                                         }
+                                        skip_next_section = true;
                                     }
-                                    skip_next_section = true;
-                                }
 
-                                // Error has been consumed at startup stage; continue with next sections.
-                                continue;
-                            }
-                            Err(e) => {
-                                failure_reasons.push(format!(
-                                    "Failed to join gRPC stream startup task: {}",
-                                    e
-                                ));
-                                break;
+                                    // Error has been consumed at startup stage; continue with next sections.
+                                    continue;
+                                }
+                                Err(e) => {
+                                    failure_reasons.push(format!(
+                                        "Failed to join gRPC stream startup task: {}",
+                                        e
+                                    ));
+                                    break;
+                                }
                             }
                         }
-                    }
 
-                    // Expect an error from the stream
-                    let Some(error_stream) = response_stream.as_mut() else {
-                        failure_reasons.push(format!(
-                            "No response stream available for ERROR section at line {}",
-                            section.start_line
-                        ));
-                        break;
-                    };
-                    match error_stream.next().await {
-                        Some(Err(status)) => {
-                            let scope_start_ms =
-                                assertion_timing.last_message_elapsed_ms.unwrap_or(0);
-                            let scope_end_ms = start_time.elapsed().as_millis() as u64;
-                            assertion_timing.last_message_elapsed_ms = Some(scope_end_ms);
-                            let error_scope_timing =
-                                assertion_timing.finish_scope(scope_start_ms, scope_end_ms, 1);
+                        // Expect an error from the stream
+                        let Some(error_stream) = response_stream.as_mut() else {
+                            failure_reasons.push(format!(
+                                "No response stream available for ERROR section at line {}",
+                                section.start_line
+                            ));
+                            break;
+                        };
+                        match error_stream.next().await {
+                            Some(Err(status)) => {
+                                let scope_start_ms =
+                                    assertion_timing.last_message_elapsed_ms.unwrap_or(0);
+                                let scope_end_ms = start_time.elapsed().as_millis() as u64;
+                                assertion_timing.last_message_elapsed_ms = Some(scope_end_ms);
+                                let error_scope_timing =
+                                    assertion_timing.finish_scope(scope_start_ms, scope_end_ms, 1);
 
-                            let status_message = status.message();
-                            last_error_message = Some(status_message.to_string());
-                            let error_json =
-                                super::error_handler::ErrorHandler::status_to_json(&status);
-                            last_error_json = Some(error_json.clone());
-                            last_error_timing = error_scope_timing;
-                            captured_trailers
-                                .extend(runner_helpers::metadata_map_to_hashmap(status.metadata()));
-                            let should_format_error = effective_no_assert || self.verbose;
-                            let got = should_format_error.then(|| {
-                                let status_name =
-                                    Self::grpc_code_name_from_numeric(status.code() as i64)
-                                        .unwrap_or("Unknown");
-                                format!("status: {}, message: \"{}\"", status_name, status_message)
-                            });
+                                let status_message = status.message();
+                                last_error_message = Some(status_message.to_string());
+                                let error_json =
+                                    super::error_handler::ErrorHandler::status_to_json(&status);
+                                last_error_json = Some(error_json.clone());
+                                last_error_timing = error_scope_timing;
+                                captured_trailers.extend(runner_helpers::metadata_map_to_hashmap(
+                                    status.metadata(),
+                                ));
+                                let should_format_error = effective_no_assert || self.verbose;
+                                let got = should_format_error.then(|| {
+                                    let status_name =
+                                        Self::grpc_code_name_from_numeric(status.code() as i64)
+                                            .unwrap_or("Unknown");
+                                    format!(
+                                        "status: {}, message: \"{}\"",
+                                        status_name, status_message
+                                    )
+                                });
 
-                            if effective_no_assert {
-                                println!("--- RESPONSE (Error) ---");
-                                if let Some(got) = got.as_deref() {
-                                    println!("{}", got);
+                                if effective_no_assert {
+                                    println!("--- RESPONSE (Error) ---");
+                                    if let Some(got) = got.as_deref() {
+                                        println!("{}", got);
+                                    }
+                                } else if self.verbose {
+                                    if let Some(got) = got.as_deref() {
+                                        println!("🔍 gRPC error received: '{}'", got);
+                                    }
+                                    let details_json =
+                                        super::error_handler::ErrorHandler::status_details_json(
+                                            &status,
+                                        );
+                                    if details_json != Value::Null
+                                        && details_json
+                                            .as_array()
+                                            .is_some_and(|arr| !arr.is_empty())
+                                    {
+                                        println!("🔍 gRPC error details: {}", details_json);
+                                    }
                                 }
-                            } else if self.verbose {
-                                if let Some(got) = got.as_deref() {
-                                    println!("🔍 gRPC error received: '{}'", got);
-                                }
-                                let details_json =
-                                    super::error_handler::ErrorHandler::status_details_json(
-                                        &status,
-                                    );
-                                if details_json != Value::Null
-                                    && details_json.as_array().is_some_and(|arr| !arr.is_empty())
-                                {
-                                    println!("🔍 gRPC error details: {}", details_json);
-                                }
-                            }
 
-                            if !effective_no_assert {
-                                if let SectionContent::Json(expected_json) = &section.content {
-                                    let mut expected = expected_json.clone();
-                                    self.substitute_variables(&mut expected, variables);
+                                if !effective_no_assert {
+                                    if let SectionContent::Json(expected_json) = &section.content {
+                                        let mut expected = expected_json.clone();
+                                        self.substitute_variables(&mut expected, variables);
 
-                                    if !super::error_handler::ErrorHandler::status_matches_expected_with_options(
+                                        if !super::error_handler::ErrorHandler::status_matches_expected_with_options(
                                         &status,
                                         &expected,
                                         section.inline_options.partial,
@@ -1565,73 +1748,76 @@ impl TestRunner {
                                         failure_reasons
                                             .push(get_json_diff(&expected, &actual_json));
                                     }
-                                }
+                                    }
 
-                                // Handle with_asserts for Error
-                                if Self::has_required_followup_asserts(
-                                    section,
-                                    sections,
-                                    i,
-                                    effective_no_assert,
-                                    &mut failure_reasons,
-                                ) && let Some(next_section) = sections.get(i + 1)
-                                    && next_section.section_type == SectionType::Asserts
-                                    && let SectionContent::Assertions(lines) = &next_section.content
-                                {
-                                    self.run_assertions(
-                                        lines,
-                                        &error_json,
+                                    // Handle with_asserts for Error
+                                    if Self::has_required_followup_asserts(
+                                        section,
+                                        sections,
+                                        i,
+                                        effective_no_assert,
                                         &mut failure_reasons,
-                                        format!(
-                                            "(attached to ERROR at line {})",
-                                            section.start_line
-                                        ),
-                                        section.start_line,
-                                        AssertionContext {
-                                            headers: &captured_headers,
-                                            trailers: &captured_trailers,
-                                            timing: last_error_timing.as_ref(),
-                                        },
-                                    );
-                                    skip_next_section = true;
-                                }
-                            } else {
-                                // In no_assert mode, we still need to skip the attached ASSERTS section if present
-                                if section.inline_options.with_asserts
-                                    && let Some(next_section) = sections.get(i + 1)
-                                    && next_section.section_type == SectionType::Asserts
-                                {
-                                    skip_next_section = true;
+                                    ) && let Some(next_section) = sections.get(i + 1)
+                                        && next_section.section_type == SectionType::Asserts
+                                        && let SectionContent::Assertions(lines) =
+                                            &next_section.content
+                                    {
+                                        self.run_assertions(
+                                            lines,
+                                            &error_json,
+                                            &mut failure_reasons,
+                                            format!(
+                                                "(attached to ERROR at line {})",
+                                                section.start_line
+                                            ),
+                                            section.start_line,
+                                            AssertionContext {
+                                                headers: &captured_headers,
+                                                trailers: &captured_trailers,
+                                                timing: last_error_timing.as_ref(),
+                                            },
+                                        );
+                                        skip_next_section = true;
+                                    }
+                                } else {
+                                    // In no_assert mode, we still need to skip the attached ASSERTS section if present
+                                    if section.inline_options.with_asserts
+                                        && let Some(next_section) = sections.get(i + 1)
+                                        && next_section.section_type == SectionType::Asserts
+                                    {
+                                        skip_next_section = true;
+                                    }
                                 }
                             }
-                        }
-                        Some(Ok(msg_item)) => {
-                            if !effective_no_assert {
-                                failure_reasons.push(format!(
+                            Some(Ok(msg_item)) => {
+                                if !effective_no_assert {
+                                    failure_reasons.push(format!(
                                     "Expected ERROR at line {}, but received success message or trailers",
                                     section.start_line
                                 ));
-                            } else {
-                                // If we got a message instead of error in no_assert mode, print it
-                                if let crate::grpc::client::StreamItem::Message(msg) = msg_item {
-                                    println!("--- RESPONSE (Raw) ---");
-                                    println!("{}", runner_helpers::format_json_pretty(&msg));
+                                } else {
+                                    // If we got a message instead of error in no_assert mode, print it
+                                    if let crate::grpc::client::StreamItem::Message(msg) = msg_item
+                                    {
+                                        println!("--- RESPONSE (Raw) ---");
+                                        println!("{}", runner_helpers::format_json_pretty(&msg));
+                                    }
+                                }
+                            }
+                            None => {
+                                if !effective_no_assert {
+                                    failure_reasons.push(format!(
+                                        "Expected ERROR at line {}, but stream ended successfully",
+                                        section.start_line
+                                    ));
                                 }
                             }
                         }
-                        None => {
-                            if !effective_no_assert {
-                                failure_reasons.push(format!(
-                                    "Expected ERROR at line {}, but stream ended successfully",
-                                    section.start_line
-                                ));
-                            }
-                        }
                     }
+                    _ => {}
                 }
-                _ => {}
-            }
-        }
+            } // close repeat_iter
+        } // close for (i, section)
 
         // Ensure we close the request stream
         drop(tx.take());
@@ -1965,7 +2151,7 @@ impl TestRunner {
                         }
                     }
                 }
-                SectionType::Meta => {}
+                SectionType::Bench | SectionType::Meta => {}
             }
         }
 

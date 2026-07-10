@@ -1,0 +1,6 @@
+[package]
+name = "source-row"
+version = "0.1.0"
+edition = "2021"
+description = "Row-oriented data structure for CSV/TSV/NDJSON sources"
+license = "MIT"

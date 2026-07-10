@@ -1015,3 +1015,317 @@ fn test_list_with_range_includes_meta_tags() {
     assert_eq!(tests[0]["id"], "tagged.gctf");
     assert_eq!(tests[0]["tags"], serde_json::json!(["smoke", "critical"]));
 }
+
+#[test]
+fn test_inspect_json_contains_effective_runtime_with_source_tracking() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("effective-runtime.gctf");
+    let content = r#"--- OPTIONS ---
+timeout: 10
+retry: 3
+retry_delay: 0.5
+
+--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["inspect", &path, "--format", "json"]);
+    let json = parse_json_stdout(&output);
+
+    let effective_runtime = json.get("effective_runtime");
+    assert!(
+        effective_runtime.is_some(),
+        "inspect JSON should contain effective_runtime field"
+    );
+
+    let er = effective_runtime.unwrap();
+    assert!(
+        er.get("timeout_seconds").is_some(),
+        "effective_runtime should have timeout_seconds"
+    );
+    let timeout = &er["timeout_seconds"];
+    assert_eq!(timeout["value"], 10, "timeout should be 10 from OPTIONS");
+    assert_eq!(
+        timeout["source"], "file_options",
+        "timeout source should be file_options"
+    );
+
+    assert!(
+        er.get("retry").is_some(),
+        "effective_runtime should have retry"
+    );
+    let retry = &er["retry"];
+    assert_eq!(retry["value"], 3, "retry should be 3 from OPTIONS");
+    assert_eq!(
+        retry["source"], "file_options",
+        "retry source should be file_options"
+    );
+
+    assert!(
+        er.get("retry_delay_seconds").is_some(),
+        "effective_runtime should have retry_delay_seconds"
+    );
+    let retry_delay = &er["retry_delay_seconds"];
+    assert_eq!(
+        retry_delay["value"], 0.5,
+        "retry_delay should be 0.5 from OPTIONS"
+    );
+    assert_eq!(
+        retry_delay["source"], "file_options",
+        "retry_delay source should be file_options"
+    );
+}
+
+#[test]
+fn test_inspect_effective_runtime_section_attribute_overrides_options() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("attr-override.gctf");
+    let content = r#"--- OPTIONS ---
+timeout: 10
+retry: 3
+
+#[timeout(20)]
+--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["inspect", &path, "--format", "json"]);
+    let json = parse_json_stdout(&output);
+
+    let effective_runtime = json
+        .get("effective_runtime")
+        .expect("effective_runtime must exist");
+    let timeout = &effective_runtime["timeout_seconds"];
+    assert_eq!(
+        timeout["value"], 20,
+        "timeout should be overridden to 20 by section attribute"
+    );
+    assert_eq!(
+        timeout["source"], "section_attribute",
+        "timeout source should be section_attribute when overridden"
+    );
+}
+
+#[test]
+fn test_inspect_effective_runtime_no_retry_overrides_retry() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("no-retry-override.gctf");
+    let content = r#"--- OPTIONS ---
+timeout: 10
+retry: 3
+
+#[no_retry(true)]
+--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["inspect", &path, "--format", "json"]);
+    let json = parse_json_stdout(&output);
+
+    let effective_runtime = json
+        .get("effective_runtime")
+        .expect("effective_runtime must exist");
+    let no_retry = &effective_runtime["no_retry"];
+    assert_eq!(
+        no_retry["value"], true,
+        "no_retry should be true from section attribute"
+    );
+    assert_eq!(
+        no_retry["source"], "section_attribute",
+        "no_retry source should be section_attribute"
+    );
+}
+
+#[test]
+fn test_inspect_effective_runtime_kebab_alias_normalizes_to_snake_case() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("kebab-alias.gctf");
+    let content = r#"--- OPTIONS ---
+retry-delay: 0.5
+no-retry: true
+
+--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["inspect", &path, "--format", "json"]);
+    let json = parse_json_stdout(&output);
+
+    let effective_runtime = json
+        .get("effective_runtime")
+        .expect("effective_runtime must exist");
+    let retry_delay = &effective_runtime["retry_delay_seconds"];
+    assert_eq!(
+        retry_delay["value"], 0.5,
+        "retry_delay should be 0.5 (normalized from kebab retry-delay)"
+    );
+    assert_eq!(retry_delay["source"], "file_options");
+
+    let no_retry = &effective_runtime["no_retry"];
+    assert_eq!(
+        no_retry["value"], true,
+        "no_retry should be true (normalized from kebab no-retry)"
+    );
+    assert_eq!(no_retry["source"], "file_options");
+}
+
+#[test]
+fn test_fmt_writes_normalizes_kebab_options_to_snake_case() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("kebab-options.gctf");
+    let content = r#"--- OPTIONS ---
+retry-delay: 0.5
+no-retry: true
+
+--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+
+    // Run fmt -w to normalize
+    let write_output = run_cli(&["fmt", "-w", &path]);
+    assert!(
+        write_output.status.success(),
+        "fmt -w command failed\nstderr:\n{}",
+        String::from_utf8_lossy(&write_output.stderr)
+    );
+
+    // Read back and verify kebab was normalized
+    let normalized = std::fs::read_to_string(&file).expect("failed to read normalized file");
+
+    // Should contain snake_case keys, not kebab
+    assert!(
+        normalized.contains("retry_delay:"),
+        "fmt should normalize retry-delay -> retry_delay\ngot:\n{}",
+        normalized
+    );
+    assert!(
+        normalized.contains("no_retry:"),
+        "fmt should normalize no-retry -> no_retry\ngot:\n{}",
+        normalized
+    );
+    assert!(
+        !normalized.contains("retry-delay:"),
+        "fmt should remove retry-delay\ngot:\n{}",
+        normalized
+    );
+    assert!(
+        !normalized.contains("no-retry:"),
+        "fmt should remove no-retry\ngot:\n{}",
+        normalized
+    );
+}
+
+#[test]
+fn test_check_warns_on_kebab_options_keys() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("kebab-warn.gctf");
+    let content = r#"--- OPTIONS ---
+retry-delay: 0.5
+
+--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["check", &path, "--format", "json"]);
+    let json = parse_json_stdout_any_status(&output);
+
+    let diagnostics = json
+        .get("diagnostics")
+        .expect("diagnostics field must exist");
+    let has_deprecation_warning = diagnostics
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["message"].as_str().unwrap().contains("deprecated"));
+
+    assert!(
+        has_deprecation_warning,
+        "check should warn about deprecated kebab options\ngot: {}",
+        serde_json::to_string_pretty(&diagnostics).unwrap()
+    );
+}
+
+#[test]
+fn test_check_warns_on_kebab_attribute_keys() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("kebab-attr-warn.gctf");
+    let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+#[retry-delay(0.5)]
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["check", &path, "--format", "json"]);
+    let json = parse_json_stdout_any_status(&output);
+
+    let diagnostics = json
+        .get("diagnostics")
+        .expect("diagnostics field must exist");
+    let has_deprecation_warning = diagnostics
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["message"].as_str().unwrap().contains("deprecated"));
+
+    assert!(
+        has_deprecation_warning,
+        "check should warn about deprecated kebab attributes\ngot: {}",
+        serde_json::to_string_pretty(&diagnostics).unwrap()
+    );
+}

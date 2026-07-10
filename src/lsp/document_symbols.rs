@@ -5,11 +5,9 @@
 
 use crate::parser;
 use crate::parser::ast::SectionType;
-#[allow(deprecated)]
 use tower_lsp::lsp_types::{DocumentSymbol, Position, Range, SymbolKind};
 
 /// Build document symbols (assertions and extracted variables) for a GCTF document.
-#[allow(deprecated)]
 pub fn build_section_children_for_doc(doc: &parser::GctfDocument) -> Vec<DocumentSymbol> {
     let mut all_children: Vec<DocumentSymbol> = Vec::new();
 
@@ -24,7 +22,7 @@ pub fn build_section_children_for_doc(doc: &parser::GctfDocument) -> Vec<Documen
                 }
 
                 let line_num = (s.start_line + idx + 1) as u32;
-                #[allow(deprecated)]
+                #[expect(deprecated)]
                 let mut assertion_symbol = DocumentSymbol {
                     name: trimmed.to_string(),
                     detail: Some("assertion".to_string()),
@@ -52,7 +50,7 @@ pub fn build_section_children_for_doc(doc: &parser::GctfDocument) -> Vec<Documen
                     let abs_close = abs_open + close_rel + 2;
                     let inner = trimmed[abs_open + 2..abs_close - 2].trim();
                     if !inner.is_empty() {
-                        #[allow(deprecated)]
+                        #[expect(deprecated)]
                         var_children.push(DocumentSymbol {
                             name: inner.to_string(),
                             detail: Some("variable reference".to_string()),
@@ -95,7 +93,7 @@ pub fn build_section_children_for_doc(doc: &parser::GctfDocument) -> Vec<Documen
                 let line_num = (s.start_line + idx + 1) as u32;
                 let expr_trimmed = expr.trim();
 
-                #[allow(deprecated)]
+                #[expect(deprecated)]
                 children.push(DocumentSymbol {
                     name: var_name.to_string(),
                     detail: Some(format!("extract: {}", expr_trimmed)),

@@ -131,8 +131,8 @@ pub fn find_variable_references(content: &str, var_name: &str, uri: &str) -> Vec
     if let Ok(doc) = parser::parse_gctf_from_str(content, "lsp-document.gctf") {
         for section in &doc.sections {
             for (idx, line) in section.raw_content.lines().enumerate() {
-                // Find all {{ var_name }} occurrences
                 let mut search_start = 0;
+                // Find all {{ var_name }} occurrences
                 while let Some(var_start) = line[search_start..].find("{{") {
                     let abs_start = search_start + var_start;
                     if let Some(var_end) = line[abs_start..].find("}}") {
@@ -156,6 +156,26 @@ pub fn find_variable_references(content: &str, var_name: &str, uri: &str) -> Vec
                     } else {
                         break;
                     }
+                }
+                // Find all $var_name occurrences
+                search_start = 0;
+                let dollar_var = format!("${}", var_name);
+                while let Some(var_start) = line[search_start..].find(&dollar_var) {
+                    let abs_start = search_start + var_start;
+                    references.push(Location {
+                        uri: parsed_uri.clone(),
+                        range: Range {
+                            start: Position {
+                                line: section.start_line as u32 + idx as u32 + 1,
+                                character: abs_start as u32,
+                            },
+                            end: Position {
+                                line: section.start_line as u32 + idx as u32 + 1,
+                                character: (abs_start + dollar_var.len()) as u32,
+                            },
+                        },
+                    });
+                    search_start = abs_start + dollar_var.len();
                 }
             }
         }
@@ -252,7 +272,7 @@ auth_token = .token
 user_id = .user_id
 
 --- ASSERTS ---
-@len({{ auth_token }}) > 0
+@len($auth_token) > 0
 "#;
 
         let loc = find_variable_in_extract(content, "auth_token", "file:///test.gctf");
@@ -273,7 +293,7 @@ test.Service/Method
 auth_token = .token
 
 --- ASSERTS ---
-@len({{ auth_token }}) > 0
+@len($auth_token) > 0
 "#;
 
         let loc = find_variable_in_extract(content, "nonexistent", "file:///test.gctf");
@@ -295,7 +315,7 @@ user_id = .user_id
 user_name = .name
 
 --- ASSERTS ---
-@len({{ auth_token }}) > 0
+@len($auth_token) > 0
 "#;
 
         let vars = get_all_variables(content);
@@ -318,8 +338,8 @@ test.Service/Method
 token = .token
 
 --- ASSERTS ---
-@len({{ token }}) > 0
-{{ token }} != null
+@len($token) > 0
+$token != null
 "#;
 
         let refs = find_variable_references(content, "token", "file:///test.gctf");
