@@ -194,6 +194,14 @@ pub fn tokenize_assertion(source: &str) -> Vec<Token> {
                     ));
                 }
             }
+            '-' => {
+                let s = i;
+                i += 1;
+                out.push(Token::new(
+                    TokenKind::Op("-".into()),
+                    Span { start: s, end: i },
+                ));
+            }
             '"' => {
                 let s = i;
                 i += 1;
