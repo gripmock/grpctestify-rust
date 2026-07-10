@@ -382,7 +382,7 @@ pub fn register_all(manager: &mut crate::core::PluginManager) {
 mod tests {
     use super::*;
     use crate::Plugin;
-    use crate::core::{PluginManager, PluginPurity};
+    use crate::core::PluginManager;
     use serde_json::json;
 
     fn ctx() -> PluginContext<'static> {

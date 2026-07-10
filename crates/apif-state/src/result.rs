@@ -234,7 +234,6 @@ mod tests {
             tags: vec!["tag".into()],
             owner: Some("me".into()),
             links: vec!["http://link".into()],
-            ..Default::default()
         };
         let meta = TestMeta::from_file_meta(&file_meta);
         assert_eq!(meta.name, Some("test.gctf".into()));
