@@ -19,5 +19,6 @@ uuid = { workspace = true }
 email_address = { workspace = true }
 url = { workspace = true }
 chrono = { workspace = true }
+jsonschema = { workspace = true }
 
 [dev-dependencies]

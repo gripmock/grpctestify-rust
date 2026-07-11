@@ -14,6 +14,11 @@ static CHANNEL_CACHE: LazyLock<RwLock<HashMap<ChannelCacheKey, Channel>>> =
 /// Ensures proxy warnings are emitted at most once per process lifetime.
 static PROXY_WARNED: OnceLock<()> = OnceLock::new();
 
+/// Create a channel to a gRPC server.
+///
+/// Channels are cached by (address, timeout, tls, user_agent, connection_id).
+/// Set `config.connection_id` to a unique value to bypass the cache and create
+/// an independent TCP/TLS connection (useful for connection pooling in bench).
 pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
     if config.address.is_empty() {
         return Err(anyhow::anyhow!("gRPC address cannot be empty"));
@@ -28,12 +33,17 @@ pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
 
     let user_agent = resolve_user_agent(config.metadata.as_ref());
 
-    let cache_key = ChannelCacheKey {
+    let mut cache_key = ChannelCacheKey {
         address: config.address.clone(),
         timeout_seconds: config.timeout_seconds,
         tls_config: config.tls_config.clone(),
         user_agent: user_agent.clone(),
     };
+
+    // connection_id > 0 creates independent cache entries (connection pooling)
+    if config.connection_id > 0 {
+        cache_key.user_agent = format!("{}/conn-{}", cache_key.user_agent, config.connection_id);
+    }
 
     {
         let cache = CHANNEL_CACHE.read().expect("lock poisoned");
@@ -178,7 +188,7 @@ pub fn build_metadata(config: &GrpcClientConfig) -> tonic::metadata::MetadataMap
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::grpc::tls::CompressionMode;
+    use crate::grpc::tls::{CompressionMode, WireProtocol};
 
     fn base_config(metadata: Option<HashMap<String, String>>) -> GrpcClientConfig {
         GrpcClientConfig {
@@ -189,6 +199,8 @@ mod tests {
             metadata,
             target_service: None,
             compression: CompressionMode::None,
+            connection_id: 0,
+            protocol: WireProtocol::Grpc,
         }
     }
 
@@ -238,6 +250,8 @@ mod tests {
             metadata: None,
             target_service: None,
             compression: Default::default(),
+            connection_id: 0,
+            protocol: WireProtocol::Grpc,
         };
 
         let start = std::time::Instant::now();

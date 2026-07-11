@@ -10,6 +10,7 @@ pub mod is_json;
 pub mod len;
 pub mod macros;
 pub mod regex;
+pub mod schema;
 pub mod timestamp;
 pub mod timing;
 pub mod trailer_extract;

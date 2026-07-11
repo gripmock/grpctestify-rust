@@ -11,8 +11,20 @@ pub struct ChannelCacheKey {
     pub user_agent: String,
 }
 
+/// Wire protocol
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WireProtocol {
+    /// Standard gRPC over HTTP/2 (tonic)
+    #[default]
+    Grpc,
+    /// gRPC-Web over HTTP/1.1 (application/grpc-web-proto)
+    GrpcWeb,
+    /// Connect protocol by buf (application/connect+proto)
+    Connect,
+}
+
 /// Configuration for gRPC client
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GrpcClientConfig {
     pub address: String,
     pub timeout_seconds: u64,
@@ -21,6 +33,11 @@ pub struct GrpcClientConfig {
     pub metadata: Option<HashMap<String, String>>,
     pub target_service: Option<String>,
     pub compression: CompressionMode,
+    /// Per-connection id for independent channel cache entries.
+    /// 0 means use the shared cache. Set to 1..N for connection pooling.
+    pub connection_id: u64,
+    /// Wire protocol: gRPC (tonic), gRPC-Web, or ConnectRPC
+    pub protocol: WireProtocol,
 }
 
 /// TLS configuration for gRPC connections

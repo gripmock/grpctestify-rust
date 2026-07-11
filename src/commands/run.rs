@@ -232,6 +232,9 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
                 crate::cli::LogFormat::Allure => {
                     reporters.push(Box::new(report::AllureReporter::new(output_path.clone())));
                 }
+                crate::cli::LogFormat::Yaml => {
+                    reporters.push(Box::new(report::YamlReporter::new(output_path.clone())));
+                }
                 _ => {}
             }
         } else {

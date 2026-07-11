@@ -11,9 +11,9 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::client::{GrpcClient, GrpcClientConfig, StreamItem};
-use super::tls::{CompressionMode, TlsConfig};
+use super::tls::{CompressionMode, TlsConfig, WireProtocol};
 
-/// gRPC factory implementing CallClientFactory.
+/// Factory that creates a native gRPC client.
 pub struct GrpcClientFactory;
 
 #[async_trait]
@@ -23,11 +23,14 @@ impl CallClientFactory for GrpcClientFactory {
             address: config.address.clone(),
             timeout_seconds: config.timeout_seconds,
             tls_config: config.tls.as_ref().map(convert_tls),
-            proto_config: None, // caller sets this separately
+            proto_config: None,
             metadata: config.metadata.clone(),
             target_service: None,
             compression: CompressionMode::from_env(),
+            connection_id: 0,
+            protocol: WireProtocol::Grpc,
         };
+
         let client = GrpcClient::new(grpc_config).await?;
         Ok(Box::new(GrpcCallClient(client)))
     }
@@ -43,37 +46,13 @@ fn convert_tls(tls: &apif_execution::TlsConfig) -> TlsConfig {
     }
 }
 
-/// gRPC implementation of the CallClient trait.
+/// Native gRPC client (tonic).
 pub struct GrpcCallClient(GrpcClient);
 
 #[async_trait]
 impl CallClient for GrpcCallClient {
     async fn resolve_endpoint(&self, endpoint: &str) -> Result<EndpointMeta> {
-        let parts: Vec<&str> = endpoint.split('/').collect();
-        if parts.len() != 2 {
-            anyhow::bail!("invalid endpoint format: {}", endpoint);
-        }
-        let (full_service, method_name) = (parts[0], parts[1]);
-
-        let pool = self.0.descriptor_pool();
-        let svc = pool
-            .get_service_by_name(full_service)
-            .ok_or_else(|| anyhow::anyhow!("service not found: {}", full_service))?;
-        let m = svc
-            .methods()
-            .find(|m| m.name() == method_name)
-            .ok_or_else(|| anyhow::anyhow!("method not found: {}", method_name))?;
-
-        Ok(EndpointMeta {
-            rpc_mode: match (m.is_client_streaming(), m.is_server_streaming()) {
-                (false, false) => RpcMode::Unary,
-                (false, true) => RpcMode::ServerStream,
-                (true, false) => RpcMode::ClientStream,
-                (true, true) => RpcMode::Bidi,
-            },
-            input_type: Some(m.input().full_name().to_string()),
-            output_type: Some(m.output().full_name().to_string()),
-        })
+        resolve_via_pool(self.0.descriptor_pool(), endpoint)
     }
 
     async fn call(
@@ -109,4 +88,82 @@ impl CallClient for GrpcCallClient {
             }),
         })))
     }
+}
+
+/// HTTP-based client for gRPC-Web and ConnectRPC.
+pub struct HttpCallClient {
+    config: GrpcClientConfig,
+}
+
+#[async_trait]
+impl CallClient for HttpCallClient {
+    async fn resolve_endpoint(&self, endpoint: &str) -> Result<EndpointMeta> {
+        // Load descriptors via a temporary gRPC client
+        let grpc_config = GrpcClientConfig {
+            proto_config: self.config.proto_config.clone(),
+            target_service: None,
+            ..self.config.clone()
+        };
+        let client = GrpcClient::new(grpc_config).await?;
+        resolve_via_pool(client.descriptor_pool(), endpoint)
+    }
+
+    async fn call(
+        &mut self,
+        endpoint: &str,
+        request: CallRequest,
+    ) -> Result<Pin<Box<dyn futures::Stream<Item = Result<CallStreamItem, CallError>> + Send>>>
+    {
+        let parts: Vec<&str> = endpoint.split('/').collect();
+        anyhow::ensure!(parts.len() == 2, "invalid endpoint: {}", endpoint);
+        let (full_service, method_name) = (parts[0].to_string(), parts[1].to_string());
+
+        let value = match request {
+            CallRequest::Unary(v) => v,
+            CallRequest::Streaming(mut s) => s.next().await.unwrap_or(Value::Null),
+        };
+
+        let mut stream =
+            super::web::call_unary(&self.config, &full_service, &method_name, value).await?;
+
+        // Collect all messages
+        let mut messages = Vec::new();
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(msg) => messages.push(msg),
+                Err(e) => return Err(anyhow::anyhow!(e)),
+            }
+        }
+
+        Ok(Box::pin(futures::stream::iter(
+            messages
+                .into_iter()
+                .map(|msg| Ok(CallStreamItem::Message(msg))),
+        )))
+    }
+}
+
+fn resolve_via_pool(pool: &prost_reflect::DescriptorPool, endpoint: &str) -> Result<EndpointMeta> {
+    let parts: Vec<&str> = endpoint.split('/').collect();
+    anyhow::ensure!(parts.len() == 2, "invalid endpoint: {}", endpoint);
+    let (full_service, method_name) = (parts[0], parts[1]);
+
+    let svc = pool
+        .get_service_by_name(full_service)
+        .ok_or_else(|| anyhow::anyhow!("service not found: {}", full_service))?;
+    let m = svc
+        .methods()
+        .find(|m| m.name() == method_name)
+        .ok_or_else(|| anyhow::anyhow!("method not found: {}", method_name))?;
+
+    Ok(EndpointMeta {
+        rpc_mode: match (m.is_client_streaming(), m.is_server_streaming()) {
+            (false, false) => RpcMode::Unary,
+            (false, true) => RpcMode::ServerStream,
+            (true, false) => RpcMode::ClientStream,
+            (true, true) => RpcMode::Bidi,
+        },
+        input_type: Some(m.input().full_name().to_string()),
+        output_type: Some(m.output().full_name().to_string()),
+    })
 }

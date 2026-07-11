@@ -75,5 +75,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Compile test server protos (always if they exist)
     compile_test_server_protos()?;
 
+    // Trigger rebuild when embedded web assets change (rust-embed)
+    println!("cargo:rerun-if-changed=web/dist/");
+
     Ok(())
 }

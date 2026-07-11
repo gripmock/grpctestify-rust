@@ -28,11 +28,49 @@ struct CallOptions<'a> {
     insecure: bool,
 }
 
+/// Handle inline call with synthetic document (no file)
+async fn handle_call_document_inline(doc: &parser::GctfDocument, args: &CallArgs) -> Result<()> {
+    let mut output_file: Option<File> = if let Some(ref path) = args.output {
+        Some(File::create(path)?)
+    } else {
+        None
+    };
+
+    let mut header_file: Option<File> = if let Some(ref path) = args.dump_header {
+        Some(File::create(path)?)
+    } else {
+        None
+    };
+
+    let verbose = args.verbose || args.very_verbose;
+
+    let opts = CallOptions {
+        include_headers: args.include,
+        verbose,
+        very_verbose: args.very_verbose,
+        output_file: &mut output_file,
+        header_file: &mut header_file,
+        silent: args.silent,
+        show_error: args.show_error,
+        connect_timeout: args.connect_timeout,
+        max_time: args.max_time,
+        insecure: args.insecure,
+    };
+
+    handle_call_document(doc, Path::new("<inline>"), opts).await
+}
+
 pub async fn handle_call(args: &CallArgs) -> Result<()> {
-    // --bench mode: forward to benchmark
+    // --bench mode: forward to benchmark (handles both file and inline)
     if args.bench {
         let bench_args = crate::cli::args::BenchArgs {
-            test_paths: vec![args.file.clone()],
+            test_paths: if args.endpoint.is_some() {
+                vec![]
+            } else {
+                vec![args.file.clone().unwrap_or_default()]
+            },
+            call: args.endpoint.clone(),
+            data: args.data.clone(),
             profile: None,
             mode: None,
             concurrency: args.concurrency,
@@ -72,26 +110,42 @@ pub async fn handle_call(args: &CallArgs) -> Result<()> {
             exclude: vec![],
             list_profiles: false,
             profile_file: None,
-            call: None,
-            data: None,
         };
         return crate::commands::bench::handle_bench(&bench_args).await;
+    }
+
+    // Inline endpoint mode (-e): build synthetic document in memory
+    if let Some(ref endpoint) = args.endpoint {
+        let body = args.data.as_deref().unwrap_or("{}");
+        let request_value: Value = serde_json::from_str(body)
+            .map_err(|e| anyhow::anyhow!("Invalid JSON in -d/--data: {}", e))?;
+        let doc = crate::parser::GctfDocumentBuilder::new()
+            .with_file_path("<inline>")
+            .endpoint(endpoint)
+            .request(request_value)
+            .build();
+        return handle_call_document_inline(&doc, args).await;
     }
 
     if args.doc_index == Some(0) {
         anyhow::bail!("--doc-index must be >= 1");
     }
 
-    let cwd = std::env::current_dir()?;
-    let file_path = if args.file.is_absolute() {
-        args.file.clone()
-    } else {
-        cwd.join(&args.file)
+    let file_path = match &args.file {
+        Some(f) => {
+            let cwd = std::env::current_dir()?;
+            let abs = if f.is_absolute() {
+                f.clone()
+            } else {
+                cwd.join(f)
+            };
+            if !abs.exists() {
+                return Err(anyhow::anyhow!("File not found: {}", abs.display()));
+            }
+            abs
+        }
+        None => anyhow::bail!("Either provide a .gctf file or use -e/--endpoint"),
     };
-
-    if !file_path.exists() {
-        return Err(anyhow::anyhow!("File not found: {}", file_path.display()));
-    }
 
     let parse_result = parser::parse_with_recovery(&file_path);
     let doc = parse_result.document;
@@ -278,6 +332,8 @@ async fn handle_call_document(
         metadata: doc.get_request_headers(),
         target_service: Some(full_service.clone()),
         compression: Default::default(),
+        connection_id: 0,
+        protocol: crate::grpc::WireProtocol::Grpc,
     };
 
     let start = Instant::now();

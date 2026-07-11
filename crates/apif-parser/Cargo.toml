@@ -19,4 +19,4 @@ serde_yaml_ng = { workspace = true }
 json5 = "1.3"
 
 [dev-dependencies]
-cfg-runtime = { path = "../cfg-runtime", version = "0.1.0" }
+apif-cfg-runtime = { path = "../apif-cfg-runtime", version = "0.1.0" }

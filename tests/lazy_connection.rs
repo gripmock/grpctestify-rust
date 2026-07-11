@@ -25,6 +25,8 @@ async fn test_local_proto_files_are_rejected_in_native_mode() {
         metadata: None,
         target_service: None,
         compression: CompressionMode::None,
+        connection_id: 0,
+        protocol: Default::default(),
     };
 
     let result = GrpcClient::new(config).await;
