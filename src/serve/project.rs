@@ -145,7 +145,7 @@ pub fn delete_dotenv_local(root: &Path, name: &str) -> Result<()> {
     delete_text_file(&env_local_path(root, name))
 }
 
-/// List session IDs from history/*.json files.
+/// List session IDs from history/*.jsonl files.
 pub fn list_history_sessions(root: &Path) -> Result<Vec<String>> {
     let dir = root.join("history");
     if !dir.is_dir() {
@@ -155,7 +155,7 @@ pub fn list_history_sessions(root: &Path) -> Result<Vec<String>> {
     for entry in fs::read_dir(&dir).context("Failed to read history directory")? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().to_string();
-        if let Some(id) = name.strip_suffix(".json") {
+        if let Some(id) = name.strip_suffix(".jsonl") {
             sessions.push(id.to_string());
         }
     }
@@ -163,18 +163,37 @@ pub fn list_history_sessions(root: &Path) -> Result<Vec<String>> {
     Ok(sessions)
 }
 
-/// Read a single session history file.
-pub fn read_history_session(root: &Path, session: &str) -> Result<Option<String>> {
-    read_text_file(&root.join("history").join(format!("{}.json", session)))
+/// Read all history entries from a session file (NDJSON format).
+pub fn read_history_session(root: &Path, session: &str) -> Result<Vec<String>> {
+    let path = root.join("history").join(format!("{}.jsonl", session));
+    if !path.is_file() {
+        return Ok(vec![]);
+    }
+    let content =
+        fs::read_to_string(&path).with_context(|| format!("Failed to read {}", path.display()))?;
+    Ok(content
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect())
 }
 
-/// Write a single session history file.
-pub fn write_history_session(root: &Path, session: &str, content: &str) -> Result<()> {
+/// Append one history entry as a JSON line to a session file.
+pub fn append_history_entry(root: &Path, session: &str, entry: &str) -> Result<()> {
     let dir = root.join("history");
     if !dir.is_dir() {
         std::fs::create_dir_all(&dir).ok();
     }
-    write_text_file(&dir.join(format!("{}.json", session)), content)
+    let path = dir.join(format!("{}.jsonl", session));
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("Failed to open {}", path.display()))?;
+    writeln!(file, "{}", entry)
+        .with_context(|| format!("Failed to append to {}", path.display()))?;
+    Ok(())
 }
 
 /// Create the .grpctestify project directory structure.

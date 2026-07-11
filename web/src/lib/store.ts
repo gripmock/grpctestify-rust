@@ -5,7 +5,6 @@ import type { ClientSettings } from './types';
 import { LRUCache } from './cache';
 import { getSessionId } from './session';
 import { applyEnvironment, substituteEnv } from './env';
-import { parseDotenv, mergeEnv } from './dotenv';
 
 function now() { return Date.now(); }
 function id() { return Math.random().toString(36).slice(2, 9); }
@@ -19,19 +18,15 @@ const EMPTY_REQUEST = { endpoint: '', headers: {}, bodies: DEFAULT_BODIES };
 
 
 async function initProjectEnvs(envNames: string[]) {
-  const st = useStore.getState();
+  if (envNames.length === 0) return;
   const projectEnvs: Environment[] = [];
   for (const name of envNames) {
-    const [sharedRaw, localStatus] = await Promise.all([
-      st.fetchProjectEnv(name).catch(() => ''),
-      st.fetchProjectEnvLocal(name).catch(() => ({ exists: false, content: null })),
-    ]);
-    const shared = parseDotenv(sharedRaw);
-    const local = localStatus?.content ? parseDotenv(localStatus.content) : {};
-    const merged = mergeEnv(shared, local);
-    const address = merged.GRPC_ADDRESS || undefined;
-    delete merged.GRPC_ADDRESS;
-    projectEnvs.push({ name, address, variables: merged });
+    try {
+      const res = await fetch(`/api/project/env/${encodeURIComponent(name)}/merged`);
+      if (!res.ok) continue;
+      const data = await res.json();
+      projectEnvs.push({ name, address: data.address || undefined, variables: data.variables });
+    } catch {  }
   }
   if (projectEnvs.length > 0) {
     useStore.setState(s => {
@@ -186,15 +181,6 @@ function saveHistoryToStorage() {
           break;
         }
       }
-    }
-    
-    const st = useStore.getState();
-    if (st.projectRoot && st.sessionId) {
-      fetch(`/api/project/history/${st.sessionId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ entries: historyCache.values() }),
-      }).catch(() => {});
     }
   } catch {  }
 }
@@ -648,6 +634,7 @@ export const useStore = create<PlayStore>((set, get) => ({
           address: effectiveAddress || undefined,
           protocol: protocol || undefined,
           collection_path: workspacePath || undefined,
+          session_id: st.sessionId || undefined,
         }),
         signal,
       });
@@ -812,91 +799,6 @@ export const useStore = create<PlayStore>((set, get) => ({
 
   
 
-  loadProjectInfo: async () => {
-    try {
-      const res = await fetch('/api/project/info');
-      if (!res.ok) return;
-      const data = await res.json();
-      if (!data.active) return;
-      set({ projectRoot: data.project_dir || '.grpctestify', projectEnvNames: data.envs || [] });
-
-      
-      let activeEnvName: string | null = null;
-      const st = get();
-      const fetchEnv = st.fetchProjectEnv;
-      const fetchEnvLocal = st.fetchProjectEnvLocal;
-      await Promise.all([
-        (async () => {
-          try {
-            const sres = await fetch('/api/project/settings');
-            if (sres.ok) {
-              const sdata = await sres.json();
-              activeEnvName = sdata.active_env || null;
-              set({
-                address: sdata.address || get().address,
-                protocol: sdata.protocol || get().protocol,
-                tls: sdata.tls ?? get().tls,
-                tlsInsecure: sdata.tls_insecure ?? get().tlsInsecure,
-              });
-            }
-          } catch {  }
-        })(),
-        (async () => {
-          try {
-            const envNames = data.envs || [];
-            const projectEnvs: Environment[] = [];
-            for (const name of envNames) {
-              const [sharedRaw, localStatus] = await Promise.all([
-                fetchEnv(name).catch(() => ''),
-                fetchEnvLocal(name).catch(() => ({ exists: false, content: null })),
-              ]);
-              const shared = parseDotenv(sharedRaw);
-              const local = localStatus?.content ? parseDotenv(localStatus.content) : {};
-              const merged = mergeEnv(shared, local);
-              const address = merged.GRPC_ADDRESS || undefined;
-              delete merged.GRPC_ADDRESS;
-              projectEnvs.push({ name, address, variables: merged });
-            }
-            if (projectEnvs.length > 0) {
-              set(s => {
-                const existing = s.environments.filter(e => !projectEnvs.some(p => p.name === e.name));
-                return { environments: [...projectEnvs, ...existing] };
-              });
-            }
-          } catch {  }
-        })(),
-      ]);
-
-      if (activeEnvName) {
-        const envExists = get().environments.some(e => e.name === activeEnvName);
-        if (envExists) set({ activeEnvironment: activeEnvName });
-      }
-
-      
-      try {
-        const hres = await fetch('/api/project/history');
-        if (hres.ok) {
-          const sessions: Record<string, HistoryEntry[]> = await hres.json();
-          const all: HistoryEntry[] = [];
-          for (const [sid, entries] of Object.entries(sessions)) {
-            for (const e of entries) {
-              if (e && e.id) {
-                (e as any)._session = sid;
-                all.push(e);
-              }
-            }
-          }
-          all.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-          if (all.length > 0) {
-            historyCache.clear();
-            for (const e of all) historyCache.put(e.id, e);
-            set({ history: historyCache.values() });
-          }
-        }
-      } catch {  }
-    } catch {  }
-  },
-
   saveProjectSettings: async (s) => {
     try {
       await fetch('/api/project/settings', {
@@ -953,4 +855,4 @@ if (stored.length > 0) {
 }
 
 
-setTimeout(() => { useStore.getState().loadStartupInfo(); }, 0);
+

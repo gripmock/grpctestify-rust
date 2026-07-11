@@ -29,6 +29,7 @@ export interface HistoryEntry {
 export interface CollectionItem {
   path: string;
   name: string;
+  is_dir: boolean;
   tags?: string[];
 }
 
@@ -236,7 +237,6 @@ export interface PlayStore {
   
   projectRoot: string | null;
   projectEnvNames: string[];
-  loadProjectInfo: () => Promise<void>;
   saveProjectSettings: (s: { address?: string; protocol?: string; tls?: boolean; tls_insecure?: boolean; active_env?: string | null }) => Promise<void>;
   fetchProjectEnv: (name: string) => Promise<string>;
   saveProjectEnv: (name: string, content: string) => Promise<void>;

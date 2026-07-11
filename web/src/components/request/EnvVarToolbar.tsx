@@ -41,8 +41,8 @@ export function EnvVarToolbar({ text }: { text: string }) {
           background: muted ? `${colors.warning}18` : 'var(--bg-primary)',
           color: muted ? colors.warning : 'var(--text-primary)',
           textDecoration: muted ? 'line-through' : 'none',
-        }} title={muted ? `"${key}" is muted — will NOT be substituted` : value || 'empty (secret)'}>
-          {key}={value || '••••••'}
+        }} title={muted ? `"${key}" is muted — will NOT be substituted` : value === '' ? '(empty)' : value}>
+          {key}={value === '' ? '(empty)' : value ?? '••••••'}
         </span>
       ))}
     </div>

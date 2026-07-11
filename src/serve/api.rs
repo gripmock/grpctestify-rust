@@ -103,7 +103,7 @@ pub struct CollectionItem {
 }
 
 /// Structured data extracted from a .gctf file — frontend-friendly, no gctf concepts.
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct CollectionParsed {
     pub endpoint: String,
     pub address: String,
@@ -245,7 +245,7 @@ fn parse_collection(doc: &crate::parser::GctfDocument) -> CollectionParsed {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct CollectionResponse {
     pub content: String,
     pub path: String,
@@ -300,6 +300,8 @@ pub struct CallRequest {
     /// Optional: relative path to original .gctf collection.
     /// When set, the backend reads the file to get PROTO/TLS/OPTIONS sections.
     pub collection_path: Option<String>,
+    /// Session ID for project history auto-save.
+    pub session_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -427,6 +429,9 @@ pub async fn get_collection(
     reject_traversal(&path.0)?;
     let file_path = resolve_file(&state, &path.0)
         .ok_or_else(|| (StatusCode::NOT_FOUND, "File not found".to_string()))?;
+    if file_path.is_dir() {
+        return Err((StatusCode::NOT_FOUND, "Path is a directory".to_string()));
+    }
     let content = std::fs::read_to_string(&file_path)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let doc = crate::parser::parse_gctf_from_str(&content, &file_path.to_string_lossy())
@@ -1165,6 +1170,35 @@ pub async fn execute_call(
 
     let success = response_error.is_none();
 
+    // Auto-save history entry if session_id is provided
+    if let Some(sid) = req.session_id.clone() {
+        let hist_body = req.bodies_raw.clone().unwrap_or_default();
+        let hist_headers = req.headers.clone().unwrap_or_default();
+        if let Ok(root) = require_project(&state) {
+            let entry = serde_json::json!({
+                "id": uuid::Uuid::new_v4().to_string(),
+                "timestamp": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis(),
+                "endpoint": req.endpoint,
+                "bodies": hist_body,
+                "headers": hist_headers,
+                "response": {
+                    "status": if success { "ok" } else { "error" },
+                    "error": response_error.clone(),
+                    "messages": response_messages.clone(),
+                    "headers": resp_headers.clone(),
+                    "trailers": response_trailers.clone(),
+                },
+            });
+
+            if let Ok(line) = serde_json::to_string(&entry) {
+                super::project::append_history_entry(&root, &sid, &line).ok();
+            }
+        }
+    }
+
     Ok(Json(CallResponse {
         success,
         messages: response_messages,
@@ -1327,6 +1361,57 @@ pub struct EnvLocalStatus {
     pub content: Option<String>,
 }
 
+#[derive(Serialize)]
+pub struct EnvMergedResponse {
+    pub variables: std::collections::HashMap<String, String>,
+    pub has_local: bool,
+    pub address: Option<String>,
+}
+
+pub async fn project_env_merged(
+    State(state): State<Arc<PlayState>>,
+    Path(name): Path<String>,
+) -> Result<Json<EnvMergedResponse>, (StatusCode, String)> {
+    let root = require_project(&state)?;
+    let shared_raw = super::project::read_dotenv(&root, &name)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .unwrap_or_default();
+    let local_raw = super::project::read_dotenv_local(&root, &name)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .unwrap_or_default();
+
+    fn parse_dotenv(s: &str) -> std::collections::HashMap<String, String> {
+        let mut map = std::collections::HashMap::new();
+        for line in s.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some(eq) = line.find('=') {
+                let key = line[..eq].trim().to_string();
+                let val = line[eq + 1..].trim().to_string();
+                if !key.is_empty() {
+                    map.insert(key, val);
+                }
+            }
+        }
+        map
+    }
+    let shared = parse_dotenv(&shared_raw);
+    let local = parse_dotenv(&local_raw);
+    let mut variables = shared;
+    for (k, v) in local {
+        variables.insert(k, v);
+    }
+
+    let address = variables.remove("GRPC_ADDRESS");
+    Ok(Json(EnvMergedResponse {
+        variables,
+        has_local: !local_raw.is_empty(),
+        address,
+    }))
+}
+
 pub async fn project_env_local_get(
     State(state): State<Arc<PlayState>>,
     Path(name): Path<String>,
@@ -1370,45 +1455,17 @@ pub async fn project_history_get(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let mut map = serde_json::Map::new();
     for sid in &sessions {
-        if let Ok(Some(raw)) = super::project::read_history_session(&root, sid)
-            && let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(&raw)
-        {
-            map.insert(sid.clone(), serde_json::Value::Array(entries));
+        if let Ok(lines) = super::project::read_history_session(&root, sid) {
+            let entries: Vec<serde_json::Value> = lines
+                .iter()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .collect();
+            if !entries.is_empty() {
+                map.insert(sid.clone(), serde_json::Value::Array(entries));
+            }
         }
     }
     Ok(Json(serde_json::Value::Object(map)))
-}
-
-/// GET /api/project/history/{session} — read one session file
-pub async fn project_history_session_get(
-    State(state): State<Arc<PlayState>>,
-    Path(session): Path<String>,
-) -> Result<Json<Vec<serde_json::Value>>, (StatusCode, String)> {
-    let root = require_project(&state)?;
-    let raw = super::project::read_history_session(&root, &session)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .unwrap_or_else(|| "[]".into());
-    let entries: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap_or_default();
-    Ok(Json(entries))
-}
-
-#[derive(Deserialize)]
-pub struct ProjectHistoryPut {
-    pub entries: Vec<serde_json::Value>,
-}
-
-/// PUT /api/project/history/{session} — save one session file
-pub async fn project_history_put(
-    State(state): State<Arc<PlayState>>,
-    Path(session): Path<String>,
-    Json(body): Json<ProjectHistoryPut>,
-) -> Result<Json<()>, (StatusCode, String)> {
-    let root = require_project(&state)?;
-    let content = serde_json::to_string_pretty(&body.entries)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    super::project::write_history_session(&root, &session, &content)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(()))
 }
 
 /// DELETE /api/collections/{*path} — delete a file
@@ -1502,4 +1559,137 @@ pub async fn move_item(
         )
     })?;
     Ok(Json(()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_reject_traversal_valid() {
+        assert!(reject_traversal("foo.gctf").is_ok());
+        assert!(reject_traversal("dir/foo.gctf").is_ok());
+        assert!(reject_traversal("a/b/c.gctf").is_ok());
+    }
+
+    #[test]
+    fn test_reject_traversal_invalid() {
+        assert!(reject_traversal("../foo.gctf").is_err());
+        assert!(reject_traversal("dir/../../foo.gctf").is_err());
+        assert!(reject_traversal("/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn test_resolve_file_nonexistent() {
+        let state = PlayState {
+            collections_dir: PathBuf::from("/tmp/nonexistent_XXXX"),
+            collections_dirs: vec![PathBuf::from("/tmp/nonexistent_XXXX")],
+            project_root: None,
+            project_settings: None,
+        };
+        assert!(resolve_file(&state, "foo.gctf").is_none());
+    }
+
+    #[test]
+    fn test_get_collection_returns_404_for_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("emptydir");
+        std::fs::create_dir(&sub).unwrap();
+
+        let state = Arc::new(PlayState {
+            collections_dir: dir.path().to_path_buf(),
+            collections_dirs: vec![dir.path().to_path_buf()],
+            project_root: None,
+            project_settings: None,
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(get_collection(State(state), Path("emptydir".to_string())));
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().0, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_get_collection_ok_for_gctf_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.gctf");
+        std::fs::write(
+            &file_path,
+            "--- ENDPOINT ---\n\ngrpc://localhost:5000\n\n--- REQUEST ---\n{}\n",
+        )
+        .unwrap();
+
+        let state = Arc::new(PlayState {
+            collections_dir: dir.path().to_path_buf(),
+            collections_dirs: vec![dir.path().to_path_buf()],
+            project_root: None,
+            project_settings: None,
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(get_collection(State(state), Path("test.gctf".to_string())));
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert_eq!(resp.path.contains("test.gctf"), true);
+    }
+
+    #[test]
+    fn test_list_collections_includes_empty_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("emptydir");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(
+            dir.path().join("test.gctf"),
+            "--- ENDPOINT ---\n--- REQUEST ---\n{}\n",
+        )
+        .unwrap();
+
+        let state = Arc::new(PlayState {
+            collections_dir: dir.path().to_path_buf(),
+            collections_dirs: vec![dir.path().to_path_buf()],
+            project_root: None,
+            project_settings: None,
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(list_collections(State(state)));
+        assert!(result.is_ok());
+        let items = result.unwrap();
+
+        let dir_item = items.iter().find(|i| i.path == "emptydir");
+        assert!(dir_item.is_some(), "empty dir must be listed");
+        assert!(dir_item.unwrap().is_dir, "empty dir must have is_dir: true");
+
+        let file_item = items.iter().find(|i| i.path == "test.gctf");
+        assert!(file_item.is_some(), "gctf file must be listed");
+        assert!(!file_item.unwrap().is_dir, "file must have is_dir: false");
+    }
+
+    #[test]
+    fn test_list_collections_empty_dir_with_gitkeep() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("projects");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join(".gitkeep"), "").unwrap();
+
+        let state = Arc::new(PlayState {
+            collections_dir: dir.path().to_path_buf(),
+            collections_dirs: vec![dir.path().to_path_buf()],
+            project_root: None,
+            project_settings: None,
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(list_collections(State(state)));
+        assert!(result.is_ok());
+        let items = result.unwrap();
+
+        let dir_item = items.iter().find(|i| i.path == "projects");
+        assert!(
+            dir_item.is_some(),
+            "projects dir must be listed even with .gitkeep"
+        );
+        assert!(dir_item.unwrap().is_dir, "projects must have is_dir: true");
+    }
 }

@@ -271,6 +271,10 @@ pub async fn start_play_server(port: u16, dir: PathBuf) -> Result<()> {
         .route("/api/project/env/{name}", get(api::project_env_get))
         .route("/api/project/env/{name}", put(api::project_env_put))
         .route(
+            "/api/project/env/{name}/merged",
+            get(api::project_env_merged),
+        )
+        .route(
             "/api/project/env/{name}/local",
             get(api::project_env_local_get),
         )
@@ -282,15 +286,7 @@ pub async fn start_play_server(port: u16, dir: PathBuf) -> Result<()> {
             "/api/project/env/{name}/local",
             delete(api::project_env_local_delete),
         )
-        .route("/api/project/history", get(api::project_history_get))
-        .route(
-            "/api/project/history/{session}",
-            get(api::project_history_session_get),
-        )
-        .route(
-            "/api/project/history/{session}",
-            put(api::project_history_put),
-        );
+        .route("/api/project/history", get(api::project_history_get));
 
     let app = base_routes
         .merge(project_routes)
