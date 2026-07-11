@@ -28,6 +28,7 @@ allow = [
   "0BSD",
   "Unlicense",
   "OpenSSL",
+  "MIT-0",
 ]
 
 [[licenses.clarify]]

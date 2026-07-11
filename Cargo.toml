@@ -4,7 +4,7 @@ members = [
   "crates/apif-twoq-cache",
   "crates/apif-source-row",
   "crates/apif-source-error",
-"crates/apif-cfg-runtime",
+  "crates/apif-cfg-runtime",
   "crates/apif-query",
   "crates/apif-semantics",
   "crates/apif-optimizer",
@@ -111,7 +111,10 @@ jsonschema = "0.47"
 fake = "5.1"
 
 # HTTP/1.1 client for gRPC-Web / ConnectRPC
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2"] }
+reqwest = { version = "0.13", default-features = false, features = [
+  "rustls",
+  "http2",
+] }
 
 # Web UI (play command)
 axum = "0.8"

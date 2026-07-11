@@ -2,7 +2,7 @@
 # Configuration for typos checker
 
 [files]
-extend-exclude = ["*.profraw", "*.profdata", "target/", "Cargo.lock"]
+extend-exclude = ["*.profraw", "*.profdata", "target/", "Cargo.lock", "web/dist/"]
 
 [default]
 extend-ignore-re = [
