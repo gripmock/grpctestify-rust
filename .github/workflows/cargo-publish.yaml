@@ -34,30 +34,18 @@ jobs:
       - name: Publish workspace crates
         run: |
           CRATES=$(ls -d crates/*/ | sed 's|crates/||;s|/||')
-          LEFT=$CRATES
-          for PASS in 1 2 3 4 5; do
-            [ -z "$LEFT" ] && break
-            NEXT=""
-            for CRATE in $LEFT; do
-              VERSION=$(grep '^version' "crates/$CRATE/Cargo.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')
-              STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/$CRATE/$VERSION")
-              if [ "$STATUS" = "200" ]; then
-                echo "$CRATE v$VERSION already published, skipping"
-                continue
-              fi
-              if cargo publish -p "$CRATE"; then
-                echo "✓ $CRATE published"
-              else
-                NEXT="$NEXT $CRATE"
-              fi
-            done
-            LEFT=$NEXT
-            [ -n "$LEFT" ] && echo "Retrying ${LEFT} (pass $((PASS+1)))"
+          for CRATE in $CRATES; do
+            echo "::group::Publishing $CRATE"
+            VERSION=$(grep '^version' "crates/$CRATE/Cargo.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/$CRATE/$VERSION")
+            if [ "$STATUS" = "200" ]; then
+              echo "$CRATE v$VERSION already published, skipping"
+            else
+              cargo publish -p "$CRATE" || { echo "::error::$CRATE publish failed"; exit 1; }
+            fi
+            echo "::endgroup::"
+            sleep 30
           done
-          if [ -n "$LEFT" ]; then
-            echo "::error::Failed to publish: $LEFT"
-            exit 1
-          fi
       - name: Publish root crate
         run: |
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
