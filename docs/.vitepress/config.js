@@ -56,6 +56,7 @@ export default defineConfig({
           items: [
             { text: 'Data Sources', link: '/guides/bench-sources' },
             { text: 'Query', link: '/guides/query' },
+            { text: 'Playground', link: '/guides/playground' },
             { text: 'Indexes', link: '/guides/features/indexes' },
             { text: 'LSP Support', link: '/guides/features/lsp' }
           ]

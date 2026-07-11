@@ -32,6 +32,8 @@ pub struct PlayState {
     pub collections_dirs: Vec<PathBuf>,
     pub project_root: Option<PathBuf>,
     pub project_settings: Option<ProjectSettings>,
+    /// Serialize history writes to prevent file-level races.
+    pub history_lock: std::sync::Mutex<()>,
 }
 
 async fn static_handler(Path(path): Path<String>) -> Response {
@@ -231,6 +233,7 @@ pub async fn start_play_server(port: u16, dir: PathBuf) -> Result<()> {
         project_settings: project_root
             .as_ref()
             .and_then(|r| project::load_project_settings(r).ok()),
+        history_lock: std::sync::Mutex::new(()),
     });
 
     let cors = CorsLayer::new()

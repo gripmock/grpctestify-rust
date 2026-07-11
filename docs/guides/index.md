@@ -21,3 +21,4 @@ Use this section as the shortest path from local setup to stable CI checks.
 - Output for CI systems: [Report Formats](reference/api/report-formats)
 - Data sources for benchmarks: [Data Sources](bench-sources)
 - Interactive query shell: [Query](query)
+- Interactive playground UI: [Playground](playground)

@@ -114,13 +114,12 @@ export function RequestPanel() {
           collection_path: selectedCollection || undefined,
         }),
       });
-      if (!res.ok) {
-        const text = await res.text().catch(() => 'Unknown error');
-        setFillError(text || `Server returned ${res.status}`);
+      const data = await res.json();
+      if (data.error) {
+        setFillError(data.error);
         return;
       }
-      const data = await res.json();
-      setRequestBody(0, JSON.stringify(data, null, 2));
+      setRequestBody(0, JSON.stringify(data.schema, null, 2));
     } catch (err: any) {
       setFillError(err?.message || String(err));
     } finally {

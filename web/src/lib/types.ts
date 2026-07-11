@@ -183,6 +183,7 @@ export interface PlayStore {
   theme: 'light' | 'dark';
   reflectionMethods: { name: string; fullName: string; service: string }[];
   reflectStatus: 'idle' | 'loading' | 'ok' | 'error';
+  reflectError: string | null;
   serverHealthy: boolean;
   environments: Environment[];
   activeEnvironment: string | null;
