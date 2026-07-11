@@ -1631,7 +1631,7 @@ mod tests {
         let result = rt.block_on(get_collection(State(state), Path("test.gctf".to_string())));
         assert!(result.is_ok());
         let resp = result.unwrap();
-        assert_eq!(resp.path.contains("test.gctf"), true);
+        assert!(resp.path.contains("test.gctf"));
     }
 
     #[test]
