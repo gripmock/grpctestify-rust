@@ -1564,6 +1564,7 @@ pub async fn move_item(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(miri))]
     use std::path::PathBuf;
 
     #[test]
