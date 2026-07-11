@@ -24,7 +24,7 @@ use self::codec::DynamicCodec;
 // Re-export types and functions from tls and channel modules
 pub use crate::grpc::channel::create_channel;
 pub use crate::grpc::tls::{
-    ChannelCacheKey, CompressionMode, GrpcClientConfig, ProtoConfig, TlsConfig,
+    ChannelCacheKey, CompressionMode, GrpcClientConfig, ProtoConfig, TlsConfig, WireProtocol,
 };
 
 // Global cache for descriptors to avoid race conditions in parallel tests
@@ -153,72 +153,72 @@ impl GrpcClient {
         }
         tracing::debug!("Client ready");
 
-        let response_stream: Pin<Box<dyn Stream<Item = Result<StreamItem, Status>> + Send>> =
-            if method.is_client_streaming() && method.is_server_streaming() {
-                // Bidi Streaming
-                let mut request = Request::new(request_stream);
-                let meta = request.metadata_mut();
-                insert_request_metadata(meta, self.config.metadata.as_ref());
+        let response_stream: Pin<Box<dyn Stream<Item = Result<StreamItem, Status>> + Send>>;
+        let initial_headers: HashMap<String, String>;
 
-                let response = client.streaming(request, path, codec).await?;
-                let inner = response.into_inner();
-                Box::pin(
-                    inner.map(|item| {
-                        item.map(|msg| StreamItem::Message(dynamic_message_to_json(&msg)))
-                    }),
-                )
-            } else if method.is_server_streaming() {
-                // Server Streaming (Client Unary)
-                // We need exactly one request
-                let first_msg = request_stream
-                    .next()
-                    .await
-                    .ok_or_else(|| Status::invalid_argument("Missing request message"))?;
+        if method.is_client_streaming() && method.is_server_streaming() {
+            // Bidi Streaming
+            let mut request = Request::new(request_stream);
+            let meta = request.metadata_mut();
+            insert_request_metadata(meta, self.config.metadata.as_ref());
 
-                let mut request = Request::new(first_msg);
-                let meta = request.metadata_mut();
-                insert_request_metadata(meta, self.config.metadata.as_ref());
+            let response = client.streaming(request, path, codec).await?;
+            initial_headers = metadata_map_to_hashmap(response.metadata());
+            let inner = response.into_inner();
+            response_stream =
+                Box::pin(inner.map(|item| {
+                    item.map(|msg| StreamItem::Message(dynamic_message_to_json(&msg)))
+                }));
+        } else if method.is_server_streaming() {
+            // Server Streaming (Client Unary)
+            let first_msg = request_stream
+                .next()
+                .await
+                .ok_or_else(|| Status::invalid_argument("Missing request message"))?;
+            let mut request = Request::new(first_msg);
+            let meta = request.metadata_mut();
+            insert_request_metadata(meta, self.config.metadata.as_ref());
 
-                let response = client.server_streaming(request, path, codec).await?;
-                let inner = response.into_inner();
-                Box::pin(
-                    inner.map(|item| {
-                        item.map(|msg| StreamItem::Message(dynamic_message_to_json(&msg)))
-                    }),
-                )
-            } else if method.is_client_streaming() {
-                // Client Streaming (Server Unary)
-                let mut request = Request::new(request_stream);
-                let meta = request.metadata_mut();
-                insert_request_metadata(meta, self.config.metadata.as_ref());
+            let response = client.server_streaming(request, path, codec).await?;
+            initial_headers = metadata_map_to_hashmap(response.metadata());
+            let inner = response.into_inner();
+            response_stream =
+                Box::pin(inner.map(|item| {
+                    item.map(|msg| StreamItem::Message(dynamic_message_to_json(&msg)))
+                }));
+        } else if method.is_client_streaming() {
+            // Client Streaming (Server Unary)
+            let mut request = Request::new(request_stream);
+            let meta = request.metadata_mut();
+            insert_request_metadata(meta, self.config.metadata.as_ref());
 
-                let response = client.client_streaming(request, path, codec).await?;
-                let msg = response.into_inner();
-                let val = dynamic_message_to_json(&msg);
-                Box::pin(futures::stream::once(async move {
-                    Ok(StreamItem::Message(val))
-                }))
-            } else {
-                // Unary
-                let first_msg = request_stream
-                    .next()
-                    .await
-                    .ok_or_else(|| Status::invalid_argument("Missing request message"))?;
-                let mut request = Request::new(first_msg);
-                let meta = request.metadata_mut();
-                insert_request_metadata(meta, self.config.metadata.as_ref());
+            let response = client.client_streaming(request, path, codec).await?;
+            initial_headers = metadata_map_to_hashmap(response.metadata());
+            let msg = response.into_inner();
+            let val = dynamic_message_to_json(&msg);
+            response_stream = Box::pin(futures::stream::once(async move {
+                Ok(StreamItem::Message(val))
+            }));
+        } else {
+            // Unary
+            let first_msg = request_stream
+                .next()
+                .await
+                .ok_or_else(|| Status::invalid_argument("Missing request message"))?;
+            let mut request = Request::new(first_msg);
+            let meta = request.metadata_mut();
+            insert_request_metadata(meta, self.config.metadata.as_ref());
 
-                let response = client.unary(request, path, codec).await?;
-                let msg = response.into_inner();
-                let val = dynamic_message_to_json(&msg);
-                Box::pin(futures::stream::once(async move {
-                    Ok(StreamItem::Message(val))
-                }))
-            };
+            let response = client.unary(request, path, codec).await?;
+            initial_headers = metadata_map_to_hashmap(response.metadata());
+            let msg = response.into_inner();
+            let val = dynamic_message_to_json(&msg);
+            response_stream = Box::pin(futures::stream::once(async move {
+                Ok(StreamItem::Message(val))
+            }));
+        }
 
-        let headers = HashMap::new();
-
-        Ok((headers, response_stream))
+        Ok((initial_headers, response_stream))
     }
 
     /// Describe service/method using reflection
@@ -357,6 +357,24 @@ fn insert_request_metadata(
             }
         }
     }
+}
+
+/// Convert tonic MetadataMap to a simple HashMap of String→String.
+fn metadata_map_to_hashmap(metadata: &MetadataMap) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for entry in metadata.iter() {
+        match entry {
+            tonic::metadata::KeyAndValueRef::Ascii(key, value) => {
+                map.insert(key.to_string(), value.to_str().unwrap_or("?").to_string());
+            }
+            tonic::metadata::KeyAndValueRef::Binary(key, value) => {
+                let bytes = value.to_bytes();
+                let encoded: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                map.insert(key.to_string(), encoded);
+            }
+        }
+    }
+    map
 }
 
 /// Transform input JSON for well-known protobuf types.
@@ -588,7 +606,7 @@ async fn load_descriptors_via_reflection(config: &GrpcClientConfig) -> Result<De
         let mut response_stream = match client.server_reflection_info(request).await {
             Ok(s) => s.into_inner(),
             Err(e) => {
-                tracing::warn!(
+                tracing::debug!(
                     "Failed to initiate reflection request for {}: {}",
                     symbol_or_filename,
                     e
@@ -801,6 +819,8 @@ mod tests {
             metadata: None,
             target_service: None,
             compression: CompressionMode::None,
+            connection_id: 0,
+            protocol: WireProtocol::Grpc,
         };
         assert_eq!(config.address, "localhost:4770");
         assert_eq!(config.timeout_seconds, 30);

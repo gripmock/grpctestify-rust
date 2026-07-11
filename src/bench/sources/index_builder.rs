@@ -2,7 +2,7 @@ use super::index::{KeyType, SourceIndex};
 use super::{SourceDefinition, open_source_reader};
 use crate::utils::file::FileUtils;
 use anyhow::{Context, Result};
-use source_row::SourceRow;
+use apif_source_row::SourceRow;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};

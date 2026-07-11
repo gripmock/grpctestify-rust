@@ -239,6 +239,8 @@ impl RequestHandler {
             proto_config,
             metadata: document.get_request_headers(),
             compression: crate::grpc::CompressionMode::from_env(),
+            connection_id: 0,
+            protocol: crate::grpc::WireProtocol::Grpc,
             target_service: document.parse_endpoint().map(|(p, s, m)| {
                 if p.is_empty() {
                     format!("{}/{}", s, m)

@@ -1,7 +1,7 @@
 // Health command — checks gRPC service health using grpc.health.v1.Health/Check
 
 use crate::cli::args::HealthArgs;
-use crate::grpc::{GrpcClient, GrpcClientConfig, TlsConfig};
+use crate::grpc::{GrpcClient, GrpcClientConfig, TlsConfig, WireProtocol};
 use anyhow::Result;
 
 pub async fn handle_health(args: &HealthArgs) -> Result<()> {
@@ -27,6 +27,8 @@ pub async fn handle_health(args: &HealthArgs) -> Result<()> {
         metadata: None,
         target_service: Some("grpc.health.v1".to_string()),
         compression: crate::grpc::CompressionMode::None,
+        connection_id: 0,
+        protocol: WireProtocol::Grpc,
     };
 
     let mut client = GrpcClient::new(config).await?;

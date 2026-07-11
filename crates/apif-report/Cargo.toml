@@ -12,9 +12,10 @@ description = "Reporters for .apif/.gctf test results"
 [dependencies]
 apif-state = { path = "../apif-state", version = "0.1.0" }
 anyhow = { workspace = true }
-cfg-runtime = { path = "../cfg-runtime", version = "0.1.0" }
+apif-cfg-runtime = { path = "../apif-cfg-runtime", version = "0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
 tracing = { workspace = true }
 indicatif = "0.18"
 

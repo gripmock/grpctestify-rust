@@ -6,6 +6,7 @@ pub mod diagnostics;
 pub mod json;
 pub mod junit;
 pub mod streaming;
+pub mod yaml;
 
 use anyhow::Result;
 use apif_state::{TestResult, TestResults};
@@ -17,6 +18,7 @@ pub use diagnostics::{
 pub use json::JsonReporter;
 pub use junit::JunitReporter;
 pub use streaming::StreamingJsonReporter;
+pub use yaml::YamlReporter;
 
 /// Reporter that accumulates test results and produces formatted output.
 /// Each reporter is responsible for its own state management and formatting logic.

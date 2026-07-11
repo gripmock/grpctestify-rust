@@ -43,7 +43,12 @@ impl ParsedGrpcurl {
                 }
                 "-d" => {
                     let value = next_value(args, i, "-d")?;
-                    request_body = Some(parse_json_or_string(value));
+                    // -d @ means "read from stdin" — in import context, skip body
+                    if value == "@" {
+                        request_body = Some(Value::Object(serde_json::Map::new()));
+                    } else {
+                        request_body = Some(parse_json_or_string(value));
+                    }
                     i += 1;
                 }
                 "-cacert" => {
@@ -394,5 +399,298 @@ mod tests {
     fn parse_response_payload_single_json_object() {
         let parsed = parse_response_payload(r#"{"ok":true,"count":2}"#);
         assert_eq!(parsed, vec![json!({"ok": true, "count": 2})]);
+    }
+
+    // ── Parameterized format tests ─────────────────────────
+
+    fn p(args: &[&str]) -> ParsedGrpcurl {
+        ParsedGrpcurl::parse(&args.iter().map(|s| (*s).to_string()).collect::<Vec<_>>()).unwrap()
+    }
+
+    struct TC {
+        args: &'static [&'static str],
+        check: fn(&ParsedGrpcurl),
+    }
+
+    macro_rules! t {
+        ($args:expr, $check:expr) => {
+            TC {
+                args: $args,
+                check: $check,
+            }
+        };
+    }
+
+    #[test]
+    fn fmt_all_variants() {
+        let cases = vec![
+            t!(&["-plaintext", "localhost:50051", "foo.Bar/Baz"], |r| {
+                assert_eq!(r.address, "localhost:50051");
+                assert_eq!(r.symbol, "foo.Bar/Baz");
+                assert_eq!(r.options.get("plaintext").map(String::as_str), Some("true"));
+            }),
+            t!(
+                &["-plaintext", "-d", "{}", "localhost:50051", "foo.Bar/Baz"],
+                |r| {
+                    assert_eq!(r.request_body, json!({}));
+                }
+            ),
+            t!(
+                &[
+                    "-d",
+                    r#"{"id":1}"#,
+                    "-plaintext",
+                    "localhost:50051",
+                    "foo.Bar/Baz"
+                ],
+                |r| {
+                    assert_eq!(r.request_body, json!({"id": 1}));
+                }
+            ),
+            t!(
+                &[
+                    "-plaintext",
+                    "localhost:50051",
+                    "-d",
+                    r#"{"id":1}"#,
+                    "foo.Bar/Baz"
+                ],
+                |r| {
+                    assert_eq!(r.request_body, json!({"id": 1}));
+                }
+            ),
+            t!(
+                &[
+                    "-H",
+                    "authorization: Bearer abc",
+                    "-plaintext",
+                    "-d",
+                    r#"{"id":1}"#,
+                    "localhost:50051",
+                    "foo.Bar/Baz"
+                ],
+                |r| {
+                    assert_eq!(
+                        r.headers.get("authorization").map(String::as_str),
+                        Some("Bearer abc")
+                    );
+                }
+            ),
+            t!(
+                &[
+                    "-H",
+                    "x-a:1",
+                    "-H",
+                    "x-b:2",
+                    "-plaintext",
+                    "-d",
+                    r#"{"a":1,"b":2}"#,
+                    "localhost:50051",
+                    "foo.Bar/Baz"
+                ],
+                |r| {
+                    assert_eq!(r.headers.get("x-a").map(String::as_str), Some("1"));
+                    assert_eq!(r.headers.get("x-b").map(String::as_str), Some("2"));
+                    assert_eq!(r.request_body, json!({"a": 1, "b": 2}));
+                }
+            ),
+            t!(
+                &[
+                    "-plaintext",
+                    "-d",
+                    r#"{"b":2,"a":1}"#,
+                    "localhost:50051",
+                    "foo.Bar/Baz"
+                ],
+                |r| {
+                    let s = serde_json::to_string(&r.request_body).unwrap();
+                    assert!(s.contains(r#""b""#), "field order: {}", s);
+                }
+            ),
+            t!(
+                &[
+                    "-plaintext",
+                    "-d",
+                    r#"{"nested":{"x":1,"y":[1,2,3]}}"#,
+                    "localhost:50051",
+                    "foo.Bar/Baz"
+                ],
+                |r| {
+                    assert_eq!(r.request_body["nested"]["x"], json!(1));
+                    assert_eq!(r.request_body["nested"]["y"], json!([1, 2, 3]));
+                }
+            ),
+            t!(
+                &[
+                    "-plaintext",
+                    "-d",
+                    r#"{"text":"Привет 🌍"}"#,
+                    "localhost:50051",
+                    "foo.Bar/Baz"
+                ],
+                |r| {
+                    assert_eq!(r.request_body["text"], "Привет 🌍");
+                }
+            ),
+            t!(
+                &["-plaintext", "-d", "@", "localhost:50051", "foo.Bar/Baz"],
+                |r| {
+                    assert_eq!(r.request_body, json!({}), "-d @ → empty body");
+                }
+            ),
+            t!(
+                &[
+                    "-emit-defaults",
+                    "-plaintext",
+                    "localhost:50051",
+                    "foo.Bar/Baz"
+                ],
+                |r| {
+                    assert_eq!(
+                        r.options.get("emit-defaults").map(String::as_str),
+                        Some("true")
+                    );
+                }
+            ),
+            t!(
+                &[
+                    "-allow-unknown-fields",
+                    "-plaintext",
+                    "-d",
+                    r#"{"unknown":1}"#,
+                    "localhost:50051",
+                    "foo.Bar/Baz"
+                ],
+                |r| {
+                    assert_eq!(
+                        r.options.get("allow-unknown-fields").map(String::as_str),
+                        Some("true")
+                    );
+                }
+            ),
+            t!(
+                &[
+                    "-proto",
+                    "api.proto",
+                    "-import-path",
+                    "./proto",
+                    "-plaintext",
+                    "-d",
+                    "{}",
+                    "localhost:50051",
+                    "foo.Bar/Baz"
+                ],
+                |r| {
+                    assert_eq!(r.proto.get("files").map(String::as_str), Some("api.proto"));
+                    assert_eq!(
+                        r.proto.get("import_paths").map(String::as_str),
+                        Some("./proto")
+                    );
+                }
+            ),
+            t!(
+                &[
+                    "-protoset",
+                    "api.protoset",
+                    "-d",
+                    r#"{"id":123}"#,
+                    "localhost:50051",
+                    "foo.Bar/Baz"
+                ],
+                |r| {
+                    assert_eq!(
+                        r.proto.get("descriptor").map(String::as_str),
+                        Some("api.protoset")
+                    );
+                    assert_eq!(r.request_body["id"], json!(123));
+                }
+            ),
+            t!(
+                &["-cacert", "ca.pem", "api.example.com:443", "foo.Bar/Baz"],
+                |r| {
+                    assert_eq!(r.tls.get("ca-cert").map(String::as_str), Some("ca.pem"));
+                    assert_eq!(r.address, "api.example.com:443");
+                }
+            ),
+            t!(
+                &[
+                    "-cert",
+                    "client.pem",
+                    "-key",
+                    "client.key",
+                    "api.example.com:443",
+                    "foo.Bar/Baz"
+                ],
+                |r| {
+                    assert_eq!(
+                        r.tls.get("client-cert").map(String::as_str),
+                        Some("client.pem")
+                    );
+                    assert_eq!(
+                        r.tls.get("client-key").map(String::as_str),
+                        Some("client.key")
+                    );
+                }
+            ),
+            t!(
+                &[
+                    "-authority",
+                    "example.com",
+                    "-plaintext",
+                    "localhost:50051",
+                    "foo.Bar/Baz"
+                ],
+                |r| {
+                    assert_eq!(
+                        r.options.get("authority").map(String::as_str),
+                        Some("example.com")
+                    );
+                }
+            ),
+            t!(
+                &[
+                    "-servername",
+                    "example.com",
+                    "api.example.com:443",
+                    "foo.Bar/Baz"
+                ],
+                |r| {
+                    assert_eq!(
+                        r.tls.get("server-name").map(String::as_str),
+                        Some("example.com")
+                    );
+                }
+            ),
+            t!(
+                &[
+                    "-max-time",
+                    "5",
+                    "-plaintext",
+                    "localhost:50051",
+                    "foo.Bar/Baz"
+                ],
+                |r| {
+                    assert_eq!(r.options.get("max-time").map(String::as_str), Some("5"));
+                }
+            ),
+            t!(
+                &["-vv", "-plaintext", "localhost:50051", "foo.Bar/Baz"],
+                |r| {
+                    assert_eq!(r.options.get("vv").map(String::as_str), Some("true"));
+                }
+            ),
+            t!(
+                &["grpcurl", "-plaintext", "localhost:50051", "foo.Bar/Baz"],
+                |r| {
+                    assert_eq!(r.address, "localhost:50051");
+                    assert_eq!(r.symbol, "foo.Bar/Baz");
+                }
+            ),
+        ];
+
+        for tc in cases {
+            let result = p(tc.args);
+            (tc.check)(&result);
+        }
     }
 }

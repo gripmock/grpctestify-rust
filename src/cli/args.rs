@@ -29,6 +29,7 @@ impl std::str::FromStr for ProgressMode {
 pub enum LogFormat {
     Console,
     Json,
+    Yaml,
     JUnit,
     Allure,
 }
@@ -94,6 +95,8 @@ pub enum Commands {
     Query(QueryArgs),
     /// Check gRPC service health
     Health(HealthArgs),
+    /// Launch web UI playground
+    Play(PlayArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -571,9 +574,21 @@ pub struct FmtArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct CallArgs {
-    /// File to call
-    #[arg(required = true)]
-    pub file: PathBuf,
+    /// File to call (omit if using -e)
+    pub file: Option<PathBuf>,
+
+    /// Inline endpoint (package.Service/Method), skips file
+    #[arg(
+        short = 'e',
+        long,
+        value_name = "SERVICE/METHOD",
+        conflicts_with = "file"
+    )]
+    pub endpoint: Option<String>,
+
+    /// Inline JSON request body (used with -e)
+    #[arg(short = 'd', long, value_name = "JSON", requires = "endpoint")]
+    pub data: Option<String>,
 
     /// Document index for multi-document .gctf files (1-based)
     #[arg(long)]
@@ -715,6 +730,7 @@ impl Cli {
         log_format.as_ref().map(|fmt| match fmt.as_str() {
             "junit" => LogFormat::JUnit,
             "json" => LogFormat::Json,
+            "yaml" => LogFormat::Yaml,
             "allure" => LogFormat::Allure,
             _ => LogFormat::Console,
         })
@@ -793,6 +809,25 @@ impl HasFormat for BenchArgs {
     }
 }
 
+#[derive(Args, Debug, Clone)]
+pub struct PlayArgs {
+    /// Port to listen on (default: 4755)
+    #[arg(long, default_value = "4755")]
+    pub port: u16,
+
+    /// Directory with .gctf collections (default: current dir)
+    #[arg(long, default_value = ".")]
+    pub dir: std::path::PathBuf,
+
+    /// Open browser automatically
+    #[arg(long, default_value_t = false)]
+    pub open: bool,
+
+    /// Initialize .grpctestify project directory
+    #[arg(long, default_value_t = false)]
+    pub init: bool,
+}
+
 impl RunArgs {
     #[must_use]
     pub fn is_json_coverage(&self) -> bool {
@@ -812,8 +847,10 @@ mod tests {
             panic!("expected call command");
         };
 
-        assert_eq!(call.file, PathBuf::from("test.gctf"));
+        assert_eq!(call.file, Some(PathBuf::from("test.gctf")));
         assert_eq!(call.doc_index, None);
+        assert_eq!(call.endpoint, None);
+        assert_eq!(call.data, None);
         assert!(!call.include);
         assert!(!call.verbose);
         assert!(!call.very_verbose);
@@ -821,6 +858,24 @@ mod tests {
         assert!(!call.show_error);
         assert_eq!(call.connect_timeout, 30);
         assert_eq!(call.max_time, 60);
+    }
+
+    #[test]
+    fn parse_call_inline_endpoint() {
+        let cli = Cli::parse_from([
+            "grpctestify",
+            "call",
+            "-e",
+            "svc.Method/Call",
+            "-d",
+            r#"{"name":"test"}"#,
+        ]);
+        let Some(Commands::Call(call)) = cli.command else {
+            panic!("expected call command");
+        };
+        assert_eq!(call.endpoint.as_deref(), Some("svc.Method/Call"));
+        assert_eq!(call.data.as_deref(), Some(r#"{"name":"test"}"#));
+        assert_eq!(call.file, None);
     }
 
     #[test]

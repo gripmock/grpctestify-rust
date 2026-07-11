@@ -1116,6 +1116,17 @@ async fn run_benchmark(
 
     info!("Bench: found {} test files", test_files.len());
 
+    // Graceful shutdown via SIGINT/SIGTERM
+    let shutdown_requested = Arc::new(AtomicBool::new(false));
+    {
+        let flag = Arc::clone(&shutdown_requested);
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c().await.ok();
+            flag.store(true, Ordering::Relaxed);
+            eprintln!("\nShutdown requested — finishing in-flight requests...");
+        });
+    }
+
     // Metrics collector (merged from per-worker local metrics)
     let mut metrics = BenchMetrics::default();
     let progress_count = Arc::new(AtomicU64::new(0));
@@ -1201,13 +1212,14 @@ async fn run_benchmark(
             let progress_count = Arc::clone(&progress_count);
             let progress_errors = Arc::clone(&progress_errors);
             let sc = source_config.clone();
+            let shutdown = Arc::clone(&shutdown_requested);
             join_set.spawn(async move {
                 let mut local = BenchMetrics::with_capacity(1000);
                 let mut next_slot = Instant::now();
                 let deadline = Instant::now() + dur;
-                while Instant::now() < deadline {
+                while Instant::now() < deadline && !shutdown.load(Ordering::Relaxed) {
                     for (_file, gctf_doc) in &docs {
-                        if Instant::now() >= deadline {
+                        if Instant::now() >= deadline || shutdown.load(Ordering::Relaxed) {
                             break;
                         }
                         wait_for_rps_slot(&cfg, schedule_start, &mut next_slot).await;
@@ -1280,11 +1292,15 @@ async fn run_benchmark(
                 requests_per_worker
             };
             let sc = source_config.clone();
+            let shutdown = Arc::clone(&shutdown_requested);
 
             join_set.spawn(async move {
                 let mut local = BenchMetrics::with_capacity(worker_requests as usize);
                 let mut next_slot = Instant::now();
                 for _ in 0..worker_requests {
+                    if shutdown.load(Ordering::Relaxed) {
+                        break;
+                    }
                     if let Some(deadline) = max_deadline
                         && Instant::now() >= deadline
                     {
@@ -1292,6 +1308,9 @@ async fn run_benchmark(
                     }
 
                     for (_file, gctf_doc) in &docs {
+                        if shutdown.load(Ordering::Relaxed) {
+                            break;
+                        }
                         if let Some(deadline) = max_deadline
                             && Instant::now() >= deadline
                         {
@@ -1350,7 +1369,13 @@ async fn run_benchmark(
     let run_elapsed = run_start.elapsed();
     let end_ts = crate::polyfill::runtime::now_timestamp();
 
-    let end_reason = derive_end_reason(has_duration, config.max_duration, run_elapsed);
+    let user_cancelled = shutdown_requested.load(Ordering::Relaxed);
+    let end_reason = derive_end_reason(
+        has_duration,
+        config.max_duration,
+        run_elapsed,
+        user_cancelled,
+    );
 
     build_report(
         start_ts,
@@ -1748,8 +1773,11 @@ fn derive_end_reason(
     has_duration: bool,
     max_duration: Option<Duration>,
     run_elapsed: Duration,
+    shutdown_requested: bool,
 ) -> &'static str {
-    if has_duration {
+    if shutdown_requested {
+        "user_cancelled"
+    } else if has_duration {
         "duration_reached"
     } else if max_duration.is_some_and(|limit| run_elapsed >= limit) {
         "max_duration_reached"
@@ -2735,15 +2763,29 @@ mod tests {
     #[test]
     fn test_derive_end_reason_variants() {
         assert_eq!(
-            derive_end_reason(true, None, Duration::from_secs(5)),
+            derive_end_reason(true, None, Duration::from_secs(5), false),
             "duration_reached"
         );
         assert_eq!(
-            derive_end_reason(false, Some(Duration::from_secs(2)), Duration::from_secs(3)),
+            derive_end_reason(false, None, Duration::from_secs(5), true),
+            "user_cancelled"
+        );
+        assert_eq!(
+            derive_end_reason(
+                false,
+                Some(Duration::from_secs(2)),
+                Duration::from_secs(3),
+                false
+            ),
             "max_duration_reached"
         );
         assert_eq!(
-            derive_end_reason(false, Some(Duration::from_secs(5)), Duration::from_secs(3)),
+            derive_end_reason(
+                false,
+                Some(Duration::from_secs(5)),
+                Duration::from_secs(3),
+                false
+            ),
             "requests_completed"
         );
     }

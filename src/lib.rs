@@ -14,6 +14,7 @@ pub mod plugins;
 pub mod polyfill;
 pub mod report;
 pub mod semantics;
+pub mod serve;
 pub mod state;
 
 pub mod utils;

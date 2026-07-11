@@ -220,6 +220,7 @@ impl PluginManager {
         self.register(Arc::new(crate::has_value::HasValuePlugin));
         self.register(Arc::new(crate::is_base64::IsBase64Plugin));
         self.register(Arc::new(crate::is_json::IsJsonPlugin));
+        self.register(Arc::new(crate::schema::SchemaPlugin));
 
         // Type methods (@type.method syntax)
         crate::type_methods::register_all(self);

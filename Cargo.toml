@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-  "crates/twoq-cache",
-  "crates/source-row",
-  "crates/source-error",
-  "crates/cfg-runtime",
+  "crates/apif-twoq-cache",
+  "crates/apif-source-row",
+  "crates/apif-source-error",
+"crates/apif-cfg-runtime",
   "crates/apif-query",
   "crates/apif-semantics",
   "crates/apif-optimizer",
@@ -20,7 +20,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.7.3"
+version = "1.8.0"
 edition = "2024"
 authors = ["bavix"]
 license = "MIT"
@@ -91,7 +91,7 @@ walkdir = "2.5"
 globset = "0.4"
 
 # System info
-sysinfo = "0.33"
+sysinfo = "0.39"
 
 # Memory-mapped files
 memmap2 = "0.9"
@@ -101,8 +101,24 @@ jaq-core = "3.1"
 jaq-std = "3.0"
 jaq-json = { version = "2.0", features = ["serde"] }
 
-# CRC32 checksum
+# File system
 crc32fast = "1.5"
+
+# JSON Schema
+jsonschema = "0.47"
+
+# Fake data generation
+fake = "5.1"
+
+# HTTP/1.1 client for gRPC-Web / ConnectRPC
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2"] }
+
+# Web UI (play command)
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.7", features = ["cors", "fs", "trace"] }
+rust-embed = "8"
+mime_guess = "2"
 
 [package]
 name = "grpctestify"
@@ -175,10 +191,10 @@ globset = { workspace = true }
 sysinfo = { workspace = true }
 memmap2 = { workspace = true }
 crc32fast = { workspace = true }
-twoq-cache = { path = "crates/twoq-cache", version = "0.1.0" }
-source-row = { path = "crates/source-row", version = "0.1.0" }
-source-error = { path = "crates/source-error", version = "0.1.0" }
-cfg-runtime = { path = "crates/cfg-runtime", version = "0.1.0" }
+apif-twoq-cache = { path = "crates/apif-twoq-cache", version = "0.1.0" }
+apif-source-row = { path = "crates/apif-source-row", version = "0.1.0" }
+apif-source-error = { path = "crates/apif-source-error", version = "0.1.0" }
+apif-cfg-runtime = { path = "crates/apif-cfg-runtime", version = "0.1.0" }
 apif-diagnostics = { path = "crates/apif-diagnostics", version = "0.1.0" }
 apif-parser = { path = "crates/apif-parser", version = "0.1.0" }
 apif-assert = { path = "crates/apif-assert", version = "0.1.0" }
@@ -196,6 +212,13 @@ prost-reflect.workspace = true
 futures = "0.3"
 tower-lsp = "0.20"
 rustyline = { version = "18", features = ["derive"] }
+reqwest = { workspace = true }
+axum = { workspace = true }
+fake = { workspace = true }
+tower-http = { workspace = true }
+rust-embed = { workspace = true }
+mime_guess = { workspace = true }
+
 
 [[test]]
 name = "explain"

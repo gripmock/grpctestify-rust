@@ -8,12 +8,12 @@ use crate::grpc::CompressionMode;
 use crate::parser;
 
 #[derive(Debug, Clone, Serialize)]
-struct GrpcurlOutput {
-    file: String,
-    doc_index: usize,
-    address: String,
-    endpoint: String,
-    command: String,
+pub struct GrpcurlOutput {
+    pub file: String,
+    pub doc_index: usize,
+    pub address: String,
+    pub endpoint: String,
+    pub command: String,
 }
 
 fn shell_quote(value: &str) -> String {
@@ -45,7 +45,7 @@ fn path_for_invocation(resolved: &Path, cwd: &Path) -> String {
     normalize(resolved)
 }
 
-fn build_grpcurl_command(
+pub fn build_grpcurl_command(
     doc: &parser::GctfDocument,
     gctf_file: &Path,
     cwd: &Path,

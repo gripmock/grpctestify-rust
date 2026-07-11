@@ -6,10 +6,11 @@ pub mod client;
 pub mod grpcurl_invocation;
 pub mod proxy;
 pub mod tls;
+pub mod web;
 
 pub use channel::create_channel;
 pub use client::{GrpcClient, GrpcClientConfig};
-pub use tls::{CompressionMode, ProtoConfig, TlsConfig};
+pub use tls::{CompressionMode, ProtoConfig, TlsConfig, WireProtocol};
 
 use serde::Serialize;
 use serde_json::Value;

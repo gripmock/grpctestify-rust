@@ -43,14 +43,14 @@ impl Reporter for StreamingJsonReporter {
             self.emit(&json!({
                 "event": "suite_start",
                 "testCount": self.test_count,
-                "timestamp": cfg_runtime::now_rfc3339(),
+                "timestamp": apif_cfg_runtime::now_rfc3339(),
             }));
         }
 
         self.emit(&json!({
             "event": "test_start",
             "testId": test_name,
-            "timestamp": cfg_runtime::now_rfc3339()
+            "timestamp": apif_cfg_runtime::now_rfc3339()
         }));
     }
 
@@ -65,7 +65,7 @@ impl Reporter for StreamingJsonReporter {
             "event": event_type,
             "testId": test_name,
             "duration": result.duration_ms,
-            "timestamp": cfg_runtime::now_rfc3339()
+            "timestamp": apif_cfg_runtime::now_rfc3339()
         });
 
         if let Some(msg) = &result.error_message {
@@ -89,7 +89,7 @@ impl Reporter for StreamingJsonReporter {
                 "skipped": results.skipped(),
                 "duration": results.metrics.total_duration_ms
             },
-            "timestamp": cfg_runtime::now_rfc3339()
+            "timestamp": apif_cfg_runtime::now_rfc3339()
         }));
 
         Ok(())

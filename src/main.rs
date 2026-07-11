@@ -29,19 +29,26 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let filter = if cli.verbose {
+    use tracing_subscriber::EnvFilter;
+
+    // Access log (tower_http) goes to stdout, other logs to stderr
+    let base_filter = if cli.verbose {
         "grpctestify=debug,warn"
     } else {
         "grpctestify=warn,error"
     };
-
-    use tracing_subscriber::EnvFilter;
+    // In play mode, include HTTP access logs from tower_http
+    let filter = if matches!(cli.command, Some(Commands::Play(_))) {
+        format!("{},tower_http=info", base_filter)
+    } else {
+        base_filter.to_string()
+    };
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&filter));
 
     tracing_subscriber::fmt()
+        .with_writer(std::io::stdout)
         .event_format(grpctestify::logging::CustomFormatter)
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter)),
-        )
+        .with_env_filter(env_filter)
         .init();
 
     if cli.verbose {
@@ -70,6 +77,7 @@ async fn main() -> Result<()> {
         Some(Commands::Bench(args)) => commands::handle_bench(args).await,
         Some(Commands::Query(args)) => commands::handle_query(args),
         Some(Commands::Health(args)) => commands::handle_health(args).await,
+        Some(Commands::Play(args)) => commands::handle_play(args).await,
         None => {
             // Implicit Run
             let args = cli.run_args.clone();

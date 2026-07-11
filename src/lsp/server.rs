@@ -8,7 +8,7 @@ use tower_lsp::jsonrpc::Result as LspResult;
 use tower_lsp::{Client, LanguageServer, LspService, Server, lsp_types::*};
 
 use crate::config;
-use crate::grpc::client::{GrpcClient, GrpcClientConfig, ProtoConfig};
+use crate::grpc::client::{GrpcClient, GrpcClientConfig, ProtoConfig, WireProtocol};
 use crate::lsp::handlers::{self, get_var_hover, get_variable_completions};
 use crate::lsp::variable_definition;
 use crate::parser::ast::SectionType;
@@ -125,6 +125,8 @@ impl GrpctestifyLsp {
             metadata: None,
             target_service,
             compression: Default::default(),
+            connection_id: 0,
+            protocol: WireProtocol::Grpc,
         };
 
         let created = tokio::time::timeout(SCHEMA_TIMEOUT, GrpcClient::new(config)).await;
