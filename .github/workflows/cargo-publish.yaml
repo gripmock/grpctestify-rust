@@ -45,7 +45,7 @@ jobs:
                 echo "$CRATE v$VERSION already published, skipping"
                 continue
               fi
-              if cargo publish -p "$CRATE" 2>/dev/null; then
+              if cargo publish -p "$CRATE"; then
                 echo "✓ $CRATE published"
               else
                 NEXT="$NEXT $CRATE"
