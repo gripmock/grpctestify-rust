@@ -1580,6 +1580,7 @@ mod tests {
         assert!(reject_traversal("/etc/passwd").is_err());
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn test_resolve_file_nonexistent() {
         let state = PlayState {
