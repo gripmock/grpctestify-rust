@@ -13,11 +13,8 @@ export function EnvVarToolbar({ text }: { text: string }) {
     [environments, activeEnvironment],
   );
 
-  if (!activeEnv) return null;
-
-  
   const usedVars = useMemo(() => {
-    if (!text) return [];
+    if (!activeEnv || !text) return [];
     const matches = text.match(/\{\{(\w+)\}\}/g);
     if (!matches) return [];
     const names = [...new Set(matches.map(m => m.slice(2, -2)))];
@@ -26,6 +23,7 @@ export function EnvVarToolbar({ text }: { text: string }) {
       .map(k => ({ key: k, value: activeEnv.variables[k], muted: (activeEnv.mutedVariables || []).includes(k) }));
   }, [text, activeEnv]);
 
+  if (!activeEnv) return null;
   if (usedVars.length === 0) return null;
 
   return (
