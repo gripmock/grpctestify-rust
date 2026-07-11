@@ -255,6 +255,7 @@ export const useStore = create<PlayStore>((set, get) => ({
   })(),
   reflectionMethods: [],
   reflectStatus: 'idle',
+  reflectError: null,
   serverHealthy: true,
   environments: (() => {
     try { return JSON.parse(localStorage.getItem(ENVS_KEY) || '[]'); }
@@ -345,7 +346,7 @@ export const useStore = create<PlayStore>((set, get) => ({
   reflect: async () => {
     const { address, tls, tlsInsecure, workspacePath } = get();
     if (!address) return;
-    set({ reflectStatus: 'loading' });
+    set({ reflectStatus: 'loading', reflectError: null });
     try {
       const res = await fetch('/api/reflect', {
         method: 'POST',
@@ -357,16 +358,20 @@ export const useStore = create<PlayStore>((set, get) => ({
           collection_path: workspacePath || undefined,
         }),
       });
-      if (!res.ok) { set({ reflectionMethods: [], reflectStatus: 'error' }); return; }
-      const data: any[] = await res.json();
-      const methods = data.flatMap((s: any) => (s.methods || []).map((m: any) => ({
+      const data = await res.json();
+      if (data.error) {
+        set({ reflectionMethods: [], reflectStatus: 'error', reflectError: data.error });
+        return;
+      }
+      const services: any[] = data.services || [];
+      const methods = services.flatMap((s: any) => (s.methods || []).map((m: any) => ({
         name: m.name,
         fullName: m.full_name,
         service: s.name,
       })));
-      set({ reflectionMethods: methods, reflectStatus: methods.length > 0 ? 'ok' : 'error' });
+      set({ reflectionMethods: methods, reflectStatus: methods.length > 0 ? 'ok' : 'error', reflectError: methods.length === 0 ? 'No methods found' : null });
     } catch {
-      set({ reflectionMethods: [], reflectStatus: 'error' });
+      set({ reflectionMethods: [], reflectStatus: 'error', reflectError: 'Network error' });
     }
   },
 

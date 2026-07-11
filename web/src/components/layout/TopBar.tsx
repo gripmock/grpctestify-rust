@@ -18,6 +18,7 @@ export function TopBar() {
   const serverHealthy = useStore(s => s.serverHealthy);
   const reflect = useStore(s => s.reflect);
   const reflectStatus = useStore(s => s.reflectStatus);
+  const reflectError = useStore(s => s.reflectError);
   const environments = useStore(s => s.environments);
   const activeEnvironment = useStore(s => s.activeEnvironment);
   const setActiveEnvironment = useStore(s => s.setActiveEnvironment);
@@ -242,7 +243,7 @@ export function TopBar() {
 
       {}
       <button onClick={reflect} disabled={reflectStatus === 'loading' || !address}
-        title="Discover services via reflection"
+        title={reflectStatus === 'error' ? `Reflection failed: ${reflectError || 'unknown error'}` : "Discover services via reflection"}
         style={{ ...btn('ghost', 'sm'), opacity: reflectStatus === 'loading' || !address ? 0.5 : 1 }}
       >
         {reflectStatus === 'loading' ? <Loader2 size={14} className="animate-spin" />

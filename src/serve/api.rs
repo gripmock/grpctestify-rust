@@ -573,11 +573,17 @@ pub async fn proto_files(State(state): State<Arc<PlayState>>) -> Json<Vec<ProtoI
     Json(files)
 }
 
+#[derive(Serialize)]
+pub struct ReflectResponse {
+    pub services: Vec<ServiceInfo>,
+    pub error: Option<String>,
+}
+
 /// POST /api/reflect — list services and methods via reflection
 pub async fn reflect_server(
     State(state): State<Arc<PlayState>>,
     Json(req): Json<ReflectRequest>,
-) -> Result<Json<Vec<ServiceInfo>>, (StatusCode, String)> {
+) -> Json<ReflectResponse> {
     let tls_config = if req.tls.unwrap_or(false) {
         Some(crate::grpc::TlsConfig {
             ca_cert_path: None,
@@ -593,7 +599,10 @@ pub async fn reflect_server(
     // Resolve proto config from collection if provided
     let proto_config = if let Some(ref coll_path) = req.collection_path {
         if coll_path.contains("..") {
-            return Err((StatusCode::NOT_FOUND, "Invalid collection_path".to_string()));
+            return Json(ReflectResponse {
+                services: vec![],
+                error: Some("Invalid collection_path".into()),
+            });
         }
         let file_path =
             resolve_file(&state, coll_path).unwrap_or_else(|| primary_dir(&state).join(coll_path));
@@ -621,7 +630,12 @@ pub async fn reflect_server(
 
     let client = match crate::grpc::GrpcClient::new(config).await {
         Ok(c) => c,
-        Err(e) => return Err((StatusCode::BAD_GATEWAY, format!("Reflection failed: {}", e))),
+        Err(e) => {
+            return Json(ReflectResponse {
+                services: vec![],
+                error: Some(format!("Reflection failed: {}", e)),
+            });
+        }
     };
 
     let pool = client.descriptor_pool();
@@ -646,7 +660,10 @@ pub async fn reflect_server(
         });
     }
 
-    Ok(Json(services))
+    Json(ReflectResponse {
+        services,
+        error: None,
+    })
 }
 
 /// POST /api/import-grpcurl — parse grpcurl command into request fields
@@ -704,16 +721,22 @@ pub async fn import_grpcurl(
 }
 
 /// POST /api/schema-fill — generate JSON template from proto message descriptor
+#[derive(Serialize)]
+pub struct SchemaFillResponse {
+    pub schema: Option<serde_json::Value>,
+    pub error: Option<String>,
+}
+
 pub async fn schema_fill(
     State(state): State<Arc<PlayState>>,
     Json(req): Json<SchemaFillRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Json<SchemaFillResponse> {
     let parts: Vec<&str> = req.endpoint.split('/').collect();
     if parts.len() != 2 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Invalid endpoint format".to_string(),
-        ));
+        return Json(SchemaFillResponse {
+            schema: None,
+            error: Some("Invalid endpoint format".into()),
+        });
     }
     let (full_service, method_name) = (parts[0], parts[1]);
 
@@ -733,7 +756,10 @@ pub async fn schema_fill(
     // Resolve proto config from collection if provided
     let proto_config = if let Some(ref coll_path) = req.collection_path {
         if coll_path.contains("..") {
-            return Err((StatusCode::NOT_FOUND, "Invalid collection_path".to_string()));
+            return Json(SchemaFillResponse {
+                schema: None,
+                error: Some("Invalid collection_path".into()),
+            });
         }
         let file_path =
             resolve_file(&state, coll_path).unwrap_or_else(|| primary_dir(&state).join(coll_path));
@@ -760,37 +786,47 @@ pub async fn schema_fill(
         protocol: crate::grpc::WireProtocol::Grpc,
     };
 
-    let client = crate::grpc::GrpcClient::new(grpc_config)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("Failed to load descriptors: {}", e),
-            )
-        })?;
+    let client = match crate::grpc::GrpcClient::new(grpc_config).await {
+        Ok(c) => c,
+        Err(e) => {
+            return Json(SchemaFillResponse {
+                schema: None,
+                error: Some(format!("Failed to load descriptors: {}", e)),
+            });
+        }
+    };
 
     let pool = client.descriptor_pool();
-    let svc = pool.get_service_by_name(full_service).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            format!("Service '{}' not found", full_service),
-        )
-    })?;
-    let method = svc
-        .methods()
-        .find(|m| m.name() == method_name)
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                format!("Method '{}' not found in '{}'", method_name, full_service),
-            )
-        })?;
+    let svc = match pool.get_service_by_name(full_service) {
+        Some(s) => s,
+        None => {
+            return Json(SchemaFillResponse {
+                schema: None,
+                error: Some(format!("Service '{}' not found", full_service)),
+            });
+        }
+    };
+    let method = match svc.methods().find(|m| m.name() == method_name) {
+        Some(m) => m,
+        None => {
+            return Json(SchemaFillResponse {
+                schema: None,
+                error: Some(format!(
+                    "Method '{}' not found in '{}'",
+                    method_name, full_service
+                )),
+            });
+        }
+    };
 
     // Generate JSON template from input message descriptor
     let input_desc = method.input();
     let template = generate_json_template(&input_desc);
 
-    Ok(Json(template))
+    Json(SchemaFillResponse {
+        schema: Some(template),
+        error: None,
+    })
 }
 
 /// Generate a fake value for a given field name + type.
@@ -1194,6 +1230,7 @@ pub async fn execute_call(
             });
 
             if let Ok(line) = serde_json::to_string(&entry) {
+                let _guard = state.history_lock.lock().unwrap();
                 super::project::append_history_entry(&root, &sid, &line).ok();
             }
         }
@@ -1589,6 +1626,7 @@ mod tests {
             collections_dirs: vec![PathBuf::from("/tmp/nonexistent_XXXX")],
             project_root: None,
             project_settings: None,
+            history_lock: std::sync::Mutex::new(()),
         };
         assert!(resolve_file(&state, "foo.gctf").is_none());
     }
@@ -1605,6 +1643,7 @@ mod tests {
             collections_dirs: vec![dir.path().to_path_buf()],
             project_root: None,
             project_settings: None,
+            history_lock: std::sync::Mutex::new(()),
         });
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1629,6 +1668,7 @@ mod tests {
             collections_dirs: vec![dir.path().to_path_buf()],
             project_root: None,
             project_settings: None,
+            history_lock: std::sync::Mutex::new(()),
         });
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1655,6 +1695,7 @@ mod tests {
             collections_dirs: vec![dir.path().to_path_buf()],
             project_root: None,
             project_settings: None,
+            history_lock: std::sync::Mutex::new(()),
         });
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1684,6 +1725,7 @@ mod tests {
             collections_dirs: vec![dir.path().to_path_buf()],
             project_root: None,
             project_settings: None,
+            history_lock: std::sync::Mutex::new(()),
         });
 
         let rt = tokio::runtime::Runtime::new().unwrap();

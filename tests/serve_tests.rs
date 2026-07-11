@@ -17,6 +17,7 @@ fn test_app(collections_dir: PathBuf) -> Router {
         collections_dirs: vec![collections_dir],
         project_root: None,
         project_settings: None,
+        history_lock: std::sync::Mutex::new(()),
     });
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -62,6 +63,7 @@ fn test_app_project(dir: PathBuf) -> Router {
         collections_dirs: vec![collections_dir.clone(), project_root.join("collections")],
         project_root: Some(project_root.clone()),
         project_settings: project::load_project_settings(&project_root).ok(),
+        history_lock: std::sync::Mutex::new(()),
     });
 
     let cors = CorsLayer::new()
