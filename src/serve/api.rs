@@ -1591,6 +1591,7 @@ mod tests {
         assert!(resolve_file(&state, "foo.gctf").is_none());
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn test_get_collection_returns_404_for_directory() {
         let dir = tempfile::tempdir().unwrap();
@@ -1610,6 +1611,7 @@ mod tests {
         assert_eq!(result.unwrap_err().0, StatusCode::NOT_FOUND);
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn test_get_collection_ok_for_gctf_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -1634,6 +1636,7 @@ mod tests {
         assert!(resp.path.contains("test.gctf"));
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn test_list_collections_includes_empty_dirs() {
         let dir = tempfile::tempdir().unwrap();
@@ -1666,6 +1669,7 @@ mod tests {
         assert!(!file_item.unwrap().is_dir, "file must have is_dir: false");
     }
 
+    #[cfg(not(miri))]
     #[test]
     fn test_list_collections_empty_dir_with_gitkeep() {
         let dir = tempfile::tempdir().unwrap();
