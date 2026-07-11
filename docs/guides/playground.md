@@ -18,7 +18,7 @@ Opens at `http://localhost:4755`.
 
 Creates `.grpctestify/` in your project:
 
-```
+```text
 .grpctestify/
 ├── settings.json          # project defaults (address, protocol, active env)
 ├── .env.example           # env template — share with team
@@ -29,13 +29,11 @@ Creates `.grpctestify/` in your project:
 
 ## What it solves
 
-| Before | After |
-|--------|-------|
-| grpcurl one-liners you lose | Saved `.gctf` files in git |
-| Secrets in terminal history | `.env.*.local` gitignored |
-| No env separation | `.env.staging`, `.env.prod` with `{{VAR}}` syntax |
-| "How did I call that endpoint?" | History panel + NDJSON file |
-| Manual JSON construction | Reflect + Auto-fill from proto schema |
+- **grpcurl one-liners you lose** → Saved `.gctf` files in git
+- **Secrets in terminal history** → `.env.*.local` gitignored
+- **No env separation** → `.env.staging`, `.env.prod` with `{{VAR}}` syntax
+- **"How did I call that endpoint?"** → History panel + NDJSON file
+- **Manual JSON construction** → Reflect + Auto-fill from proto schema
 
 ## Basic workflow
 
