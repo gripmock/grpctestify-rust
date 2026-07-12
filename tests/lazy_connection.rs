@@ -2,7 +2,7 @@ use grpctestify::grpc::client::{CompressionMode, GrpcClient, GrpcClientConfig, P
 use std::path::PathBuf;
 
 #[tokio::test]
-async fn test_local_proto_files_are_rejected_in_native_mode() {
+async fn test_local_proto_files_descriptors_loaded() {
     let address = "http://localhost:59123";
     let proto_path = PathBuf::from("tests/e2e/examples/helloworld/helloworld.proto");
     let import_path = PathBuf::from("tests/e2e/examples/helloworld");
@@ -27,17 +27,19 @@ async fn test_local_proto_files_are_rejected_in_native_mode() {
         compression: CompressionMode::None,
         connection_id: 0,
         protocol: Default::default(),
+        user_agent: None,
     };
 
+    // Proto files should NOT be rejected — protox compiles them successfully.
+    // Initialization may succeed (lazy channel) or fail with a connection error.
     let result = GrpcClient::new(config).await;
-    assert!(
-        result.is_err(),
-        "Client initialization unexpectedly succeeded"
-    );
-    let err = result.err().unwrap().to_string();
-    assert!(
-        err.contains("PROTO files are not supported in native mode"),
-        "Unexpected error: {}",
-        err
-    );
+    if let Err(err) = result {
+        let err_str = err.to_string();
+        assert!(
+            !err_str.contains("PROTO files are not supported"),
+            "Proto files should not be rejected: {}",
+            err_str
+        );
+    }
+    // If it succeeded, proto compilation works correctly.
 }

@@ -23,6 +23,7 @@ export function PlayLayout() {
   const loadStartupInfo = useStore(s => s.loadStartupInfo);
   const checkHealth = useStore(s => s.checkHealth);
   const collectionParsed = useStore(s => s.collectionParsed);
+  const collectionsMtime = useStore(s => s.collectionsMtime);
 
   useEffect(() => { refreshCollections(); loadStartupInfo(); }, []);
 
@@ -32,6 +33,23 @@ export function PlayLayout() {
     const interval = setInterval(checkHealth, 15000);
     return () => clearInterval(interval);
   }, []);
+
+  
+  useEffect(() => {
+    let active = true;
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/info');
+        if (!res.ok || !active) return;
+        const data = await res.json();
+        if (data.collections_mtime !== undefined && data.collections_mtime !== collectionsMtime) {
+          refreshCollections();
+        }
+      } catch {  }
+    };
+    const interval = setInterval(poll, 3000);
+    return () => { active = false; clearInterval(interval); };
+  }, [collectionsMtime, refreshCollections]);
 
   const [sidebarW, setSidebarW] = useState(250);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('collections');

@@ -182,8 +182,10 @@ fn interpolate_custom_profile(profile: &[(f64, f64)], t: f64) -> f64 {
     if t <= profile[0].0 {
         return profile[0].1.max(0.0);
     }
-    if t >= profile.last().unwrap().0 {
-        return profile.last().unwrap().1.max(0.0);
+    if let Some(last) = profile.last()
+        && t >= last.0
+    {
+        return last.1.max(0.0);
     }
     for i in 0..profile.len() - 1 {
         let (t1, r1) = profile[i];
@@ -1201,8 +1203,7 @@ async fn run_benchmark(
     };
 
     // Run with duration or count limit
-    if has_duration {
-        let dur = config.duration.unwrap();
+    if let Some(dur) = config.duration {
         let mut join_set = JoinSet::new();
         let schedule_start = run_start;
 
@@ -2288,6 +2289,7 @@ mod tests {
     #[test]
     fn test_bench_config_cli_override() {
         let args = BenchArgs {
+            protocol: "grpc".to_string(),
             test_paths: vec![],
             profile: Some("load".to_string()),
             mode: Some("stepping".to_string()),
@@ -2364,6 +2366,7 @@ mod tests {
         bench_section.insert("threshold.latency_ms.p95".to_string(), "< 200".to_string());
 
         let args = BenchArgs {
+            protocol: "grpc".to_string(),
             test_paths: vec![],
             profile: None,
             mode: None,
@@ -2426,6 +2429,7 @@ mod tests {
         bench_section.insert("concurrency".to_string(), "50".to_string());
 
         let args = BenchArgs {
+            protocol: "grpc".to_string(),
             test_paths: vec![],
             profile: Some("load".to_string()),
             mode: None,
@@ -2482,6 +2486,7 @@ mod tests {
         bench_section.insert("load_schedule".to_string(), "step".to_string());
 
         let args = BenchArgs {
+            protocol: "grpc".to_string(),
             test_paths: vec![],
             profile: None,
             mode: None,
@@ -2570,6 +2575,7 @@ mod tests {
     #[test]
     fn test_duration_mode_ignores_requests() {
         let args = BenchArgs {
+            protocol: "grpc".to_string(),
             test_paths: vec![],
             profile: None,
             mode: None,
@@ -2622,6 +2628,7 @@ mod tests {
     #[test]
     fn test_connections_must_not_exceed_concurrency() {
         let args = BenchArgs {
+            protocol: "grpc".to_string(),
             test_paths: vec![],
             profile: None,
             mode: None,
@@ -2672,6 +2679,7 @@ mod tests {
     #[test]
     fn test_duration_stop_invalid_value_fails() {
         let args = BenchArgs {
+            protocol: "grpc".to_string(),
             test_paths: vec![],
             profile: None,
             mode: None,

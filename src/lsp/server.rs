@@ -109,11 +109,19 @@ impl GrpctestifyLsp {
         })
     }
 
+    fn protocol_from_document(doc: &GctfDocument) -> WireProtocol {
+        doc.get_options()
+            .and_then(|opts| opts.get("protocol").cloned())
+            .map(|s| s.parse::<WireProtocol>().unwrap_or_default())
+            .unwrap_or_default()
+    }
+
     async fn create_schema_client(
         &self,
         address: &str,
         proto_config: Option<ProtoConfig>,
         target_service: Option<String>,
+        protocol: WireProtocol,
     ) -> Option<GrpcClient> {
         const SCHEMA_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -126,7 +134,8 @@ impl GrpctestifyLsp {
             target_service,
             compression: Default::default(),
             connection_id: 0,
-            protocol: WireProtocol::Grpc,
+            protocol,
+            user_agent: None,
         };
 
         let created = tokio::time::timeout(SCHEMA_TIMEOUT, GrpcClient::new(config)).await;
@@ -161,7 +170,8 @@ impl GrpctestifyLsp {
             }
         }
 
-        let Some(client) = self.create_schema_client(address, proto_config, None).await else {
+        let proto = WireProtocol::default();
+        let Some(client) = self.create_schema_client(address, proto_config, None, proto).await else {
             return Vec::new();
         };
 
@@ -222,9 +232,10 @@ impl GrpctestifyLsp {
             )
             .unwrap_or_else(config::default_address);
         let proto_config = Self::proto_config_from_document(doc, uri);
+        let proto = Self::protocol_from_document(doc);
 
         let Some(client) = self
-            .create_schema_client(&address, proto_config, Some(service_name.to_string()))
+            .create_schema_client(&address, proto_config, Some(service_name.to_string()), proto)
             .await
         else {
             return Vec::new();
@@ -411,9 +422,10 @@ impl GrpctestifyLsp {
             )
             .unwrap_or_else(config::default_address);
         let proto_config = Self::proto_config_from_document(doc, uri);
+        let proto = Self::protocol_from_document(doc);
 
         let Some(client) = self
-            .create_schema_client(&address, proto_config, Some(service_name.to_string()))
+            .create_schema_client(&address, proto_config, Some(service_name.to_string()), proto)
             .await
         else {
             return Vec::new();

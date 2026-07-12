@@ -7,12 +7,12 @@ use prost_types::FileDescriptorProto;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
-use std::str::FromStr;
+
 use std::sync::{Arc, LazyLock, RwLock};
 use tokio::sync::Mutex as TokioMutex;
 use tonic::codec::CompressionEncoding;
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
-use tonic::transport::{Channel, Uri};
+use tonic::transport::Uri;
 use tonic::{Request, Status};
 use tonic_reflection::pb::v1::ServerReflectionRequest;
 use tonic_reflection::pb::v1::server_reflection_client::ServerReflectionClient;
@@ -22,7 +22,9 @@ pub mod codec;
 use self::codec::DynamicCodec;
 
 // Re-export types and functions from tls and channel modules
-pub use crate::grpc::channel::create_channel;
+pub use std::str::FromStr;
+use crate::grpc::channel::create_channel;
+use crate::grpc::ua_interceptor::StripTonicUA;
 pub use crate::grpc::tls::{
     ChannelCacheKey, CompressionMode, GrpcClientConfig, ProtoConfig, TlsConfig, WireProtocol,
 };
@@ -35,7 +37,7 @@ static DESCRIPTOR_LOAD_MUTEX: LazyLock<TokioMutex<()>> = LazyLock::new(|| TokioM
 
 /// gRPC client
 pub struct GrpcClient {
-    client: tonic::client::Grpc<Channel>,
+    client: tonic::client::Grpc<StripTonicUA<tonic::transport::Channel>>,
     descriptor_pool: Arc<DescriptorPool>,
     config: GrpcClientConfig,
 }
@@ -48,6 +50,9 @@ impl GrpcClient {
 
         // Load descriptors (might require connection if reflection is used)
         let descriptor_pool = load_descriptors(&config).await?;
+
+        // Wrap channel to strip tonic's automatic User-Agent suffix
+        let channel = super::ua_interceptor::StripTonicUA::new(channel);
 
         let mut client = tonic::client::Grpc::new(channel);
         if config.compression == CompressionMode::Gzip {
@@ -160,7 +165,7 @@ impl GrpcClient {
             // Bidi Streaming
             let mut request = Request::new(request_stream);
             let meta = request.metadata_mut();
-            insert_request_metadata(meta, self.config.metadata.as_ref());
+            insert_request_metadata(meta, self.config.metadata.as_ref(), self.config.user_agent.as_deref());
 
             let response = client.streaming(request, path, codec).await?;
             initial_headers = metadata_map_to_hashmap(response.metadata());
@@ -177,7 +182,7 @@ impl GrpcClient {
                 .ok_or_else(|| Status::invalid_argument("Missing request message"))?;
             let mut request = Request::new(first_msg);
             let meta = request.metadata_mut();
-            insert_request_metadata(meta, self.config.metadata.as_ref());
+            insert_request_metadata(meta, self.config.metadata.as_ref(), self.config.user_agent.as_deref());
 
             let response = client.server_streaming(request, path, codec).await?;
             initial_headers = metadata_map_to_hashmap(response.metadata());
@@ -190,7 +195,7 @@ impl GrpcClient {
             // Client Streaming (Server Unary)
             let mut request = Request::new(request_stream);
             let meta = request.metadata_mut();
-            insert_request_metadata(meta, self.config.metadata.as_ref());
+            insert_request_metadata(meta, self.config.metadata.as_ref(), self.config.user_agent.as_deref());
 
             let response = client.client_streaming(request, path, codec).await?;
             initial_headers = metadata_map_to_hashmap(response.metadata());
@@ -207,7 +212,7 @@ impl GrpcClient {
                 .ok_or_else(|| Status::invalid_argument("Missing request message"))?;
             let mut request = Request::new(first_msg);
             let meta = request.metadata_mut();
-            insert_request_metadata(meta, self.config.metadata.as_ref());
+            insert_request_metadata(meta, self.config.metadata.as_ref(), self.config.user_agent.as_deref());
 
             let response = client.unary(request, path, codec).await?;
             initial_headers = metadata_map_to_hashmap(response.metadata());
@@ -326,22 +331,20 @@ impl GrpcClient {
 fn insert_request_metadata(
     meta: &mut MetadataMap,
     custom_metadata: Option<&HashMap<String, String>>,
+    user_agent: Option<&str>,
 ) {
-    let custom_ua = custom_metadata.and_then(|m| {
-        m.iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case("user-agent"))
-            .map(|(_, v)| v.as_str())
-    });
+    // User-Agent priority: explicit config > metadata["user-agent"] > default
+    let default_ua = format!("grpctestify/{}", env!("CARGO_PKG_VERSION"));
+    let ua = user_agent
+        .or_else(|| {
+            custom_metadata
+                .and_then(|m| m.iter().find(|(k, _)| k.eq_ignore_ascii_case("user-agent")))
+                .map(|(_, v)| v.as_str())
+        })
+        .unwrap_or(&default_ua);
 
-    if let Some(ua) = custom_ua {
-        if let Ok(val) = MetadataValue::from_str(ua) {
-            meta.insert("user-agent", val);
-        }
-    } else {
-        let ua = format!("grpctestify/{}", env!("CARGO_PKG_VERSION"));
-        if let Ok(val) = MetadataValue::from_str(&ua) {
-            meta.insert("user-agent", val);
-        }
+    if let Ok(val) = MetadataValue::from_str(ua) {
+        meta.insert("user-agent", val);
     }
 
     if let Some(metadata) = custom_metadata {
@@ -447,15 +450,6 @@ pub enum StreamItem {
 
 /// Load descriptors with caching
 async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<DescriptorPool>> {
-    // Check if we have proto config
-    if let Some(proto_config) = &config.proto_config
-        && !proto_config.files.is_empty()
-    {
-        return Err(anyhow!(
-            "PROTO files are not supported in native mode. Use PROTO descriptor=<path> or server reflection."
-        ));
-    }
-
     let cache_key = if let Some(proto_config) = &config.proto_config {
         if let Some(descriptor_path) = &proto_config.descriptor {
             if let Some(target) = &config.target_service {
@@ -497,6 +491,8 @@ async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<DescriptorPoo
     let pool = if let Some(proto_config) = &config.proto_config {
         if let Some(descriptor_path) = &proto_config.descriptor {
             load_descriptors_from_descriptor_file(descriptor_path)?
+        } else if !proto_config.files.is_empty() {
+            load_descriptors_from_proto_files(&proto_config.files, &proto_config.import_paths)?
         } else {
             load_descriptors_via_reflection(config).await?
         }
@@ -529,6 +525,21 @@ fn load_descriptors_from_descriptor_file(path: &str) -> Result<DescriptorPool> {
             "Failed to create descriptor pool from descriptor file: {}",
             path
         )
+    })?;
+    Ok(pool)
+}
+
+/// Load descriptors from .proto files using pure-Rust proto compiler.
+fn load_descriptors_from_proto_files(
+    files: &[String],
+    import_paths: &[String],
+) -> Result<DescriptorPool> {
+    let fds = protox::compile(files, import_paths)
+        .map_err(|e| anyhow!("Failed to compile proto files: {}", e))?;
+
+    let mut pool = DescriptorPool::global();
+    pool.add_file_descriptor_set(fds).map_err(|e| {
+        anyhow!("Failed to build descriptor pool from proto files: {}", e)
     })?;
     Ok(pool)
 }
@@ -821,6 +832,7 @@ mod tests {
             compression: CompressionMode::None,
             connection_id: 0,
             protocol: WireProtocol::Grpc,
+                user_agent: None,
         };
         assert_eq!(config.address, "localhost:4770");
         assert_eq!(config.timeout_seconds, 30);
@@ -867,7 +879,7 @@ mod tests {
     fn test_insert_request_metadata_sets_default_user_agent() {
         let mut meta = MetadataMap::new();
 
-        insert_request_metadata(&mut meta, None);
+        insert_request_metadata(&mut meta, None, None);
 
         let expected = format!("grpctestify/{}", env!("CARGO_PKG_VERSION"));
         let ua = meta
@@ -883,7 +895,7 @@ mod tests {
         let mut custom = HashMap::new();
         custom.insert("user-agent".to_string(), "my-agent/2.0".to_string());
 
-        insert_request_metadata(&mut meta, Some(&custom));
+        insert_request_metadata(&mut meta, Some(&custom), None);
 
         let ua = meta
             .get("user-agent")
@@ -898,7 +910,7 @@ mod tests {
         let mut custom = HashMap::new();
         custom.insert("User-Agent".to_string(), "my-agent/3.0".to_string());
 
-        insert_request_metadata(&mut meta, Some(&custom));
+        insert_request_metadata(&mut meta, Some(&custom), None);
 
         let ua = meta
             .get("user-agent")
@@ -914,7 +926,7 @@ mod tests {
         custom.insert("x-trace-id".to_string(), "trace-123".to_string());
         custom.insert("User-Agent".to_string(), "my-agent/4.0".to_string());
 
-        insert_request_metadata(&mut meta, Some(&custom));
+        insert_request_metadata(&mut meta, Some(&custom), None);
 
         let trace = meta
             .get("x-trace-id")

@@ -105,6 +105,10 @@ pub struct HealthArgs {
     #[arg(required = true)]
     pub address: String,
 
+    /// Wire protocol: grpc (default), grpc-web, connectrpc
+    #[arg(long, default_value = "grpc")]
+    pub protocol: String,
+
     /// Service name to check (default: empty — checks overall server health)
     #[arg(long, default_value = "")]
     pub service: String,
@@ -146,6 +150,10 @@ pub struct LspArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct BenchArgs {
+    /// Wire protocol: grpc (default), grpc-web, connectrpc
+    #[arg(long, default_value = "grpc")]
+    pub protocol: String,
+
     /// Path to test file or directory to benchmark
     #[arg(required = true)]
     pub test_paths: Vec<PathBuf>,
@@ -440,6 +448,10 @@ pub struct CheckArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct RunArgs {
+    /// Wire protocol: grpc (default), grpc-web, connectrpc
+    #[arg(long, default_value = "grpc")]
+    pub protocol: String,
+
     /// Path to test file or directory to execute
     // We make this optional so it doesn't conflict with subcommands when parsed at top level,
     // but we'll enforce it manually if no subcommand is present.
@@ -525,6 +537,10 @@ pub struct RunArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct ReflectArgs {
+    /// Wire protocol: grpc (default), grpc-web, connectrpc
+    #[arg(long, default_value = "grpc")]
+    pub protocol: String,
+
     /// Service/method symbol OR .gctf file path
     pub symbol: Option<String>,
 
@@ -574,6 +590,10 @@ pub struct FmtArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct CallArgs {
+    /// Wire protocol: grpc (default), grpc-web, connectrpc
+    #[arg(long, default_value = "grpc")]
+    pub protocol: String,
+
     /// File to call (omit if using -e)
     pub file: Option<PathBuf>,
 

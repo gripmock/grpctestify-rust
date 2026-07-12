@@ -26,6 +26,7 @@ struct CallOptions<'a> {
     connect_timeout: u64,
     max_time: u64,
     insecure: bool,
+    protocol: crate::grpc::WireProtocol,
 }
 
 /// Handle inline call with synthetic document (no file)
@@ -55,6 +56,7 @@ async fn handle_call_document_inline(doc: &parser::GctfDocument, args: &CallArgs
         connect_timeout: args.connect_timeout,
         max_time: args.max_time,
         insecure: args.insecure,
+        protocol: args.protocol.parse::<crate::grpc::WireProtocol>().unwrap_or(crate::grpc::WireProtocol::Grpc),
     };
 
     handle_call_document(doc, Path::new("<inline>"), opts).await
@@ -64,6 +66,7 @@ pub async fn handle_call(args: &CallArgs) -> Result<()> {
     // --bench mode: forward to benchmark (handles both file and inline)
     if args.bench {
         let bench_args = crate::cli::args::BenchArgs {
+            protocol: args.protocol.clone(),
             test_paths: if args.endpoint.is_some() {
                 vec![]
             } else {
@@ -185,6 +188,7 @@ pub async fn handle_call(args: &CallArgs) -> Result<()> {
             connect_timeout: args.connect_timeout,
             max_time: args.max_time,
             insecure: args.insecure,
+            protocol: args.protocol.parse::<crate::grpc::WireProtocol>().unwrap_or(crate::grpc::WireProtocol::Grpc),
         };
 
         handle_call_document(d, &file_path, opts).await?;
@@ -333,7 +337,8 @@ async fn handle_call_document(
         target_service: Some(full_service.clone()),
         compression: Default::default(),
         connection_id: 0,
-        protocol: crate::grpc::WireProtocol::Grpc,
+        protocol: opts.protocol,
+        user_agent: None,
     };
 
     let start = Instant::now();

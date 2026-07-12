@@ -26,6 +26,10 @@ fn reject_traversal(path: &str) -> Result<(), (StatusCode, String)> {
     Ok(())
 }
 
+fn parse_protocol(s: Option<&str>) -> crate::grpc::WireProtocol {
+    s.and_then(|s| s.parse().ok()).unwrap_or_default()
+}
+
 /// Resolve a relative path across all collections dirs. Returns first match.
 fn resolve_file(state: &PlayState, rel: &str) -> Option<std::path::PathBuf> {
     for dir in &state.collections_dirs {
@@ -49,6 +53,8 @@ pub struct ReflectRequest {
     pub tls_insecure: Option<bool>,
     /// Optional: collection path to load PROTO config from
     pub collection_path: Option<String>,
+    /// Wire protocol: "grpc" (default), "grpc-web", "connect"
+    pub protocol: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -75,6 +81,8 @@ pub struct SchemaFillRequest {
     pub tls: Option<bool>,
     pub tls_insecure: Option<bool>,
     pub collection_path: Option<String>,
+    /// Wire protocol: "grpc" (default), "grpc-web", "connect"
+    pub protocol: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -455,6 +463,7 @@ pub async fn save_collection(
     }
     std::fs::write(&file_path, &req.content)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    state.collections_mtime.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Ok(Json(()))
 }
 
@@ -520,6 +529,7 @@ pub async fn save_collection_structured(
     }
     std::fs::write(&file_path, &content)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    state.collections_mtime.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Ok(Json(()))
 }
 
@@ -541,6 +551,7 @@ pub async fn proto_upload(
     let file_path = primary_dir(&state).join(&filename);
     std::fs::write(&file_path, &req.content)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    state.collections_mtime.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Ok(Json(()))
 }
 
@@ -625,7 +636,8 @@ pub async fn reflect_server(
         target_service: None,
         compression: Default::default(),
         connection_id: 0,
-        protocol: crate::grpc::WireProtocol::Grpc,
+        protocol: parse_protocol(req.protocol.as_deref()),
+        user_agent: None,
     };
 
     let client = match crate::grpc::GrpcClient::new(config).await {
@@ -783,7 +795,8 @@ pub async fn schema_fill(
         target_service: Some(full_service.to_string()),
         compression: Default::default(),
         connection_id: 0,
-        protocol: crate::grpc::WireProtocol::Grpc,
+        protocol: parse_protocol(req.protocol.as_deref()),
+        user_agent: None,
     };
 
     let client = match crate::grpc::GrpcClient::new(grpc_config).await {
@@ -1124,11 +1137,7 @@ pub async fn execute_call(
         });
 
     // Resolve wire protocol
-    let protocol = match req.protocol.as_deref() {
-        Some("grpc-web") => crate::grpc::WireProtocol::GrpcWeb,
-        Some("connect") => crate::grpc::WireProtocol::Connect,
-        _ => crate::grpc::WireProtocol::Grpc,
-    };
+    let protocol = parse_protocol(req.protocol.as_deref());
 
     // Create gRPC client
     let grpc_config = crate::grpc::GrpcClientConfig {
@@ -1141,6 +1150,7 @@ pub async fn execute_call(
         compression: Default::default(),
         connection_id: 0,
         protocol,
+        user_agent: None,
     };
 
     let mut client = match crate::grpc::GrpcClient::new(grpc_config).await {
@@ -1229,8 +1239,9 @@ pub async fn execute_call(
                 },
             });
 
-            if let Ok(line) = serde_json::to_string(&entry) {
-                let _guard = state.history_lock.lock().unwrap();
+            if let Ok(line) = serde_json::to_string(&entry)
+                && let Ok(_guard) = state.history_lock.lock()
+            {
                 super::project::append_history_entry(&root, &sid, &line).ok();
             }
         }
@@ -1528,6 +1539,7 @@ pub async fn delete_collection(
             )
         })?;
     }
+    state.collections_mtime.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Ok(Json(()))
 }
 
@@ -1546,6 +1558,7 @@ pub async fn create_directory(
             format!("Failed to create directory: {}", e),
         )
     })?;
+    state.collections_mtime.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Ok(Json(()))
 }
 
@@ -1595,12 +1608,14 @@ pub async fn move_item(
             format!("Failed to move: {}", e),
         )
     })?;
+    state.collections_mtime.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Ok(Json(()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicU64;
     #[cfg(not(miri))]
     use std::path::PathBuf;
 
@@ -1627,6 +1642,7 @@ mod tests {
             project_root: None,
             project_settings: None,
             history_lock: std::sync::Mutex::new(()),
+        collections_mtime: Arc::new(AtomicU64::new(0)),
         };
         assert!(resolve_file(&state, "foo.gctf").is_none());
     }
@@ -1644,6 +1660,7 @@ mod tests {
             project_root: None,
             project_settings: None,
             history_lock: std::sync::Mutex::new(()),
+        collections_mtime: Arc::new(AtomicU64::new(0)),
         });
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1669,6 +1686,7 @@ mod tests {
             project_root: None,
             project_settings: None,
             history_lock: std::sync::Mutex::new(()),
+        collections_mtime: Arc::new(AtomicU64::new(0)),
         });
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1696,6 +1714,7 @@ mod tests {
             project_root: None,
             project_settings: None,
             history_lock: std::sync::Mutex::new(()),
+        collections_mtime: Arc::new(AtomicU64::new(0)),
         });
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1726,6 +1745,7 @@ mod tests {
             project_root: None,
             project_settings: None,
             history_lock: std::sync::Mutex::new(()),
+        collections_mtime: Arc::new(AtomicU64::new(0)),
         });
 
         let rt = tokio::runtime::Runtime::new().unwrap();

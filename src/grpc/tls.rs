@@ -23,6 +23,18 @@ pub enum WireProtocol {
     Connect,
 }
 
+impl std::str::FromStr for WireProtocol {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "grpc-web" => Self::GrpcWeb,
+            "connectrpc" => Self::Connect,
+            _ => Self::Grpc,
+        })
+    }
+}
+
 /// Configuration for gRPC client
 #[derive(Debug, Clone, Default)]
 pub struct GrpcClientConfig {
@@ -36,8 +48,10 @@ pub struct GrpcClientConfig {
     /// Per-connection id for independent channel cache entries.
     /// 0 means use the shared cache. Set to 1..N for connection pooling.
     pub connection_id: u64,
-    /// Wire protocol: gRPC (tonic), gRPC-Web, or ConnectRPC
+    /// Wire protocol: gRPC (tonic), gRPC-Web, or Connect (connectrpc)
     pub protocol: WireProtocol,
+    /// Custom User-Agent header. If set, overrides any "user-agent" in metadata.
+    pub user_agent: Option<String>,
 }
 
 /// TLS configuration for gRPC connections

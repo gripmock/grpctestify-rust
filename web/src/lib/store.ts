@@ -257,6 +257,7 @@ export const useStore = create<PlayStore>((set, get) => ({
   reflectStatus: 'idle',
   reflectError: null,
   serverHealthy: true,
+  collectionsMtime: 0,
   environments: (() => {
     try { return JSON.parse(localStorage.getItem(ENVS_KEY) || '[]'); }
     catch { return []; }
@@ -344,7 +345,7 @@ export const useStore = create<PlayStore>((set, get) => ({
   setReflectionMethods: (v) => set({ reflectionMethods: v, reflectStatus: v.length > 0 ? 'ok' : 'error' }),
 
   reflect: async () => {
-    const { address, tls, tlsInsecure, workspacePath } = get();
+    const { address, protocol, tls, tlsInsecure, workspacePath } = get();
     if (!address) return;
     set({ reflectStatus: 'loading', reflectError: null });
     try {
@@ -356,6 +357,7 @@ export const useStore = create<PlayStore>((set, get) => ({
           tls: tls || undefined,
           tls_insecure: tls ? tlsInsecure : undefined,
           collection_path: workspacePath || undefined,
+          protocol: protocol || undefined,
         }),
       });
       const data = await res.json();
@@ -694,6 +696,7 @@ export const useStore = create<PlayStore>((set, get) => ({
       set({
         version: data.version || '',
         serverHealthy: data.status === 'ok',
+        collectionsMtime: data.collections_mtime ?? 0,
       });
       
       if (data.project?.active) {

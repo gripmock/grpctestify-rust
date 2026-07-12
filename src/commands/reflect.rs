@@ -40,7 +40,8 @@ pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
         target_service: None,
         compression: Default::default(),
         connection_id: 0,
-        protocol: WireProtocol::Grpc,
+        protocol: args.protocol.parse::<WireProtocol>().unwrap_or(crate::grpc::WireProtocol::Grpc),
+        user_agent: None,
     };
 
     eprintln!("Connecting to {}...", config.address);

@@ -27,6 +27,7 @@ export function RequestPanel() {
   const getGrpcurlCommand = useStore(s => s.getGrpcurlCommand);
   const reflectionMethods = useStore(s => s.reflectionMethods);
   const address = useStore(s => s.address);
+  const protocol = useStore(s => s.protocol);
   const tls = useStore(s => s.tls);
   const tlsInsecure = useStore(s => s.tlsInsecure);
   const selectedCollection = useStore(s => s.selectedCollection);
@@ -112,6 +113,7 @@ export function RequestPanel() {
           tls: tls || undefined,
           tls_insecure: tls ? tlsInsecure : undefined,
           collection_path: selectedCollection || undefined,
+          protocol: protocol || undefined,
         }),
       });
       const data = await res.json();

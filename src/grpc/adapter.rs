@@ -29,6 +29,7 @@ impl CallClientFactory for GrpcClientFactory {
             compression: CompressionMode::from_env(),
             connection_id: 0,
             protocol: WireProtocol::Grpc,
+            user_agent: None,
         };
 
         let client = GrpcClient::new(grpc_config).await?;

@@ -6,6 +6,7 @@ pub mod client;
 pub mod grpcurl_invocation;
 pub mod proxy;
 pub mod tls;
+pub mod ua_interceptor;
 pub mod web;
 
 pub use channel::create_channel;

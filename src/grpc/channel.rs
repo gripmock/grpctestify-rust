@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::sync::{LazyLock, OnceLock, RwLock};
 use std::time::Duration;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
@@ -31,7 +30,7 @@ pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
         ));
     }
 
-    let user_agent = resolve_user_agent(config.metadata.as_ref());
+    let user_agent = resolve_user_agent(config.user_agent.as_deref(), config.metadata.as_ref());
 
     let mut cache_key = ChannelCacheKey {
         address: config.address.clone(),
@@ -137,7 +136,13 @@ fn user_agent_value() -> String {
     format!("grpctestify/{}", env!("CARGO_PKG_VERSION"))
 }
 
-fn resolve_user_agent(custom_metadata: Option<&HashMap<String, String>>) -> String {
+fn resolve_user_agent(
+    explicit: Option<&str>,
+    custom_metadata: Option<&HashMap<String, String>>,
+) -> String {
+    if let Some(ua) = explicit {
+        return ua.to_string();
+    }
     if let Some(metadata) = custom_metadata {
         for (k, v) in metadata {
             if k.eq_ignore_ascii_case("user-agent") {
@@ -148,21 +153,22 @@ fn resolve_user_agent(custom_metadata: Option<&HashMap<String, String>>) -> Stri
     user_agent_value()
 }
 
-/// Insert user agent into metadata map
+#[cfg(test)]
 fn insert_user_agent(metadata: &mut tonic::metadata::MetadataMap, user_agent: &str) {
+    use std::str::FromStr as _;
     if let Ok(val) = tonic::metadata::MetadataValue::from_str(user_agent) {
         metadata.insert("user-agent", val);
     }
 }
 
-/// Insert custom metadata into metadata map
+#[cfg(test)]
 fn insert_custom_metadata(
     metadata: &mut tonic::metadata::MetadataMap,
     custom: Option<&HashMap<String, String>>,
 ) {
+    use std::str::FromStr as _;
     if let Some(map) = custom {
         for (key, value) in map {
-            // Skip user-agent as it's handled separately
             if key.to_lowercase() == "user-agent" {
                 continue;
             }
@@ -176,10 +182,10 @@ fn insert_custom_metadata(
     }
 }
 
-/// Build metadata map from config
+#[cfg(test)]
 pub fn build_metadata(config: &GrpcClientConfig) -> tonic::metadata::MetadataMap {
     let mut metadata = tonic::metadata::MetadataMap::new();
-    let user_agent = resolve_user_agent(config.metadata.as_ref());
+    let user_agent = resolve_user_agent(config.user_agent.as_deref(), config.metadata.as_ref());
     insert_user_agent(&mut metadata, &user_agent);
     insert_custom_metadata(&mut metadata, config.metadata.as_ref());
     metadata
@@ -201,6 +207,7 @@ mod tests {
             compression: CompressionMode::None,
             connection_id: 0,
             protocol: WireProtocol::Grpc,
+                user_agent: None,
         }
     }
 
@@ -252,6 +259,7 @@ mod tests {
             compression: Default::default(),
             connection_id: 0,
             protocol: WireProtocol::Grpc,
+                user_agent: None,
         };
 
         let start = std::time::Instant::now();

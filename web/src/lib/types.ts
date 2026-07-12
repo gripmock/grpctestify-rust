@@ -1,4 +1,4 @@
-export type WireProtocol = 'grpc' | 'grpc-web' | 'connect';
+export type WireProtocol = 'grpc' | 'grpc-web' | 'connectrpc';
 
 export interface RequestConfig {
   endpoint: string;
@@ -185,6 +185,7 @@ export interface PlayStore {
   reflectStatus: 'idle' | 'loading' | 'ok' | 'error';
   reflectError: string | null;
   serverHealthy: boolean;
+  collectionsMtime: number;
   environments: Environment[];
   activeEnvironment: string | null;
 

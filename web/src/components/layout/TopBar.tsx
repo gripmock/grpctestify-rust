@@ -224,7 +224,7 @@ export function TopBar() {
       >
         <option value="grpc">gRPC</option>
         <option value="grpc-web">gRPC-Web</option>
-        <option value="connect">Connect</option>
+        <option value="connectrpc">ConnectRPC</option>
       </select>
 
       {}

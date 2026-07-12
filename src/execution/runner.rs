@@ -6,7 +6,7 @@ use super::super::parser::GctfDocument;
 use super::runner_helpers;
 use super::{AssertionHandler, RequestHandler, RequestSendResult, ResponseHandler};
 use crate::assert::{AssertionEngine, JsonComparator, get_json_diff};
-use crate::grpc::{GrpcClient, GrpcClientConfig, WireProtocol};
+use crate::grpc::{GrpcClient, GrpcClientConfig};
 use crate::optimizer;
 use crate::parser::ast::{SectionContent, SectionType};
 use crate::plugins::{AssertionTiming, PluginManager};
@@ -849,7 +849,11 @@ impl TestRunner {
             target_service: Some(full_service.clone()),
             compression,
             connection_id: 0,
-            protocol: WireProtocol::Grpc,
+            protocol: document
+                .get_options()
+                .and_then(|o| o.get("protocol").map(|s| s.parse::<crate::grpc::WireProtocol>().unwrap_or(crate::grpc::WireProtocol::Grpc)))
+                .unwrap_or(crate::grpc::WireProtocol::Grpc),
+                user_agent: None,
         };
 
         let client = GrpcClient::new(client_config).await?;
