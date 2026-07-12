@@ -1,5 +1,5 @@
 #[cfg(test)]
-use crate::model::{RpcMode, TestExecutionResult, TestExecutionStatus};
+use crate::model::{TestExecutionResult, TestExecutionStatus};
 #[cfg(test)]
 use apif_ast::GctfDocument;
 

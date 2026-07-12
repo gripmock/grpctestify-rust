@@ -13,7 +13,9 @@ description = "Test execution engine"
 apif-ast = { path = "../apif-ast", version = "0.1.0" }
 apif-assert = { path = "../apif-assert", version = "0.1.0" }
 apif-cfg-runtime = { path = "../apif-cfg-runtime", version = "0.1.0" }
-apif-grpc-transport = { path = "../apif-grpc-transport", version = "0.2.0", features = ["tonic-transport"] }
+apif-grpc-transport = { path = "../apif-grpc-transport", version = "0.2.0", features = [
+  "tonic-transport",
+] }
 apif-optimizer = { path = "../apif-optimizer", version = "0.1.0" }
 apif-parser = { path = "../apif-parser", version = "0.1.0" }
 apif-plugins = { path = "../apif-plugins", version = "0.1.0" }
