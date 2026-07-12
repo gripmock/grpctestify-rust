@@ -1626,6 +1626,7 @@ mod tests {
     use super::*;
     #[cfg(not(miri))]
     use std::path::PathBuf;
+    #[cfg(not(miri))]
     use std::sync::atomic::AtomicU64;
 
     #[test]
