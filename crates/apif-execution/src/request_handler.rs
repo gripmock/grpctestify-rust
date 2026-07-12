@@ -1,6 +1,7 @@
 use apif_ast::SectionContent;
 use serde_json::Value;
 
+#[derive(Default)]
 pub struct RequestHandler;
 
 impl RequestHandler {

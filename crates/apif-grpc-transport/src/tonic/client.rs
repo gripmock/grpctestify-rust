@@ -365,7 +365,7 @@ fn fake_value(field_name: &str, kind: &prost_reflect::Kind) -> Value {
         Kind::Int64 | Kind::Sint64 | Kind::Sfixed64 => serde_json::json!((n * 100) as i64),
         Kind::Uint32 | Kind::Fixed32 => serde_json::json!(n),
         Kind::Uint64 | Kind::Fixed64 => serde_json::json!((n * 100) as u64),
-        Kind::Bool => serde_json::json!(n % 2 == 0),
+        Kind::Bool => serde_json::json!(n.is_multiple_of(2)),
         Kind::String => Value::String(fake_string(field_name)),
         Kind::Bytes => Value::String(format!("{} bytes", n)),
         Kind::Enum(ed) => Value::String(

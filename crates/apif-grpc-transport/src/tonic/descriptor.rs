@@ -1,3 +1,4 @@
+#![allow(clippy::collapsible_if)]
 use super::channel::create_channel;
 use crate::config::GrpcClientConfig;
 use anyhow::{Context, Result, anyhow};
@@ -113,10 +114,9 @@ async fn load_via_reflection(config: &GrpcClientConfig) -> Result<DescriptorPool
             .server_reflection_info(Request::new(futures::stream::iter(vec![req])))
             .await?
             .into_inner();
-        if let Some(Ok(msg)) = stream.next().await {
-            if let Some(tonic_reflection::pb::v1::server_reflection_response::MessageResponse::ListServicesResponse(resp)) = msg.message_response {
+        if let Some(Ok(msg)) = stream.next().await
+            && let Some(tonic_reflection::pb::v1::server_reflection_response::MessageResponse::ListServicesResponse(resp)) = msg.message_response {
                 services = resp.service;
-            }
         }
         for s in services {
             if s.name != "grpc.reflection.v1alpha.ServerReflection"
@@ -151,8 +151,8 @@ async fn load_via_reflection(config: &GrpcClientConfig) -> Result<DescriptorPool
             Ok(s) => s.into_inner(),
             Err(_) => continue,
         };
-        if let Some(Ok(msg)) = stream.next().await {
-            if let Some(tonic_reflection::pb::v1::server_reflection_response::MessageResponse::FileDescriptorResponse(resp)) = msg.message_response {
+        if let Some(Ok(msg)) = stream.next().await
+            && let Some(tonic_reflection::pb::v1::server_reflection_response::MessageResponse::FileDescriptorResponse(resp)) = msg.message_response {
                 for b in resp.file_descriptor_proto {
                     if let Ok(fd) = FileDescriptorProto::decode(b.as_slice()) {
                         if let Some(name) = &fd.name {
@@ -163,7 +163,6 @@ async fn load_via_reflection(config: &GrpcClientConfig) -> Result<DescriptorPool
                             }
                         }
                     }
-                }
             }
         }
     }

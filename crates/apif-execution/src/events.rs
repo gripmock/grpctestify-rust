@@ -267,13 +267,13 @@ impl Workflow {
             address: String::new(),
         });
 
-        if let Some(s) = doc.first_section(apif_ast::SectionType::Endpoint) {
-            if let apif_ast::SectionContent::Single(e) = &s.content {
-                events.push(WorkflowEvent::LoadDescriptors {
-                    backend: "default".into(),
-                    service: e.clone(),
-                });
-            }
+        if let Some(s) = doc.first_section(apif_ast::SectionType::Endpoint)
+            && let apif_ast::SectionContent::Single(e) = &s.content
+        {
+            events.push(WorkflowEvent::LoadDescriptors {
+                backend: "default".into(),
+                service: e.clone(),
+            });
         }
         events.push(WorkflowEvent::DescriptorsLoaded {
             backend: "default".into(),

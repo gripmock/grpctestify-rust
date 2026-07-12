@@ -37,10 +37,10 @@ pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
         cache_key.address = format!("{}/conn-{}", cache_key.address, config.connection_id);
     }
 
-    if let Ok(cache) = CHANNEL_CACHE.read() {
-        if let Some(channel) = cache.get(&cache_key) {
-            return Ok(channel.clone());
-        }
+    if let Ok(cache) = CHANNEL_CACHE.read()
+        && let Some(channel) = cache.get(&cache_key)
+    {
+        return Ok(channel.clone());
     }
 
     PROXY_WARNED.get_or_init(|| ProxyEnv::from_env().warn_if_set());

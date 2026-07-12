@@ -1,3 +1,4 @@
+#![allow(clippy::question_mark)]
 use prost::Message;
 use prost_types::Any;
 use serde_json::{Map, Value};
@@ -84,17 +85,16 @@ impl ErrorHandler {
         }
         let mut reasons = Vec::new();
         if !Self::code_matches_status(status, expected) {
-            reasons.push(format!("code mismatch"));
+            reasons.push("code mismatch".to_string());
         }
         if !Self::message_matches_status(status, expected) {
-            reasons.push(format!("message mismatch"));
+            reasons.push("message mismatch".to_string());
         }
         if reasons.is_empty()
             && let Some(actual) = Self::decode_status_details(status.details())
+            && let Some(r) = Self::details_mismatch_reason(expected, actual)
         {
-            if let Some(r) = Self::details_mismatch_reason(expected, actual) {
-                reasons.push(r);
-            }
+            reasons.push(r);
         }
         if reasons.is_empty() {
             None
@@ -129,8 +129,7 @@ impl ErrorHandler {
     fn message_matches_status(status: &apif_grpc_transport::GrpcError, expected: &Value) -> bool {
         expected
             .get("message")
-            .map(|m| m.as_str())
-            .flatten()
+            .and_then(|m| m.as_str())
             .map(|exp_msg| status.message().contains(exp_msg))
             .unwrap_or(true)
     }
@@ -164,13 +163,12 @@ impl ErrorHandler {
         })
     }
     pub fn error_matches_expected(error_text: &str, expected: &Value) -> bool {
-        if let Value::Object(obj) = expected {
-            if let Some(code_val) = obj.get("code").and_then(|c| c.as_i64()) {
-                if let Some(msg_val) = obj.get("message").and_then(|m| m.as_str()) {
-                    return error_text.contains(&format!("code={}", code_val))
-                        && error_text.contains(msg_val);
-                }
-            }
+        if let Value::Object(obj) = expected
+            && let Some(code_val) = obj.get("code").and_then(|c| c.as_i64())
+            && let Some(msg_val) = obj.get("message").and_then(|m| m.as_str())
+        {
+            return error_text.contains(&format!("code={}", code_val))
+                && error_text.contains(msg_val);
         }
         false
     }

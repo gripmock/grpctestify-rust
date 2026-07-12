@@ -59,11 +59,12 @@ pub async fn call_unary(
     };
 
     // Build reqwest client
+    let user_agent = format!("grpctestify/{}", env!("CARGO_PKG_VERSION"));
     let mut req_builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(
             config.timeout_seconds.max(5),
         ))
-        .user_agent(&format!("grpctestify/{}", env!("CARGO_PKG_VERSION")));
+        .user_agent(&user_agent);
 
     if let Some(ref tls) = config.tls_config
         && tls.insecure_skip_verify
