@@ -76,17 +76,7 @@ impl GrpcClient for TonicGrpcClient {
             .ok_or_else(|| GrpcError::new(3, "Invalid path"))?
             .clone();
 
-        let input_clone = input_desc.clone();
-        let request_stream = requests.filter_map(move |json| {
-            let desc = input_clone.clone();
-            async move {
-                let mut v = json;
-                transform_input_json_for_well_known(&mut v, &desc);
-                let s = serde_json::to_string(&v).ok()?;
-                DynamicMessage::deserialize(desc, &mut serde_json::Deserializer::from_str(&s)).ok()
-            }
-        });
-        let mut request_stream = Box::pin(request_stream);
+        let mut requests = requests; // shadow for mutability
         let codec = DynamicCodec::new(m.input(), m.output());
         let mut client = self.client.clone();
         let _ = client.ready().await;
@@ -94,73 +84,111 @@ impl GrpcClient for TonicGrpcClient {
         let is_cs = m.is_client_streaming();
         let is_ss = m.is_server_streaming();
 
-        let stream: Pin<Box<dyn Stream<Item = Result<StreamItem, GrpcError>> + Send>>;
+        let result: Result<
+            (
+                HashMap<String, String>,
+                Pin<Box<dyn Stream<Item = Result<StreamItem, GrpcError>> + Send>>,
+            ),
+            GrpcError,
+        >;
 
-        let initial_headers: HashMap<String, String>;
-
-        if is_cs && is_ss {
-            let mut req = Request::new(request_stream);
+        if is_cs {
+            // Client-streaming or bidi: wrap all values via filter_map
+            let input_clone = input_desc.clone();
+            let req_stream = Box::pin(requests.filter_map(move |json| {
+                let desc = input_clone.clone();
+                async move {
+                    let mut v = json;
+                    transform_input_json_for_well_known(&mut v, &desc);
+                    serde_json::to_string(&v).ok().and_then(|s| {
+                        DynamicMessage::deserialize(
+                            desc,
+                            &mut serde_json::Deserializer::from_str(&s),
+                        )
+                        .ok()
+                    })
+                }
+            }));
+            let mut req = Request::new(req_stream);
             insert_metadata(req.metadata_mut(), self.config.metadata.as_ref());
-            let response = client
-                .streaming(req, path, codec)
-                .await
-                .map_err(|s| tonic_status_to_grpc_error(&s))?;
-            initial_headers = metadata_map_to_hashmap(response.metadata());
-            let inner = response.into_inner();
-            stream = Box::pin(inner.map(|item| {
-                item.map(|msg| StreamItem::Message(dynamic_message_to_json(&msg)))
+            result = if is_ss {
+                client
+                    .streaming(req, path, codec)
+                    .await
+                    .map(|r| {
+                        let h = metadata_map_to_hashmap(r.metadata());
+                        let s: Pin<Box<dyn Stream<Item = Result<StreamItem, GrpcError>> + Send>> =
+                            Box::pin(r.into_inner().map(|item| {
+                                item.map(|msg| StreamItem::Message(dynamic_message_to_json(&msg)))
+                                    .map_err(|s| tonic_status_to_grpc_error(&s))
+                            }));
+                        (h, s)
+                    })
                     .map_err(|s| tonic_status_to_grpc_error(&s))
-            }));
-        } else if is_ss {
-            let msg = request_stream
-                .next()
-                .await
-                .ok_or_else(|| GrpcError::new(3, "Missing request message".to_string()))?;
-            let mut req = Request::new(msg);
-            insert_metadata(req.metadata_mut(), self.config.metadata.as_ref());
-            let response = client
-                .server_streaming(req, path, codec)
-                .await
-                .map_err(|s| tonic_status_to_grpc_error(&s))?;
-            initial_headers = metadata_map_to_hashmap(response.metadata());
-            let inner = response.into_inner();
-            stream = Box::pin(inner.map(|item| {
-                item.map(|msg| StreamItem::Message(dynamic_message_to_json(&msg)))
+            } else {
+                client
+                    .client_streaming(req, path, codec)
+                    .await
+                    .map(|r| {
+                        let h = metadata_map_to_hashmap(r.metadata());
+                        let val = dynamic_message_to_json(&r.into_inner());
+                        let s: Pin<Box<dyn Stream<Item = Result<StreamItem, GrpcError>> + Send>> =
+                            Box::pin(futures::stream::once(async move {
+                                Ok(StreamItem::Message(val))
+                            }));
+                        (h, s)
+                    })
                     .map_err(|s| tonic_status_to_grpc_error(&s))
-            }));
-        } else if is_cs {
-            let mut req = Request::new(request_stream);
-            insert_metadata(req.metadata_mut(), self.config.metadata.as_ref());
-            let response = client
-                .client_streaming(req, path, codec)
-                .await
-                .map_err(|s| tonic_status_to_grpc_error(&s))?;
-            initial_headers = metadata_map_to_hashmap(response.metadata());
-            let msg = response.into_inner();
-            let val = dynamic_message_to_json(&msg);
-            stream = Box::pin(futures::stream::once(async move {
-                Ok(StreamItem::Message(val))
-            }));
+            };
         } else {
-            let msg = request_stream
+            // Unary or server-streaming: get first value directly (bypass filter_map)
+            let json_val = requests
                 .next()
                 .await
                 .ok_or_else(|| GrpcError::new(3, "Missing request message".to_string()))?;
+            let mut v = json_val;
+            transform_input_json_for_well_known(&mut v, &input_desc);
+            let json_str = serde_json::to_string(&v)
+                .map_err(|e| GrpcError::new(3, format!("JSON error: {}", e)))?;
+            let msg = DynamicMessage::deserialize(
+                input_desc.clone(),
+                &mut serde_json::Deserializer::from_str(&json_str),
+            )
+            .map_err(|e| GrpcError::new(3, format!("Deser error: {}", e)))?;
             let mut req = Request::new(msg);
             insert_metadata(req.metadata_mut(), self.config.metadata.as_ref());
-            let response = client
-                .unary(req, path, codec)
-                .await
-                .map_err(|s| tonic_status_to_grpc_error(&s))?;
-            initial_headers = metadata_map_to_hashmap(response.metadata());
-            let msg = response.into_inner();
-            let val = dynamic_message_to_json(&msg);
-            stream = Box::pin(futures::stream::once(async move {
-                Ok(StreamItem::Message(val))
-            }));
+            result = if is_ss {
+                client
+                    .server_streaming(req, path, codec)
+                    .await
+                    .map(|r| {
+                        let h = metadata_map_to_hashmap(r.metadata());
+                        let s: Pin<Box<dyn Stream<Item = Result<StreamItem, GrpcError>> + Send>> =
+                            Box::pin(r.into_inner().map(|item| {
+                                item.map(|msg| StreamItem::Message(dynamic_message_to_json(&msg)))
+                                    .map_err(|s| tonic_status_to_grpc_error(&s))
+                            }));
+                        (h, s)
+                    })
+                    .map_err(|s| tonic_status_to_grpc_error(&s))
+            } else {
+                client
+                    .unary(req, path, codec)
+                    .await
+                    .map(|r| {
+                        let h = metadata_map_to_hashmap(r.metadata());
+                        let val = dynamic_message_to_json(&r.into_inner());
+                        let s: Pin<Box<dyn Stream<Item = Result<StreamItem, GrpcError>> + Send>> =
+                            Box::pin(futures::stream::once(async move {
+                                Ok(StreamItem::Message(val))
+                            }));
+                        (h, s)
+                    })
+                    .map_err(|s| tonic_status_to_grpc_error(&s))
+            };
         }
 
-        Ok((initial_headers, stream))
+        result
     }
 
     fn list_services(&self) -> Vec<String> {

@@ -2,9 +2,17 @@
 use super::channel::create_channel;
 use crate::config::GrpcClientConfig;
 use anyhow::{Context, Result, anyhow};
+
+/// Create a fresh pool with well-known types (google.protobuf.*).
+fn new_pool_with_wkt() -> DescriptorPool {
+    prost_types::FileDescriptorSet::default()
+        .descriptor()
+        .parent_pool()
+        .clone()
+}
 use futures::StreamExt;
 use prost::Message;
-use prost_reflect::DescriptorPool;
+use prost_reflect::{DescriptorPool, ReflectMessage};
 use prost_types::FileDescriptorProto;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, RwLock};
@@ -82,7 +90,7 @@ fn load_from_descriptor_file(path: &str) -> Result<DescriptorPool> {
     if set.file.is_empty() {
         return Err(anyhow!("Descriptor file contains no descriptors: {}", path));
     }
-    let mut pool = DescriptorPool::new();
+    let mut pool = new_pool_with_wkt();
     pool.add_file_descriptor_set(set)
         .map_err(|_| anyhow!("Failed to create pool from descriptor file: {}", path))?;
     Ok(pool)
@@ -91,7 +99,7 @@ fn load_from_descriptor_file(path: &str) -> Result<DescriptorPool> {
 fn load_from_proto_files(files: &[String], import_paths: &[String]) -> Result<DescriptorPool> {
     let fds = protox::compile(files, import_paths)
         .map_err(|e| anyhow!("Failed to compile proto files: {}", e))?;
-    let mut pool = DescriptorPool::new();
+    let mut pool = new_pool_with_wkt();
     pool.add_file_descriptor_set(fds)
         .map_err(|e| anyhow!("Failed to build pool from proto files: {}", e))?;
     Ok(pool)
@@ -183,7 +191,7 @@ async fn load_via_reflection(config: &GrpcClientConfig) -> Result<DescriptorPool
         return Err(anyhow!("No descriptors loaded via reflection"));
     }
     match std::panic::catch_unwind(|| {
-        let mut pool = DescriptorPool::new();
+        let mut pool = new_pool_with_wkt();
         pool.add_file_descriptor_set(set)?;
         Ok::<DescriptorPool, prost_reflect::DescriptorError>(pool)
     }) {
@@ -191,5 +199,50 @@ async fn load_via_reflection(config: &GrpcClientConfig) -> Result<DescriptorPool
         _ => Err(anyhow!(
             "Failed to build descriptor pool from reflected descriptors"
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pool_includes_well_known_types() {
+        let pool = new_pool_with_wkt();
+
+        // google.protobuf.StringValue should be available
+        assert!(
+            pool.get_message_by_name("google.protobuf.StringValue")
+                .is_some(),
+            "StringValue should be in pool"
+        );
+        assert!(
+            pool.get_message_by_name("google.protobuf.Timestamp")
+                .is_some(),
+            "Timestamp should be in pool"
+        );
+        assert!(
+            pool.get_message_by_name("google.protobuf.Duration")
+                .is_some(),
+            "Duration should be in pool"
+        );
+        assert!(
+            pool.get_message_by_name("google.protobuf.Any").is_some(),
+            "Any should be in pool"
+        );
+
+        // WKT can be deserialized from JSON with @type reference
+        let any_desc = pool.get_message_by_name("google.protobuf.Any").unwrap();
+        let json =
+            r#"{"@type": "type.googleapis.com/google.protobuf.StringValue", "value": "test"}"#;
+        let msg = prost_reflect::DynamicMessage::deserialize(
+            any_desc.clone(),
+            &mut serde_json::Deserializer::from_str(json),
+        );
+        assert!(
+            msg.is_ok(),
+            "Any with @type should deserialize: {:?}",
+            msg.err()
+        );
     }
 }
