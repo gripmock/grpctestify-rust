@@ -1,18 +1,25 @@
 [package]
 name = "apif-execution"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
 rust-version.workspace = true
-description = "Protocol-agnostic test execution engine for .apif/.gctf files"
+description = "Test execution engine"
 
 [dependencies]
 apif-ast = { path = "../apif-ast", version = "0.1.0" }
 apif-assert = { path = "../apif-assert", version = "0.1.0" }
+apif-cfg-runtime = { path = "../apif-cfg-runtime", version = "0.1.0" }
+apif-grpc-transport = { path = "../apif-grpc-transport", version = "0.2.0", features = ["tonic-transport"] }
+apif-optimizer = { path = "../apif-optimizer", version = "0.1.0" }
+apif-parser = { path = "../apif-parser", version = "0.1.0" }
+apif-plugins = { path = "../apif-plugins", version = "0.1.0" }
+apif-semantics = { path = "../apif-semantics", version = "0.1.0" }
 apif-state = { path = "../apif-state", version = "0.1.0" }
+apif-utils = { path = "../apif-utils", version = "0.1.0" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -20,3 +27,8 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 futures = "0.3"
 async-trait = "0.1"
+tracing = { workspace = true }
+prost = { workspace = true }
+prost-reflect = { workspace = true }
+prost-types = { workspace = true }
+tonic = { workspace = true, features = ["transport"] }

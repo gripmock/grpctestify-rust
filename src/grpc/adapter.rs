@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::client::{GrpcClient, GrpcClientConfig, StreamItem};
-use super::tls::{CompressionMode, TlsConfig, WireProtocol};
+use crate::grpc::{TlsConfig, WireProtocol};
 
 /// Factory that creates a native gRPC client.
 pub struct GrpcClientFactory;
@@ -26,10 +26,9 @@ impl CallClientFactory for GrpcClientFactory {
             proto_config: None,
             metadata: config.metadata.clone(),
             target_service: None,
-            compression: CompressionMode::from_env(),
+            compression: crate::config::compression_from_env(),
             connection_id: 0,
             protocol: WireProtocol::Grpc,
-            user_agent: None,
         };
 
         let client = GrpcClient::new(grpc_config).await?;

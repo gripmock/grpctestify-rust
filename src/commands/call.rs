@@ -56,7 +56,10 @@ async fn handle_call_document_inline(doc: &parser::GctfDocument, args: &CallArgs
         connect_timeout: args.connect_timeout,
         max_time: args.max_time,
         insecure: args.insecure,
-        protocol: args.protocol.parse::<crate::grpc::WireProtocol>().unwrap_or(crate::grpc::WireProtocol::Grpc),
+        protocol: args
+            .protocol
+            .parse::<crate::grpc::WireProtocol>()
+            .unwrap_or(crate::grpc::WireProtocol::Grpc),
     };
 
     handle_call_document(doc, Path::new("<inline>"), opts).await
@@ -188,7 +191,10 @@ pub async fn handle_call(args: &CallArgs) -> Result<()> {
             connect_timeout: args.connect_timeout,
             max_time: args.max_time,
             insecure: args.insecure,
-            protocol: args.protocol.parse::<crate::grpc::WireProtocol>().unwrap_or(crate::grpc::WireProtocol::Grpc),
+            protocol: args
+                .protocol
+                .parse::<crate::grpc::WireProtocol>()
+                .unwrap_or(crate::grpc::WireProtocol::Grpc),
         };
 
         handle_call_document(d, &file_path, opts).await?;
@@ -338,7 +344,6 @@ async fn handle_call_document(
         compression: Default::default(),
         connection_id: 0,
         protocol: opts.protocol,
-        user_agent: None,
     };
 
     let start = Instant::now();

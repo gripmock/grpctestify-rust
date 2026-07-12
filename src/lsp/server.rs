@@ -8,7 +8,8 @@ use tower_lsp::jsonrpc::Result as LspResult;
 use tower_lsp::{Client, LanguageServer, LspService, Server, lsp_types::*};
 
 use crate::config;
-use crate::grpc::client::{GrpcClient, GrpcClientConfig, ProtoConfig, WireProtocol};
+use crate::grpc::client::{GrpcClient, GrpcClientConfig};
+use crate::grpc::{ProtoConfig, WireProtocol};
 use crate::lsp::handlers::{self, get_var_hover, get_variable_completions};
 use crate::lsp::variable_definition;
 use crate::parser::ast::SectionType;
@@ -135,7 +136,6 @@ impl GrpctestifyLsp {
             compression: Default::default(),
             connection_id: 0,
             protocol,
-            user_agent: None,
         };
 
         let created = tokio::time::timeout(SCHEMA_TIMEOUT, GrpcClient::new(config)).await;
@@ -171,7 +171,10 @@ impl GrpctestifyLsp {
         }
 
         let proto = WireProtocol::default();
-        let Some(client) = self.create_schema_client(address, proto_config, None, proto).await else {
+        let Some(client) = self
+            .create_schema_client(address, proto_config, None, proto)
+            .await
+        else {
             return Vec::new();
         };
 
@@ -235,7 +238,12 @@ impl GrpctestifyLsp {
         let proto = Self::protocol_from_document(doc);
 
         let Some(client) = self
-            .create_schema_client(&address, proto_config, Some(service_name.to_string()), proto)
+            .create_schema_client(
+                &address,
+                proto_config,
+                Some(service_name.to_string()),
+                proto,
+            )
             .await
         else {
             return Vec::new();
@@ -425,7 +433,12 @@ impl GrpctestifyLsp {
         let proto = Self::protocol_from_document(doc);
 
         let Some(client) = self
-            .create_schema_client(&address, proto_config, Some(service_name.to_string()), proto)
+            .create_schema_client(
+                &address,
+                proto_config,
+                Some(service_name.to_string()),
+                proto,
+            )
             .await
         else {
             return Vec::new();

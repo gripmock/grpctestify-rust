@@ -67,7 +67,7 @@ pub fn build_grpcurl_command(
     }
 
     let options = doc.get_options().unwrap_or_default();
-    if runner_helpers::parse_compression_option(&options) == CompressionMode::Gzip {
+    if runner_helpers::parse_compression_option(&options) == Some(CompressionMode::Gzip) {
         parts.push("-gzip".to_string());
     }
 

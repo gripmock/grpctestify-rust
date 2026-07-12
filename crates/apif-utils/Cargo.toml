@@ -11,9 +11,9 @@ description = "Utility functions for .apif/.gctf test file processing"
 
 [dependencies]
 anyhow = { workspace = true }
+prost-reflect = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 walkdir = { workspace = true }
 globset = { workspace = true }
 rand = "0.10"
-
-[dev-dependencies]
-serde_json = { workspace = true }

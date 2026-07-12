@@ -1,5 +1,5 @@
-use super::detect::SourceFormat;
-use super::filter::FilterCondition;
+use crate::detect::SourceFormat;
+use crate::filter::FilterCondition;
 use serde::Deserialize;
 use std::str::FromStr;
 

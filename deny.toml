@@ -9,7 +9,10 @@ targets = [
 ]
 
 [advisories]
-ignore = []
+ignore = [
+  # transitive dep via notify — unmaintained but no alternative
+  "RUSTSEC-2024-0384",
+]
 unmaintained = "all"
 yanked = "deny"
 

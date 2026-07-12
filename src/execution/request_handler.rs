@@ -238,13 +238,17 @@ impl RequestHandler {
             tls_config,
             proto_config,
             metadata: document.get_request_headers(),
-            compression: crate::grpc::CompressionMode::from_env(),
+            compression: crate::config::compression_from_env(),
             connection_id: 0,
             protocol: document
                 .get_options()
-                .and_then(|o| o.get("protocol").map(|s| s.parse::<crate::grpc::WireProtocol>().unwrap_or(crate::grpc::WireProtocol::Grpc)))
+                .and_then(|o| {
+                    o.get("protocol").map(|s| {
+                        s.parse::<crate::grpc::WireProtocol>()
+                            .unwrap_or(crate::grpc::WireProtocol::Grpc)
+                    })
+                })
                 .unwrap_or(crate::grpc::WireProtocol::Grpc),
-            user_agent: None,
             target_service: document.parse_endpoint().map(|(p, s, m)| {
                 if p.is_empty() {
                     format!("{}/{}", s, m)

@@ -38,7 +38,7 @@ jobs:
             apif-cfg-runtime apif-query apif-ast apif-diagnostics
             apif-utils apif-assert apif-state apif-parser
             apif-report apif-plugins apif-execution apif-semantics
-            apif-optimizer
+            apif-optimizer apif-grpc-transport
           )
           for CRATE in "${CRATES[@]}"; do
             echo "::group::Publishing $CRATE"

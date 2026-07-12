@@ -1,5 +1,6 @@
 // Error handling for test execution
 
+use apif_grpc_transport::GrpcError;
 use prost::Message;
 use prost_types::Any;
 use serde_json::{Map, Value, json};
@@ -49,14 +50,14 @@ impl ErrorHandler {
             && expected.get("details").is_none()
     }
 
-    /// Check if tonic::Status matches expected error JSON (supports details)
-    pub fn status_matches_expected(status: &tonic::Status, expected: &Value) -> bool {
+    /// Check if GrpcError matches expected error JSON (supports details)
+    pub fn status_matches_expected(status: &GrpcError, expected: &Value) -> bool {
         Self::status_matches_expected_with_options(status, expected, false)
     }
 
-    /// Check if tonic::Status matches expected error JSON, optionally as partial subset.
+    /// Check if GrpcError matches expected error JSON, optionally as partial subset.
     pub fn status_matches_expected_with_options(
-        status: &tonic::Status,
+        status: &GrpcError,
         expected: &Value,
         partial: bool,
     ) -> bool {
@@ -87,16 +88,16 @@ impl ErrorHandler {
         Self::compare_details(expected, actual_details).is_none()
     }
 
-    /// Convert tonic::Status details to JSON array
-    pub fn status_details_json(status: &tonic::Status) -> Value {
+    /// Convert GrpcError details to JSON array
+    pub fn status_details_json(status: &GrpcError) -> Value {
         match Self::decode_status_details(status.details()) {
             Some(details) => Value::Array(details),
             None => Value::Null,
         }
     }
 
-    /// Convert tonic::Status to JSON object for diff output
-    pub fn status_to_json(status: &tonic::Status) -> Value {
+    /// Convert GrpcError to JSON object for diff output
+    pub fn status_to_json(status: &GrpcError) -> Value {
         let mut obj = Map::with_capacity(3);
         obj.insert("code".into(), Value::from(status.code() as i64));
         obj.insert("message".into(), Value::from(status.message()));
@@ -110,14 +111,14 @@ impl ErrorHandler {
         Value::Object(obj)
     }
 
-    /// Returns a human-readable mismatch reason for tonic::Status comparison
-    pub fn status_mismatch_reason(status: &tonic::Status, expected: &Value) -> Option<String> {
+    /// Returns a human-readable mismatch reason for GrpcError comparison
+    pub fn status_mismatch_reason(status: &GrpcError, expected: &Value) -> Option<String> {
         Self::status_mismatch_reason_with_options(status, expected, false)
     }
 
-    /// Returns mismatch reason for tonic::Status comparison with optional partial mode.
+    /// Returns mismatch reason for GrpcError comparison with optional partial mode.
     pub fn status_mismatch_reason_with_options(
-        status: &tonic::Status,
+        status: &GrpcError,
         expected: &Value,
         partial: bool,
     ) -> Option<String> {
@@ -177,12 +178,12 @@ impl ErrorHandler {
         Self::subset_mismatch_reason(actual, expected, "$").is_none()
     }
 
-    fn status_has_no_unexpected_top_level_fields(status: &tonic::Status, expected: &Value) -> bool {
+    fn status_has_no_unexpected_top_level_fields(status: &GrpcError, expected: &Value) -> bool {
         Self::status_unexpected_top_level_field_reason(status, expected).is_none()
     }
 
     fn status_unexpected_top_level_field_reason(
-        status: &tonic::Status,
+        status: &GrpcError,
         expected: &Value,
     ) -> Option<String> {
         let Value::Object(expected_obj) = expected else {
@@ -278,7 +279,7 @@ impl ErrorHandler {
         true
     }
 
-    fn message_matches_status(status: &tonic::Status, expected: &Value) -> bool {
+    fn message_matches_status(status: &GrpcError, expected: &Value) -> bool {
         if let Some(expected_msg) = expected.get("message").and_then(|v| v.as_str()) {
             return status.message() == expected_msg;
         }
@@ -308,7 +309,7 @@ impl ErrorHandler {
         true
     }
 
-    fn code_matches_status(status: &tonic::Status, expected: &Value) -> bool {
+    fn code_matches_status(status: &GrpcError, expected: &Value) -> bool {
         if let Some(code) = expected.get("code").and_then(|v| v.as_i64()) {
             return status.code() as i64 == code;
         }
@@ -501,9 +502,7 @@ mod tests {
     use super::*;
     use prost::Message;
     use serde_json::json;
-    use tonic::Code;
-
-    fn status_with_details() -> tonic::Status {
+    fn status_with_details() -> GrpcError {
         let error_info = GoogleRpcErrorInfo {
             reason: "API_DISABLED".to_string(),
             domain: "your.service.com".to_string(),
@@ -521,7 +520,7 @@ mod tests {
         };
 
         let status_proto = GoogleRpcStatus {
-            code: Code::InvalidArgument as i32,
+            code: 3, // InvalidArgument
             message: "Invalid argument provided".to_string(),
             details: vec![
                 Any {
@@ -535,15 +534,11 @@ mod tests {
             ],
         };
 
-        tonic::Status::with_details(
-            Code::InvalidArgument,
-            "Invalid argument provided",
-            status_proto.encode_to_vec().into(),
-        )
+        GrpcError::with_details(3, "Invalid argument provided", status_proto.encode_to_vec())
     }
 
-    fn status_without_details() -> tonic::Status {
-        tonic::Status::new(Code::InvalidArgument, "Invalid argument provided")
+    fn status_without_details() -> GrpcError {
+        GrpcError::new(3, "Invalid argument provided")
     }
 
     #[test]

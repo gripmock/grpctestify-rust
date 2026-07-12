@@ -27,7 +27,6 @@ async fn test_local_proto_files_descriptors_loaded() {
         compression: CompressionMode::None,
         connection_id: 0,
         protocol: Default::default(),
-        user_agent: None,
     };
 
     // Proto files should NOT be rejected — protox compiles them successfully.

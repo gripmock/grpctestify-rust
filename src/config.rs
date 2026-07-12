@@ -94,6 +94,18 @@ pub struct CoverageConfig {
 pub const ENV_GRPCTESTIFY_ADDRESS: &str = "GRPCTESTIFY_ADDRESS";
 pub const ENV_GRPCTESTIFY_COMPRESSION: &str = "GRPCTESTIFY_COMPRESSION";
 
+pub fn compression_from_env() -> apif_grpc_transport::CompressionMode {
+    match std::env::var("GRPCTESTIFY_COMPRESSION")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "gzip" => apif_grpc_transport::CompressionMode::Gzip,
+        _ => apif_grpc_transport::CompressionMode::None,
+    }
+}
+
 pub const ENV_GRPCTESTIFY_TLS_CERT_FILE: &str = "GRPCTESTIFY_TLS_CERT_FILE";
 pub const ENV_GRPCTESTIFY_TLS_KEY_FILE: &str = "GRPCTESTIFY_TLS_KEY_FILE";
 pub const ENV_GRPCTESTIFY_TLS_CA_FILE: &str = "GRPCTESTIFY_TLS_CA_FILE";

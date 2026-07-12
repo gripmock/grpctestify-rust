@@ -158,8 +158,6 @@ async fn test_get_collection_404() {
     assert_eq!(status, 404);
 }
 
-
-
 // ─── Save ───────────────────────────────────────────────────
 
 #[tokio::test]

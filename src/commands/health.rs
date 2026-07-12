@@ -28,8 +28,10 @@ pub async fn handle_health(args: &HealthArgs) -> Result<()> {
         target_service: Some("grpc.health.v1".to_string()),
         compression: crate::grpc::CompressionMode::None,
         connection_id: 0,
-        protocol: args.protocol.parse::<WireProtocol>().unwrap_or(crate::grpc::WireProtocol::Grpc),
-        user_agent: None,
+        protocol: args
+            .protocol
+            .parse::<WireProtocol>()
+            .unwrap_or(crate::grpc::WireProtocol::Grpc),
     };
 
     let mut client = GrpcClient::new(config).await?;

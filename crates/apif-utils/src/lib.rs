@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod coverage;
 pub mod file_utils;
 pub mod gctf_style;
 

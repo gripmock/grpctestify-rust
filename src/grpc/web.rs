@@ -4,7 +4,7 @@ use prost_reflect::{DynamicMessage, MessageDescriptor, SerializeOptions};
 use serde_json::Value;
 use std::pin::Pin;
 
-use super::tls::{GrpcClientConfig, WireProtocol};
+use crate::grpc::{GrpcClientConfig, WireProtocol};
 
 /// Execute a unary gRPC request over HTTP (gRPC-Web or ConnectRPC).
 /// Returns a stream of response messages.
@@ -25,7 +25,6 @@ pub async fn call_unary(
         compression: Default::default(),
         connection_id: 0,
         protocol: WireProtocol::Grpc,
-        user_agent: None,
     };
     let client = crate::grpc::GrpcClient::new(grpc_config)
         .await
@@ -60,15 +59,11 @@ pub async fn call_unary(
     };
 
     // Build reqwest client
-    let ua = config.user_agent.clone().unwrap_or(format!(
-        "grpctestify/{}",
-        env!("CARGO_PKG_VERSION")
-    ));
     let mut req_builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(
             config.timeout_seconds.max(5),
         ))
-        .user_agent(&ua);
+        .user_agent(&format!("grpctestify/{}", env!("CARGO_PKG_VERSION")));
 
     if let Some(ref tls) = config.tls_config
         && tls.insecure_skip_verify
@@ -105,10 +100,10 @@ pub async fn call_unary(
         .header("Content-Type", content_type)
         .header("TE", "trailers");
 
-    // Add metadata (skip user-agent if explicitly configured in GrpcClientConfig)
+    // Add metadata (skip user-agent — set via reqwest builder)
     if let Some(ref metadata) = config.metadata {
         for (k, v) in metadata {
-            if config.user_agent.is_some() && k.eq_ignore_ascii_case("user-agent") {
+            if k.eq_ignore_ascii_case("user-agent") {
                 continue;
             }
             http_req = http_req.header(k.as_str(), v.as_str());

@@ -1,7 +1,7 @@
-use super::SourceReader;
+use crate::SourceReader;
+use crate::SourceRow;
 use anyhow::Result;
 use apif_source_error::SourceError;
-use apif_source_row::SourceRow;
 use std::io::{BufRead, BufReader, Read, Seek};
 
 pub struct NdjsonReader<R> {
