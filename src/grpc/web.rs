@@ -14,40 +14,8 @@ pub async fn call_unary(
     method_name: &str,
     request_value: Value,
 ) -> Result<Pin<Box<dyn futures::Stream<Item = Result<Value, String>> + Send>>> {
-    // Load descriptors via reflection (reuse existing tonic-based machinery)
-    let grpc_config = GrpcClientConfig {
-        address: config.address.clone(),
-        timeout_seconds: config.timeout_seconds,
-        tls_config: config.tls_config.clone(),
-        proto_config: config.proto_config.clone(),
-        metadata: None,
-        target_service: Some(service_name.to_string()),
-        compression: Default::default(),
-        connection_id: 0,
-        protocol: WireProtocol::Grpc,
-        version: env!("CARGO_PKG_VERSION").to_string(),
-    };
-    let client = crate::grpc::GrpcClient::new(grpc_config)
-        .await
-        .with_context(|| "Failed to load descriptors")?;
-    let pool = client.descriptor_pool().clone();
-
-    let svc = pool
-        .get_service_by_name(service_name)
-        .ok_or_else(|| anyhow!("Service '{}' not found", service_name))?;
-    let method = svc
-        .methods()
-        .find(|m| m.name() == method_name)
-        .ok_or_else(|| anyhow!("Method '{}' not found", method_name))?;
-
-    let input_desc = method.input();
-    let output_desc = method.output();
     let path = format!("/{}/{}", service_name, method_name);
 
-    // Serialize request
-    let request_bytes = serialize_message(&request_value, &input_desc)?;
-
-    // Build URL
     let scheme = if config.tls_config.is_some() {
         "https"
     } else {
@@ -78,32 +46,54 @@ pub async fn call_unary(
         .build()
         .with_context(|| "Failed to build HTTP client")?;
 
-    // Build request with protocol-specific framing
-    let content_type = match config.protocol {
-        WireProtocol::GrpcWeb => "application/grpc-web-proto",
-        WireProtocol::ConnectRpc => "application/connect+proto",
-        _ => anyhow::bail!("Unsupported protocol for HTTP client"),
-    };
+    // For ConnectRPC — use JSON format (no proto schema needed)
+    if config.protocol == WireProtocol::ConnectRpc {
+        return call_connect_json(&http_client, &url, config, request_value).await;
+    }
 
-    let body: Vec<u8> = match config.protocol {
-        WireProtocol::GrpcWeb => {
-            let len = request_bytes.len() as u32;
-            let mut framed = Vec::with_capacity(request_bytes.len() + 5);
-            framed.push(0x00);
-            framed.extend_from_slice(&len.to_be_bytes());
-            framed.extend_from_slice(&request_bytes);
-            framed
-        }
-        WireProtocol::ConnectRpc => request_bytes.clone(),
-        _ => unreachable!(),
+    // gRPC-Web — load descriptors and use binary protobuf
+    let grpc_config = GrpcClientConfig {
+        address: config.address.clone(),
+        timeout_seconds: config.timeout_seconds,
+        tls_config: config.tls_config.clone(),
+        proto_config: config.proto_config.clone(),
+        metadata: None,
+        target_service: Some(service_name.to_string()),
+        compression: Default::default(),
+        connection_id: 0,
+        protocol: WireProtocol::Grpc,
+        version: env!("CARGO_PKG_VERSION").to_string(),
     };
+    let client = crate::grpc::GrpcClient::new(grpc_config)
+        .await
+        .with_context(|| "Failed to load descriptors")?;
+    let pool = client.descriptor_pool().clone();
+
+    let svc = pool
+        .get_service_by_name(service_name)
+        .ok_or_else(|| anyhow!("Service '{}' not found", service_name))?;
+    let method = svc
+        .methods()
+        .find(|m| m.name() == method_name)
+        .ok_or_else(|| anyhow!("Method '{}' not found", method_name))?;
+
+    let input_desc = method.input();
+    let output_desc = method.output();
+
+    let request_bytes = serialize_message(&request_value, &input_desc)?;
+
+    let content_type = "application/grpc-web-proto";
+    let len = request_bytes.len() as u32;
+    let mut body = Vec::with_capacity(request_bytes.len() + 5);
+    body.push(0x00);
+    body.extend_from_slice(&len.to_be_bytes());
+    body.extend_from_slice(&request_bytes);
 
     let mut http_req = http_client
         .post(&url)
         .header("Content-Type", content_type)
         .header("TE", "trailers");
 
-    // Add metadata (skip user-agent — set via reqwest builder)
     if let Some(ref metadata) = config.metadata {
         for (k, v) in metadata {
             if k.eq_ignore_ascii_case("user-agent") {
@@ -129,16 +119,59 @@ pub async fn call_unary(
         return Err(anyhow!("HTTP {} from server", status));
     }
 
-    // Parse response messages
-    let messages = match config.protocol {
-        WireProtocol::GrpcWeb => parse_grpc_web_response(&response_bytes, &output_desc),
-        WireProtocol::ConnectRpc => parse_connect_response(&response_bytes, &output_desc),
-        _ => unreachable!(),
-    };
+    let messages = parse_grpc_web_response(&response_bytes, &output_desc);
 
     Ok(Box::pin(futures::stream::iter(
         messages.into_iter().map(Ok),
     )))
+}
+
+/// ConnectRPC with JSON format — no proto schema required.
+async fn call_connect_json(
+    http_client: &reqwest::Client,
+    url: &str,
+    config: &GrpcClientConfig,
+    request_value: Value,
+) -> Result<Pin<Box<dyn futures::Stream<Item = Result<Value, String>> + Send>>> {
+    let body =
+        serde_json::to_vec(&request_value).with_context(|| "Failed to serialize request body")?;
+
+    let mut http_req = http_client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json");
+
+    if let Some(ref metadata) = config.metadata {
+        for (k, v) in metadata {
+            if k.eq_ignore_ascii_case("user-agent") {
+                continue;
+            }
+            http_req = http_req.header(k.as_str(), v.as_str());
+        }
+    }
+
+    let response = http_req
+        .body(body)
+        .send()
+        .await
+        .with_context(|| format!("Request to {} failed", url))?;
+
+    let status = response.status();
+    let response_bytes = response
+        .bytes()
+        .await
+        .with_context(|| "Failed to read response")?;
+
+    if !status.is_success() && response_bytes.is_empty() {
+        return Err(anyhow!("HTTP {} from server", status));
+    }
+
+    let result: Value = serde_json::from_slice(&response_bytes).with_context(|| {
+        let text = String::from_utf8_lossy(&response_bytes);
+        format!("Failed to parse response as JSON: {}", text)
+    })?;
+
+    Ok(Box::pin(futures::stream::iter(vec![Ok(result)])))
 }
 
 fn serialize_message(value: &Value, desc: &MessageDescriptor) -> Result<Vec<u8>> {
@@ -181,16 +214,6 @@ fn parse_grpc_web_response(data: &[u8], output_desc: &MessageDescriptor) -> Vec<
         msgs.push(dynamic_message_to_json(&msg));
     }
     msgs
-}
-
-fn parse_connect_response(data: &[u8], output_desc: &MessageDescriptor) -> Vec<Value> {
-    if data.is_empty() {
-        return vec![];
-    }
-    match DynamicMessage::decode(output_desc.clone(), data) {
-        Ok(msg) => vec![dynamic_message_to_json(&msg)],
-        Err(_) => vec![],
-    }
 }
 
 fn dynamic_message_to_json(msg: &DynamicMessage) -> Value {

@@ -1191,63 +1191,90 @@ pub async fn execute_call(
         version: env!("CARGO_PKG_VERSION").to_string(),
     };
 
-    let mut client = match crate::grpc::GrpcClient::new(grpc_config).await {
-        Ok(c) => c,
-        Err(e) => {
-            return Ok(Json(CallResponse {
-                success: false,
-                messages: Vec::new(),
-                headers: std::collections::HashMap::new(),
-                trailers: std::collections::HashMap::new(),
-                error: Some(e.to_string()),
-            }));
-        }
-    };
-
-    // Send request and collect response
-    let stream = futures::stream::iter(messages);
-
-    let (resp_headers, mut response_stream) = match client
-        .call_stream(&full_service, &method_name, stream)
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            return Ok(Json(CallResponse {
-                success: false,
-                messages: Vec::new(),
-                headers: std::collections::HashMap::new(),
-                trailers: std::collections::HashMap::new(),
-                error: Some(e.to_string()),
-            }));
-        }
-    };
-
     let mut response_messages = Vec::new();
+    let mut resp_headers = std::collections::HashMap::new();
     let mut response_trailers = std::collections::HashMap::new();
     let mut response_error = None;
 
-    use futures::StreamExt;
-    while let Some(item) = response_stream.next().await {
-        match item {
-            Ok(crate::grpc::client::StreamItem::Message(msg)) => {
-                response_messages.push(msg);
+    if protocol == crate::grpc::WireProtocol::Grpc {
+        let mut client = match crate::grpc::GrpcClient::new(grpc_config).await {
+            Ok(c) => c,
+            Err(e) => {
+                return Ok(Json(CallResponse {
+                    success: false,
+                    messages: Vec::new(),
+                    headers: std::collections::HashMap::new(),
+                    trailers: std::collections::HashMap::new(),
+                    error: Some(e.to_string()),
+                }));
             }
-            Ok(crate::grpc::client::StreamItem::Trailers(trailers)) => {
-                response_trailers = trailers.clone();
-                if let Some(status) = trailers.get("grpc-status")
-                    && status != "0"
-                {
-                    let msg = trailers.get("grpc-message").cloned().unwrap_or_default();
-                    response_error = Some(format!("gRPC error: code={} message={}", status, msg));
+        };
+
+        let stream = futures::stream::iter(messages);
+        let (headers, mut response_stream) = match client
+            .call_stream(&full_service, &method_name, stream)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(Json(CallResponse {
+                    success: false,
+                    messages: Vec::new(),
+                    headers: std::collections::HashMap::new(),
+                    trailers: std::collections::HashMap::new(),
+                    error: Some(e.to_string()),
+                }));
+            }
+        };
+        resp_headers = headers;
+
+        use futures::StreamExt;
+        while let Some(item) = response_stream.next().await {
+            match item {
+                Ok(crate::grpc::client::StreamItem::Message(msg)) => {
+                    response_messages.push(msg);
+                }
+                Ok(crate::grpc::client::StreamItem::Trailers(trailers)) => {
+                    response_trailers = trailers.clone();
+                    if let Some(status) = trailers.get("grpc-status")
+                        && status != "0"
+                    {
+                        let msg = trailers.get("grpc-message").cloned().unwrap_or_default();
+                        response_error =
+                            Some(format!("gRPC error: code={} message={}", status, msg));
+                    }
+                }
+                Err(status) => {
+                    response_error = Some(format!(
+                        "gRPC error: code={} message={}",
+                        status.code(),
+                        status.message()
+                    ));
                 }
             }
-            Err(status) => {
-                response_error = Some(format!(
-                    "gRPC error: code={} message={}",
-                    status.code(),
-                    status.message()
-                ));
+        }
+    } else {
+        // gRPC-Web and ConnectRPC — use HTTP-based client
+        for msg_val in messages {
+            match crate::grpc::web::call_unary(&grpc_config, &full_service, &method_name, msg_val)
+                .await
+            {
+                Ok(mut stream) => {
+                    use futures::StreamExt;
+                    while let Some(item) = stream.next().await {
+                        match item {
+                            Ok(val) => response_messages.push(val),
+                            Err(e) => {
+                                response_error = Some(e);
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    response_error = Some(e.to_string());
+                    break;
+                }
             }
         }
     }
