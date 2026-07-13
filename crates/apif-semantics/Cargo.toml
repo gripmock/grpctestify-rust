@@ -12,5 +12,5 @@ description = "Semantic type checking for .gctf assertion expressions"
 [dependencies]
 apif-parser = { path = "../apif-parser", version = "0.1.0" }
 apif-plugins = { path = "../apif-plugins", version = "0.1.0" }
-apif-utils = { path = "../apif-utils", version = "0.1.0" }
+apif-utils = { path = "../apif-utils", version = "0.2.0" }
 serde = { workspace = true }

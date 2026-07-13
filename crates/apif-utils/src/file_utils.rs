@@ -7,13 +7,15 @@ use std::path::{Path, PathBuf};
 pub struct FileUtils;
 
 impl FileUtils {
-    /// Collect all .gctf files from a directory, optionally excluding patterns
+    /// Collect all .gctf files from a directory, optionally excluding patterns.
+    /// Uses `ignore` crate which respects `.gitignore` and `.ignore` files.
     pub fn collect_test_files(path: &Path, exclude_patterns: &[String]) -> Vec<PathBuf> {
         let mut files = Vec::new();
-        let walker = walkdir::WalkDir::new(path)
-            .follow_links(true)
-            .into_iter()
-            .filter_entry(|e| !is_skipped_dir(e));
+        let walker = ignore::WalkBuilder::new(path)
+            .git_global(true)
+            .git_ignore(true)
+            .git_exclude(true)
+            .build();
         for entry in walker.flatten() {
             let p = entry.path();
             if p.extension()
@@ -68,32 +70,6 @@ impl FileUtils {
         let base_dir = base_file_path.parent().unwrap_or(Path::new("."));
         base_dir.join(relative_path)
     }
-}
-
-fn is_skipped_dir(entry: &walkdir::DirEntry) -> bool {
-    if !entry.file_type().is_dir() {
-        return false;
-    }
-    let name = entry.file_name().to_string_lossy();
-    matches!(
-        name.as_ref(),
-        "node_modules"
-            | "target"
-            | ".git"
-            | ".next"
-            | ".cache"
-            | "dist"
-            | "build"
-            | "__pycache__"
-            | ".venv"
-            | "venv"
-            | ".svn"
-            | ".hg"
-            | "bazel-out"
-            | ".gradle"
-            | "vendor"
-            | ".bundle"
-    )
 }
 
 fn is_excluded(path: &Path, exclude_patterns: &[String]) -> bool {

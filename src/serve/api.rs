@@ -411,23 +411,25 @@ fn collect_empty_dirs(
     seen_dirs: &mut std::collections::HashSet<String>,
     result: &mut Vec<CollectionItem>,
 ) {
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let rel = path.strip_prefix(base).unwrap_or(&path);
-                let rel_str = rel.to_string_lossy().to_string();
-                if !seen_dirs.contains(&rel_str) {
-                    result.push(CollectionItem {
-                        path: rel_str.clone(),
-                        name: entry.file_name().to_string_lossy().to_string(),
-                        is_dir: true,
-                        tags: vec![],
-                    });
-                    seen_dirs.insert(rel_str);
-                }
-                collect_empty_dirs(&path, base, seen_dirs, result);
-            }
+    let walker = ignore::WalkBuilder::new(dir)
+        .git_global(true)
+        .git_ignore(true)
+        .git_exclude(true)
+        .build();
+    for entry in walker.flatten() {
+        let path = entry.path();
+        if !path.is_dir() || path == base {
+            continue;
+        }
+        let rel = path.strip_prefix(base).unwrap_or(path);
+        let rel_str = rel.to_string_lossy().to_string();
+        if seen_dirs.insert(rel_str.clone()) {
+            result.push(CollectionItem {
+                path: rel_str,
+                name: entry.file_name().to_string_lossy().to_string(),
+                is_dir: true,
+                tags: vec![],
+            });
         }
     }
 }

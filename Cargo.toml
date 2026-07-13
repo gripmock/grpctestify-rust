@@ -90,6 +90,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # File operations
 walkdir = "2.5"
 globset = "0.4"
+ignore = "0.4"
 
 # System info
 sysinfo = "0.39"
@@ -197,6 +198,7 @@ console = "0.16"
 # File operations
 walkdir = { workspace = true }
 globset = { workspace = true }
+ignore = { workspace = true }
 sysinfo = { workspace = true }
 memmap2 = { workspace = true }
 crc32fast = { workspace = true }
@@ -210,7 +212,7 @@ apif-assert = { path = "crates/apif-assert", version = "0.1.0" }
 apif-state = { path = "crates/apif-state", version = "0.1.0" }
 apif-plugins = { path = "crates/apif-plugins", version = "0.1.0" }
 apif-execution = { path = "crates/apif-execution", version = "0.2.0" }
-apif-utils = { path = "crates/apif-utils", version = "0.1.0" }
+apif-utils = { path = "crates/apif-utils", version = "0.2.0" }
 apif-report = { path = "crates/apif-report", version = "0.2.0" }
 apif-semantics = { path = "crates/apif-semantics", version = "0.1.0" }
 apif-optimizer = { path = "crates/apif-optimizer", version = "0.1.0" }

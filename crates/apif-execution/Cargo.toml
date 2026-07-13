@@ -21,7 +21,7 @@ apif-parser = { path = "../apif-parser", version = "0.1.0" }
 apif-plugins = { path = "../apif-plugins", version = "0.1.0" }
 apif-semantics = { path = "../apif-semantics", version = "0.1.0" }
 apif-state = { path = "../apif-state", version = "0.1.0" }
-apif-utils = { path = "../apif-utils", version = "0.1.0" }
+apif-utils = { path = "../apif-utils", version = "0.2.0" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
