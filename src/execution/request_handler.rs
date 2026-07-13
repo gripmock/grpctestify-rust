@@ -249,6 +249,7 @@ impl RequestHandler {
                     })
                 })
                 .unwrap_or(crate::grpc::WireProtocol::Grpc),
+            version: env!("CARGO_PKG_VERSION").to_string(),
             target_service: document.parse_endpoint().map(|(p, s, m)| {
                 if p.is_empty() {
                     format!("{}/{}", s, m)

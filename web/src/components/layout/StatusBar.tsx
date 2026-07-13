@@ -1,6 +1,6 @@
 import { useStore } from '../../lib/store';
 import { colors } from '../../lib/theme';
-import { FlaskConical, FolderGit2, Fingerprint } from 'lucide-react';
+import { FlaskConical, FolderGit2, Fingerprint, CircleHelp } from 'lucide-react';
 
 export function StatusBar() {
   const history = useStore(s => s.history);
@@ -59,6 +59,23 @@ export function StatusBar() {
           <span style={{ fontFamily: 'monospace', fontSize: 10 }}>{address}</span>
         </span>
       )}
+
+      <Divider />
+      <button
+        onClick={() => useStore.getState().setShowHotkeyHelp(true)}
+        title="Keyboard shortcuts (?)"
+        style={{
+          background: 'none', border: 'none', cursor: 'pointer',
+          color: 'var(--text-muted)', padding: 4,
+          display: 'flex', alignItems: 'center',
+          fontSize: 11, lineHeight: 1,
+          borderRadius: 4,
+        }}
+        onMouseEnter={e => (e.currentTarget.style.color = 'var(--text-primary)')}
+        onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-muted)')}
+      >
+        <CircleHelp size={12} />
+      </button>
     </footer>
   );
 }

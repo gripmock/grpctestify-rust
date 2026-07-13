@@ -344,6 +344,7 @@ async fn handle_call_document(
         compression: Default::default(),
         connection_id: 0,
         protocol: opts.protocol,
+        version: env!("CARGO_PKG_VERSION").to_string(),
     };
 
     let start = Instant::now();

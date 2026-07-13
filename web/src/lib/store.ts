@@ -13,6 +13,7 @@ const DEFAULT_BODY = '{}';
 const DEFAULT_BODIES = [DEFAULT_BODY];
 const historyCache = new LRUCache<string, HistoryEntry>(200);
 let abortController: AbortController | null = null;
+let reflectController: AbortController | null = null;
 
 const EMPTY_REQUEST = { endpoint: '', headers: {}, bodies: DEFAULT_BODIES };
 
@@ -192,6 +193,7 @@ const DEFAULT_SETTINGS: ClientSettings = {
   protocol: 'grpc',
   tls: false,
   tlsInsecure: true,
+  requestTimeoutMs: 0,
 };
 
 function loadSettings(): ClientSettings {
@@ -222,6 +224,7 @@ export const useStore = create<PlayStore>((set, get) => ({
   protocol: initialSettings.protocol,
   tls: initialSettings.tls,
   tlsInsecure: initialSettings.tlsInsecure,
+  requestTimeoutMs: initialSettings.requestTimeoutMs,
   environment: {},
   collections: [],
   projectRoot: null,
@@ -258,6 +261,8 @@ export const useStore = create<PlayStore>((set, get) => ({
   reflectError: null,
   serverHealthy: true,
   collectionsMtime: 0,
+  sidebarVisible: true,
+  showHotkeyHelp: false,
   environments: (() => {
     try { return JSON.parse(localStorage.getItem(ENVS_KEY) || '[]'); }
     catch { return []; }
@@ -273,6 +278,7 @@ export const useStore = create<PlayStore>((set, get) => ({
   setProtocol: (v) => { set({ protocol: v }); saveSettings({ ...get(), protocol: v }); },
   setTls: (v) => { set({ tls: v }); saveSettings({ ...get(), tls: v }); },
   setTlsInsecure: (v) => { set({ tlsInsecure: v }); saveSettings({ ...get(), tlsInsecure: v }); },
+  setRequestTimeoutMs: (v) => { set({ requestTimeoutMs: v }); saveSettings({ ...get(), requestTimeoutMs: v }); },
 
   setEndpoint: (v) => set(s => {
     const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, endpoint: v } : t);
@@ -348,6 +354,10 @@ export const useStore = create<PlayStore>((set, get) => ({
     const { address, protocol, tls, tlsInsecure, workspacePath } = get();
     if (!address) return;
     set({ reflectStatus: 'loading', reflectError: null });
+    if (reflectController) reflectController.abort();
+    reflectController = new AbortController();
+    const reflector = reflectController;
+    const timeoutId = setTimeout(() => reflector.abort(), 30_000);
     try {
       const res = await fetch('/api/reflect', {
         method: 'POST',
@@ -359,7 +369,9 @@ export const useStore = create<PlayStore>((set, get) => ({
           collection_path: workspacePath || undefined,
           protocol: protocol || undefined,
         }),
+        signal: reflector.signal,
       });
+      if (reflectController === reflector) reflectController = null;
       const data = await res.json();
       if (data.error) {
         set({ reflectionMethods: [], reflectStatus: 'error', reflectError: data.error });
@@ -373,7 +385,10 @@ export const useStore = create<PlayStore>((set, get) => ({
       })));
       set({ reflectionMethods: methods, reflectStatus: methods.length > 0 ? 'ok' : 'error', reflectError: methods.length === 0 ? 'No methods found' : null });
     } catch {
+      if (reflectController === reflector) reflectController = null;
       set({ reflectionMethods: [], reflectStatus: 'error', reflectError: 'Network error' });
+    } finally {
+      clearTimeout(timeoutId);
     }
   },
 
@@ -388,7 +403,10 @@ export const useStore = create<PlayStore>((set, get) => ({
   },
 
   cancel: () => {
-    if (abortController) { abortController.abort(); abortController = null; }
+    let aborted = false;
+    if (abortController) { abortController.abort(); abortController = null; aborted = true; }
+    if (reflectController) { reflectController.abort(); reflectController = null; aborted = true; }
+    if (!aborted) return;
     set(s => {
       const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, response: null } : t);
       return { tabs, response: null };
@@ -508,7 +526,7 @@ export const useStore = create<PlayStore>((set, get) => ({
 
   saveWorkspace: async () => {
     const st = get();
-    if (!st.workspacePath) return st.saveWorkspaceAs();
+    if (!st.workspacePath) return;
     const finalName = st.workspacePath.endsWith('.gctf') ? st.workspacePath : `${st.workspacePath}.gctf`;
     const res = await fetch('/api/save-structured', {
       method: 'POST',
@@ -537,10 +555,8 @@ export const useStore = create<PlayStore>((set, get) => ({
     get().refreshCollections();
   },
 
-  saveWorkspaceAs: async () => {
+  saveWorkspaceAs: async (name: string) => {
     const st = get();
-    const name = prompt('Save as:', 'untitled.gctf');
-    if (!name) return;
     const finalName = name.endsWith('.gctf') ? name : `${name}.gctf`;
     const res = await fetch('/api/save-structured', {
       method: 'POST',
@@ -616,8 +632,13 @@ export const useStore = create<PlayStore>((set, get) => ({
       : address;
 
     if (abortController) abortController.abort();
-    abortController = new AbortController();
-    const signal = abortController.signal;
+    const controller = new AbortController();
+    abortController = controller;
+    const signal = controller.signal;
+    let timeoutId: number | undefined;
+    if (st.requestTimeoutMs > 0) {
+      timeoutId = window.setTimeout(() => controller.abort(), st.requestTimeoutMs);
+    }
 
     const pending: CallResult = { status: 'pending', statusCode: null, messages: [], headers: {}, trailers: {}, error: null, durationMs: null };
     set(s => {
@@ -645,7 +666,7 @@ export const useStore = create<PlayStore>((set, get) => ({
         }),
         signal,
       });
-      abortController = null;
+      if (abortController === controller) abortController = null;
 
       let data: any;
       try { data = await res.json(); } catch {
@@ -675,16 +696,21 @@ export const useStore = create<PlayStore>((set, get) => ({
         return { tabs, response: result, history: historyCache.values() };
       });
     } catch (err: any) {
-      abortController = null;
-      if (err?.name === 'AbortError') { set(s => {
-        const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, response: null } : t);
-        return { tabs, response: null };
-      }); return; }
+      if (abortController === controller) abortController = null;
+      if (err?.name === 'AbortError') {
+        set(s => {
+          const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, response: null } : t);
+          return { tabs, response: null };
+        });
+        return;
+      }
       const errResult: CallResult = { status: 'error', statusCode: null, messages: [], headers: {}, trailers: {}, error: err?.message || String(err), durationMs: Math.round(performance.now() - start) };
       set(s => {
         const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, response: errResult } : t);
         return { tabs, response: errResult };
       });
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
     }
   },
 
@@ -850,6 +876,9 @@ export const useStore = create<PlayStore>((set, get) => ({
   deleteProjectEnvLocal: async (name) => {
     await fetch(`/api/project/env/${encodeURIComponent(name)}/local`, { method: 'DELETE' });
   },
+
+  toggleSidebar: () => set(s => ({ sidebarVisible: !s.sidebarVisible })),
+  setShowHotkeyHelp: (v) => set({ showHotkeyHelp: v }),
 
   refreshCollections: async () => {
     try { const res = await fetch('/api/collections'); if (res.ok) set({ collections: await res.json() }); } catch {  }

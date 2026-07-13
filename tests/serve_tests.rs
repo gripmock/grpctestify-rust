@@ -10,12 +10,14 @@ use grpctestify::serve::{self, PlayState};
 /// Create a test app with the given collections dir.
 /// Delegates to `serve::build_app()` so it always matches production routes.
 fn test_app(collections_dir: PathBuf) -> Router {
+    let shares_dir = collections_dir.join("../../shares");
     let state = Arc::new(PlayState {
         collections_dir: collections_dir.clone(),
         collections_dirs: vec![collections_dir],
+        shares_dir,
         project_root: None,
         project_settings: None,
-        history_lock: std::sync::Mutex::new(()),
+        history_lock: tokio::sync::Mutex::new(()),
         collections_mtime: Arc::new(AtomicU64::new(0)),
     });
     serve::build_app(state)
@@ -30,9 +32,10 @@ fn test_app_project(dir: PathBuf) -> Router {
     let state = Arc::new(PlayState {
         collections_dir: collections_dir.clone(),
         collections_dirs: vec![collections_dir.clone(), project_root.join("collections")],
+        shares_dir: project_root.join("shares"),
         project_root: Some(project_root.clone()),
         project_settings: grpctestify::serve::project::load_project_settings(&project_root).ok(),
-        history_lock: std::sync::Mutex::new(()),
+        history_lock: tokio::sync::Mutex::new(()),
         collections_mtime: Arc::new(AtomicU64::new(0)),
     });
     serve::build_app(state)

@@ -20,6 +20,7 @@ use crate::tonic::codec::DynamicCodec;
 use crate::tonic::descriptor;
 use crate::types::{EndpointMeta, MethodInfo, RpcMode, StreamItem};
 
+#[derive(Debug)]
 pub struct TonicGrpcClient {
     client: tonic::client::Grpc<tonic::transport::Channel>,
     descriptor_pool: Arc<prost_reflect::DescriptorPool>,
@@ -28,6 +29,11 @@ pub struct TonicGrpcClient {
 
 impl TonicGrpcClient {
     pub async fn new(config: GrpcClientConfig) -> Result<Self> {
+        anyhow::ensure!(
+            config.protocol == crate::config::WireProtocol::Grpc,
+            "tonic transport only supports gRPC protocol, not {:?}",
+            config.protocol,
+        );
         let channel = create_channel(&config).await?;
         let descriptor_pool = descriptor::load_descriptors(&config).await?;
         let mut client = tonic::client::Grpc::new(channel);
@@ -110,7 +116,11 @@ impl GrpcClient for TonicGrpcClient {
                 }
             }));
             let mut req = Request::new(req_stream);
-            insert_metadata(req.metadata_mut(), self.config.metadata.as_ref());
+            insert_metadata(
+                req.metadata_mut(),
+                self.config.metadata.as_ref(),
+                &self.config.version,
+            );
             result = if is_ss {
                 client
                     .streaming(req, path, codec)
@@ -156,7 +166,11 @@ impl GrpcClient for TonicGrpcClient {
             )
             .map_err(|e| GrpcError::new(3, format!("Deser error: {}", e)))?;
             let mut req = Request::new(msg);
-            insert_metadata(req.metadata_mut(), self.config.metadata.as_ref());
+            insert_metadata(
+                req.metadata_mut(),
+                self.config.metadata.as_ref(),
+                &self.config.version,
+            );
             result = if is_ss {
                 client
                     .server_streaming(req, path, codec)
@@ -255,8 +269,12 @@ impl GrpcClient for TonicGrpcClient {
     }
 }
 
-fn insert_metadata(meta: &mut MetadataMap, custom: Option<&HashMap<String, String>>) {
-    let default_ua = format!("grpctestify/{}", env!("CARGO_PKG_VERSION"));
+fn insert_metadata(
+    meta: &mut MetadataMap,
+    custom: Option<&HashMap<String, String>>,
+    version: &str,
+) {
+    let default_ua = format!("grpctestify/{}", version);
     let ua = custom
         .and_then(|m| {
             m.iter()
@@ -473,4 +491,52 @@ fn fake_string(field_name: &str) -> String {
         "sample"
     }
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::WireProtocol;
+
+    #[tokio::test]
+    async fn test_rejects_non_grpc_protocols() {
+        for proto in &[WireProtocol::GrpcWeb, WireProtocol::ConnectRpc] {
+            let config = GrpcClientConfig {
+                address: "localhost:4770".to_string(),
+                protocol: *proto,
+                ..Default::default()
+            };
+            let result = TonicGrpcClient::new(config).await;
+            assert!(result.is_err(), "Expected error for {:?}", proto);
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("tonic transport only supports gRPC protocol"),
+                "Unexpected error for {:?}: {}",
+                proto,
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn test_insert_metadata_version() {
+        let mut meta = MetadataMap::new();
+        insert_metadata(&mut meta, None, "1.8.7");
+        let ua = meta.get("user-agent").unwrap();
+        assert_eq!(ua.to_str().unwrap(), "grpctestify/1.8.7");
+    }
+
+    #[test]
+    fn test_insert_metadata_with_custom_user_agent() {
+        let mut meta = MetadataMap::new();
+        let mut custom = HashMap::new();
+        custom.insert("user-agent".to_string(), "custom-ua/2.0".to_string());
+        custom.insert("x-custom".to_string(), "value1".to_string());
+        insert_metadata(&mut meta, Some(&custom), "1.8.7");
+        assert_eq!(
+            meta.get("user-agent").unwrap().to_str().unwrap(),
+            "custom-ua/2.0"
+        );
+        assert_eq!(meta.get("x-custom").unwrap().to_str().unwrap(), "value1");
+    }
 }

@@ -29,6 +29,7 @@ impl CallClientFactory for GrpcClientFactory {
             compression: crate::config::compression_from_env(),
             connection_id: 0,
             protocol: WireProtocol::Grpc,
+            version: env!("CARGO_PKG_VERSION").to_string(),
         };
 
         let client = GrpcClient::new(grpc_config).await?;

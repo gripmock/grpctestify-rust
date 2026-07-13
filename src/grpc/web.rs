@@ -25,6 +25,7 @@ pub async fn call_unary(
         compression: Default::default(),
         connection_id: 0,
         protocol: WireProtocol::Grpc,
+        version: env!("CARGO_PKG_VERSION").to_string(),
     };
     let client = crate::grpc::GrpcClient::new(grpc_config)
         .await
@@ -64,6 +65,7 @@ pub async fn call_unary(
         .timeout(std::time::Duration::from_secs(
             config.timeout_seconds.max(5),
         ))
+        .connect_timeout(std::time::Duration::from_secs(5))
         .user_agent(&user_agent);
 
     if let Some(ref tls) = config.tls_config
@@ -79,7 +81,7 @@ pub async fn call_unary(
     // Build request with protocol-specific framing
     let content_type = match config.protocol {
         WireProtocol::GrpcWeb => "application/grpc-web-proto",
-        WireProtocol::Connect => "application/connect+proto",
+        WireProtocol::ConnectRpc => "application/connect+proto",
         _ => anyhow::bail!("Unsupported protocol for HTTP client"),
     };
 
@@ -92,7 +94,7 @@ pub async fn call_unary(
             framed.extend_from_slice(&request_bytes);
             framed
         }
-        WireProtocol::Connect => request_bytes.clone(),
+        WireProtocol::ConnectRpc => request_bytes.clone(),
         _ => unreachable!(),
     };
 
@@ -130,7 +132,7 @@ pub async fn call_unary(
     // Parse response messages
     let messages = match config.protocol {
         WireProtocol::GrpcWeb => parse_grpc_web_response(&response_bytes, &output_desc),
-        WireProtocol::Connect => parse_connect_response(&response_bytes, &output_desc),
+        WireProtocol::ConnectRpc => parse_connect_response(&response_bytes, &output_desc),
         _ => unreachable!(),
     };
 

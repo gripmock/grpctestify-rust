@@ -15,8 +15,8 @@ use prost::Message;
 use prost_reflect::{DescriptorPool, ReflectMessage};
 use prost_types::FileDescriptorProto;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, LazyLock, RwLock};
-use tokio::sync::Mutex as TokioMutex;
+use std::sync::{Arc, LazyLock};
+use tokio::sync::{Mutex as TokioMutex, RwLock};
 use tonic::Request;
 use tonic_reflection::pb::v1::ServerReflectionRequest;
 use tonic_reflection::pb::v1::server_reflection_client::ServerReflectionClient;
@@ -24,23 +24,22 @@ use tonic_reflection::pb::v1::server_reflection_request::MessageRequest;
 
 static DESCRIPTOR_CACHE: LazyLock<RwLock<HashMap<String, Arc<DescriptorPool>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+
 static DESCRIPTOR_LOAD_MUTEX: LazyLock<TokioMutex<()>> = LazyLock::new(|| TokioMutex::new(()));
 
 pub async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<DescriptorPool>> {
     let cache_key = build_cache_key(config);
     {
-        if let Ok(cache) = DESCRIPTOR_CACHE.read() {
-            if let Some(pool) = cache.get(&cache_key) {
-                return Ok(pool.clone());
-            }
+        let cache = DESCRIPTOR_CACHE.read().await;
+        if let Some(pool) = cache.get(&cache_key) {
+            return Ok(pool.clone());
         }
     }
     let _guard = DESCRIPTOR_LOAD_MUTEX.lock().await;
     {
-        if let Ok(cache) = DESCRIPTOR_CACHE.read() {
-            if let Some(pool) = cache.get(&cache_key) {
-                return Ok(pool.clone());
-            }
+        let cache = DESCRIPTOR_CACHE.read().await;
+        if let Some(pool) = cache.get(&cache_key) {
+            return Ok(pool.clone());
         }
     }
     let pool = match &config.proto_config {
@@ -53,8 +52,8 @@ pub async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<Descripto
     let pool_arc = Arc::new(pool);
     DESCRIPTOR_CACHE
         .write()
-        .map(|mut c| c.insert(cache_key, pool_arc.clone()))
-        .ok();
+        .await
+        .insert(cache_key, pool_arc.clone());
     Ok(pool_arc)
 }
 

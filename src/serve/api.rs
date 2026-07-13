@@ -6,7 +6,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use super::PlayState;
+use super::{PlayState, ShareState};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Consistent JSON error response.
 #[derive(Serialize)]
@@ -348,85 +349,87 @@ fn extract_tags(path: &std::path::Path) -> Vec<String> {
 pub async fn list_collections(
     State(state): State<Arc<PlayState>>,
 ) -> Result<Json<Vec<CollectionItem>>, (StatusCode, String)> {
-    let mut items = Vec::new();
-    let mut seen_paths = std::collections::HashSet::new();
-    let mut seen_dirs = std::collections::HashSet::new();
+    let dirs = state.collections_dirs.clone();
+    let items = tokio::task::spawn_blocking(move || {
+        let mut items = Vec::new();
+        let mut seen_paths = std::collections::HashSet::new();
+        let mut seen_dirs = std::collections::HashSet::new();
 
-    for dir in &state.collections_dirs {
-        if !dir.is_dir() {
-            continue;
-        }
-
-        // Collect .gctf files
-        for file in crate::utils::FileUtils::collect_test_files(dir, &[]) {
-            let rel = file.strip_prefix(dir).unwrap_or(&file);
-            let rel_str = rel.to_string_lossy().to_string();
-            if seen_paths.insert(rel_str.clone()) {
-                items.push(CollectionItem {
-                    path: rel_str.clone(),
-                    name: file
-                        .file_stem()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string(),
-                    is_dir: false,
-                    tags: extract_tags(&file),
-                });
+        for dir in &dirs {
+            if !dir.is_dir() {
+                continue;
             }
-            // Track all parent directories as "seen" (they contain files)
-            if let Some(parent) = rel.parent() {
-                let parent_str = parent.to_string_lossy().to_string();
-                if !parent_str.is_empty() {
-                    seen_dirs.insert(parent_str);
+
+            for file in crate::utils::FileUtils::collect_test_files(dir, &[]) {
+                let rel = file.strip_prefix(dir).unwrap_or(&file);
+                let rel_str = rel.to_string_lossy().to_string();
+                if seen_paths.insert(rel_str.clone()) {
+                    items.push(CollectionItem {
+                        path: rel_str.clone(),
+                        name: file
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string(),
+                        is_dir: false,
+                        tags: extract_tags(&file),
+                    });
                 }
-            }
-        }
-
-        // Find empty directories (not tracked by any file path)
-        fn collect_empty_dirs(
-            dir: &std::path::Path,
-            base: &std::path::Path,
-            seen_dirs: &mut std::collections::HashSet<String>,
-            result: &mut Vec<CollectionItem>,
-        ) {
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        let rel = path.strip_prefix(base).unwrap_or(&path);
-                        let rel_str = rel.to_string_lossy().to_string();
-                        if !seen_dirs.contains(&rel_str) {
-                            result.push(CollectionItem {
-                                path: rel_str.clone(),
-                                name: entry.file_name().to_string_lossy().to_string(),
-                                is_dir: true,
-                                tags: vec![],
-                            });
-                            seen_dirs.insert(rel_str); // prevent duplicates
-                        }
-                        // Recurse into subdirectories
-                        collect_empty_dirs(&path, base, seen_dirs, result);
+                if let Some(parent) = rel.parent() {
+                    let parent_str = parent.to_string_lossy().to_string();
+                    if !parent_str.is_empty() {
+                        seen_dirs.insert(parent_str);
                     }
                 }
             }
+
+            collect_empty_dirs(dir, dir, &mut seen_dirs, &mut items);
         }
 
-        collect_empty_dirs(dir, dir, &mut seen_dirs, &mut items);
-    }
+        items.sort_by(|a, b| {
+            if a.is_dir != b.is_dir {
+                return if a.is_dir {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                };
+            }
+            a.path.cmp(&b.path)
+        });
 
-    // Sort: dirs first, then files, alphabetical
-    items.sort_by(|a, b| {
-        if a.is_dir != b.is_dir {
-            return if a.is_dir {
-                std::cmp::Ordering::Less
-            } else {
-                std::cmp::Ordering::Greater
-            };
-        }
-        a.path.cmp(&b.path)
-    });
+        items
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(items))
+}
+
+fn collect_empty_dirs(
+    dir: &std::path::Path,
+    base: &std::path::Path,
+    seen_dirs: &mut std::collections::HashSet<String>,
+    result: &mut Vec<CollectionItem>,
+) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let rel = path.strip_prefix(base).unwrap_or(&path);
+                let rel_str = rel.to_string_lossy().to_string();
+                if !seen_dirs.contains(&rel_str) {
+                    result.push(CollectionItem {
+                        path: rel_str.clone(),
+                        name: entry.file_name().to_string_lossy().to_string(),
+                        is_dir: true,
+                        tags: vec![],
+                    });
+                    seen_dirs.insert(rel_str);
+                }
+                collect_empty_dirs(&path, base, seen_dirs, result);
+            }
+        }
+    }
 }
 
 /// GET /api/collections/*path — read a .gctf file, returns raw + parsed
@@ -435,20 +438,27 @@ pub async fn get_collection(
     path: Path<String>,
 ) -> Result<Json<CollectionResponse>, (StatusCode, String)> {
     reject_traversal(&path.0)?;
-    let file_path = resolve_file(&state, &path.0)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "File not found".to_string()))?;
-    if file_path.is_dir() {
-        return Err((StatusCode::NOT_FOUND, "Path is a directory".to_string()));
-    }
-    let content = std::fs::read_to_string(&file_path)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let doc = crate::parser::parse_gctf_from_str(&content, &file_path.to_string_lossy())
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Parse error: {}", e)))?;
-    Ok(Json(CollectionResponse {
-        path: file_path.to_string_lossy().to_string(),
-        content,
-        parsed: parse_collection(&doc),
-    }))
+    let state = state.clone();
+    let path_str = path.0.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let file_path = resolve_file(&state, &path_str)
+            .ok_or_else(|| (StatusCode::NOT_FOUND, "File not found".to_string()))?;
+        if file_path.is_dir() {
+            return Err((StatusCode::NOT_FOUND, "Path is a directory".to_string()));
+        }
+        let content = std::fs::read_to_string(&file_path)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let doc = crate::parser::parse_gctf_from_str(&content, &file_path.to_string_lossy())
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("Parse error: {}", e)))?;
+        Ok(CollectionResponse {
+            path: file_path.to_string_lossy().to_string(),
+            content,
+            parsed: parse_collection(&doc),
+        })
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(result))
 }
 
 /// POST /api/save — save raw content to a .gctf file
@@ -457,15 +467,23 @@ pub async fn save_collection(
     Json(req): Json<SaveRequest>,
 ) -> Result<Json<()>, (StatusCode, String)> {
     reject_traversal(&req.path)?;
-    let file_path = primary_dir(&state).join(&req.path);
-    if let Some(parent) = file_path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    std::fs::write(&file_path, &req.content)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    state
-        .collections_mtime
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let state = state.clone();
+    let path_str = req.path.clone();
+    let content = req.content.clone();
+    tokio::task::spawn_blocking(move || {
+        let file_path = primary_dir(&state).join(&path_str);
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&file_path, &content)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        state
+            .collections_mtime
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok::<(), (StatusCode, String)>(())
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
     Ok(Json(()))
 }
 
@@ -643,6 +661,7 @@ pub async fn reflect_server(
         compression: Default::default(),
         connection_id: 0,
         protocol: parse_protocol(req.protocol.as_deref()),
+        version: env!("CARGO_PKG_VERSION").to_string(),
     };
 
     let client = match crate::grpc::GrpcClient::new(config).await {
@@ -801,6 +820,7 @@ pub async fn schema_fill(
         compression: Default::default(),
         connection_id: 0,
         protocol: parse_protocol(req.protocol.as_deref()),
+        version: env!("CARGO_PKG_VERSION").to_string(),
     };
 
     let client = match crate::grpc::GrpcClient::new(grpc_config).await {
@@ -1109,14 +1129,26 @@ pub async fn execute_call(
         if coll_path.contains("..") {
             return Err((StatusCode::NOT_FOUND, "Invalid collection_path".to_string()));
         }
-        let file_path =
-            resolve_file(&state, coll_path).unwrap_or_else(|| primary_dir(&state).join(coll_path));
-        if file_path.exists() {
-            let parse_result = crate::parser::parse_with_recovery(&file_path);
-            crate::execution::runner_helpers::build_proto_config(&parse_result.document, &file_path)
-        } else {
-            None
-        }
+        let state = state.clone();
+        let path = coll_path.clone();
+        let result = tokio::task::spawn_blocking(
+            move || -> Result<Option<crate::grpc::ProtoConfig>, (StatusCode, String)> {
+                let file_path =
+                    resolve_file(&state, &path).unwrap_or_else(|| primary_dir(&state).join(&path));
+                if file_path.exists() {
+                    let parse_result = crate::parser::parse_with_recovery(&file_path);
+                    Ok(crate::execution::runner_helpers::build_proto_config(
+                        &parse_result.document,
+                        &file_path,
+                    ))
+                } else {
+                    Ok(None)
+                }
+            },
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        result?
     } else {
         None
     };
@@ -1154,6 +1186,7 @@ pub async fn execute_call(
         compression: Default::default(),
         connection_id: 0,
         protocol,
+        version: env!("CARGO_PKG_VERSION").to_string(),
     };
 
     let mut client = match crate::grpc::GrpcClient::new(grpc_config).await {
@@ -1242,10 +1275,15 @@ pub async fn execute_call(
                 },
             });
 
-            if let Ok(line) = serde_json::to_string(&entry)
-                && let Ok(_guard) = state.history_lock.lock()
-            {
-                super::project::append_history_entry(&root, &sid, &line).ok();
+            if let Ok(line) = serde_json::to_string(&entry) {
+                let _guard = state.history_lock.lock().await;
+                let root = root.to_path_buf();
+                let sid = sid.clone();
+                tokio::task::spawn_blocking(move || {
+                    super::project::append_history_entry(&root, &sid, &line).ok();
+                })
+                .await
+                .ok();
             }
         }
     }
@@ -1257,6 +1295,117 @@ pub async fn execute_call(
         trailers: response_trailers,
         error: response_error,
     }))
+}
+
+/* ── Share API ─────────────────────────────────────── */
+
+#[derive(Deserialize)]
+pub struct ShareRequest {
+    pub endpoint: String,
+    pub headers: Option<std::collections::HashMap<String, String>>,
+    pub bodies: Vec<String>,
+    pub address: Option<String>,
+    pub protocol: Option<String>,
+    pub tls: Option<bool>,
+    pub tls_insecure: Option<bool>,
+    pub ttl_days: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct ShareResponse {
+    pub id: String,
+    pub url: String,
+    pub expires_at: i64,
+}
+
+pub async fn create_share(
+    State(state): State<Arc<PlayState>>,
+    Json(req): Json<ShareRequest>,
+) -> Result<Json<ShareResponse>, (StatusCode, String)> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let ttl_days = req.ttl_days.unwrap_or(7).min(30);
+    let expires_at = now + (ttl_days as i64) * 24 * 60 * 60 * 1000;
+
+    let share = ShareState {
+        id: id.clone(),
+        endpoint: req.endpoint,
+        headers: req.headers.unwrap_or_default(),
+        bodies: req.bodies,
+        address: req.address,
+        protocol: req.protocol,
+        tls: req.tls,
+        tls_insecure: req.tls_insecure,
+        created_at: now,
+        expires_at,
+        access_count: 0,
+    };
+
+    let json = serde_json::to_string(&share)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let shares_dir = state.shares_dir.clone();
+    let id2 = id.clone();
+    tokio::task::spawn_blocking(move || super::project::write_share(&shares_dir, &id2, &json))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(ShareResponse {
+        id: id.clone(),
+        url: format!("/s/{}", id),
+        expires_at,
+    }))
+}
+
+pub async fn get_share(
+    State(state): State<Arc<PlayState>>,
+    Path(id): Path<String>,
+) -> Result<Json<ShareState>, (StatusCode, String)> {
+    let shares_dir = state.shares_dir.clone();
+    let id2 = id.clone();
+    let json = tokio::task::spawn_blocking(move || super::project::read_share(&shares_dir, &id2))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Share not found".to_string()))?;
+
+    let mut share: ShareState = serde_json::from_str(&json).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Corrupt share".to_string(),
+        )
+    })?;
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    if share.expires_at < now {
+        let shares_dir = state.shares_dir.clone();
+        let id2 = id.clone();
+        tokio::task::spawn_blocking(move || {
+            super::project::delete_share(&shares_dir, &id2).ok();
+        })
+        .await
+        .ok();
+        return Err((StatusCode::GONE, "Share has expired".to_string()));
+    }
+
+    share.access_count += 1;
+    if let Ok(json) = serde_json::to_string(&share) {
+        let shares_dir = state.shares_dir.clone();
+        let id2 = id.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ = super::project::write_share(&shares_dir, &id2, &json);
+        })
+        .await
+        .ok();
+    }
+
+    Ok(Json(share))
 }
 
 /* ── Project mode helpers ──────────────────────────── */
@@ -1649,9 +1798,10 @@ mod tests {
         let state = PlayState {
             collections_dir: PathBuf::from("/tmp/nonexistent_XXXX"),
             collections_dirs: vec![PathBuf::from("/tmp/nonexistent_XXXX")],
+            shares_dir: PathBuf::from("/tmp/nonexistent_XXXX/shares"),
             project_root: None,
             project_settings: None,
-            history_lock: std::sync::Mutex::new(()),
+            history_lock: tokio::sync::Mutex::new(()),
             collections_mtime: Arc::new(AtomicU64::new(0)),
         };
         assert!(resolve_file(&state, "foo.gctf").is_none());
@@ -1667,9 +1817,10 @@ mod tests {
         let state = Arc::new(PlayState {
             collections_dir: dir.path().to_path_buf(),
             collections_dirs: vec![dir.path().to_path_buf()],
+            shares_dir: dir.path().join("shares"),
             project_root: None,
             project_settings: None,
-            history_lock: std::sync::Mutex::new(()),
+            history_lock: tokio::sync::Mutex::new(()),
             collections_mtime: Arc::new(AtomicU64::new(0)),
         });
 
@@ -1693,9 +1844,10 @@ mod tests {
         let state = Arc::new(PlayState {
             collections_dir: dir.path().to_path_buf(),
             collections_dirs: vec![dir.path().to_path_buf()],
+            shares_dir: dir.path().join("shares"),
             project_root: None,
             project_settings: None,
-            history_lock: std::sync::Mutex::new(()),
+            history_lock: tokio::sync::Mutex::new(()),
             collections_mtime: Arc::new(AtomicU64::new(0)),
         });
 
@@ -1721,9 +1873,10 @@ mod tests {
         let state = Arc::new(PlayState {
             collections_dir: dir.path().to_path_buf(),
             collections_dirs: vec![dir.path().to_path_buf()],
+            shares_dir: dir.path().join("shares"),
             project_root: None,
             project_settings: None,
-            history_lock: std::sync::Mutex::new(()),
+            history_lock: tokio::sync::Mutex::new(()),
             collections_mtime: Arc::new(AtomicU64::new(0)),
         });
 
@@ -1752,9 +1905,10 @@ mod tests {
         let state = Arc::new(PlayState {
             collections_dir: dir.path().to_path_buf(),
             collections_dirs: vec![dir.path().to_path_buf()],
+            shares_dir: dir.path().join("shares"),
             project_root: None,
             project_settings: None,
-            history_lock: std::sync::Mutex::new(()),
+            history_lock: tokio::sync::Mutex::new(()),
             collections_mtime: Arc::new(AtomicU64::new(0)),
         });
 

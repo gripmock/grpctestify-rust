@@ -7,7 +7,7 @@ use axum::{
     response::Response,
     routing::{delete, get, post, put},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,13 +32,29 @@ pub struct PlayState {
     pub collections_dir: PathBuf,
     /// All collections directories (primary + extras from settings.json)
     pub collections_dirs: Vec<PathBuf>,
+    pub shares_dir: PathBuf,
     pub project_root: Option<PathBuf>,
     pub project_settings: Option<ProjectSettings>,
     /// Serialize history writes to prevent file-level races.
-    pub history_lock: std::sync::Mutex<()>,
+    pub history_lock: tokio::sync::Mutex<()>,
     /// Monotonic timestamp bumped on every collection/env change.
     /// Frontend polls /api/info and compares this value for auto-reload.
     pub collections_mtime: Arc<AtomicU64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShareState {
+    pub id: String,
+    pub endpoint: String,
+    pub headers: std::collections::HashMap<String, String>,
+    pub bodies: Vec<String>,
+    pub address: Option<String>,
+    pub protocol: Option<String>,
+    pub tls: Option<bool>,
+    pub tls_insecure: Option<bool>,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub access_count: u64,
 }
 
 async fn static_handler(Path(path): Path<String>) -> Response {
@@ -305,6 +321,8 @@ pub fn build_app(state: Arc<PlayState>) -> Router {
         .route("/api/dir/{*path}", post(api::create_directory))
         .route("/api/move", post(api::move_item))
         .route("/api/collections/{*path}", delete(api::delete_collection))
+        .route("/api/share", post(api::create_share))
+        .route("/api/share/{id}", get(api::get_share))
         .route("/api/version", get(version_handler))
         .route("/api/health", get(health_handler))
         .route("/api/info", get(info_handler));
@@ -383,15 +401,26 @@ pub async fn start_play_server(port: u16, dir: PathBuf) -> Result<()> {
         start_file_watcher(w_mtime, &w_dirs, w_root.as_deref(), shutdown_rx);
     });
 
+    let shares_dir = project_root
+        .as_ref()
+        .map(|r| r.join("shares"))
+        .unwrap_or_else(|| dir.join("shares"));
+
     let state = Arc::new(PlayState {
         collections_dir,
         collections_dirs,
+        shares_dir: shares_dir.clone(),
         project_root: project_root.clone(),
         project_settings: project_root
             .as_ref()
             .and_then(|r| project::load_project_settings(r).ok()),
-        history_lock: std::sync::Mutex::new(()),
+        history_lock: tokio::sync::Mutex::new(()),
         collections_mtime,
+    });
+
+    // Cleanup expired shares on startup
+    tokio::task::spawn_blocking(move || {
+        let _ = project::cleanup_expired_shares(&shares_dir);
     });
 
     let app = build_app(state);

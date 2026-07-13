@@ -5,6 +5,29 @@ import { Plus, X, Layers, Send } from 'lucide-react';
 import { EnvVarToolbar } from './EnvVarToolbar';
 import { registerEnvHoverProvider, addEnvDecorations } from '../../lib/monaco-env-hover';
 
+let jsonFormatterRegistered = false;
+
+function ensureJsonFormatter(monaco: any) {
+  if (jsonFormatterRegistered) return;
+  jsonFormatterRegistered = true;
+  monaco.languages.registerDocumentFormattingEditProvider('json', {
+    provideDocumentFormattingEdits(model: any) {
+      try {
+        const text = model.getValue();
+        const parsed = JSON.parse(text);
+        const formatted = JSON.stringify(parsed, null, 2);
+        if (formatted === text) return [];
+        return [{
+          range: model.getFullModelRange(),
+          text: formatted,
+        }];
+      } catch {
+        return [];
+      }
+    },
+  });
+}
+
 export function BodyEditor() {
   const request = useStore(s => s.request);
   const setRequestBody = useStore(s => s.setRequestBody);
@@ -67,6 +90,7 @@ export function BodyEditor() {
               onChange={v => setRequestBody(idx, v || '')}
               theme={monacoTheme}
               onMount={(ed, monaco) => {
+                ensureJsonFormatter(monaco);
                 registerEnvHoverProvider(monaco, () => activeEnv);
                 addEnvDecorations(ed, monaco, () => activeEnv);
               }}

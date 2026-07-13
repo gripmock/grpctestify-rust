@@ -136,6 +136,7 @@ impl GrpctestifyLsp {
             compression: Default::default(),
             connection_id: 0,
             protocol,
+            version: env!("CARGO_PKG_VERSION").to_string(),
         };
 
         let created = tokio::time::timeout(SCHEMA_TIMEOUT, GrpcClient::new(config)).await;

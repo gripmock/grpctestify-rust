@@ -5,7 +5,7 @@ pub enum WireProtocol {
     #[default]
     Grpc,
     GrpcWeb,
-    Connect,
+    ConnectRpc,
 }
 
 impl std::str::FromStr for WireProtocol {
@@ -13,7 +13,7 @@ impl std::str::FromStr for WireProtocol {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
             "grpc-web" => Self::GrpcWeb,
-            "connectrpc" => Self::Connect,
+            "connectrpc" => Self::ConnectRpc,
             _ => Self::Grpc,
         })
     }
@@ -42,7 +42,7 @@ pub enum CompressionMode {
     Gzip,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct GrpcClientConfig {
     pub address: String,
     pub timeout_seconds: u64,
@@ -53,4 +53,22 @@ pub struct GrpcClientConfig {
     pub compression: CompressionMode,
     pub connection_id: u64,
     pub protocol: WireProtocol,
+    pub version: String,
+}
+
+impl Default for GrpcClientConfig {
+    fn default() -> Self {
+        Self {
+            address: String::new(),
+            timeout_seconds: 0,
+            tls_config: None,
+            proto_config: None,
+            metadata: None,
+            target_service: None,
+            compression: CompressionMode::default(),
+            connection_id: 0,
+            protocol: WireProtocol::default(),
+            version: "unknown".to_string(),
+        }
+    }
 }

@@ -2,8 +2,9 @@ use super::proxy::ProxyEnv;
 use crate::config::{GrpcClientConfig, TlsConfig};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::sync::{LazyLock, OnceLock, RwLock};
+use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
+use tokio::sync::RwLock;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -37,10 +38,11 @@ pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
         cache_key.address = format!("{}/conn-{}", cache_key.address, config.connection_id);
     }
 
-    if let Ok(cache) = CHANNEL_CACHE.read()
-        && let Some(channel) = cache.get(&cache_key)
     {
-        return Ok(channel.clone());
+        let cache = CHANNEL_CACHE.read().await;
+        if let Some(channel) = cache.get(&cache_key) {
+            return Ok(channel.clone());
+        }
     }
 
     PROXY_WARNED.get_or_init(|| ProxyEnv::from_env().warn_if_set());
@@ -52,8 +54,8 @@ pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
 
     CHANNEL_CACHE
         .write()
-        .map(|mut cache| cache.insert(cache_key, channel.clone()))
-        .ok();
+        .await
+        .insert(cache_key, channel.clone());
     Ok(channel)
 }
 
@@ -87,7 +89,8 @@ async fn create_tls_channel(config: &GrpcClientConfig, tls_config: &TlsConfig) -
     };
     let endpoint = Channel::from_shared(addr)
         .context("Invalid address format")?
-        .timeout(Duration::from_secs(config.timeout_seconds));
+        .timeout(Duration::from_secs(config.timeout_seconds))
+        .connect_timeout(Duration::from_secs(5));
     Ok(endpoint
         .tls_config(tls)
         .context("Failed to configure TLS")?
@@ -102,6 +105,7 @@ async fn create_plaintext_channel(config: &GrpcClientConfig) -> Result<Channel> 
     };
     let endpoint = Channel::from_shared(addr)
         .context("Invalid address format")?
-        .timeout(Duration::from_secs(config.timeout_seconds));
+        .timeout(Duration::from_secs(config.timeout_seconds))
+        .connect_timeout(Duration::from_secs(5));
     Ok(endpoint.connect_lazy())
 }

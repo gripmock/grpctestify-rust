@@ -13,6 +13,8 @@ export function TopBar() {
   const setTls = useStore(s => s.setTls);
   const tlsInsecure = useStore(s => s.tlsInsecure);
   const setTlsInsecure = useStore(s => s.setTlsInsecure);
+  const requestTimeoutMs = useStore(s => s.requestTimeoutMs);
+  const setRequestTimeoutMs = useStore(s => s.setRequestTimeoutMs);
   const theme = useStore(s => s.theme);
   const setTheme = useStore(s => s.setTheme);
   const serverHealthy = useStore(s => s.serverHealthy);
@@ -216,6 +218,16 @@ export function TopBar() {
             {resolvedAddress}
           </span>
         )}
+      </div>
+
+      {}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+        <input type="number" min={0} value={requestTimeoutMs} onChange={e => setRequestTimeoutMs(Math.max(0, parseInt(e.target.value) || 0))}
+          placeholder="0"
+          title="Request timeout in milliseconds (0 = no timeout)"
+          style={{ width: 50, padding: '5px 4px', fontSize: 12, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none', textAlign: 'right', ...css.mono }}
+        />
+        <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>ms</span>
       </div>
 
       {}

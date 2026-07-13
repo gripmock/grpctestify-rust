@@ -32,6 +32,7 @@ pub async fn handle_health(args: &HealthArgs) -> Result<()> {
             .protocol
             .parse::<WireProtocol>()
             .unwrap_or(crate::grpc::WireProtocol::Grpc),
+        version: env!("CARGO_PKG_VERSION").to_string(),
     };
 
     let mut client = GrpcClient::new(config).await?;

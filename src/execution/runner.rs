@@ -859,6 +859,7 @@ impl TestRunner {
                     })
                 })
                 .unwrap_or(crate::grpc::WireProtocol::Grpc),
+            version: env!("CARGO_PKG_VERSION").to_string(),
         };
 
         let client = GrpcClient::new(client_config).await?;

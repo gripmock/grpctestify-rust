@@ -44,6 +44,7 @@ pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
             .protocol
             .parse::<WireProtocol>()
             .unwrap_or(crate::grpc::WireProtocol::Grpc),
+        version: env!("CARGO_PKG_VERSION").to_string(),
     };
 
     eprintln!("Connecting to {}...", config.address);
