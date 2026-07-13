@@ -11,7 +11,7 @@ function id() { return Math.random().toString(36).slice(2, 9); }
 
 const DEFAULT_BODY = '{}';
 const DEFAULT_BODIES = [DEFAULT_BODY];
-const historyCache = new LRUCache<string, HistoryEntry>(200);
+const historyCache = new LRUCache<string, HistoryEntry>(1000);
 let abortController: AbortController | null = null;
 let reflectController: AbortController | null = null;
 
@@ -38,6 +38,7 @@ async function initProjectEnvs(envNames: string[]) {
 }
 
 const STORAGE_KEY = 'grpctestify-history';
+const TOTALS_KEY = 'grpctestify-totals';
 const MAX_STORAGE_BYTES = 4_000_000;
 const MAX_TABS = 50;
 
@@ -211,6 +212,10 @@ function saveSettings(s: ClientSettings) {
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch {  }
 }
 
+function saveTotals(ok: number, error: number) {
+  try { localStorage.setItem(TOTALS_KEY, JSON.stringify({ ok, error })); } catch {  }
+}
+
 
 const initTabs = loadTabsFromStorage();
 const initActive = initTabs.activeTabId || initTabs.tabs[0]?.id || null;
@@ -244,6 +249,8 @@ export const useStore = create<PlayStore>((set, get) => ({
   responseTab: 'response',
 
   history: [],
+  totalOk: (() => { try { return JSON.parse(localStorage.getItem(TOTALS_KEY) || '{}').ok || 0; } catch { return 0; } })(),
+  totalError: (() => { try { return JSON.parse(localStorage.getItem(TOTALS_KEY) || '{}').error || 0; } catch { return 0; } })(),
   version: '',
   sessionId: getSessionId(),
   theme: (() => {
@@ -671,9 +678,14 @@ export const useStore = create<PlayStore>((set, get) => ({
       let data: any;
       try { data = await res.json(); } catch {
         const errResult: CallResult = { status: 'error', statusCode: res.status, messages: [], headers: {}, trailers: {}, error: `Server returned ${res.status} ${res.statusText}`, durationMs: Math.round(performance.now() - start) };
+        const errEntry: HistoryEntry = { id: id(), timestamp: now(), endpoint: st.request.endpoint, bodies: st.request.bodies, headers: st.request.headers, response: errResult };
+        historyCache.put(errEntry.id, errEntry);
+        saveHistoryToStorage();
         set(s => {
           const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, response: errResult } : t);
-          return { tabs, response: errResult };
+          const totalError = s.totalError + 1;
+          saveTotals(s.totalOk, totalError);
+          return { tabs, response: errResult, history: historyCache.values(), totalError };
         });
         return;
       }
@@ -693,7 +705,15 @@ export const useStore = create<PlayStore>((set, get) => ({
       saveHistoryToStorage();
       set(s => {
         const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, response: result } : t);
-        return { tabs, response: result, history: historyCache.values() };
+        if (data.success) {
+          const totalOk = s.totalOk + 1;
+          saveTotals(totalOk, s.totalError);
+          return { tabs, response: result, history: historyCache.values(), totalOk };
+        } else {
+          const totalError = s.totalError + 1;
+          saveTotals(s.totalOk, totalError);
+          return { tabs, response: result, history: historyCache.values(), totalError };
+        }
       });
     } catch (err: any) {
       if (abortController === controller) abortController = null;
@@ -705,9 +725,14 @@ export const useStore = create<PlayStore>((set, get) => ({
         return;
       }
       const errResult: CallResult = { status: 'error', statusCode: null, messages: [], headers: {}, trailers: {}, error: err?.message || String(err), durationMs: Math.round(performance.now() - start) };
+      const errEntry: HistoryEntry = { id: id(), timestamp: now(), endpoint: st.request.endpoint, bodies: st.request.bodies, headers: st.request.headers, response: errResult };
+      historyCache.put(errEntry.id, errEntry);
+      saveHistoryToStorage();
       set(s => {
         const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, response: errResult } : t);
-        return { tabs, response: errResult };
+        const totalError = s.totalError + 1;
+        saveTotals(s.totalOk, totalError);
+        return { tabs, response: errResult, history: historyCache.values(), totalError };
       });
     } finally {
       if (timeoutId !== undefined) clearTimeout(timeoutId);

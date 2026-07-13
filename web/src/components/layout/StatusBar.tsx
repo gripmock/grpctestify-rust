@@ -3,15 +3,13 @@ import { colors } from '../../lib/theme';
 import { FlaskConical, FolderGit2, Fingerprint, CircleHelp } from 'lucide-react';
 
 export function StatusBar() {
-  const history = useStore(s => s.history);
-  const address = useStore(s => s.address);
+  const totalOk = useStore(s => s.totalOk);
+  const totalError = useStore(s => s.totalError);
   const version = useStore(s => s.version);
   const lastResponse = useStore(s => s.response);
   const projectRoot = useStore(s => s.projectRoot);
   const sessionId = useStore(s => s.sessionId);
-
-  const ok = history.filter(h => h.response?.status === 'ok').length;
-  const err = history.filter(h => h.response?.status === 'error').length;
+  const address = useStore(s => s.address);
 
   
   const connColor = lastResponse?.status === 'ok' ? colors.success
@@ -32,9 +30,9 @@ export function StatusBar() {
 
       <Divider />
 
-      <span>{history.length} call{history.length !== 1 ? 's' : ''}</span>
-      {ok > 0 && <span style={{ color: colors.success }}>✓{ok}</span>}
-      {err > 0 && <span style={{ color: colors.error }}>✗{err}</span>}
+      <span>{totalOk + totalError} call{totalOk + totalError !== 1 ? 's' : ''}</span>
+      {totalOk > 0 && <span style={{ color: colors.success }}>✓{totalOk}</span>}
+      {totalError > 0 && <span style={{ color: colors.error }}>✗{totalError}</span>}
 
       <div style={{ flex: 1 }} />
 

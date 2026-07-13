@@ -193,6 +193,8 @@ export interface PlayStore {
   response: CallResult | null;
   responseTab: ResponseTab;
   history: HistoryEntry[];
+  totalOk: number;
+  totalError: number;
   version: string;
   sessionId: string;
   theme: 'light' | 'dark';
