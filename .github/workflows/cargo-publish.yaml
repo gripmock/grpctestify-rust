@@ -33,27 +33,57 @@ jobs:
           cargo test --release
       - name: Publish workspace crates
         run: |
+          # Sorted by dependency depth: no-dependency crates first
           CRATES=(
-            apif-twoq-cache apif-source-row apif-source-error
-            apif-cfg-runtime apif-query apif-ast apif-diagnostics
-            apif-utils apif-assert apif-state apif-parser
-            apif-report apif-plugins apif-execution apif-semantics
-            apif-optimizer apif-grpc-transport
+            # Level 0: no apif-* dependencies
+            apif-twoq-cache apif-source-error apif-cfg-runtime
+            apif-query apif-ast apif-diagnostics apif-utils
+            apif-state apif-grpc-transport
+            # Level 1: depend only on Level 0
+            apif-assert apif-parser apif-report
+            # Level 2
+            apif-plugins apif-semantics
+            # Level 3
+            apif-source-row apif-optimizer
+            # Level 4
+            apif-execution
           )
-          for CRATE in "${CRATES[@]}"; do
-            echo "::group::Publishing $CRATE"
-            while :; do
-              OUTPUT=$(cargo publish -p "$CRATE" 2>&1) && echo "$OUTPUT" && break
-              if echo "$OUTPUT" | grep -q "already exists"; then
-                echo "$CRATE already published"; break
+          declare -A DONE
+          MAX_PASSES=10
+          for PASS in $(seq 1 $MAX_PASSES); do
+            echo "::group::Pass $PASS/$MAX_PASSES"
+            ALL_DONE=true
+            for CRATE in "${CRATES[@]}"; do
+              if [ "${DONE[$CRATE]}" = "1" ]; then
+                continue
               fi
-              if echo "$OUTPUT" | grep -q "429"; then sleep 300; continue; fi
+              ALL_DONE=false
+              OUTPUT=$(cargo publish -p "$CRATE" 2>&1) && echo "$OUTPUT" && DONE[$CRATE]=1 && continue
+              if echo "$OUTPUT" | grep -q "already exists"; then
+                echo "$CRATE already published"
+                DONE[$CRATE]=1
+                continue
+              fi
+              if echo "$OUTPUT" | grep -q "429"; then
+                echo "Rate limited, will retry in next pass"
+                continue
+              fi
+              if echo "$OUTPUT" | grep -q "failed to select a version"; then
+                echo "$CRATE dependencies not yet published, will retry in next pass"
+                continue
+              fi
               echo "$OUTPUT"
               echo "::error::$CRATE publish failed"
               exit 1
             done
             echo "::endgroup::"
-            sleep 30
+            if $ALL_DONE; then
+              echo "All crates published successfully"
+              break
+            fi
+            if [ "$PASS" -lt "$MAX_PASSES" ]; then
+              sleep 30
+            fi
           done
       - name: Publish root crate
         run: |
