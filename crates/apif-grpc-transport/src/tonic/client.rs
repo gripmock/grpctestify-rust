@@ -521,9 +521,9 @@ mod tests {
     #[test]
     fn test_insert_metadata_version() {
         let mut meta = MetadataMap::new();
-        insert_metadata(&mut meta, None, "1.8.7");
+        insert_metadata(&mut meta, None, "test-version");
         let ua = meta.get("user-agent").unwrap();
-        assert_eq!(ua.to_str().unwrap(), "grpctestify/1.8.7");
+        assert_eq!(ua.to_str().unwrap(), "grpctestify/test-version");
     }
 
     #[test]
@@ -532,7 +532,7 @@ mod tests {
         let mut custom = HashMap::new();
         custom.insert("user-agent".to_string(), "custom-ua/2.0".to_string());
         custom.insert("x-custom".to_string(), "value1".to_string());
-        insert_metadata(&mut meta, Some(&custom), "1.8.7");
+        insert_metadata(&mut meta, Some(&custom), "test-version");
         assert_eq!(
             meta.get("user-agent").unwrap().to_str().unwrap(),
             "custom-ua/2.0"
