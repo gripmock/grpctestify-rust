@@ -51,3 +51,15 @@ updates:
     open-pull-requests-limit: 10
     commit-message:
       prefix: "chore(npm-deps)"
+  # Node.js dependencies (UI / frontend)
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: daily
+    groups:
+      ui:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(ui-deps)"

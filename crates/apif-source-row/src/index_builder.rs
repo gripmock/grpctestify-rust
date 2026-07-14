@@ -1,8 +1,8 @@
-use super::index::{KeyType, SourceIndex};
-use super::{SourceDefinition, open_source_reader};
-use crate::utils::file::FileUtils;
+use crate::SourceRow;
+use crate::index::{KeyType, SourceIndex};
+use crate::{SourceDefinition, open_source_reader};
 use anyhow::{Context, Result};
-use apif_source_row::SourceRow;
+use apif_utils::FileUtils;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};

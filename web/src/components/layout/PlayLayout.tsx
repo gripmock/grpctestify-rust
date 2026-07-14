@@ -8,6 +8,9 @@ import { RequestPanel } from '../request/RequestPanel';
 import { ResponsePanel } from '../response/ResponsePanel';
 import { GctfInfoPanel } from '../request/GctfInfoPanel';
 import { useStore } from '../../lib/store';
+import { useDeepLink } from '../../lib/routing';
+import { KeyboardShortcutHelp } from '../ui/KeyboardShortcutHelp';
+import { SHORTCUT_DEFINITIONS, matchesHotkey, matchesDigitShortcut, isInputFocused } from '../../lib/hotkeys';
 import { FolderOpen, Clock, Upload } from 'lucide-react';
 
 type SidebarTab = 'collections' | 'history' | 'import';
@@ -23,6 +26,7 @@ export function PlayLayout() {
   const loadStartupInfo = useStore(s => s.loadStartupInfo);
   const checkHealth = useStore(s => s.checkHealth);
   const collectionParsed = useStore(s => s.collectionParsed);
+  const collectionsMtime = useStore(s => s.collectionsMtime);
 
   useEffect(() => { refreshCollections(); loadStartupInfo(); }, []);
 
@@ -32,6 +36,91 @@ export function PlayLayout() {
     const interval = setInterval(checkHealth, 15000);
     return () => clearInterval(interval);
   }, []);
+
+  
+  useEffect(() => {
+    let active = true;
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/info');
+        if (!res.ok || !active) return;
+        const data = await res.json();
+        if (data.collections_mtime !== undefined && data.collections_mtime !== collectionsMtime) {
+          refreshCollections();
+        }
+      } catch {  }
+    };
+    const interval = setInterval(poll, 3000);
+    return () => { active = false; clearInterval(interval); };
+  }, [collectionsMtime, refreshCollections]);
+
+  useDeepLink();
+
+  const tabs = useStore(s => s.tabs);
+  const activeTabId = useStore(s => s.activeTabId);
+  const sidebarVisible = useStore(s => s.sidebarVisible);
+  const showHotkeyHelp = useStore(s => s.showHotkeyHelp);
+  const addTab = useStore(s => s.addTab);
+  const removeTab = useStore(s => s.removeTab);
+  const setActiveTab = useStore(s => s.setActiveTab);
+  const execute = useStore(s => s.execute);
+  const toggleSidebar = useStore(s => s.toggleSidebar);
+  const setShowHotkeyHelp = useStore(s => s.setShowHotkeyHelp);
+  const closeHotkeyHelp = useCallback(() => setShowHotkeyHelp(false), [setShowHotkeyHelp]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (isInputFocused()) return;
+
+      // Alt+1-9: use e.code to work on any keyboard layout
+      const digit = matchesDigitShortcut(e);
+      if (digit) {
+        e.preventDefault();
+        const idx = parseInt(digit, 10) - 1;
+        if (idx < tabs.length) setActiveTab(tabs[idx].id);
+        return;
+      }
+
+      for (const def of SHORTCUT_DEFINITIONS) {
+        if (!matchesHotkey(e, def)) continue;
+        e.preventDefault();
+
+        switch (def.key) {
+          case 'Enter':
+            execute();
+            return;
+          case 'w':
+            if (activeTabId) removeTab(activeTabId);
+            return;
+          case 'T':
+            addTab();
+            return;
+          case ']':
+            if (tabs.length > 1 && activeTabId) {
+              const idx = tabs.findIndex(t => t.id === activeTabId);
+              const next = (idx + 1) % tabs.length;
+              setActiveTab(tabs[next].id);
+            }
+            return;
+          case '[':
+            if (tabs.length > 1 && activeTabId) {
+              const idx = tabs.findIndex(t => t.id === activeTabId);
+              const prev = (idx - 1 + tabs.length) % tabs.length;
+              setActiveTab(tabs[prev].id);
+            }
+            return;
+          case 'b':
+            toggleSidebar();
+            return;
+          case '?':
+            setShowHotkeyHelp(true);
+            return;
+        }
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [tabs, activeTabId, addTab, removeTab, setActiveTab, execute, toggleSidebar, setShowHotkeyHelp]);
 
   const [sidebarW, setSidebarW] = useState(250);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('collections');
@@ -58,7 +147,7 @@ export function PlayLayout() {
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <TopBar />
       <div ref={containerRef} style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        {}
+        {sidebarVisible && <>
         <aside style={{
           width: sidebarW, minWidth: 180, display: 'flex', flexDirection: 'column',
           background: 'var(--bg-secondary)',
@@ -89,11 +178,11 @@ export function PlayLayout() {
           </div>
         </aside>
 
-        {}
         <div
           onMouseDown={onMouseDown}
           style={{ width: 4, cursor: 'col-resize', background: 'var(--border)', flexShrink: 0 }}
         />
+        </>}
 
         {}
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -105,6 +194,7 @@ export function PlayLayout() {
         </main>
       </div>
       <StatusBar />
+      <KeyboardShortcutHelp open={showHotkeyHelp} onClose={closeHotkeyHelp} />
     </div>
   );
 }

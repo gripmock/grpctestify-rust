@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useStore } from '../../lib/store';
+import { useModal } from '../ui/ModalContext';
+import { useToast } from '../ui/ToastContext';
 import type { Environment, EnvLocalStatus } from '../../lib/types';
 import { btn, colors, css } from '../../lib/theme';
 import { Plus, Pencil, Trash2, Copy, Check, X, Settings, FolderGit2, Globe, FileText, Lock, FilePlus2, Eye, EyeOff, Search, ArrowLeft, Shield, ShieldOff, Info } from 'lucide-react';
@@ -97,6 +99,9 @@ export function EnvironmentManager({ onClose }: Props) {
   const saveProjectEnvLocal = useStore(s => s.saveProjectEnvLocal);
   const deleteProjectEnvLocal = useStore(s => s.deleteProjectEnvLocal);
 
+  const modal = useModal();
+  const toast = useToast();
+
   const [tab, setTab] = useState<'project' | 'browser'>(projectRoot ? 'project' : 'browser');
   const [view, setView] = useState<View>({ kind: 'list' });
   const [envSearch, setEnvSearch] = useState('');
@@ -177,14 +182,14 @@ export function EnvironmentManager({ onClose }: Props) {
 
   const handleSaveShared = async () => {
     if (!selectedEnv) return;
-    try { await saveProjectEnv(selectedEnv, sharedContent); setDirtyShared(false); } catch (err: any) { alert(err?.message); }
+    try { await saveProjectEnv(selectedEnv, sharedContent); setDirtyShared(false); } catch (err: any) { toast.error(err?.message); }
   };
   const handleSaveLocal = async () => {
     if (!selectedEnv) return;
-    try { await saveProjectEnvLocal(selectedEnv, localContent); setLocalStatus({ exists: true, content: localContent }); setDirtyLocal(false); } catch (err: any) { alert(err?.message); }
+    try { await saveProjectEnvLocal(selectedEnv, localContent); setLocalStatus({ exists: true, content: localContent }); setDirtyLocal(false); } catch (err: any) { toast.error(err?.message); }
   };
   const handleDeleteLocal = async () => {
-    if (!selectedEnv || !confirm('Delete local overrides for this environment?')) return;
+    if (!selectedEnv || !await modal.confirm('Delete', 'Delete local overrides for this environment?')) return;
     try { await deleteProjectEnvLocal(selectedEnv); setLocalContent(''); setLocalStatus({ exists: false, content: null }); setDirtyLocal(false); } catch {  }
   };
   const handleCreateEnv = async () => {
@@ -194,7 +199,7 @@ export function EnvironmentManager({ onClose }: Props) {
       const st = useStore.getState();
       useStore.setState({ projectEnvNames: [...st.projectEnvNames, name].sort() });
       setNewEnvName(''); loadEnv(name);
-    } catch (err: any) { alert(err?.message); }
+    } catch (err: any) { toast.error(err?.message); }
   };
   const hasLocalOverrides = localStatus?.exists || dirtyLocal;
 
@@ -332,7 +337,7 @@ export function EnvironmentManager({ onClose }: Props) {
                 {projectEnvNames.length === 0 && <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '8px 0' }}>No .env files yet</div>}
                 <div style={{ flex: 1, overflow: 'auto' }}>
                   {projectEnvNames.map(name => (
-                    <div key={name} onClick={() => { if (!dirtyShared || confirm('Discard changes?')) loadEnv(name); }} style={{
+                    <div key={name} onClick={async () => { if (!dirtyShared || await modal.confirm('Discard', 'Discard changes?')) loadEnv(name); }} style={{
                       display: 'flex', alignItems: 'center', gap: 4, padding: '5px 8px', borderRadius: 5,
                       cursor: 'pointer', fontSize: 12, marginBottom: 2,
                       background: selectedEnv === name ? colors.accent + '18' : 'transparent',
@@ -465,7 +470,7 @@ export function EnvironmentManager({ onClose }: Props) {
                     {}
                     <button onClick={() => openEdit(env)} style={btn('ghost', 'sm')} title="Edit"><Pencil size={13} /></button>
                     <button onClick={() => { addEnvironment({ ...env, name: `${env.name} (copy)` }); }} style={btn('ghost', 'sm')} title="Duplicate"><Copy size={13} /></button>
-                    <button onClick={() => { if (confirm(`Delete "${env.name}"?`)) deleteEnvironment(env.name); }} style={btn('ghost', 'sm')} title="Delete"><Trash2 size={13} /></button>
+                    <button onClick={async () => { if (await modal.confirm('Delete', `Delete "${env.name}"?`)) deleteEnvironment(env.name); }} style={btn('ghost', 'sm')} title="Delete"><Trash2 size={13} /></button>
                   </div>
                 );
               })}

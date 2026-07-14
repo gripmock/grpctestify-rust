@@ -1,12 +1,12 @@
-use super::filter::{FilterCondition, matches_all as matches_filter_all};
-use super::index::SourceIndex;
-use super::index_builder::index_path_for_source;
-use super::memory::InMemorySource;
-use super::{SourceDefinition, SourceReader, open_source_reader};
-use crate::utils::file::FileUtils;
+use crate::SourceRow;
+use crate::filter::{FilterCondition, matches_all as matches_filter_all};
+use crate::index::SourceIndex;
+use crate::index_builder::index_path_for_source;
+use crate::memory::InMemorySource;
+use crate::{SourceDefinition, SourceReader, open_source_reader};
 use anyhow::{Context, Result};
-use apif_source_row::SourceRow;
 use apif_twoq_cache::TwoQCache;
+use apif_utils::FileUtils;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -144,8 +144,6 @@ pub enum FallbackType {
 struct DimensionJoin {
     source_name: String,
     foreign_key: String,
-    #[allow(dead_code)]
-    remote_key: String,
     join_type: super::definition::JoinType,
 }
 
@@ -387,7 +385,6 @@ impl SourceDrivenConfig {
             dim_joins.push(DimensionJoin {
                 source_name: dim_name.clone(),
                 foreign_key: key_col.clone(),
-                remote_key: key_col.clone(),
                 join_type: def.join_type_or_default(),
             });
 

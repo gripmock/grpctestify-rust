@@ -6,7 +6,7 @@ use super::super::parser::GctfDocument;
 use super::runner_helpers;
 use super::{AssertionHandler, RequestHandler, RequestSendResult, ResponseHandler};
 use crate::assert::{AssertionEngine, JsonComparator, get_json_diff};
-use crate::grpc::{GrpcClient, GrpcClientConfig, WireProtocol};
+use crate::grpc::{GrpcClient, GrpcClientConfig};
 use crate::optimizer;
 use crate::parser::ast::{SectionContent, SectionType};
 use crate::plugins::{AssertionTiming, PluginManager};
@@ -635,9 +635,9 @@ pub struct TestRunner {
     no_assert: bool,
     write_mode: bool,
     verbose: bool,
+    protocol_override: Option<crate::grpc::WireProtocol>,
     assertion_engine: AssertionEngine,
     coverage_collector: Option<Arc<CoverageCollector>>,
-    // Handler modules for delegated functionality
     request_handler: RequestHandler,
     response_handler: ResponseHandler,
     assertion_handler: AssertionHandler,
@@ -707,13 +707,19 @@ impl TestRunner {
             no_assert,
             write_mode,
             verbose,
+            protocol_override: None,
             assertion_engine: AssertionEngine::with_registry(PLUGIN_REGISTRY.clone()),
             coverage_collector: coverage_collector.clone(),
-            // Initialize handler modules
             request_handler: RequestHandler::new(no_assert, verbose, coverage_collector.clone()),
             response_handler: ResponseHandler::new(no_assert),
             assertion_handler: AssertionHandler::new(verbose),
         }
+    }
+
+    /// Set protocol override. When set, this takes priority over the GCTF file's OPTIONS.protocol.
+    pub fn with_protocol(mut self, protocol: crate::grpc::WireProtocol) -> Self {
+        self.protocol_override = Some(protocol);
+        self
     }
 
     /// Run a test document chain.
@@ -781,7 +787,8 @@ impl TestRunner {
             None => self.timeout_seconds,
         };
 
-        let compression = runner_helpers::parse_compression_option(&options);
+        let compression = runner_helpers::parse_compression_option(&options)
+            .unwrap_or(crate::config::compression_from_env());
 
         // Validate file path in update mode
         if effective_write_mode {
@@ -804,7 +811,7 @@ impl TestRunner {
         }
 
         // Extract address
-        let address = runner_helpers::effective_address(document);
+        let address = runner_helpers::effective_address(document, self.protocol_override);
 
         // Extract endpoint
         let (package, service, method) = match document.parse_endpoint() {
@@ -849,7 +856,18 @@ impl TestRunner {
             target_service: Some(full_service.clone()),
             compression,
             connection_id: 0,
-            protocol: WireProtocol::Grpc,
+            protocol: self.protocol_override.unwrap_or_else(|| {
+                document
+                    .get_options()
+                    .and_then(|o| {
+                        o.get("protocol").map(|s| {
+                            s.parse::<crate::grpc::WireProtocol>()
+                                .unwrap_or(crate::grpc::WireProtocol::Grpc)
+                        })
+                    })
+                    .unwrap_or(crate::grpc::WireProtocol::Grpc)
+            }),
+            version: env!("CARGO_PKG_VERSION").to_string(),
         };
 
         let client = GrpcClient::new(client_config).await?;
@@ -1404,9 +1422,7 @@ impl TestRunner {
                                 let error_json =
                                     super::error_handler::ErrorHandler::status_to_json(&status);
                                 last_error_json = Some(error_json.clone());
-                                captured_trailers.extend(runner_helpers::metadata_map_to_hashmap(
-                                    status.metadata(),
-                                ));
+                                captured_trailers.extend(status.metadata().clone());
                                 if !effective_no_assert
                                     && let SectionContent::Assertions(lines) = &section.content
                                 {
@@ -1501,7 +1517,7 @@ impl TestRunner {
                                             let (matches, got, mismatch_reason) = if let Some(
                                                 status,
                                             ) =
-                                                e.downcast_ref::<tonic::Status>()
+                                                e.downcast_ref::<apif_grpc_transport::GrpcError>()
                                             {
                                                 last_error_message =
                                                     Some(status.message().to_string());
@@ -1512,11 +1528,7 @@ impl TestRunner {
                                                 last_error_json = Some(actual_error_json.clone());
                                                 error_assert_target =
                                                     Some(actual_error_json.clone());
-                                                captured_trailers.extend(
-                                                    runner_helpers::metadata_map_to_hashmap(
-                                                        status.metadata(),
-                                                    ),
-                                                );
+                                                captured_trailers.extend(status.metadata().clone());
                                                 let status_name =
                                                     Self::grpc_code_name_from_numeric(
                                                         status.code() as i64,
@@ -1553,9 +1565,9 @@ impl TestRunner {
 
                                             if self.verbose {
                                                 println!("🔍 gRPC error received: '{}'", got);
-                                                if let Some(status) =
-                                                    e.downcast_ref::<tonic::Status>()
-                                                {
+                                                if let Some(status) = e
+                                                    .downcast_ref::<apif_grpc_transport::GrpcError>(
+                                                ) {
                                                     let details_json = super::error_handler::ErrorHandler::status_details_json(status);
                                                     if details_json != Value::Null
                                                         && details_json
@@ -1578,9 +1590,9 @@ impl TestRunner {
                                                 if let Some(reason) = mismatch_reason {
                                                     failure_reasons.push(format!("  - {}", reason));
                                                 }
-                                                if let Some(status) =
-                                                    e.downcast_ref::<tonic::Status>()
-                                                {
+                                                if let Some(status) = e
+                                                    .downcast_ref::<apif_grpc_transport::GrpcError>(
+                                                ) {
                                                     let actual_json =
                                                     super::error_handler::ErrorHandler::status_to_json(
                                                         status,
@@ -1616,8 +1628,9 @@ impl TestRunner {
                                                 &next_section.content
                                         {
                                             if error_assert_target.is_none()
-                                                && let Some(status) =
-                                                    e.downcast_ref::<tonic::Status>()
+                                                && let Some(status) = e
+                                                    .downcast_ref::<apif_grpc_transport::GrpcError>(
+                                                )
                                             {
                                                 let actual_error_json =
                                                 super::error_handler::ErrorHandler::status_to_json(
@@ -1684,9 +1697,7 @@ impl TestRunner {
                                     super::error_handler::ErrorHandler::status_to_json(&status);
                                 last_error_json = Some(error_json.clone());
                                 last_error_timing = error_scope_timing;
-                                captured_trailers.extend(runner_helpers::metadata_map_to_hashmap(
-                                    status.metadata(),
-                                ));
+                                captured_trailers.extend(status.metadata().clone());
                                 let should_format_error = effective_no_assert || self.verbose;
                                 let got = should_format_error.then(|| {
                                     let status_name =
@@ -2277,7 +2288,7 @@ mod tests {
 
         assert_eq!(
             runner_helpers::parse_compression_option(&options),
-            crate::grpc::CompressionMode::Gzip
+            Some(crate::grpc::CompressionMode::Gzip)
         );
     }
 
@@ -2288,23 +2299,20 @@ mod tests {
 
         assert_eq!(
             runner_helpers::parse_compression_option(&options),
-            crate::grpc::CompressionMode::None
+            Some(crate::grpc::CompressionMode::None)
         );
     }
 
     #[test]
     fn test_parse_compression_option_fallback_to_env() {
-        let _guard = ENV_MUTEX.lock().expect("ENV_MUTEX should not be poisoned");
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::set_var(crate::config::ENV_GRPCTESTIFY_COMPRESSION, "gzip");
         }
 
         let mut options = HashMap::new();
         options.insert("compression".to_string(), "invalid".to_string());
-        assert_eq!(
-            runner_helpers::parse_compression_option(&options),
-            crate::grpc::CompressionMode::Gzip
-        );
+        assert_eq!(runner_helpers::parse_compression_option(&options), None);
 
         unsafe {
             std::env::remove_var(crate::config::ENV_GRPCTESTIFY_COMPRESSION);
@@ -2346,7 +2354,7 @@ mod tests {
 
     #[test]
     fn test_tls_env_defaults_uses_grpctestify_prefix() {
-        let _guard = ENV_MUTEX.lock().expect("ENV_MUTEX should not be poisoned");
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         unsafe {
             std::env::set_var(crate::config::ENV_GRPCTESTIFY_TLS_CA_FILE, "/tmp/ca.pem");
@@ -2380,7 +2388,7 @@ mod tests {
 
     #[test]
     fn test_tls_env_defaults_ignores_empty_values() {
-        let _guard = ENV_MUTEX.lock().expect("ENV_MUTEX should not be poisoned");
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         unsafe {
             std::env::set_var(crate::config::ENV_GRPCTESTIFY_TLS_CA_FILE, "");
@@ -2569,11 +2577,17 @@ mod tests {
 
     #[test]
     fn test_metadata_map_to_hashmap_extracts_ascii_values() {
-        let mut metadata = tonic::metadata::MetadataMap::new();
-        metadata.insert("code", "EXTERNAL_SERVICE_ERROR_CODE".parse().unwrap());
-        metadata.insert("message", "External service error message".parse().unwrap());
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            "code".to_string(),
+            "EXTERNAL_SERVICE_ERROR_CODE".to_string(),
+        );
+        metadata.insert(
+            "message".to_string(),
+            "External service error message".to_string(),
+        );
 
-        let trailers = runner_helpers::metadata_map_to_hashmap(&metadata);
+        let trailers = metadata;
         assert_eq!(
             trailers.get("code"),
             Some(&"EXTERNAL_SERVICE_ERROR_CODE".to_string())

@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useStore } from '../../lib/store';
+import { useModal } from '../ui/ModalContext';
 import { BodyEditor } from './BodyEditor';
 import { HeadersEditor } from './HeadersEditor';
 import { EnvEditor } from './EnvEditor';
@@ -27,12 +28,15 @@ export function RequestPanel() {
   const getGrpcurlCommand = useStore(s => s.getGrpcurlCommand);
   const reflectionMethods = useStore(s => s.reflectionMethods);
   const address = useStore(s => s.address);
+  const protocol = useStore(s => s.protocol);
   const tls = useStore(s => s.tls);
   const tlsInsecure = useStore(s => s.tlsInsecure);
   const selectedCollection = useStore(s => s.selectedCollection);
 
   const saveWorkspace = useStore(s => s.saveWorkspace);
+  const saveWorkspaceAs = useStore(s => s.saveWorkspaceAs);
   const workspacePath = useStore(s => s.workspacePath);
+  const modal = useModal();
 
   const reflectStatus = useStore(s => s.reflectStatus);
   const reflect = useStore(s => s.reflect);
@@ -48,18 +52,6 @@ export function RequestPanel() {
 
   const isExecuting = useStore(s => s.response?.status) === 'pending';
   const canExecute = !!request.endpoint && !isExecuting;
-
-  
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-        e.preventDefault();
-        if (canExecute) execute();
-      }
-    };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [canExecute]);
 
   
   const handleEndpointFocus = () => {
@@ -112,6 +104,7 @@ export function RequestPanel() {
           tls: tls || undefined,
           tls_insecure: tls ? tlsInsecure : undefined,
           collection_path: selectedCollection || undefined,
+          protocol: protocol || undefined,
         }),
       });
       const data = await res.json();
@@ -128,6 +121,20 @@ export function RequestPanel() {
   };
 
   const handleSave = async () => {
+    if (!workspacePath) {
+      const name = await modal.prompt('Save As', 'Save as:', 'untitled.gctf');
+      if (!name) return;
+      setSaving(true);
+      setGrpurlError(null);
+      try {
+        await saveWorkspaceAs(name);
+      } catch (err: any) {
+        setGrpurlError(err?.message || 'Save failed');
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
     setSaving(true);
     setGrpurlError(null);
     try {

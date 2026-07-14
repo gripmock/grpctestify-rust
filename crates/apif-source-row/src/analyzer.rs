@@ -1,8 +1,8 @@
-use crate::parser::ast::{GctfDocument, SectionContent, SectionType};
+use apif_ast::{GctfDocument, SectionContent, SectionType};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 
-use super::SourceDefinition;
+use crate::SourceDefinition;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemplateRef {
@@ -114,7 +114,7 @@ pub fn effective_source_name(def: &SourceDefinition, index: usize) -> String {
     }
 }
 
-fn extract_template_refs(document: &GctfDocument) -> Vec<TemplateRef> {
+pub(crate) fn extract_template_refs(document: &GctfDocument) -> Vec<TemplateRef> {
     let mut refs = Vec::new();
     for section in &document.sections {
         if !section.raw_content.is_empty() {
@@ -201,7 +201,7 @@ mod tests {
     use super::*;
 
     fn parse_doc(content: &str) -> GctfDocument {
-        crate::parser::parse_gctf_from_str(content, "test.gctf").unwrap()
+        apif_parser::parse_gctf_from_str(content, "test.gctf").unwrap()
     }
 
     #[test]

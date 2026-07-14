@@ -1,8 +1,10 @@
 import { useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import { useStore } from '../../lib/store';
+import { useModal } from '../ui/ModalContext';
+import { useToast } from '../ui/ToastContext';
 import type { TreeNode } from '../../lib/types';
 import { btn, colors } from '../../lib/theme';
-import { FileJson, Folder, FolderOpen, ChevronRight, RefreshCw, Search, Tag, Pencil, Trash2, FolderPlus } from 'lucide-react';
+import { FileJson, Folder, FolderOpen, ChevronRight, RefreshCw, Search, Tag, Pencil, Trash2, FolderPlus, Copy } from 'lucide-react';
 
 import { buildTree, sortTree, filterTree, collectTags } from '../../lib/tree';
 
@@ -23,6 +25,8 @@ export function Sidebar() {
   const [expandedTags, setExpandedTags] = useState(false);
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
   const ctxRef = useRef<HTMLDivElement>(null);
+  const modal = useModal();
+  const toast = useToast();
 
   const allTags = useMemo(() => collectTags(collections), [collections]);
 
@@ -62,19 +66,19 @@ export function Sidebar() {
   }, []);
 
   
-  const handleNewFolder = useCallback(async (parentPath: string) => {
-    const name = prompt('Folder name:');
+  const handleNewFolder = async (parentPath: string) => {
+    const name = await modal.prompt('New Folder', 'Folder name:');
     if (!name?.trim()) return;
     const fullPath = parentPath ? `${parentPath}/${name.trim()}` : name.trim();
     try {
       const res = await fetch(`/api/dir/${fullPath}`, { method: 'POST' });
-      if (!res.ok) { alert('Failed to create folder'); return; }
+      if (!res.ok) { toast.error('Failed to create folder'); return; }
       refreshCollections();
-    } catch { alert('Failed to create folder'); }
-  }, [refreshCollections]);
+    } catch { toast.error('Failed to create folder'); }
+  };
 
-  const handleNewFile = useCallback(async (parentPath: string) => {
-    const name = prompt('File name (without .gctf):');
+  const handleNewFile = async (parentPath: string) => {
+    const name = await modal.prompt('New File', 'File name (without .gctf):');
     if (!name?.trim()) return;
     const fileName = `${name.trim()}.gctf`;
     const fullPath = parentPath ? `${parentPath}/${fileName}` : fileName;
@@ -84,13 +88,13 @@ export function Sidebar() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: fullPath, content: '--- ENDPOINT ---\n\n--- REQUEST ---\n{}\n' }),
       });
-      if (!res.ok) { alert('Failed to create file'); return; }
+      if (!res.ok) { toast.error('Failed to create file'); return; }
       refreshCollections();
-    } catch { alert('Failed to create file'); }
-  }, [refreshCollections]);
+    } catch { toast.error('Failed to create file'); }
+  };
   
-  const handleMove = useCallback(async (fromPath: string, toPath?: string) => {
-    const to = toPath || prompt('Move to path (rename if same parent):', fromPath);
+  const handleMove = async (fromPath: string, toPath?: string) => {
+    const to = toPath || await modal.prompt('Move / Rename', 'Move to path (rename if same parent):', fromPath);
     if (!to?.trim()) return;
     try {
       const res = await fetch('/api/move', {
@@ -98,10 +102,10 @@ export function Sidebar() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ from: fromPath, to: to.trim() }),
       });
-      if (!res.ok) { const err = await res.text().catch(() => ''); alert(err || 'Failed to move'); return; }
+      if (!res.ok) { const err = await res.text().catch(() => ''); toast.error(err || 'Failed to move'); return; }
       refreshCollections();
-    } catch { alert('Failed to move'); }
-  }, [refreshCollections]);
+    } catch { toast.error('Failed to move'); }
+  };
 
   
   const [dragOverPath, setDragOverPath] = useState<string | null>(null);
@@ -225,9 +229,25 @@ export function Sidebar() {
           <div onClick={() => { handleMove(ctxMenu.node.path); setCtxMenu(null); }} style={ctxItemStyle}>
             <Pencil size={13} /> Rename / Move
           </div>
-          {!ctxMenu.node.isDir && (
+          {!ctxMenu.node.isDir && (<>
             <div onClick={() => {
-              if (confirm(`Delete "${ctxMenu.node.path}"?`)) {
+              const p = ctxMenu.node.path;
+              if (navigator.clipboard?.writeText) {
+                navigator.clipboard.writeText(p);
+              } else {
+                const ta = document.createElement('textarea');
+                ta.value = p; ta.style.position = 'fixed'; ta.style.opacity = '0';
+                document.body.appendChild(ta); ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+              }
+              setCtxMenu(null);
+            }} style={ctxItemStyle}>
+              <Copy size={13} /> Copy path
+            </div>
+            <div onClick={async () => {
+              const ok = await modal.confirm('Delete', `Delete "${ctxMenu.node.path}"?`, { confirmText: 'Delete', cancelText: 'Cancel' });
+              if (ok) {
                 fetch(`/api/collections/${ctxMenu.node.path}`, { method: 'DELETE' })
                   .then(r => { if (r.ok) refreshCollections(); })
                   .catch(() => {});
@@ -236,7 +256,7 @@ export function Sidebar() {
             }} style={{ ...ctxItemStyle, color: 'var(--error)' }}>
               <Trash2 size={13} /> Delete
             </div>
-          )}
+            </>)}
         </div>
       )}
     </div>

@@ -55,7 +55,7 @@ pub fn build_grpcurl_command(
         .get_endpoint()
         .ok_or_else(|| anyhow::anyhow!("Missing ENDPOINT section"))?;
 
-    let address_raw = runner_helpers::effective_address(doc);
+    let address_raw = runner_helpers::effective_address(doc, None);
     let (address, plaintext_from_address) = grpcurl_address_parts(&address_raw);
 
     let tls_config = runner_helpers::build_tls_config(doc, gctf_file);
@@ -67,7 +67,7 @@ pub fn build_grpcurl_command(
     }
 
     let options = doc.get_options().unwrap_or_default();
-    if runner_helpers::parse_compression_option(&options) == CompressionMode::Gzip {
+    if runner_helpers::parse_compression_option(&options) == Some(CompressionMode::Gzip) {
         parts.push("-gzip".to_string());
     }
 

@@ -59,7 +59,7 @@ pub fn detect_format(path: &Path) -> Result<SourceFormat, apif_source_error::Sou
     Ok(detect_format_from_content(&content))
 }
 
-pub fn detect_format_from_content(content: &str) -> SourceFormat {
+pub(crate) fn detect_format_from_content(content: &str) -> SourceFormat {
     let first_line = content.lines().next().unwrap_or("");
 
     if first_line.trim_start().starts_with('{') {

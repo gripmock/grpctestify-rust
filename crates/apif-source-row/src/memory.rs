@@ -1,7 +1,7 @@
-use super::SourceReader;
+use crate::SourceReader;
+use crate::SourceRow;
 use anyhow::Result;
 use apif_source_error::SourceError;
-use apif_source_row::SourceRow;
 use std::collections::HashMap;
 
 pub struct InMemorySource {
@@ -72,7 +72,7 @@ impl InMemorySource {
 
     /// Filter the in-memory source, keeping only rows that match ALL filter conditions.
     pub fn filter(&self, conditions: &[super::filter::FilterCondition]) -> Self {
-        use super::filter::matches_all;
+        use crate::filter::matches_all;
         let mut filtered_data = HashMap::new();
         for (key, row) in &self.data {
             if matches_all(row, conditions) {
@@ -92,7 +92,7 @@ impl InMemorySource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bench::sources::CsvReader;
+    use crate::CsvReader;
     use std::io::{BufReader, Cursor};
 
     struct CsvFixtures;

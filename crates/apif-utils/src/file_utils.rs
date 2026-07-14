@@ -7,18 +7,22 @@ use std::path::{Path, PathBuf};
 pub struct FileUtils;
 
 impl FileUtils {
-    /// Collect all .gctf files from a directory, optionally excluding patterns
+    /// Collect all .gctf files from a directory, optionally excluding patterns.
+    /// Uses `ignore` crate which respects `.gitignore` and `.ignore` files.
     pub fn collect_test_files(path: &Path, exclude_patterns: &[String]) -> Vec<PathBuf> {
         let mut files = Vec::new();
-        let walker = walkdir::WalkDir::new(path).follow_links(true).into_iter();
+        let walker = ignore::WalkBuilder::new(path)
+            .git_global(true)
+            .git_ignore(true)
+            .git_exclude(true)
+            .build();
         for entry in walker.flatten() {
-            let path = entry.path();
-            if path
-                .extension()
+            let p = entry.path();
+            if p.extension()
                 .is_some_and(|ext| ext == "gctf" || ext == "apif")
-                && !is_excluded(path, exclude_patterns)
+                && !is_excluded(p, exclude_patterns)
             {
-                files.push(path.to_path_buf());
+                files.push(p.to_path_buf());
             }
         }
         files

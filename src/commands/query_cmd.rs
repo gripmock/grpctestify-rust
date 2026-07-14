@@ -637,16 +637,10 @@ impl SourceCollection {
                     path: resolved,
                 })
             } else {
-                Box::new(StreamingSource {
-                    path: resolved,
-                    def,
-                })
+                Box::new(StreamingSource { path: resolved })
             }
         } else {
-            Box::new(StreamingSource {
-                path: resolved,
-                def,
-            })
+            Box::new(StreamingSource { path: resolved })
         };
 
         self.sources.insert(name, source);
@@ -665,13 +659,11 @@ impl SourceCollection {
             } else {
                 Box::new(DirectFileSource {
                     path: path.to_path_buf(),
-                    index_col: index_col.map(|s| s.to_string()),
                 })
             }
         } else {
             Box::new(DirectFileSource {
                 path: path.to_path_buf(),
-                index_col: index_col.map(|s| s.to_string()),
             })
         };
 
@@ -744,9 +736,6 @@ impl QuerySource for IndexedSource {
 
 struct StreamingSource {
     path: PathBuf,
-
-    #[allow(dead_code)]
-    def: SourceDefinition,
 }
 
 impl QuerySource for StreamingSource {
@@ -781,9 +770,6 @@ impl QuerySource for StreamingSource {
 
 struct DirectFileSource {
     path: PathBuf,
-
-    #[allow(dead_code)]
-    index_col: Option<String>,
 }
 
 impl QuerySource for DirectFileSource {

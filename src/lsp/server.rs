@@ -8,7 +8,8 @@ use tower_lsp::jsonrpc::Result as LspResult;
 use tower_lsp::{Client, LanguageServer, LspService, Server, lsp_types::*};
 
 use crate::config;
-use crate::grpc::client::{GrpcClient, GrpcClientConfig, ProtoConfig, WireProtocol};
+use crate::grpc::client::{GrpcClient, GrpcClientConfig};
+use crate::grpc::{ProtoConfig, WireProtocol};
 use crate::lsp::handlers::{self, get_var_hover, get_variable_completions};
 use crate::lsp::variable_definition;
 use crate::parser::ast::SectionType;
@@ -109,11 +110,19 @@ impl GrpctestifyLsp {
         })
     }
 
+    fn protocol_from_document(doc: &GctfDocument) -> WireProtocol {
+        doc.get_options()
+            .and_then(|opts| opts.get("protocol").cloned())
+            .map(|s| s.parse::<WireProtocol>().unwrap_or_default())
+            .unwrap_or_default()
+    }
+
     async fn create_schema_client(
         &self,
         address: &str,
         proto_config: Option<ProtoConfig>,
         target_service: Option<String>,
+        protocol: WireProtocol,
     ) -> Option<GrpcClient> {
         const SCHEMA_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -126,7 +135,8 @@ impl GrpctestifyLsp {
             target_service,
             compression: Default::default(),
             connection_id: 0,
-            protocol: WireProtocol::Grpc,
+            protocol,
+            version: env!("CARGO_PKG_VERSION").to_string(),
         };
 
         let created = tokio::time::timeout(SCHEMA_TIMEOUT, GrpcClient::new(config)).await;
@@ -161,7 +171,11 @@ impl GrpctestifyLsp {
             }
         }
 
-        let Some(client) = self.create_schema_client(address, proto_config, None).await else {
+        let proto = WireProtocol::default();
+        let Some(client) = self
+            .create_schema_client(address, proto_config, None, proto)
+            .await
+        else {
             return Vec::new();
         };
 
@@ -214,17 +228,23 @@ impl GrpctestifyLsp {
             _ => return Vec::new(),
         };
 
+        let proto_config = Self::proto_config_from_document(doc, uri);
+        let proto = Self::protocol_from_document(doc);
         let address = doc
             .get_address(
                 std::env::var(config::ENV_GRPCTESTIFY_ADDRESS)
                     .ok()
                     .as_deref(),
             )
-            .unwrap_or_else(config::default_address);
-        let proto_config = Self::proto_config_from_document(doc, uri);
+            .unwrap_or_else(|| crate::grpc::default_address_for(proto).to_string());
 
         let Some(client) = self
-            .create_schema_client(&address, proto_config, Some(service_name.to_string()))
+            .create_schema_client(
+                &address,
+                proto_config,
+                Some(service_name.to_string()),
+                proto,
+            )
             .await
         else {
             return Vec::new();
@@ -403,17 +423,23 @@ impl GrpctestifyLsp {
             _ => return Vec::new(),
         };
 
+        let proto_config = Self::proto_config_from_document(doc, uri);
+        let proto = Self::protocol_from_document(doc);
         let address = doc
             .get_address(
                 std::env::var(config::ENV_GRPCTESTIFY_ADDRESS)
                     .ok()
                     .as_deref(),
             )
-            .unwrap_or_else(config::default_address);
-        let proto_config = Self::proto_config_from_document(doc, uri);
+            .unwrap_or_else(|| crate::grpc::default_address_for(proto).to_string());
 
         let Some(client) = self
-            .create_schema_client(&address, proto_config, Some(service_name.to_string()))
+            .create_schema_client(
+                &address,
+                proto_config,
+                Some(service_name.to_string()),
+                proto,
+            )
             .await
         else {
             return Vec::new();
@@ -903,9 +929,12 @@ impl LanguageServer for GrpctestifyLsp {
                                 ..CompletionItem::default()
                             });
 
+                            let proto = Self::protocol_from_document(&doc);
                             let address = handlers::get_address_from_document(&content)
                                 .or_else(|| std::env::var(config::ENV_GRPCTESTIFY_ADDRESS).ok())
-                                .unwrap_or_else(config::default_address);
+                                .unwrap_or_else(|| {
+                                    crate::grpc::default_address_for(proto).to_string()
+                                });
                             let proto_config = Self::proto_config_from_document(&doc, &uri);
                             items.extend(
                                 self.schema_endpoint_completions(&address, proto_config)

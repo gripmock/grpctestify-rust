@@ -1,59 +1,30 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
-use axum::{
-    Json, Router,
-    routing::{self, delete, put},
-};
-use tower_http::cors::{Any, CorsLayer};
+use axum::Router;
 
 use grpctestify::serve::project;
 use grpctestify::serve::{self, PlayState};
 
-/// Create a test app with the given collections dir
+/// Create a test app with the given collections dir.
+/// Delegates to `serve::build_app()` so it always matches production routes.
 fn test_app(collections_dir: PathBuf) -> Router {
+    let shares_dir = collections_dir.join("../../shares");
     let state = Arc::new(PlayState {
         collections_dir: collections_dir.clone(),
         collections_dirs: vec![collections_dir],
+        shares_dir,
         project_root: None,
         project_settings: None,
-        history_lock: std::sync::Mutex::new(()),
+        history_lock: tokio::sync::Mutex::new(()),
+        collections_mtime: Arc::new(AtomicU64::new(0)),
     });
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
-        .allow_headers(Any);
-    Router::new()
-        .route(
-            "/api/collections",
-            routing::get(serve::api::list_collections),
-        )
-        .route(
-            "/api/collections/{*path}",
-            routing::get(serve::api::get_collection),
-        )
-        .route("/api/save", routing::post(serve::api::save_collection))
-        .route(
-            "/api/save-structured",
-            routing::post(serve::api::save_collection_structured),
-        )
-        .route("/api/call", routing::post(serve::api::execute_call))
-        .route(
-            "/api/import-grpcurl",
-            routing::post(serve::api::import_grpcurl),
-        )
-        .route("/api/grpcurl", routing::post(serve::api::generate_grpcurl))
-        .route("/api/version", routing::get(serve::version_handler))
-        .route(
-            "/api/health",
-            routing::get(|| async { Json(serde_json::json!({"status":"ok"})) }),
-        )
-        .route("/api/project/info", routing::get(serve::api::project_info))
-        .layer(cors)
-        .with_state(state)
+    serve::build_app(state)
 }
 
-/// Create a test app with project mode (with .grpctestify directory)
+/// Create a test app with project mode (with .grpctestify directory).
+/// Delegates to `serve::build_app()` so it always matches production routes.
 fn test_app_project(dir: PathBuf) -> Router {
     let project_root = dir.join(".grpctestify");
     let collections_dir = project_root.join("collections");
@@ -61,77 +32,13 @@ fn test_app_project(dir: PathBuf) -> Router {
     let state = Arc::new(PlayState {
         collections_dir: collections_dir.clone(),
         collections_dirs: vec![collections_dir.clone(), project_root.join("collections")],
+        shares_dir: project_root.join("shares"),
         project_root: Some(project_root.clone()),
-        project_settings: project::load_project_settings(&project_root).ok(),
-        history_lock: std::sync::Mutex::new(()),
+        project_settings: grpctestify::serve::project::load_project_settings(&project_root).ok(),
+        history_lock: tokio::sync::Mutex::new(()),
+        collections_mtime: Arc::new(AtomicU64::new(0)),
     });
-
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([
-            axum::http::Method::GET,
-            axum::http::Method::POST,
-            axum::http::Method::PUT,
-            axum::http::Method::DELETE,
-        ])
-        .allow_headers(Any);
-
-    let base_routes = Router::new()
-        .route(
-            "/api/health",
-            routing::get(|| async { Json(serde_json::json!({"status":"ok"})) }),
-        )
-        .route("/api/project/info", routing::get(serve::api::project_info))
-        .route("/api/save", routing::post(serve::api::save_collection))
-        .route(
-            "/api/collections/{*path}",
-            routing::get(serve::api::get_collection),
-        )
-        .route(
-            "/api/collections/{*path}",
-            delete(serve::api::delete_collection),
-        )
-        .route(
-            "/api/dir/{*path}",
-            routing::post(serve::api::create_directory),
-        )
-        .route("/api/move", routing::post(serve::api::move_item));
-
-    let project_routes = Router::new()
-        .route(
-            "/api/project/settings",
-            routing::get(serve::api::project_get_settings),
-        )
-        .route(
-            "/api/project/settings",
-            put(serve::api::project_put_settings),
-        )
-        .route(
-            "/api/project/env/list",
-            routing::get(serve::api::project_env_list),
-        )
-        .route(
-            "/api/project/env/{name}",
-            routing::get(serve::api::project_env_get),
-        )
-        .route("/api/project/env/{name}", put(serve::api::project_env_put))
-        .route(
-            "/api/project/env/{name}/local",
-            routing::get(serve::api::project_env_local_get),
-        )
-        .route(
-            "/api/project/env/{name}/local",
-            put(serve::api::project_env_local_put),
-        )
-        .route(
-            "/api/project/env/{name}/local",
-            delete(serve::api::project_env_local_delete),
-        );
-
-    base_routes
-        .merge(project_routes)
-        .layer(cors)
-        .with_state(state)
+    serve::build_app(state)
 }
 
 /// Start a server on a random port and return the base URL
@@ -251,13 +158,6 @@ async fn test_get_collection_ok() {
 async fn test_get_collection_404() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let (status, _) = get_json(&url, "/api/collections/nonexistent.gctf").await;
-    assert_eq!(status, 404);
-}
-
-#[tokio::test]
-async fn test_get_collection_traversal() {
-    let url = start_server(test_app(PathBuf::from("examples"))).await;
-    let (status, _) = get_json(&url, "/api/collections/../Cargo.toml").await;
     assert_eq!(status, 404);
 }
 

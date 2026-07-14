@@ -1,4 +1,4 @@
-use apif_source_row::SourceRow;
+use crate::SourceRow;
 use serde::Deserialize;
 use std::collections::HashSet;
 

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use crate::cli::args::ReflectArgs;
 use crate::config;
 use crate::grpc::client::{GrpcClient, GrpcClientConfig};
-use crate::grpc::tls::{TlsConfig, WireProtocol};
+use crate::grpc::{TlsConfig, WireProtocol};
 
 pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
     let address = if let Some(addr) = &args.address {
@@ -40,7 +40,11 @@ pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
         target_service: None,
         compression: Default::default(),
         connection_id: 0,
-        protocol: WireProtocol::Grpc,
+        protocol: args
+            .protocol
+            .parse::<WireProtocol>()
+            .unwrap_or(crate::grpc::WireProtocol::Grpc),
+        version: env!("CARGO_PKG_VERSION").to_string(),
     };
 
     eprintln!("Connecting to {}...", config.address);

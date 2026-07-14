@@ -1,4 +1,14 @@
-export type WireProtocol = 'grpc' | 'grpc-web' | 'connect';
+export type WireProtocol = 'grpc' | 'grpc-web' | 'connectrpc';
+
+export function defaultAddressFor(protocol: WireProtocol): string {
+  switch (protocol) {
+    case 'connectrpc':
+    case 'grpc-web':
+      return 'localhost:4769';
+    default:
+      return 'localhost:4770';
+  }
+}
 
 export interface RequestConfig {
   endpoint: string;
@@ -97,6 +107,21 @@ export interface ClientSettings {
   protocol: WireProtocol;
   tls: boolean;
   tlsInsecure: boolean;
+  requestTimeoutMs: number;
+}
+
+export interface ShareState {
+  id: string;
+  endpoint: string;
+  headers: Record<string, string>;
+  bodies: string[];
+  address: string | null;
+  protocol: string | null;
+  tls: boolean | null;
+  tls_insecure: boolean | null;
+  created_at: number;
+  expires_at: number;
+  access_count: number;
 }
 
 
@@ -178,6 +203,8 @@ export interface PlayStore {
   response: CallResult | null;
   responseTab: ResponseTab;
   history: HistoryEntry[];
+  totalOk: number;
+  totalError: number;
   version: string;
   sessionId: string;
   theme: 'light' | 'dark';
@@ -185,13 +212,18 @@ export interface PlayStore {
   reflectStatus: 'idle' | 'loading' | 'ok' | 'error';
   reflectError: string | null;
   serverHealthy: boolean;
+  collectionsMtime: number;
   environments: Environment[];
   activeEnvironment: string | null;
+  sidebarVisible: boolean;
+  showHotkeyHelp: boolean;
 
+  requestTimeoutMs: number;
   setAddress: (v: string) => void;
   setProtocol: (v: WireProtocol) => void;
   setTls: (v: boolean) => void;
   setTlsInsecure: (v: boolean) => void;
+  setRequestTimeoutMs: (v: number) => void;
   setEndpoint: (v: string) => void;
   setRequestBody: (idx: number, v: string) => void;
   addRequestBody: () => void;
@@ -209,7 +241,7 @@ export interface PlayStore {
   loadCollection: (path: string) => Promise<void>;
   newWorkspace: () => void;
   saveWorkspace: () => Promise<void>;
-  saveWorkspaceAs: () => Promise<void>;
+  saveWorkspaceAs: (name: string) => Promise<void>;
   isDirty: () => boolean;
   execute: () => Promise<void>;
   loadStartupInfo: () => Promise<void>;
@@ -226,6 +258,8 @@ export interface PlayStore {
   restoreHistory: (entry: HistoryEntry) => void;
   setHistory: (v: HistoryEntry[]) => void;
   clearHistory: () => void;
+  toggleSidebar: () => void;
+  setShowHotkeyHelp: (v: boolean) => void;
   refreshCollections: () => Promise<void>;
 
   

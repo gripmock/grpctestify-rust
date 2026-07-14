@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Project-wide settings stored in settings.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -196,6 +197,60 @@ pub fn append_history_entry(root: &Path, session: &str, entry: &str) -> Result<(
     Ok(())
 }
 
+/* ── share helpers ─────────────────────────────────── */
+
+pub fn ensure_shares_dir(shares_dir: &Path) -> Result<PathBuf> {
+    fs::create_dir_all(shares_dir)?;
+    Ok(shares_dir.to_path_buf())
+}
+
+pub fn write_share(shares_dir: &Path, id: &str, content: &str) -> Result<()> {
+    let dir = ensure_shares_dir(shares_dir)?;
+    fs::write(dir.join(format!("{}.json", id)), content)?;
+    Ok(())
+}
+
+pub fn read_share(shares_dir: &Path, id: &str) -> Result<Option<String>> {
+    let path = shares_dir.join(format!("{}.json", id));
+    if !path.is_file() {
+        return Ok(None);
+    }
+    Ok(Some(fs::read_to_string(&path)?))
+}
+
+pub fn delete_share(shares_dir: &Path, id: &str) -> Result<()> {
+    let path = shares_dir.join(format!("{}.json", id));
+    if path.is_file() {
+        fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+pub fn cleanup_expired_shares(shares_dir: &Path) -> Result<usize> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let mut removed = 0;
+    if !shares_dir.is_dir() {
+        return Ok(0);
+    }
+    for entry in fs::read_dir(shares_dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(json) = fs::read_to_string(&path)
+            && let Ok(share) = serde_json::from_str::<super::ShareState>(&json)
+            && share.expires_at < now
+        {
+            fs::remove_file(path)?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 /// Create the .grpctestify project directory structure.
 pub fn init_project_dir(root: &Path) -> Result<()> {
     let dot = root.join(".grpctestify");
@@ -203,6 +258,7 @@ pub fn init_project_dir(root: &Path) -> Result<()> {
     fs::create_dir_all(dot.join("collections"))
         .context("Failed to create .grpctestify/collections")?;
     fs::create_dir_all(dot.join("history")).context("Failed to create .grpctestify/history")?;
+    fs::create_dir_all(dot.join("shares")).context("Failed to create .grpctestify/shares")?;
 
     let settings = ProjectSettings {
         version: 1,
@@ -236,10 +292,11 @@ GRPC_ADDRESS=
 "#,
     )?;
 
-    fs::write(dot.join(".gitignore"), "*.local\n")?;
+    fs::write(dot.join(".gitignore"), "*.local\nshares/\n")?;
     fs::write(dot.join(".gitkeep"), "")?;
     fs::write(dot.join("collections/.gitkeep"), "")?;
     fs::write(dot.join("history/.gitkeep"), "")?;
+    fs::write(dot.join("shares/.gitkeep"), "")?;
 
     Ok(())
 }

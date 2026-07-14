@@ -13,6 +13,8 @@ export function TopBar() {
   const setTls = useStore(s => s.setTls);
   const tlsInsecure = useStore(s => s.tlsInsecure);
   const setTlsInsecure = useStore(s => s.setTlsInsecure);
+  const requestTimeoutMs = useStore(s => s.requestTimeoutMs);
+  const setRequestTimeoutMs = useStore(s => s.setRequestTimeoutMs);
   const theme = useStore(s => s.theme);
   const setTheme = useStore(s => s.setTheme);
   const serverHealthy = useStore(s => s.serverHealthy);
@@ -219,12 +221,22 @@ export function TopBar() {
       </div>
 
       {}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+        <input type="number" min={0} value={requestTimeoutMs} onChange={e => setRequestTimeoutMs(Math.max(0, parseInt(e.target.value) || 0))}
+          placeholder="0"
+          title="Request timeout in milliseconds (0 = no timeout)"
+          style={{ width: 50, padding: '5px 4px', fontSize: 12, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none', textAlign: 'right', ...css.mono }}
+        />
+        <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>ms</span>
+      </div>
+
+      {}
       <select value={protocol} onChange={e => setProtocol(e.target.value as any)}
         style={{ padding: '5px 6px', fontSize: 12, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none', cursor: 'pointer' }}
       >
         <option value="grpc">gRPC</option>
         <option value="grpc-web">gRPC-Web</option>
-        <option value="connect">Connect</option>
+        <option value="connectrpc">ConnectRPC</option>
       </select>
 
       {}

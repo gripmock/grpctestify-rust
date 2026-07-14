@@ -256,14 +256,17 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
 
     // Execute tests
     let start_time = std::time::Instant::now();
-    let runner = Arc::new(execution::TestRunner::new(
-        args.dry_run,
-        args.timeout,
-        args.no_assert,
-        args.write,
-        cli.verbose,
-        coverage_collector.clone(),
-    ));
+    let runner = Arc::new(
+        execution::TestRunner::new(
+            args.dry_run,
+            args.timeout,
+            args.no_assert,
+            args.write,
+            cli.verbose,
+            coverage_collector.clone(),
+        )
+        .with_protocol(args.protocol.parse().unwrap_or_default()),
+    );
 
     // Move reporters to Arc
     let reporters: Arc<Vec<Box<dyn report::Reporter>>> = Arc::new(reporters);

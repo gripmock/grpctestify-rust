@@ -1,20 +1,21 @@
-use super::SourceReader;
+use crate::SourceReader;
+use crate::SourceRow;
 use anyhow::Result;
 use apif_source_error::SourceError;
-use apif_source_row::SourceRow;
 use std::io::{BufReader, Read, Seek};
 
-pub struct TsvReader<R> {
+pub struct CsvReader<R> {
     reader: csv::Reader<BufReader<R>>,
     headers: Vec<String>,
+    _delimiter: u8,
     row_number: usize,
     finished: bool,
 }
 
-impl<R: Read> TsvReader<R> {
-    pub fn new(reader: BufReader<R>) -> Result<Self> {
+impl<R: Read> CsvReader<R> {
+    pub fn new(reader: BufReader<R>, delimiter: u8) -> Result<Self> {
         let mut csv_reader = csv::ReaderBuilder::new()
-            .delimiter(b'\t')
+            .delimiter(delimiter)
             .comment(Some(b'#'))
             .has_headers(true)
             .flexible(false)
@@ -22,13 +23,13 @@ impl<R: Read> TsvReader<R> {
 
         let headers = csv_reader
             .headers()
-            .map_err(|e| anyhow::anyhow!("failed to read TSV header: {e}"))?
+            .map_err(|e| anyhow::anyhow!("failed to read CSV header: {e}"))?
             .iter()
             .map(|h| h.to_string())
             .collect::<Vec<_>>();
 
         if headers.is_empty() {
-            return Err(SourceError::EmptyFile("tsv".into()).into());
+            return Err(SourceError::EmptyFile("csv".into()).into());
         }
 
         let mut seen = std::collections::HashSet::new();
@@ -41,13 +42,14 @@ impl<R: Read> TsvReader<R> {
         Ok(Self {
             reader: csv_reader,
             headers,
+            _delimiter: delimiter,
             row_number: 1,
             finished: false,
         })
     }
 }
 
-impl<R: Read + Send> SourceReader for TsvReader<R> {
+impl<R: Read + Send> SourceReader for CsvReader<R> {
     fn next_row(&mut self) -> Result<Option<SourceRow>> {
         if self.finished {
             return Ok(None);
@@ -58,7 +60,7 @@ impl<R: Read + Send> SourceReader for TsvReader<R> {
             let record = match result {
                 Ok(r) => r,
                 Err(e) => {
-                    return Err(anyhow::anyhow!("TSV error at row {}: {e}", self.row_number));
+                    return Err(anyhow::anyhow!("CSV error at row {}: {e}", self.row_number));
                 }
             };
 
@@ -89,8 +91,10 @@ impl<R: Read + Send> SourceReader for TsvReader<R> {
     }
 }
 
-impl<R: Read + Seek + Send> TsvReader<R> {
+impl<R: Read + Seek + Send> CsvReader<R> {
     pub fn reset_seekable(&mut self) -> Result<()> {
+        // csv::Reader doesn't expose the inner writer,
+        // so we need to replace it entirely by seeking the raw reader
         Err(anyhow::anyhow!(
             "reset_seekable not supported with csv crate reader"
         ))
@@ -107,14 +111,15 @@ mod tests {
     }
 
     #[test]
-    fn tsv_reads_basic_rows() {
-        let data = "id\tname\tage\n1\tAlice\t30\n2\tBob\t25\n";
-        let mut reader = TsvReader::new(cursor(data)).unwrap();
+    fn csv_reads_basic_rows() {
+        let data = "id,name,age\n1,Alice,30\n2,Bob,25\n";
+        let mut reader = CsvReader::new(cursor(data), b',').unwrap();
         assert_eq!(reader.headers(), &["id", "name", "age"]);
 
         let row1 = reader.next_row().unwrap().unwrap();
         assert_eq!(row1.get("id"), Some("1"));
         assert_eq!(row1.get("name"), Some("Alice"));
+        assert_eq!(row1.get("age"), Some("30"));
 
         let row2 = reader.next_row().unwrap().unwrap();
         assert_eq!(row2.get("name"), Some("Bob"));
@@ -123,9 +128,21 @@ mod tests {
     }
 
     #[test]
-    fn tsv_skips_comments_and_blank_lines() {
-        let data = "id\tval\n# comment\n\n1\thello\n\n2\tworld\n";
-        let mut reader = TsvReader::new(cursor(data)).unwrap();
+    fn csv_handles_quoted_fields() {
+        let data = "id,name\n1,\"Smith, John\"\n2,\"O\"\"Brien\"\n";
+        let mut reader = CsvReader::new(cursor(data), b',').unwrap();
+
+        let row1 = reader.next_row().unwrap().unwrap();
+        assert_eq!(row1.get("name"), Some("Smith, John"));
+
+        let row2 = reader.next_row().unwrap().unwrap();
+        assert_eq!(row2.get("name"), Some("O\"Brien"));
+    }
+
+    #[test]
+    fn csv_skips_comments_and_blank_lines() {
+        let data = "id,val\n# comment\n\n1,hello\n\n2,world\n";
+        let mut reader = CsvReader::new(cursor(data), b',').unwrap();
         let row1 = reader.next_row().unwrap().unwrap();
         assert_eq!(row1.get("val"), Some("hello"));
         let row2 = reader.next_row().unwrap().unwrap();
@@ -134,23 +151,32 @@ mod tests {
     }
 
     #[test]
-    fn tsv_empty_file_errors() {
-        let result = TsvReader::new(cursor(""));
+    fn csv_empty_file_errors() {
+        let data = "";
+        let result = CsvReader::new(cursor(data), b',');
         assert!(result.is_err());
     }
 
     #[test]
-    fn tsv_duplicate_column_errors() {
-        let data = "id\tid\tval\n";
-        let result = TsvReader::new(cursor(data));
+    fn csv_duplicate_column_errors() {
+        let data = "id,id,value\n1,2,3\n";
+        let result = CsvReader::new(cursor(data), b',');
         assert!(result.is_err());
     }
 
     #[test]
-    fn tsv_field_count_mismatch_errors() {
-        let data = "id\tname\n1\tAlice\textra\n";
-        let mut reader = TsvReader::new(cursor(data)).unwrap();
+    fn csv_field_count_mismatch_errors() {
+        let data = "id,name\n1,Alice,extra\n";
+        let mut reader = CsvReader::new(cursor(data), b',').unwrap();
         let result = reader.next_row();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn csv_custom_delimiter() {
+        let data = "id;name;age\n1;Alice;30\n";
+        let mut reader = CsvReader::new(cursor(data), b';').unwrap();
+        let row = reader.next_row().unwrap().unwrap();
+        assert_eq!(row.get("name"), Some("Alice"));
     }
 }
