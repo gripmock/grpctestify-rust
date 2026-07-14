@@ -1,5 +1,15 @@
 export type WireProtocol = 'grpc' | 'grpc-web' | 'connectrpc';
 
+export function defaultAddressFor(protocol: WireProtocol): string {
+  switch (protocol) {
+    case 'connectrpc':
+    case 'grpc-web':
+      return 'localhost:4769';
+    default:
+      return 'localhost:4770';
+  }
+}
+
 export interface RequestConfig {
   endpoint: string;
   headers: Record<string, string>;

@@ -112,7 +112,14 @@ pub const ENV_GRPCTESTIFY_TLS_CA_FILE: &str = "GRPCTESTIFY_TLS_CA_FILE";
 pub const ENV_GRPCTESTIFY_TLS_SERVER_NAME: &str = "GRPCTESTIFY_TLS_SERVER_NAME";
 
 pub fn default_address() -> String {
-    String::from("localhost:4770")
+    default_address_for(None)
+}
+
+pub fn default_address_for(protocol: Option<&str>) -> String {
+    match protocol {
+        Some("connectrpc" | "grpc-web") => String::from("localhost:4769"),
+        _ => String::from("localhost:4770"),
+    }
 }
 
 pub fn default_parallel() -> String {
@@ -186,6 +193,10 @@ mod tests {
     #[test]
     fn test_default_values() {
         assert_eq!(default_address(), "localhost:4770");
+        assert_eq!(default_address_for(None), "localhost:4770");
+        assert_eq!(default_address_for(Some("grpc")), "localhost:4770");
+        assert_eq!(default_address_for(Some("grpc-web")), "localhost:4769");
+        assert_eq!(default_address_for(Some("connectrpc")), "localhost:4769");
         assert_eq!(default_parallel(), "auto");
         assert_eq!(default_timeout(), 30);
         assert_eq!(default_progress(), "auto");

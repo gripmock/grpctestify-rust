@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import type { PlayStore, HistoryEntry, CallResult, CollectionParsed, Tab, StoredTab, TabsStorage, Environment } from './types';
-import { ENVS_KEY, ACTIVE_ENV_KEY, TABS_KEY, SETTINGS_KEY } from './types';
+import type { PlayStore, HistoryEntry, CallResult, CollectionParsed, Tab, StoredTab, TabsStorage, Environment, WireProtocol } from './types';
+import { ENVS_KEY, ACTIVE_ENV_KEY, TABS_KEY, SETTINGS_KEY, defaultAddressFor } from './types';
 import type { ClientSettings } from './types';
 import { LRUCache } from './cache';
 import { getSessionId } from './session';
@@ -282,7 +282,15 @@ export const useStore = create<PlayStore>((set, get) => ({
   
 
   setAddress: (v) => { set({ address: v }); saveSettings({ ...get(), address: v }); },
-  setProtocol: (v) => { set({ protocol: v }); saveSettings({ ...get(), protocol: v }); },
+  setProtocol: (v) => {
+    const s = get();
+    const updates: Partial<PlayStore> = { protocol: v };
+    if (s.address === defaultAddressFor(s.protocol as WireProtocol)) {
+      updates.address = defaultAddressFor(v);
+    }
+    set(updates);
+    saveSettings({ ...s, ...updates });
+  },
   setTls: (v) => { set({ tls: v }); saveSettings({ ...get(), tls: v }); },
   setTlsInsecure: (v) => { set({ tlsInsecure: v }); saveSettings({ ...get(), tlsInsecure: v }); },
   setRequestTimeoutMs: (v) => { set({ requestTimeoutMs: v }); saveSettings({ ...get(), requestTimeoutMs: v }); },

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use super::{PlayState, ShareState};
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Consistent JSON error response.
@@ -1155,7 +1156,13 @@ pub async fn execute_call(
         None
     };
 
-    let address = req.address.as_deref().unwrap_or("localhost:4770");
+    // Resolve wire protocol
+    let protocol = parse_protocol(req.protocol.as_deref());
+
+    let address = req
+        .address
+        .clone()
+        .unwrap_or_else(|| crate::grpc::default_address_for(protocol).to_string());
 
     // Substitute environment variables in headers
     let env_ref = req.environment.as_ref();
@@ -1174,9 +1181,6 @@ pub async fn execute_call(
                 .collect()
         });
 
-    // Resolve wire protocol
-    let protocol = parse_protocol(req.protocol.as_deref());
-
     // Create gRPC client
     let grpc_config = crate::grpc::GrpcClientConfig {
         address: address.to_string(),
@@ -1191,91 +1195,36 @@ pub async fn execute_call(
         version: env!("CARGO_PKG_VERSION").to_string(),
     };
 
+    let mut transport = match crate::grpc::TransportRef::new(&grpc_config).await {
+        Ok(t) => t,
+        Err(e) => {
+            return Ok(Json(CallResponse {
+                success: false,
+                messages: vec![],
+                headers: HashMap::new(),
+                trailers: HashMap::new(),
+                error: Some(e.to_string()),
+            }));
+        }
+    };
+
     let mut response_messages = Vec::new();
-    let mut resp_headers = std::collections::HashMap::new();
-    let mut response_trailers = std::collections::HashMap::new();
+    let mut resp_headers = HashMap::new();
+    let mut response_trailers = HashMap::new();
     let mut response_error = None;
 
-    if protocol == crate::grpc::WireProtocol::Grpc {
-        let mut client = match crate::grpc::GrpcClient::new(grpc_config).await {
-            Ok(c) => c,
-            Err(e) => {
-                return Ok(Json(CallResponse {
-                    success: false,
-                    messages: Vec::new(),
-                    headers: std::collections::HashMap::new(),
-                    trailers: std::collections::HashMap::new(),
-                    error: Some(e.to_string()),
-                }));
-            }
-        };
-
-        let stream = futures::stream::iter(messages);
-        let (headers, mut response_stream) = match client
-            .call_stream(&full_service, &method_name, stream)
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                return Ok(Json(CallResponse {
-                    success: false,
-                    messages: Vec::new(),
-                    headers: std::collections::HashMap::new(),
-                    trailers: std::collections::HashMap::new(),
-                    error: Some(e.to_string()),
-                }));
-            }
-        };
-        resp_headers = headers;
-
-        use futures::StreamExt;
-        while let Some(item) = response_stream.next().await {
-            match item {
-                Ok(crate::grpc::client::StreamItem::Message(msg)) => {
-                    response_messages.push(msg);
-                }
-                Ok(crate::grpc::client::StreamItem::Trailers(trailers)) => {
-                    response_trailers = trailers.clone();
-                    if let Some(status) = trailers.get("grpc-status")
-                        && status != "0"
-                    {
-                        let msg = trailers.get("grpc-message").cloned().unwrap_or_default();
-                        response_error =
-                            Some(format!("gRPC error: code={} message={}", status, msg));
-                    }
-                }
-                Err(status) => {
-                    response_error = Some(format!(
-                        "gRPC error: code={} message={}",
-                        status.code(),
-                        status.message()
-                    ));
-                }
-            }
+    for msg_val in messages {
+        let result = transport
+            .execute(&grpc_config, &full_service, &method_name, msg_val)
+            .await;
+        response_messages.extend(result.messages);
+        response_trailers.extend(result.trailers);
+        if resp_headers.is_empty() {
+            resp_headers = result.headers;
         }
-    } else {
-        // gRPC-Web and ConnectRPC — use HTTP-based client
-        for msg_val in messages {
-            match crate::grpc::web::call_unary(&grpc_config, &full_service, &method_name, msg_val)
-                .await
-            {
-                Ok(mut stream) => {
-                    use futures::StreamExt;
-                    while let Some(item) = stream.next().await {
-                        match item {
-                            Ok(val) => response_messages.push(val),
-                            Err(e) => {
-                                response_error = Some(e);
-                                break;
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    response_error = Some(e.to_string());
-                    break;
-                }
-            }
+        if let Some(e) = result.error {
+            response_error = Some(e);
+            break;
         }
     }
 

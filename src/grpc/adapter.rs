@@ -99,7 +99,6 @@ pub struct HttpCallClient {
 #[async_trait]
 impl CallClient for HttpCallClient {
     async fn resolve_endpoint(&self, endpoint: &str) -> Result<EndpointMeta> {
-        // Load descriptors via a temporary gRPC client
         let grpc_config = GrpcClientConfig {
             proto_config: self.config.proto_config.clone(),
             target_service: None,
@@ -124,23 +123,24 @@ impl CallClient for HttpCallClient {
             CallRequest::Streaming(mut s) => s.next().await.unwrap_or(Value::Null),
         };
 
-        let mut stream =
-            super::web::call_unary(&self.config, &full_service, &method_name, value).await?;
+        let mut transport = super::TransportRef::new(&self.config)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let result = transport
+            .execute(&self.config, &full_service, &method_name, value)
+            .await;
 
-        // Collect all messages
-        let mut messages = Vec::new();
-        while let Some(item) = stream.next().await {
-            match item {
-                Ok(msg) => messages.push(msg),
-                Err(e) => return Err(anyhow::anyhow!(e)),
-            }
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
         }
 
-        Ok(Box::pin(futures::stream::iter(
-            messages
-                .into_iter()
-                .map(|msg| Ok(CallStreamItem::Message(msg))),
-        )))
+        let items: Vec<_> = result
+            .messages
+            .into_iter()
+            .map(|msg| Ok(CallStreamItem::Message(msg)))
+            .collect();
+
+        Ok(Box::pin(futures::stream::iter(items)))
     }
 }
 
