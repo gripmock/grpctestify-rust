@@ -635,9 +635,9 @@ pub struct TestRunner {
     no_assert: bool,
     write_mode: bool,
     verbose: bool,
+    protocol_override: Option<crate::grpc::WireProtocol>,
     assertion_engine: AssertionEngine,
     coverage_collector: Option<Arc<CoverageCollector>>,
-    // Handler modules for delegated functionality
     request_handler: RequestHandler,
     response_handler: ResponseHandler,
     assertion_handler: AssertionHandler,
@@ -707,13 +707,19 @@ impl TestRunner {
             no_assert,
             write_mode,
             verbose,
+            protocol_override: None,
             assertion_engine: AssertionEngine::with_registry(PLUGIN_REGISTRY.clone()),
             coverage_collector: coverage_collector.clone(),
-            // Initialize handler modules
             request_handler: RequestHandler::new(no_assert, verbose, coverage_collector.clone()),
             response_handler: ResponseHandler::new(no_assert),
             assertion_handler: AssertionHandler::new(verbose),
         }
+    }
+
+    /// Set protocol override. When set, this takes priority over the GCTF file's OPTIONS.protocol.
+    pub fn with_protocol(mut self, protocol: crate::grpc::WireProtocol) -> Self {
+        self.protocol_override = Some(protocol);
+        self
     }
 
     /// Run a test document chain.
@@ -805,7 +811,7 @@ impl TestRunner {
         }
 
         // Extract address
-        let address = runner_helpers::effective_address(document);
+        let address = runner_helpers::effective_address(document, self.protocol_override);
 
         // Extract endpoint
         let (package, service, method) = match document.parse_endpoint() {
@@ -850,15 +856,17 @@ impl TestRunner {
             target_service: Some(full_service.clone()),
             compression,
             connection_id: 0,
-            protocol: document
-                .get_options()
-                .and_then(|o| {
-                    o.get("protocol").map(|s| {
-                        s.parse::<crate::grpc::WireProtocol>()
-                            .unwrap_or(crate::grpc::WireProtocol::Grpc)
+            protocol: self.protocol_override.unwrap_or_else(|| {
+                document
+                    .get_options()
+                    .and_then(|o| {
+                        o.get("protocol").map(|s| {
+                            s.parse::<crate::grpc::WireProtocol>()
+                                .unwrap_or(crate::grpc::WireProtocol::Grpc)
+                        })
                     })
-                })
-                .unwrap_or(crate::grpc::WireProtocol::Grpc),
+                    .unwrap_or(crate::grpc::WireProtocol::Grpc)
+            }),
             version: env!("CARGO_PKG_VERSION").to_string(),
         };
 

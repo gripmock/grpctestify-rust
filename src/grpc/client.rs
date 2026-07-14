@@ -1,27 +1,61 @@
 use anyhow::Result;
 use apif_grpc_transport::client::GrpcClient as _;
 use futures::stream::{Stream, StreamExt};
+use prost::Message;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::pin::Pin;
 
 pub struct GrpcClient {
-    inner: apif_grpc_transport::tonic::client::TonicGrpcClient,
+    inner: ClientInner,
+}
+
+enum ClientInner {
+    Tonic(apif_grpc_transport::tonic::client::TonicGrpcClient),
+    Http {
+        config: apif_grpc_transport::config::GrpcClientConfig,
+        pool: Option<prost_reflect::DescriptorPool>,
+    },
 }
 
 impl GrpcClient {
     pub async fn new(config: apif_grpc_transport::config::GrpcClientConfig) -> Result<Self> {
-        Ok(Self {
-            inner: apif_grpc_transport::tonic::client::TonicGrpcClient::new(config).await?,
-        })
+        match config.protocol {
+            apif_grpc_transport::config::WireProtocol::Grpc => Ok(Self {
+                inner: ClientInner::Tonic(
+                    apif_grpc_transport::tonic::client::TonicGrpcClient::new(config).await?,
+                ),
+            }),
+            apif_grpc_transport::config::WireProtocol::GrpcWeb
+            | apif_grpc_transport::config::WireProtocol::ConnectRpc => {
+                let pool = build_pool_from_config(&config);
+                Ok(Self {
+                    inner: ClientInner::Http { config, pool },
+                })
+            }
+        }
     }
 
     pub fn descriptor_pool(&self) -> &prost_reflect::DescriptorPool {
-        self.inner.descriptor_pool()
+        match &self.inner {
+            ClientInner::Tonic(c) => c.descriptor_pool(),
+            ClientInner::Http { pool, .. } => pool.as_ref().unwrap_or(&EMPTY_POOL),
+        }
     }
 
     pub fn describe(&self, symbol: Option<&str>) -> Result<String> {
-        let pool = self.inner.descriptor_pool();
+        match &self.inner {
+            ClientInner::Tonic(c) => {
+                let pool = c.descriptor_pool();
+                Self::describe_pool(pool, symbol)
+            }
+            ClientInner::Http { .. } => {
+                anyhow::bail!("describe is not supported for HTTP transport")
+            }
+        }
+    }
+
+    fn describe_pool(pool: &prost_reflect::DescriptorPool, symbol: Option<&str>) -> Result<String> {
         if let Some(sym) = symbol {
             let parts: Vec<&str> = sym.split('/').collect();
             if parts.len() != 2 {
@@ -76,11 +110,56 @@ impl GrpcClient {
         HashMap<String, String>,
         Pin<Box<dyn Stream<Item = Result<StreamItem, GrpcError>> + Send + 'static>>,
     )> {
-        let (headers, stream) = self
-            .inner
-            .call_stream(service_name, method_name, Box::pin(requests))
-            .await?;
-        Ok((headers, Box::pin(stream)))
+        match &mut self.inner {
+            ClientInner::Tonic(c) => {
+                let (headers, stream) = c
+                    .call_stream(service_name, method_name, Box::pin(requests))
+                    .await?;
+                Ok((headers, Box::pin(stream)))
+            }
+            ClientInner::Http { config, .. } => {
+                use crate::grpc::TransportRef;
+                use futures::stream;
+
+                let body: Vec<Value> = requests.collect().await;
+                let request_body = body.into_iter().next().unwrap_or(Value::Null);
+
+                let mut transport = TransportRef::new(config).await?;
+                let result = transport
+                    .execute(config, service_name, method_name, request_body)
+                    .await;
+
+                let headers = result.headers.clone();
+                let messages = result.messages;
+                let trailers = result.trailers;
+                let error = result.error;
+
+                // Convert buffered result into a stream
+                let mut items: Vec<Result<StreamItem, GrpcError>> = Vec::new();
+
+                if let Some(err_msg) = error {
+                    let mut err_trailers = trailers;
+                    let code = err_msg
+                        .split("code=")
+                        .nth(1)
+                        .and_then(|s| s.split(char::is_whitespace).next())
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .unwrap_or(2);
+                    err_trailers.insert("grpc-status".to_string(), code.to_string());
+                    err_trailers.insert("grpc-message".to_string(), err_msg);
+                    items.push(Ok(StreamItem::Trailers(err_trailers)));
+                } else {
+                    for msg in messages {
+                        items.push(Ok(StreamItem::Message(msg)));
+                    }
+                    if !trailers.is_empty() {
+                        items.push(Ok(StreamItem::Trailers(trailers)));
+                    }
+                }
+
+                Ok((headers, Box::pin(stream::iter(items))))
+            }
+        }
     }
 
     pub async fn call(
@@ -90,11 +169,7 @@ impl GrpcClient {
         requests: Vec<Value>,
     ) -> Result<TestResponse> {
         let stream = futures::stream::iter(requests);
-        let (headers, mut stream) = self
-            .inner
-            .call_stream(service_name, method_name, Box::pin(stream))
-            .await
-            .map_err(|e| anyhow::anyhow!("gRPC error: {} {}", e.code, e.message))?;
+        let (headers, mut stream) = self.call_stream(service_name, method_name, stream).await?;
         let mut messages = Vec::new();
         let mut trailers = HashMap::new();
         while let Some(item) = stream.next().await {
@@ -117,6 +192,21 @@ pub struct TestResponse {
     pub messages: Vec<Value>,
     pub trailers: HashMap<String, String>,
 }
+
+fn build_pool_from_config(config: &GrpcClientConfig) -> Option<prost_reflect::DescriptorPool> {
+    let desc_path = config.proto_config.as_ref()?.descriptor.as_ref()?;
+    let desc_bytes = std::fs::read(desc_path).ok()?;
+    let fds = prost_types::FileDescriptorSet::decode(&*desc_bytes).ok()?;
+    prost_reflect::DescriptorPool::from_file_descriptor_set(fds).ok()
+}
+
+static EMPTY_POOL: std::sync::LazyLock<prost_reflect::DescriptorPool> =
+    std::sync::LazyLock::new(|| {
+        prost_reflect::DescriptorPool::from_file_descriptor_set(
+            prost_types::FileDescriptorSet::default(),
+        )
+        .expect("empty FileDescriptorSet should always be valid")
+    });
 
 pub use apif_grpc_transport::config::{
     CompressionMode, GrpcClientConfig, ProtoConfig, TlsConfig, WireProtocol,

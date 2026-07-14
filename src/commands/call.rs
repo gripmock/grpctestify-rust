@@ -262,7 +262,7 @@ async fn handle_call_document(
     };
     let full_service = runner_helpers::full_service_name(&package, &service);
 
-    let address = runner_helpers::effective_address(doc);
+    let address = runner_helpers::effective_address(doc, Some(opts.protocol));
     let mut tls_config = runner_helpers::build_tls_config(doc, gctf_file);
     if opts.insecure {
         tls_config = tls_config

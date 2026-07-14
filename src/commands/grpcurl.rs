@@ -55,7 +55,7 @@ pub fn build_grpcurl_command(
         .get_endpoint()
         .ok_or_else(|| anyhow::anyhow!("Missing ENDPOINT section"))?;
 
-    let address_raw = runner_helpers::effective_address(doc);
+    let address_raw = runner_helpers::effective_address(doc, None);
     let (address, plaintext_from_address) = grpcurl_address_parts(&address_raw);
 
     let tls_config = runner_helpers::build_tls_config(doc, gctf_file);

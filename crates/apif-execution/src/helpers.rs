@@ -6,7 +6,9 @@
 
 use apif_ast::GctfDocument;
 use apif_cfg_runtime as runtime;
-use apif_grpc_transport::{CompressionMode, ProtoConfig, TlsConfig};
+use apif_grpc_transport::{
+    CompressionMode, ProtoConfig, TlsConfig, WireProtocol, default_address_for,
+};
 use apif_utils::FileUtils;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -54,11 +56,24 @@ pub fn parse_bool_flag(value: &str) -> bool {
     )
 }
 
-/// Resolve effective address using ADDRESS section, env var, then default.
-pub fn effective_address(document: &GctfDocument) -> String {
+/// Resolve effective address using ADDRESS section, env var, then protocol-dependent default.
+/// `protocol_override` takes precedence over OPTIONS.protocol from the document.
+pub fn effective_address(
+    document: &GctfDocument,
+    protocol_override: Option<WireProtocol>,
+) -> String {
     document
         .get_address(std::env::var("GRPCTESTIFY_ADDRESS").ok().as_deref())
-        .unwrap_or_else(|| "localhost:4770".to_string())
+        .unwrap_or_else(|| {
+            let proto = protocol_override.unwrap_or_else(|| {
+                document
+                    .get_options()
+                    .and_then(|o| o.get("protocol").cloned())
+                    .map(|s| s.parse().unwrap_or_default())
+                    .unwrap_or_default()
+            });
+            default_address_for(proto).to_string()
+        })
 }
 
 /// Resolve compression setting from OPTIONS section with env fallback.

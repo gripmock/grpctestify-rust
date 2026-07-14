@@ -228,15 +228,15 @@ impl GrpctestifyLsp {
             _ => return Vec::new(),
         };
 
+        let proto_config = Self::proto_config_from_document(doc, uri);
+        let proto = Self::protocol_from_document(doc);
         let address = doc
             .get_address(
                 std::env::var(config::ENV_GRPCTESTIFY_ADDRESS)
                     .ok()
                     .as_deref(),
             )
-            .unwrap_or_else(config::default_address);
-        let proto_config = Self::proto_config_from_document(doc, uri);
-        let proto = Self::protocol_from_document(doc);
+            .unwrap_or_else(|| crate::grpc::default_address_for(proto).to_string());
 
         let Some(client) = self
             .create_schema_client(
@@ -423,15 +423,15 @@ impl GrpctestifyLsp {
             _ => return Vec::new(),
         };
 
+        let proto_config = Self::proto_config_from_document(doc, uri);
+        let proto = Self::protocol_from_document(doc);
         let address = doc
             .get_address(
                 std::env::var(config::ENV_GRPCTESTIFY_ADDRESS)
                     .ok()
                     .as_deref(),
             )
-            .unwrap_or_else(config::default_address);
-        let proto_config = Self::proto_config_from_document(doc, uri);
-        let proto = Self::protocol_from_document(doc);
+            .unwrap_or_else(|| crate::grpc::default_address_for(proto).to_string());
 
         let Some(client) = self
             .create_schema_client(
@@ -929,9 +929,12 @@ impl LanguageServer for GrpctestifyLsp {
                                 ..CompletionItem::default()
                             });
 
+                            let proto = Self::protocol_from_document(&doc);
                             let address = handlers::get_address_from_document(&content)
                                 .or_else(|| std::env::var(config::ENV_GRPCTESTIFY_ADDRESS).ok())
-                                .unwrap_or_else(config::default_address);
+                                .unwrap_or_else(|| {
+                                    crate::grpc::default_address_for(proto).to_string()
+                                });
                             let proto_config = Self::proto_config_from_document(&doc, &uri);
                             items.extend(
                                 self.schema_endpoint_completions(&address, proto_config)
