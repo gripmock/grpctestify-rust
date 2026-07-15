@@ -158,10 +158,7 @@ impl GrpcClient {
                             crate::grpc::web::enrich_grpc_web_error(&mut m, &mut e);
                             (m, t, e, headers)
                         } else {
-                            let body = crate::grpc::web::encode_multi_request(
-                                &all,
-                                config.proto_config.is_some(),
-                            );
+                            let body = crate::grpc::web::encode_multi_request(&all);
                             let (_status, response_bytes, headers) =
                                 crate::grpc::web::send_http_post(
                                     config,

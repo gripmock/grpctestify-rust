@@ -581,14 +581,10 @@ async fn grpc_web_binary(
 }
 
 /// Encode multiple requests as a ConnectRPC envelope stream.
-pub(crate) fn encode_multi_request(requests: &[Value], needs_proto: bool) -> Vec<u8> {
+pub(crate) fn encode_multi_request(requests: &[Value]) -> Vec<u8> {
     let mut buf = Vec::new();
     for req in requests {
-        let body = if needs_proto {
-            serde_json::to_vec(req).unwrap_or_default()
-        } else {
-            serde_json::to_vec(req).unwrap_or_default()
-        };
+        let body = serde_json::to_vec(req).unwrap_or_default();
         let framed = encode_connect_envelope(&body, false);
         buf.extend_from_slice(&framed);
     }
