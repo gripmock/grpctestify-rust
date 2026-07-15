@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use prost::Message;
-use prost_reflect::{DynamicMessage, MessageDescriptor, SerializeOptions};
+use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor, SerializeOptions};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -38,7 +38,9 @@ pub async fn execute_web_with_mode(
         WireProtocol::ConnectRpc => {
             connect_rpc(config, service_name, method_name, request_body, rpc_mode).await
         }
-        WireProtocol::GrpcWeb => grpc_web(config, service_name, method_name, request_body).await,
+        WireProtocol::GrpcWeb => {
+            grpc_web(config, service_name, method_name, request_body, rpc_mode).await
+        }
         _ => Err(anyhow!(
             "Unsupported protocol for HTTP transport: {:?}",
             config.protocol
@@ -76,22 +78,7 @@ async fn resolve_method(
     service_name: &str,
     method_name: &str,
 ) -> Result<ResolvedMethod> {
-    let grpc_config = GrpcClientConfig {
-        address: config.address.clone(),
-        timeout_seconds: config.timeout_seconds,
-        tls_config: config.tls_config.clone(),
-        proto_config: config.proto_config.clone(),
-        metadata: None,
-        target_service: Some(service_name.to_string()),
-        compression: Default::default(),
-        connection_id: 0,
-        protocol: WireProtocol::Grpc,
-        version: env!("CARGO_PKG_VERSION").to_string(),
-    };
-    let client = crate::grpc::GrpcClient::new(grpc_config)
-        .await
-        .with_context(|| "Failed to load proto descriptors")?;
-    let pool = client.descriptor_pool();
+    let pool = load_descriptor_pool(config)?;
     let svc = pool
         .get_service_by_name(service_name)
         .ok_or_else(|| anyhow!("Service '{}' not found", service_name))?;
@@ -109,6 +96,21 @@ async fn resolve_method(
         input_desc: method.input(),
         output_desc: method.output(),
     })
+}
+
+/// Load proto descriptor pool from local config files only.
+/// No network connection is made — avoids hanging on HTTP ports.
+fn load_descriptor_pool(config: &GrpcClientConfig) -> Result<DescriptorPool> {
+    let desc_path = config
+        .proto_config
+        .as_ref()
+        .and_then(|p| p.descriptor.as_ref())
+        .ok_or_else(|| anyhow!("No proto descriptor configured"))?;
+    let desc_bytes = std::fs::read(desc_path)
+        .with_context(|| format!("Failed to read descriptor file: {}", desc_path))?;
+    let fds = prost_types::FileDescriptorSet::decode(&*desc_bytes)
+        .with_context(|| "Failed to decode FileDescriptorSet")?;
+    DescriptorPool::from_file_descriptor_set(fds).with_context(|| "Failed to build descriptor pool")
 }
 
 // ─── ConnectRPC ─────────────────────────────────────────────
@@ -183,8 +185,18 @@ async fn connect_rpc_unary_json(
         send_http_post(config, service_name, method_name, "application/json", &body).await?;
 
     if !status.is_success() {
+        let response_headers: HashMap<String, String> = headers
+            .into_iter()
+            .filter(|(k, _)| {
+                !k.starts_with("grpc-") && *k != "content-type" && *k != "content-length"
+            })
+            .collect();
         if response_bytes.is_empty() {
-            return Err(anyhow!("HTTP {} from server", status));
+            return Ok(WebResponse {
+                error: Some(format!("HTTP {} from server", status)),
+                headers: response_headers,
+                ..Default::default()
+            });
         }
         if let Ok(err_body) = serde_json::from_slice::<Value>(&response_bytes) {
             let code = err_body
@@ -195,40 +207,73 @@ async fn connect_rpc_unary_json(
                 .get("message")
                 .and_then(|m| m.as_str())
                 .unwrap_or("");
-            return Err(anyhow!("gRPC error: code={} message={}", code, msg));
+            let details = err_body
+                .get("details")
+                .filter(|d| d.is_array())
+                .map(|d| d.to_string())
+                .unwrap_or_default();
+            return Ok(WebResponse {
+                error: Some(format!(
+                    "gRPC error: code={} message={} details=[{}]",
+                    code, msg, details
+                )),
+                headers: response_headers,
+                ..Default::default()
+            });
         }
-        return Err(anyhow!(
-            "HTTP {}: {}",
-            status,
-            String::from_utf8_lossy(&response_bytes)
-        ));
+        return Ok(WebResponse {
+            error: Some(format!(
+                "HTTP {}: {}",
+                status,
+                String::from_utf8_lossy(&response_bytes)
+            )),
+            headers: response_headers,
+            ..Default::default()
+        });
     }
 
-    let result: Value = serde_json::from_slice(&response_bytes).with_context(|| {
-        format!(
-            "Invalid JSON response: {}",
-            String::from_utf8_lossy(&response_bytes)
-        )
-    })?;
+    // Try parsing as plain JSON first; fall back to Connect envelope framing
+    // if the server treated our unframed request as streaming.
+    match serde_json::from_slice::<Value>(&response_bytes) {
+        Ok(v) => {
+            let trailers = HashMap::new();
+            let mut error = None;
+            if let Some(grpc_status) = headers.get("grpc-status").filter(|s| *s != "0") {
+                let msg = headers.get("grpc-message").cloned().unwrap_or_default();
+                error = Some(format!("gRPC error: code={} message={}", grpc_status, msg));
+            }
+            let response_headers: HashMap<String, String> = headers
+                .into_iter()
+                .filter(|(k, _)| {
+                    !k.starts_with("grpc-") && *k != "content-type" && *k != "content-length"
+                })
+                .collect();
+            return Ok(WebResponse {
+                messages: vec![v],
+                headers: response_headers,
+                trailers,
+                error,
+            });
+        }
+        Err(_) => {
+            // Not plain JSON — might be a Connect envelope response (server treated
+            // our unframed request as streaming). Try parsing as framed response.
+            let (messages, trailers, error) = parse_connect_framed(&response_bytes, None, &headers);
+            if !messages.is_empty() || error.is_some() {
+                return Ok(WebResponse {
+                    messages,
+                    headers: HashMap::new(),
+                    trailers,
+                    error,
+                });
+            }
+        }
+    };
 
-    let trailers = HashMap::new();
-    let mut error = None;
-    if let Some(grpc_status) = headers.get("grpc-status").filter(|s| *s != "0") {
-        let msg = headers.get("grpc-message").cloned().unwrap_or_default();
-        error = Some(format!("gRPC error: code={} message={}", grpc_status, msg));
-    }
-    // Include response metadata headers (excluding transport-level ones)
-    let response_headers: HashMap<String, String> = headers
-        .into_iter()
-        .filter(|(k, _)| !k.starts_with("grpc-") && *k != "content-type" && *k != "content-length")
-        .collect();
-
-    Ok(WebResponse {
-        messages: vec![result],
-        headers: response_headers,
-        trailers,
-        error,
-    })
+    Err(anyhow!(
+        "Invalid JSON response: {}",
+        String::from_utf8_lossy(&response_bytes)
+    ))
 }
 
 /// ConnectRPC binary unary: `application/proto`
@@ -408,6 +453,7 @@ async fn grpc_web(
     service_name: &str,
     method_name: &str,
     request_body: Value,
+    _rpc_mode: Option<RpcMode>,
 ) -> Result<WebResponse> {
     if config.proto_config.is_some() {
         let m = resolve_method(config, service_name, method_name).await?;
@@ -440,7 +486,7 @@ async fn grpc_web_json(
     body.extend_from_slice(&len.to_be_bytes());
     body.extend_from_slice(&json_bytes);
 
-    let (status, response_bytes, _headers) = send_http_post(
+    let (status, response_bytes, headers) = send_http_post(
         config,
         service_name,
         method_name,
@@ -450,21 +496,39 @@ async fn grpc_web_json(
     .await?;
 
     if !status.is_success() {
-        return if response_bytes.is_empty() {
-            Err(anyhow!("HTTP {} from server", status))
+        let response_headers: HashMap<String, String> = headers
+            .into_iter()
+            .filter(|(k, _)| {
+                !k.starts_with("grpc-") && *k != "content-type" && *k != "content-length"
+            })
+            .collect();
+        let error_msg = if response_bytes.is_empty() {
+            format!("HTTP {} from server", status)
         } else {
-            Err(anyhow!(
+            format!(
                 "HTTP {}: {}",
                 status,
                 String::from_utf8_lossy(&response_bytes)
-            ))
+            )
         };
+        return Ok(WebResponse {
+            error: Some(error_msg),
+            headers: response_headers,
+            ..Default::default()
+        });
     }
 
-    let (messages, trailers, error) = parse_grpc_web_framed_json(&response_bytes);
+    let (mut messages, trailers, mut error) = parse_grpc_web_framed_json(&response_bytes);
+    enrich_grpc_web_error(&mut messages, &mut error);
+
+    let response_headers: HashMap<String, String> = headers
+        .into_iter()
+        .filter(|(k, _)| !k.starts_with("grpc-") && *k != "content-type" && *k != "content-length")
+        .collect();
+
     Ok(WebResponse {
         messages,
-        headers: HashMap::new(),
+        headers: response_headers,
         trailers,
         error,
     })
@@ -516,9 +580,79 @@ async fn grpc_web_binary(
     })
 }
 
+/// Encode multiple requests as a ConnectRPC envelope stream.
+pub(crate) fn encode_multi_request(requests: &[Value]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    for req in requests {
+        let body = serde_json::to_vec(req).unwrap_or_default();
+        let framed = encode_connect_envelope(&body, false);
+        buf.extend_from_slice(&framed);
+    }
+    let end = encode_connect_envelope(b"", true);
+    buf.extend_from_slice(&end);
+    buf
+}
+
+/// Encode multiple requests as a gRPC-Web frame stream.
+/// Each message becomes a data frame (flag 0x00), terminated by a trailers frame
+/// (flag 0x80) with grpc-status: 0.
+pub(crate) fn encode_multi_request_grpc_web(requests: &[Value]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    for req in requests {
+        let body = serde_json::to_vec(req).unwrap_or_default();
+        let len = body.len() as u32;
+        buf.push(0x00); // data frame flag
+        buf.extend_from_slice(&len.to_be_bytes());
+        buf.extend_from_slice(&body);
+    }
+    // No explicit end-of-stream frame — the HTTP connection closing
+    // signals end of stream in gRPC-Web.
+    buf
+}
+
+/// Public wrapper for parse_connect_framed so client.rs can use it.
+pub(crate) fn parse_connect_framed_public(
+    data: &[u8],
+    output_desc: Option<&prost_reflect::MessageDescriptor>,
+    headers: &HashMap<String, String>,
+) -> (Vec<Value>, HashMap<String, String>, Option<String>) {
+    parse_connect_framed(data, output_desc, headers)
+}
+
+/// Public wrapper for parse_grpc_web_framed_json so client.rs can use it.
+pub(crate) fn parse_grpc_web_framed_json_public(
+    data: &[u8],
+) -> (Vec<Value>, HashMap<String, String>, Option<String>) {
+    parse_grpc_web_framed_json(data)
+}
+
+/// Extract structured error details from gRPC-Web data frame when trailers indicate an error.
+/// If the last data frame contains a google.rpc.Status JSON (has "code" + "message" fields),
+/// enrich the error with the structured details.
+pub(crate) fn enrich_grpc_web_error(messages: &mut Vec<Value>, error: &mut Option<String>) {
+    if error.is_some() && !messages.is_empty() {
+        let last_msg = messages.last().unwrap();
+        let has_status = last_msg.get("code").is_some() && last_msg.get("message").is_some();
+        if has_status {
+            let code_val = last_msg.get("code").and_then(|c| c.as_i64()).unwrap_or(2);
+            let msg_val = last_msg
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("");
+            let details = last_msg.get("details").filter(|d| d.is_array());
+            let details_str = details.map(|d| d.to_string()).unwrap_or_default();
+            *error = Some(format!(
+                "gRPC error: code={} message={} details=[{}]",
+                code_val, msg_val, details_str
+            ));
+            messages.pop();
+        }
+    }
+}
+
 // ─── HTTP POST helper ───────────────────────────────────────
 
-async fn send_http_post(
+pub(crate) async fn send_http_post(
     config: &GrpcClientConfig,
     service_name: &str,
     method_name: &str,
@@ -615,6 +749,34 @@ fn parse_grpc_web_frame_header(data: &[u8], offset: &mut usize) -> Option<(u8, u
     Some((flags, len))
 }
 
+fn percent_decode(s: &str) -> String {
+    let mut buf = Vec::with_capacity(s.len());
+    let mut chars = s.bytes();
+    while let Some(b) = chars.next() {
+        if b == b'%' {
+            let hi = chars.next().and_then(hex_val);
+            let lo = chars.next().and_then(hex_val);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                buf.push((h << 4) | l);
+            } else {
+                buf.push(b'%');
+            }
+        } else {
+            buf.push(b);
+        }
+    }
+    String::from_utf8_lossy(&buf).to_string()
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 fn parse_grpc_web_trailers(
     payload: &[u8],
     trailers: &mut HashMap<String, String>,
@@ -623,7 +785,7 @@ fn parse_grpc_web_trailers(
     let text = String::from_utf8_lossy(payload);
     for line in text.lines() {
         if let Some((k, v)) = line.split_once(": ") {
-            trailers.insert(k.to_ascii_lowercase(), v.to_string());
+            trailers.insert(k.to_ascii_lowercase(), percent_decode(v));
         }
     }
     if let Some(status) = trailers.get("grpc-status").filter(|s| *s != "0") {
@@ -732,10 +894,13 @@ fn make_test_message(desc: &MessageDescriptor) -> DynamicMessage {
 
 // ─── Connect envelope helpers ────────────────────────────────
 
+/// Encode a ConnectRPC envelope frame.
+/// Per spec: bit 0 = compressed, bit 1 = end_stream.
+/// See: https://connectrpc.com/docs/protocol/#streaming-rpcs
 fn encode_connect_envelope(data: &[u8], end_stream: bool) -> Vec<u8> {
     let len = data.len() as u32;
     let mut buf = Vec::with_capacity(data.len() + 5);
-    let flags: u8 = if end_stream { 0x01 } else { 0x00 };
+    let flags: u8 = if end_stream { 0x02 } else { 0x00 };
     buf.push(flags);
     buf.extend_from_slice(&len.to_be_bytes());
     buf.extend_from_slice(data);
@@ -767,7 +932,7 @@ fn parse_connect_framed(
         let payload = &data[offset..offset + len];
         offset += len;
 
-        let is_end_stream = flags & 0x01 != 0;
+        let is_end_stream = flags & 0x02 != 0;
         if is_end_stream && payload.is_empty() {
             // End stream with no data — check headers for error
             if let Some(status) = headers.get("grpc-status").filter(|s| *s != "0") {
@@ -785,7 +950,15 @@ fn parse_connect_framed(
                     .get("message")
                     .and_then(|m| m.as_str())
                     .unwrap_or("");
-                error = Some(format!("gRPC error: code={} message={}", code, msg));
+                let details = err_body
+                    .get("details")
+                    .filter(|d| d.is_array())
+                    .map(|d| d.to_string())
+                    .unwrap_or_default();
+                error = Some(format!(
+                    "gRPC error: code={} message={} details=[{}]",
+                    code, msg, details
+                ));
             } else if let Some(desc) = output_desc
                 && let Ok(msg) = DynamicMessage::decode(desc.clone(), payload)
             {
@@ -801,7 +974,7 @@ fn parse_connect_framed(
     }
 
     // If no envelopes found, try raw payload as fallback
-    if messages.is_empty() && offset == 5 && !data.is_empty() && data[0] & 0x01 == 0 {
+    if messages.is_empty() && offset == 5 && !data.is_empty() && data[0] & 0x02 == 0 {
         let payload = &data[5..];
         if let Some(desc) = output_desc {
             if let Ok(msg) = DynamicMessage::decode(desc.clone(), payload) {
@@ -839,14 +1012,14 @@ mod tests {
     fn test_encode_connect_envelope_end_stream() {
         let data = b"x";
         let framed = encode_connect_envelope(data, true);
-        assert_eq!(framed[0], 0x01);
+        assert_eq!(framed[0], 0x02);
     }
 
     #[test]
     fn test_encode_connect_envelope_empty() {
         let framed = encode_connect_envelope(b"", true);
         assert_eq!(framed.len(), 5);
-        assert_eq!(framed[0], 0x01);
+        assert_eq!(framed[0], 0x02);
         let len = u32::from_be_bytes([framed[1], framed[2], framed[3], framed[4]]);
         assert_eq!(len, 0);
     }

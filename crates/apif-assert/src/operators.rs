@@ -338,8 +338,30 @@ fn eval_atom(
 
 fn eval_binary_value(lhs: Value, op: &BinaryOp, rhs: Value) -> Value {
     let pass = match op {
-        BinaryOp::Eq => lhs == rhs,
-        BinaryOp::Ne => lhs != rhs,
+        BinaryOp::Eq => {
+            // Numerically equal (3 == 3.0) should match even if JSON representation differs.
+            if let (Value::Number(l), Value::Number(r)) = (&lhs, &rhs) {
+                if let (Some(lf), Some(rf)) = (l.as_f64(), r.as_f64()) {
+                    lf == rf
+                } else {
+                    lhs == rhs
+                }
+            } else {
+                lhs == rhs
+            }
+        }
+        BinaryOp::Ne => {
+            // Numerically equal (3 != 3.0 should be false even if JSON representation differs)
+            if let (Value::Number(l), Value::Number(r)) = (&lhs, &rhs) {
+                if let (Some(lf), Some(rf)) = (l.as_f64(), r.as_f64()) {
+                    lf != rf
+                } else {
+                    lhs != rhs
+                }
+            } else {
+                lhs != rhs
+            }
+        }
         BinaryOp::Gt => compare_numeric(&lhs, &rhs, ">").unwrap_or(false),
         BinaryOp::Lt => compare_numeric(&lhs, &rhs, "<").unwrap_or(false),
         BinaryOp::Ge => compare_numeric(&lhs, &rhs, ">=").unwrap_or(false),

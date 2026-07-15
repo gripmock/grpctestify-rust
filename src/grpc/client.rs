@@ -106,6 +106,7 @@ impl GrpcClient {
         service_name: &str,
         method_name: &str,
         requests: impl Stream<Item = Value> + Send + 'static,
+        rpc_mode: Option<RpcMode>,
     ) -> Result<(
         HashMap<String, String>,
         Pin<Box<dyn Stream<Item = Result<StreamItem, GrpcError>> + Send + 'static>>,
@@ -121,12 +122,78 @@ impl GrpcClient {
                 use crate::grpc::TransportRef;
                 use futures::stream;
 
-                let body: Vec<Value> = requests.collect().await;
-                let request_body = body.into_iter().next().unwrap_or(Value::Null);
+                // For streaming modes where all requests arrive before first response
+                // (client-streaming, bidi), collect ALL and send as envelope stream.
+                // For unary/server-streaming, read first request immediately to avoid deadlock.
+                let needs_collect = matches!(
+                    rpc_mode,
+                    Some(crate::grpc::RpcMode::ClientStream | crate::grpc::RpcMode::Bidi)
+                );
+                let request_body = if needs_collect {
+                    let all: Vec<Value> = requests.collect().await;
+                    if all.is_empty() {
+                        return Ok((HashMap::new(), Box::pin(stream::iter(vec![]))));
+                    }
+                    if all.len() == 1 {
+                        all.into_iter().next().unwrap()
+                    } else {
+                        let is_grpc_web = config.protocol == crate::grpc::WireProtocol::GrpcWeb;
+                        let (messages, trailers, error, headers) = if is_grpc_web {
+                            let body = crate::grpc::web::encode_multi_request_grpc_web(&all);
+                            let (_status, response_bytes, headers) =
+                                crate::grpc::web::send_http_post(
+                                    config,
+                                    service_name,
+                                    method_name,
+                                    "application/grpc-web+json",
+                                    &body,
+                                )
+                                .await
+                                .map_err(|e| anyhow::anyhow!("{}", e))?;
+                            let (mut m, t, mut e) =
+                                crate::grpc::web::parse_grpc_web_framed_json_public(
+                                    &response_bytes,
+                                );
+                            // Extract structured error details from data frame if available
+                            crate::grpc::web::enrich_grpc_web_error(&mut m, &mut e);
+                            (m, t, e, headers)
+                        } else {
+                            let body = crate::grpc::web::encode_multi_request(&all);
+                            let (_status, response_bytes, headers) =
+                                crate::grpc::web::send_http_post(
+                                    config,
+                                    service_name,
+                                    method_name,
+                                    "application/connect+json",
+                                    &body,
+                                )
+                                .await
+                                .map_err(|e| anyhow::anyhow!("{}", e))?;
+                            let (m, t, e) = crate::grpc::web::parse_connect_framed_public(
+                                &response_bytes,
+                                None,
+                                &headers,
+                            );
+                            (m, t, e, headers)
+                        };
+                        return Ok((
+                            headers,
+                            Box::pin(stream::iter(Self::convert_result(
+                                messages,
+                                trailers,
+                                error,
+                                HashMap::new(),
+                            ))),
+                        ));
+                    }
+                } else {
+                    let mut pinned = Box::pin(requests);
+                    pinned.next().await.unwrap_or(Value::Null)
+                };
 
                 let mut transport = TransportRef::new(config).await?;
                 let result = transport
-                    .execute(config, service_name, method_name, request_body)
+                    .execute(config, service_name, method_name, request_body, rpc_mode)
                     .await;
 
                 let headers = result.headers.clone();
@@ -134,29 +201,7 @@ impl GrpcClient {
                 let trailers = result.trailers;
                 let error = result.error;
 
-                // Convert buffered result into a stream
-                let mut items: Vec<Result<StreamItem, GrpcError>> = Vec::new();
-
-                if let Some(err_msg) = error {
-                    let mut err_trailers = trailers;
-                    let code = err_msg
-                        .split("code=")
-                        .nth(1)
-                        .and_then(|s| s.split(char::is_whitespace).next())
-                        .and_then(|s| s.parse::<u32>().ok())
-                        .unwrap_or(2);
-                    err_trailers.insert("grpc-status".to_string(), code.to_string());
-                    err_trailers.insert("grpc-message".to_string(), err_msg);
-                    items.push(Ok(StreamItem::Trailers(err_trailers)));
-                } else {
-                    for msg in messages {
-                        items.push(Ok(StreamItem::Message(msg)));
-                    }
-                    if !trailers.is_empty() {
-                        items.push(Ok(StreamItem::Trailers(trailers)));
-                    }
-                }
-
+                let items = Self::convert_result(messages, trailers, error, headers.clone());
                 Ok((headers, Box::pin(stream::iter(items))))
             }
         }
@@ -169,7 +214,9 @@ impl GrpcClient {
         requests: Vec<Value>,
     ) -> Result<TestResponse> {
         let stream = futures::stream::iter(requests);
-        let (headers, mut stream) = self.call_stream(service_name, method_name, stream).await?;
+        let (headers, mut stream) = self
+            .call_stream(service_name, method_name, stream, None)
+            .await?;
         let mut messages = Vec::new();
         let mut trailers = HashMap::new();
         while let Some(item) = stream.next().await {
@@ -183,6 +230,77 @@ impl GrpcClient {
             messages,
             trailers,
         })
+    }
+
+    /// Convert TransportResult fields into a Vec of StreamItems for unified stream output.
+    fn convert_result(
+        messages: Vec<Value>,
+        trailers: HashMap<String, String>,
+        error: Option<String>,
+        headers: HashMap<String, String>,
+    ) -> Vec<Result<StreamItem, GrpcError>> {
+        use crate::grpc::GrpcError;
+        let mut items: Vec<Result<StreamItem, GrpcError>> = Vec::new();
+
+        if let Some(err_msg) = error {
+            let code = err_msg
+                .split("code=")
+                .nth(1)
+                .and_then(|s| s.split(char::is_whitespace).next())
+                .and_then(|s| {
+                    s.parse::<u32>().ok().or(Some(match s {
+                        "cancelled" => 1,
+                        "unknown" => 2,
+                        "invalid_argument" => 3,
+                        "deadline_exceeded" => 4,
+                        "not_found" => 5,
+                        "already_exists" => 6,
+                        "permission_denied" => 7,
+                        "resource_exhausted" => 8,
+                        "failed_precondition" => 9,
+                        "aborted" => 10,
+                        "out_of_range" => 11,
+                        "unimplemented" => 12,
+                        "internal" => 13,
+                        "unavailable" => 14,
+                        "data_loss" => 15,
+                        "unauthenticated" => 16,
+                        _ => 2,
+                    }))
+                })
+                .unwrap_or(2);
+            let message = err_msg
+                .split("message=")
+                .nth(1)
+                .and_then(|s| s.split(" details=").next())
+                .unwrap_or(&err_msg)
+                .to_string();
+            let details_bytes = err_msg
+                .split("details=[")
+                .nth(1)
+                .and_then(|s| s.rsplit_once(']'))
+                .map(|(json, _)| json.as_bytes().to_vec())
+                .unwrap_or_default();
+            let mut err_trailers = trailers;
+            for (k, v) in &headers {
+                err_trailers.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+            items.push(Err(GrpcError::with_metadata(
+                code,
+                message,
+                details_bytes,
+                err_trailers,
+            )));
+        } else {
+            for msg in messages {
+                items.push(Ok(StreamItem::Message(msg)));
+            }
+            if !trailers.is_empty() {
+                items.push(Ok(StreamItem::Trailers(trailers)));
+            }
+        }
+
+        items
     }
 }
 
@@ -212,4 +330,4 @@ pub use apif_grpc_transport::config::{
     CompressionMode, GrpcClientConfig, ProtoConfig, TlsConfig, WireProtocol,
 };
 pub use apif_grpc_transport::error::GrpcError;
-pub use apif_grpc_transport::types::StreamItem;
+pub use apif_grpc_transport::types::{RpcMode, StreamItem};
