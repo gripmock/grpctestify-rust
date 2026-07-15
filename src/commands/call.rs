@@ -379,7 +379,7 @@ async fn handle_call_document(
     drop(tx.take());
 
     let (headers, mut response_stream) = client
-        .call_stream(&full_service, &method, request_stream)
+        .call_stream(&full_service, &method, request_stream, None)
         .await?;
 
     if opts.verbose && !headers.is_empty() {

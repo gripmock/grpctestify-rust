@@ -430,6 +430,15 @@ fn get_actual_rpc_mode(
         .unwrap_or(RpcModeInfo::Unknown)
 }
 
+/// Format protocol name for display in verbose output.
+fn protocol_display(protocol: crate::grpc::WireProtocol) -> &'static str {
+    match protocol {
+        crate::grpc::WireProtocol::Grpc => "gRPC",
+        crate::grpc::WireProtocol::GrpcWeb => "gRPC-Web",
+        crate::grpc::WireProtocol::ConnectRpc => "ConnectRPC",
+    }
+}
+
 /// Infer RPC mode from GCTF section structure (without proto descriptor)
 pub(crate) fn infer_rpc_mode_for_section_types(document: &GctfDocument) -> RpcModeInfo {
     let request_count = document.sections_by_type(SectionType::Request).len();
@@ -440,7 +449,11 @@ pub(crate) fn infer_rpc_mode_for_section_types(document: &GctfDocument) -> RpcMo
     let has_error = document.first_section(SectionType::Error).is_some();
 
     if has_error {
-        RpcModeInfo::Unary // UnaryError still uses Unary transport
+        if request_count > 1 {
+            RpcModeInfo::ClientStreaming
+        } else {
+            RpcModeInfo::Unary
+        }
     } else if has_json_lines || response_sections.len() > 1 {
         if request_count > 1 {
             RpcModeInfo::BidirectionalStreaming
@@ -870,6 +883,8 @@ impl TestRunner {
             version: env!("CARGO_PKG_VERSION").to_string(),
         };
 
+        let client_protocol = client_config.protocol;
+        let client_address = client_config.address.clone();
         let client = GrpcClient::new(client_config).await?;
 
         // Get input/output message types for field coverage tracking
@@ -904,6 +919,20 @@ impl TestRunner {
 
         let start_time = std::time::Instant::now();
 
+        // Determine RPC mode for HTTP transport (connectrpc/grpc-web needs to know streaming type)
+        let rpc_mode: Option<crate::grpc::RpcMode> = match inferred_rpc_mode {
+            RpcModeInfo::Unary => Some(crate::grpc::RpcMode::Unary),
+            RpcModeInfo::ServerStreaming => Some(crate::grpc::RpcMode::ServerStream),
+            RpcModeInfo::ClientStreaming => Some(crate::grpc::RpcMode::ClientStream),
+            RpcModeInfo::BidirectionalStreaming => Some(crate::grpc::RpcMode::Bidi),
+            RpcModeInfo::Unknown => None,
+        };
+
+        // For HTTP bidi, the runner must send all requests before reading any responses.
+        let is_http_bidi = client_protocol != crate::grpc::WireProtocol::Grpc
+            && rpc_mode == Some(crate::grpc::RpcMode::Bidi);
+        let mut deferred_bidi_expectations: Vec<Value> = Vec::new();
+
         // Start the gRPC call in background so unary/server-streaming methods can wait
         // for the first request message without deadlocking this task.
         let full_service_clone = full_service.clone();
@@ -911,7 +940,7 @@ impl TestRunner {
         let mut client_for_call = client;
         let mut call_handle = Some(tokio::spawn(async move {
             client_for_call
-                .call_stream(&full_service_clone, &method_clone, request_stream)
+                .call_stream(&full_service_clone, &method_clone, request_stream, rpc_mode)
                 .await
         }));
 
@@ -1136,10 +1165,27 @@ impl TestRunner {
                             drop(tx.take());
                         }
 
+                        // For HTTP bidi, buffer expected values until stream is ready.
+                        if is_http_bidi && i < last_request_idx.unwrap_or(usize::MAX) {
+                            // Store deferred expectations for later processing
+                            let expected_values =
+                                Self::expected_values_for_response_section(section);
+                            for exp in expected_values {
+                                deferred_bidi_expectations.push(exp);
+                            }
+                            continue;
+                        }
+
                         ensure_stream_ready!();
 
                         let mut received_messages_for_section: Vec<Value> = Vec::new();
-                        let expected_values = Self::expected_values_for_response_section(section);
+                        let section_expected = Self::expected_values_for_response_section(section);
+                        // Merge deferred expectations (from earlier skipped response sections)
+                        // with the current section's expectations in order.
+                        let expected_values: Vec<Value> = deferred_bidi_expectations
+                            .drain(..)
+                            .chain(section_expected)
+                            .collect();
 
                         let Some(stream) = response_stream.as_mut() else {
                             failure_reasons.push(format!(
@@ -1175,6 +1221,8 @@ impl TestRunner {
                                                 &msg,
                                                 effective_no_assert,
                                                 self.verbose,
+                                                protocol_display(client_protocol),
+                                                &client_address,
                                             );
 
                                             if !effective_no_assert {
@@ -1311,10 +1359,9 @@ impl TestRunner {
 
                         ensure_stream_ready!();
 
-                        // Standalone ASSERTS usually consumes a new message.
-                        // If stream is unavailable but we already captured an ERROR,
-                        // evaluate assertions against that error context.
-                        let Some(stream) = response_stream.as_mut() else {
+                        // If we have a captured error context (from a preceding ERROR section),
+                        // use that instead of reading from the stream.
+                        if last_error_json.is_some() || last_error_message.is_some() {
                             if !effective_no_assert
                                 && let SectionContent::Assertions(lines) = &section.content
                             {
@@ -1345,12 +1392,17 @@ impl TestRunner {
                                             timing: last_error_timing.as_ref(),
                                         },
                                     );
-                                } else {
-                                    failure_reasons.push(format!(
+                                }
+                            }
+                            continue;
+                        }
+
+                        let Some(stream) = response_stream.as_mut() else {
+                            if !effective_no_assert {
+                                failure_reasons.push(format!(
                                     "ASSERTS section at line {} has no active response/error context",
                                     section.start_line
                                 ));
-                                }
                             }
                             continue;
                         };
@@ -1564,7 +1616,12 @@ impl TestRunner {
                                             };
 
                                             if self.verbose {
-                                                println!("🔍 gRPC error received: '{}'", got);
+                                                println!(
+                                                    "[{}@{}] 🔍 gRPC error received: '{}'",
+                                                    protocol_display(client_protocol),
+                                                    client_address,
+                                                    got
+                                                );
                                                 if let Some(status) = e
                                                     .downcast_ref::<apif_grpc_transport::GrpcError>(
                                                 ) {
@@ -1716,7 +1773,12 @@ impl TestRunner {
                                     }
                                 } else if self.verbose {
                                     if let Some(got) = got.as_deref() {
-                                        println!("🔍 gRPC error received: '{}'", got);
+                                        println!(
+                                            "[{}@{}] 🔍 gRPC error received: '{}'",
+                                            protocol_display(client_protocol),
+                                            client_address,
+                                            got
+                                        );
                                     }
                                     let details_json =
                                         super::error_handler::ErrorHandler::status_details_json(
@@ -2027,7 +2089,13 @@ impl TestRunner {
     }
 
     /// Log a response message for debug/verbose/raw modes.
-    fn log_response_message(msg: &Value, effective_no_assert: bool, verbose: bool) {
+    fn log_response_message(
+        msg: &Value,
+        effective_no_assert: bool,
+        verbose: bool,
+        protocol: &str,
+        addr: &str,
+    ) {
         let should_format =
             tracing::enabled!(tracing::Level::DEBUG) || effective_no_assert || verbose;
         if !should_format {
@@ -2035,12 +2103,15 @@ impl TestRunner {
         }
         let pretty = runner_helpers::format_json_pretty(msg);
         if tracing::enabled!(tracing::Level::DEBUG) {
-            tracing::debug!("Received Response:\n{}", pretty);
+            tracing::debug!("[{}@{}] Received Response:\n{}", protocol, addr, pretty);
         }
         if effective_no_assert {
             println!("--- RESPONSE (Raw) ---\n{}", pretty);
         } else if verbose {
-            println!("🔍 gRPC response received: '{}'", pretty);
+            println!(
+                "[{}@{}] 🔍 gRPC response received: '{}'",
+                protocol, addr, pretty
+            );
         }
     }
 

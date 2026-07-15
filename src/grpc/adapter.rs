@@ -77,7 +77,7 @@ impl CallClient for GrpcCallClient {
 
         let (_headers, stream) = self
             .0
-            .call_stream(&full_service, &method_name, request_stream)
+            .call_stream(&full_service, &method_name, request_stream, None)
             .await?;
 
         Ok(Box::pin(stream.map(|item| match item {
@@ -127,7 +127,7 @@ impl CallClient for HttpCallClient {
             .await
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         let result = transport
-            .execute(&self.config, &full_service, &method_name, value)
+            .execute(&self.config, &full_service, &method_name, value, None)
             .await;
 
         if let Some(e) = result.error {

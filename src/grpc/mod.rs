@@ -40,18 +40,21 @@ impl TransportRef {
         service: &str,
         method: &str,
         body: Value,
+        rpc_mode: Option<RpcMode>,
     ) -> TransportResult {
         match self {
             TransportRef::Tonic(client) => execute_tonic(client, service, method, body).await,
-            TransportRef::Http => match web::execute_web(config, service, method, body).await {
-                Ok(resp) => resp.into(),
-                Err(e) => TransportResult {
-                    messages: vec![],
-                    headers: HashMap::new(),
-                    trailers: HashMap::new(),
-                    error: Some(e.to_string()),
-                },
-            },
+            TransportRef::Http => {
+                match web::execute_web_with_mode(config, service, method, body, rpc_mode).await {
+                    Ok(resp) => resp.into(),
+                    Err(e) => TransportResult {
+                        messages: vec![],
+                        headers: HashMap::new(),
+                        trailers: HashMap::new(),
+                        error: Some(e.to_string()),
+                    },
+                }
+            }
         }
     }
 }

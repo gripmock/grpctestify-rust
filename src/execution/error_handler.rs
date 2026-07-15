@@ -42,6 +42,39 @@ struct GoogleRpcBadRequestFieldViolation {
 /// Error handler for gRPC test execution
 pub struct ErrorHandler;
 
+/// Normalize field names in `actual` to match `expected` key naming (camelCase ↔ snake_case).
+fn normalize_field_names(
+    actual: &Map<String, Value>,
+    expected: &Map<String, Value>,
+) -> Map<String, Value> {
+    let mut result = actual.clone();
+    for (exp_key, exp_val) in expected {
+        if !result.contains_key(exp_key) {
+            // Try to find a key that differs only by underscores/case
+            let normalized_key = result
+                .keys()
+                .find(|k| {
+                    let k_norm = k.replace('_', "").to_lowercase();
+                    let exp_norm = exp_key.replace('_', "").to_lowercase();
+                    k_norm == exp_norm && *k != exp_key.as_str()
+                })
+                .cloned();
+            if let Some(found) = normalized_key {
+                let val = result.remove(&found).unwrap_or(Value::Null);
+                // Recurse for nested objects
+                let val = match (exp_val, val.clone()) {
+                    (Value::Object(exp_obj), Value::Object(act_obj)) => {
+                        Value::Object(normalize_field_names(&act_obj, exp_obj))
+                    }
+                    _ => val,
+                };
+                result.insert(exp_key.clone(), val);
+            }
+        }
+    }
+    result
+}
+
 impl ErrorHandler {
     /// Check if error matches expected error
     pub fn error_matches_expected(error_text: &str, expected: &Value) -> bool {
@@ -78,11 +111,17 @@ impl ErrorHandler {
 
         let expects_details = expected.get("details").is_some();
         if !expects_details {
-            return status.details().is_empty();
+            return status.details().is_empty()
+                || status.details() == b"[]"
+                || status.details() == b"{}";
         }
 
-        let Some(actual_details) = Self::decode_status_details(status.details()) else {
-            return false;
+        let actual_details = match Self::decode_status_details(status.details()) {
+            Some(d) => d,
+            None => match Self::decode_json_details(status.details()) {
+                Some(d) => d,
+                None => return false,
+            },
         };
 
         Self::compare_details(expected, actual_details).is_none()
@@ -106,9 +145,21 @@ impl ErrorHandler {
             && !details.is_empty()
         {
             obj.insert("details".into(), Value::Array(details));
+        } else if let Some(details) = Self::decode_json_details(status.details())
+            && !details.is_empty()
+        {
+            obj.insert("details".into(), Value::Array(details));
         }
 
         Value::Object(obj)
+    }
+
+    /// Try to decode details as raw JSON array bytes (ConnectRPC style).
+    fn decode_json_details(raw: &[u8]) -> Option<Vec<Value>> {
+        if raw.is_empty() {
+            return Some(Vec::new());
+        }
+        serde_json::from_slice::<Vec<Value>>(raw).ok()
     }
 
     /// Returns a human-readable mismatch reason for GrpcError comparison
@@ -168,7 +219,10 @@ impl ErrorHandler {
 
         let actual_details = match Self::decode_status_details(status.details()) {
             Some(details) => details,
-            None => return Some("cannot decode gRPC status details".to_string()),
+            None => match Self::decode_json_details(status.details()) {
+                Some(details) => details,
+                None => return Some("cannot decode gRPC status details".to_string()),
+            },
         };
 
         Self::compare_details(expected, actual_details)
@@ -332,12 +386,36 @@ impl ErrorHandler {
             }
 
             for (idx, (exp, act)) in expected_array.iter().zip(actual_details.iter()).enumerate() {
-                if exp != act {
-                    return Some(format!(
-                        "details mismatch at index {}: expected {} but got {}",
-                        idx, exp, act
-                    ));
+                // Enrich actual with @type from expected if missing
+                let enriched = if let (Value::Object(exp_obj), Value::Object(act_obj)) = (exp, act)
+                    && exp_obj.contains_key("@type")
+                    && !act_obj.contains_key("@type")
+                {
+                    let mut enriched = act_obj.clone();
+                    if let Some(type_val) = exp_obj.get("@type") {
+                        enriched.insert("@type".to_string(), type_val.clone());
+                    }
+                    Value::Object(enriched)
+                } else {
+                    act.clone()
+                };
+
+                if exp == &enriched {
+                    continue;
                 }
+
+                // Try field-name normalization: snake_case ↔ camelCase
+                if let (Value::Object(exp_obj), Value::Object(act_obj)) = (exp, &enriched) {
+                    let norm_act = normalize_field_names(act_obj, exp_obj);
+                    if exp == &Value::Object(norm_act) {
+                        continue;
+                    }
+                }
+
+                return Some(format!(
+                    "details mismatch at index {}: expected {} but got {}",
+                    idx, exp, act
+                ));
             }
 
             return None;

@@ -1215,7 +1215,7 @@ pub async fn execute_call(
 
     for msg_val in messages {
         let result = transport
-            .execute(&grpc_config, &full_service, &method_name, msg_val)
+            .execute(&grpc_config, &full_service, &method_name, msg_val, None)
             .await;
         response_messages.extend(result.messages);
         response_trailers.extend(result.trailers);
