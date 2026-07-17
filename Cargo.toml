@@ -107,7 +107,7 @@ jaq-json = { version = "2.0", features = ["serde"] }
 crc32fast = "1.5"
 
 # JSON Schema
-jsonschema = "0.47"
+jsonschema = "0.48"
 
 # Fake data generation
 fake = "5.1"
