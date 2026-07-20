@@ -174,17 +174,14 @@ fn parse_section_header(
     line_num: usize,
     diagnostics: &mut DiagnosticCollection,
 ) -> Option<(SectionType, crate::ast::InlineOptions)> {
-    // Remove --- delimiters
     let without_delimiters = line.trim_start_matches('-').trim_end_matches('-').trim();
 
-    // Extract section name and inline options
     let (section_name, inline_opts_str) = without_delimiters
         .split_once(' ')
         .map_or((without_delimiters, ""), |(name, opts)| (name, opts));
     let section_name = section_name.trim();
     let inline_opts_str = inline_opts_str.trim();
 
-    // Parse section type
     let section_type = match section_name.to_uppercase().as_str() {
         "ADDRESS" => SectionType::Address,
         "ENDPOINT" => SectionType::Endpoint,
@@ -217,7 +214,6 @@ fn parse_section_header(
         }
     };
 
-    // Parse inline options if present
     let has_opts = !inline_opts_str.is_empty();
     let inline_options = if has_opts && section_type.supports_inline_options() {
         match crate::content_parser::parse_inline_options(inline_opts_str) {
@@ -249,7 +245,6 @@ fn extract_section_content(
     for (i, line) in lines.iter().enumerate().skip(start) {
         let trimmed = line.trim();
 
-        // Check for next section header
         if trimmed.starts_with("---") && trimmed.ends_with("---") {
             break;
         }
@@ -300,7 +295,6 @@ fn parse_section_content(
             }
         }
         SectionType::Extract => {
-            // Parse extract variables
             let mut extractions = std::collections::HashMap::new();
             for (i, line) in content.iter().enumerate() {
                 let trimmed = line.trim();
@@ -323,7 +317,6 @@ fn parse_section_content(
             SectionContent::Extract(extractions)
         }
         SectionType::Asserts => {
-            // Collect assertion lines
             let assertions: Vec<String> = content
                 .iter()
                 .filter_map(|line| strip_assertion_comments(line))
@@ -335,7 +328,6 @@ fn parse_section_content(
         | SectionType::Proto
         | SectionType::Options
         | SectionType::Bench => {
-            // Parse key-value pairs
             let mut key_values = std::collections::HashMap::new();
             for (i, line) in content.iter().enumerate() {
                 let trimmed = line.trim();

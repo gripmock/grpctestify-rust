@@ -39,7 +39,6 @@ fn compile_test_server_protos() -> Result<(), Box<dyn std::error::Error>> {
 
     let out_dir = std::path::PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    // Find all proto files in test server directory
     let proto_files = std::fs::read_dir(test_proto_dir)?
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "proto"))
@@ -50,12 +49,10 @@ fn compile_test_server_protos() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Print rerun-if-changed for all proto files
     for proto in &proto_files {
         println!("cargo:rerun-if-changed={}", proto.display());
     }
 
-    // Compile test server protos
     tonic_prost_build::configure()
         .file_descriptor_set_path(out_dir.join("test_servers_descriptor.bin"))
         .compile_protos(&proto_files, &[test_proto_dir.to_path_buf()])?;
@@ -69,10 +66,7 @@ fn compile_test_server_protos() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Compile main protos (optional, feature-gated)
     compile_main_protos()?;
-
-    // Compile test server protos (always if they exist)
     compile_test_server_protos()?;
 
     // Trigger rebuild when embedded web assets change (rust-embed)

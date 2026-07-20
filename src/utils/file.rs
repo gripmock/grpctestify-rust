@@ -160,6 +160,7 @@ mod tests {
     use std::collections::HashMap;
     use tempfile::NamedTempFile;
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_update_test_file() {
         if !runtime::supports(runtime::Capability::IsolatedFsIo) {
@@ -204,6 +205,7 @@ mod tests {
         assert!(updated.contains("\"result\": \"new\""));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_update_test_file_with_parsed_zero_based_sections() {
         if !runtime::supports(runtime::Capability::IsolatedFsIo) {
@@ -225,6 +227,7 @@ mod tests {
         assert!(updated.contains("\"result\": \"new\""));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_update_test_file_updates_jsonlines_response_count() {
         if !runtime::supports(runtime::Capability::IsolatedFsIo) {
@@ -243,6 +246,7 @@ mod tests {
         assert!(update_test_file(temp_file.path(), &doc, &response).is_ok());
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_update_test_file_preserves_streaming_message_count() {
         if !runtime::supports(runtime::Capability::IsolatedFsIo) {
@@ -269,6 +273,7 @@ mod tests {
         assert!(updated.contains("\"index\": 11"), "updated: {updated}");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_update_test_file_empty_response_preserves_original_content() {
         if !runtime::supports(runtime::Capability::IsolatedFsIo) {
@@ -287,10 +292,14 @@ mod tests {
         };
         assert!(update_test_file(temp_file.path(), &doc, &response).is_ok());
         let updated = std::fs::read_to_string(temp_file.path()).unwrap();
-        assert!(updated.contains("\"result\": \"old\""), "updated: {updated}");
+        assert!(
+            updated.contains("\"result\": \"old\""),
+            "updated: {updated}"
+        );
         assert!(updated.contains("\"code\": 5"), "updated: {updated}");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_update_test_file_preserves_trailing_newline_and_no_temp_leftover() {
         if !runtime::supports(runtime::Capability::IsolatedFsIo) {
@@ -311,13 +320,19 @@ mod tests {
         assert!(update_test_file(&path, &doc, &response).is_ok());
         let updated = std::fs::read_to_string(&path).unwrap();
         assert!(updated.contains("\"result\": \"new\""));
-        assert!(updated.ends_with('\n'), "trailing newline must be preserved");
+        assert!(
+            updated.ends_with('\n'),
+            "trailing newline must be preserved"
+        );
         // Atomic write must not leave temp files behind.
         let leftovers: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
             .collect();
-        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
     }
 }

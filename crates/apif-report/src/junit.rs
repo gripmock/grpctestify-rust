@@ -195,7 +195,10 @@ mod tests {
             extra_properties: vec![],
         };
         let xml = tc.to_xml();
-        assert!(!xml.chars().any(|c| (c as u32) < 0x20 && !matches!(c, '\t' | '\n' | '\r')));
+        assert!(
+            !xml.chars()
+                .any(|c| (c as u32) < 0x20 && !matches!(c, '\t' | '\n' | '\r'))
+        );
         assert!(xml.contains("boom"));
     }
 
@@ -273,6 +276,7 @@ mod tests {
         assert!(xml.contains("env"));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
     fn test_junit_reporter_lifecycle() {
@@ -287,6 +291,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
     fn test_junit_reporter_with_failure() {

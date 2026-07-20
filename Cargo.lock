@@ -157,7 +157,7 @@ dependencies = [
 
 [[package]]
 name = "apif-execution"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "apif-assert",
@@ -287,7 +287,7 @@ version = "0.1.0"
 
 [[package]]
 name = "apif-source-row"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "apif-ast",
@@ -1278,6 +1278,7 @@ dependencies = [
  "criterion",
  "csv",
  "fake",
+ "flate2",
  "futures",
  "globset",
  "ignore",
@@ -1307,6 +1308,7 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tonic-reflection",
+ "tonic-web",
  "tower-http 0.7.0",
  "tower-lsp",
  "tracing",
@@ -3053,12 +3055,14 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tower 0.5.3",
  "tower-http 0.6.11",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
 ]
 
@@ -3807,6 +3811,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonic-web"
+version = "0.14.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5e6a1b6319ca4b61a4c0f0c94d439c8f3ed344cca56fe0df40e1fe4be11380b"
+dependencies = [
+ "base64",
+ "bytes",
+ "http",
+ "http-body",
+ "pin-project",
+ "tokio-stream",
+ "tonic",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+]
+
+[[package]]
 name = "tower"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4228,6 +4250,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc1b4cb0cc549fcf58d7dfc081778139b3d283a081644e833e84682ad71cea24"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "wasm-streams"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d1ec4f6517c9e11ae630e200b2b65d193279042e28edd4a2cda233e46670bbb"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

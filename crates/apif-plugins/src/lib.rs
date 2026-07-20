@@ -21,7 +21,6 @@ pub mod uuid;
 
 pub use type_info::{ArgTypeInfo, TypeInfo, TypedPluginSignature};
 
-// Re-export all pub items from core module
 pub use core::{
     PLUGIN_SIGNATURES, Plugin, PluginManager, PluginPurity, PluginSignature,
     extract_plugin_call_name, normalize_plugin_name, plugin_signature_map,

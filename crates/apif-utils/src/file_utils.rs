@@ -1,5 +1,3 @@
-// Cross-platform file utilities
-
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
@@ -98,6 +96,7 @@ mod tests {
     use super::*;
     use std::fs;
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
     fn test_collect_test_files_empty_dir() {
@@ -109,6 +108,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
     fn test_collect_test_files_with_gctf() {
@@ -129,6 +129,7 @@ mod tests {
         assert_eq!(resolved, Path::new("/home/user/tests/data/file.csv"));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
     fn test_get_file_size() {

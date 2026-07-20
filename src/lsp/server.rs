@@ -688,8 +688,6 @@ impl GrpctestifyLsp {
                         lsp_diags.push(diag);
                     }
 
-                    // Semantic diagnostics
-                    // Semantic diagnostics
                     let mut semantic_diags = handlers::collect_semantic_diagnostics(d, content);
                     for diag in &mut semantic_diags {
                         if let Some(n) = doc_label {
@@ -781,7 +779,10 @@ impl LanguageServer for GrpctestifyLsp {
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
-                rename_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: Default::default(),
+                })),
                 signature_help_provider: Some(SignatureHelpOptions {
                     trigger_characters: Some(vec!["(".to_string()]),
                     retrigger_characters: None,
@@ -910,21 +911,17 @@ impl LanguageServer for GrpctestifyLsp {
             .get_or_parse_document(&uri, &content, doc_version)
             .await
         {
-            let line_num = position.line as usize + 1;
+            let line0 = position.line as usize;
 
-            let in_any_section = doc
-                .sections
-                .iter()
-                .any(|s| s.start_line <= line_num && line_num <= s.end_line);
+            let in_any_section = handlers::section_index_at_line(&doc.sections, line0).is_some();
             if current_line.is_empty() && !in_any_section {
                 items.extend(handlers::get_section_completions());
             }
 
             // Context-aware completions based on section type
             for section in &doc.sections {
-                if section.start_line <= line_num && line_num <= section.end_line {
-                    let on_section_header =
-                        line_num == section.start_line || on_section_header_line;
+                if section.start_line <= line0 && line0 < section.end_line {
+                    let on_section_header = line0 == section.start_line || on_section_header_line;
                     if on_section_header {
                         items.extend(handlers::get_section_header_option_completions(
                             &section.section_type,
@@ -1036,7 +1033,7 @@ impl LanguageServer for GrpctestifyLsp {
             .get_or_parse_document(&uri, &content, doc_version)
             .await
         {
-            let line = position.line as usize + 1;
+            let line0 = position.line as usize;
 
             // First check if cursor is on a {{var}} reference
             if let Some(var_hover) = get_var_hover(&doc, position.line as usize, position.character)
@@ -1053,8 +1050,8 @@ impl LanguageServer for GrpctestifyLsp {
 
             // Fall back to section hover
             for section in &doc.sections {
-                if section.start_line <= line
-                    && line <= section.end_line
+                if section.start_line <= line0
+                    && line0 < section.end_line
                     && let Some(content) = handlers::get_section_hover(&section.section_type)
                 {
                     return Ok(Some(Hover {
@@ -1290,7 +1287,8 @@ impl LanguageServer for GrpctestifyLsp {
         }
 
         let line = lines[line_idx];
-        let char_idx = position.character as usize;
+        // LSP `character` is a UTF-16 code-unit offset; convert to a byte index.
+        let char_idx = crate::lsp::position::utf16_col_to_byte(line, position.character as usize);
         if char_idx >= line.len() {
             return Ok(None);
         }
@@ -1332,8 +1330,7 @@ impl LanguageServer for GrpctestifyLsp {
 
         let line = lines[line_idx];
         // LSP `character` is a UTF-16 code-unit offset; convert to a byte index.
-        let char_idx =
-            crate::lsp::position::utf16_col_to_byte(line, position.character as usize);
+        let char_idx = crate::lsp::position::utf16_col_to_byte(line, position.character as usize);
         if char_idx >= line.len() {
             return Ok(None);
         }
@@ -1387,8 +1384,7 @@ impl LanguageServer for GrpctestifyLsp {
 
         let line = lines[line_idx];
         // LSP `character` is a UTF-16 code-unit offset; convert to a byte index.
-        let char_idx =
-            crate::lsp::position::utf16_col_to_byte(line, position.character as usize);
+        let char_idx = crate::lsp::position::utf16_col_to_byte(line, position.character as usize);
         if char_idx >= line.len() {
             return Ok(None);
         }
@@ -1437,8 +1433,7 @@ impl LanguageServer for GrpctestifyLsp {
 
         let line = lines[line_idx];
         // LSP `character` is a UTF-16 code-unit offset; convert to a byte index.
-        let char_idx =
-            crate::lsp::position::utf16_col_to_byte(line, position.character as usize);
+        let char_idx = crate::lsp::position::utf16_col_to_byte(line, position.character as usize);
         if char_idx >= line.len() {
             return Ok(None);
         }

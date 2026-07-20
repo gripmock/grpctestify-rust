@@ -161,7 +161,6 @@ mod tests {
     #[test]
     fn test_streaming_reporter_suite_start_once() {
         let reporter = StreamingJsonReporter::new(1);
-        // First call sets suite_started
         reporter.on_test_start("t1");
         assert!(reporter.suite_started.is_completed());
         // Subsequent calls should not re-emit suite_start

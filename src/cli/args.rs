@@ -1,5 +1,3 @@
-// CLI argument definitions using Clap
-
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -89,6 +87,8 @@ pub enum Commands {
     Lsp(LspArgs),
     /// Run benchmark tests
     Bench(BenchArgs),
+    /// Compare two bench JSON reports and gate on regressions
+    BenchCompare(BenchCompareArgs),
     /// Manage data source indexes
     Index(IndexArgs),
     /// Query data sources interactively
@@ -97,6 +97,55 @@ pub enum Commands {
     Health(HealthArgs),
     /// Launch web UI playground
     Play(PlayArgs),
+    /// Scaffold a ready-to-edit .gctf test from a proto/descriptor/reflection
+    Scaffold(ScaffoldArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ScaffoldArgs {
+    /// Fully-qualified method to scaffold (package.Service/Method)
+    #[arg(long, value_name = "SERVICE/METHOD", required = true)]
+    pub endpoint: String,
+
+    /// Proto file or directory to compile (pure-Rust protox, no protoc)
+    #[arg(long, value_name = "FILE_OR_DIR")]
+    pub proto: Option<PathBuf>,
+
+    /// Pre-compiled FileDescriptorSet (.protoset/.pb)
+    #[arg(long, value_name = "FILE")]
+    pub descriptor: Option<PathBuf>,
+
+    /// Load descriptors from server reflection at --address
+    #[arg(long, default_value_t = false)]
+    pub reflect: bool,
+
+    /// Server address (host:port) written into the ADDRESS section
+    #[arg(long)]
+    pub address: Option<String>,
+
+    /// Output file (stdout if omitted)
+    #[arg(short = 'o', long, value_name = "FILE")]
+    pub output: Option<PathBuf>,
+
+    /// Overwrite the output file if it already exists
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
+
+    /// Use TLS with certificate verification (reflection)
+    #[arg(long, default_value_t = false)]
+    pub tls: bool,
+
+    /// Use TLS without certificate verification (reflection)
+    #[arg(long, default_value_t = false)]
+    pub insecure: bool,
+
+    /// Plaintext connection, no TLS (reflection)
+    #[arg(long, default_value_t = false)]
+    pub plaintext: bool,
+
+    /// Wire protocol: grpc (default), grpc-web, connectrpc
+    #[arg(long, default_value = "grpc")]
+    pub protocol: String,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -333,6 +382,33 @@ pub struct BenchArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+pub struct BenchCompareArgs {
+    /// Baseline bench report (JSON produced by `bench --log-format json`)
+    #[arg(required = true)]
+    pub baseline: PathBuf,
+
+    /// Current bench report to compare against the baseline
+    #[arg(required = true)]
+    pub current: PathBuf,
+
+    /// Max tolerated latency rise (percent) for mean and each percentile
+    #[arg(long, value_name = "PCT", default_value_t = 10.0)]
+    pub max_latency_regression: f64,
+
+    /// Max tolerated error-rate rise, in percentage points
+    #[arg(long, value_name = "POINTS", default_value_t = 1.0)]
+    pub max_error_rate_regression: f64,
+
+    /// Max tolerated throughput (rps) drop (percent) before failing
+    #[arg(long, value_name = "PCT", default_value_t = 5.0)]
+    pub min_throughput: f64,
+
+    /// Output format (console, json)
+    #[arg(long, default_value = "console")]
+    pub format: String,
+}
+
+#[derive(Args, Debug, Clone)]
 pub struct IndexArgs {
     /// .gctf file(s) or directory with BENCH.sources definitions
     #[arg(required = true)]
@@ -533,6 +609,16 @@ pub struct RunArgs {
     /// Write/Overwrite test files with actual server responses (Snapshot Mode)
     #[arg(short = 'w', long, default_value_t = false)]
     pub write: bool,
+
+    /// Data source (CSV/TSV/NDJSON) that drives each .gctf as a template,
+    /// expanding it into one test case per row (`{{source.column}}` substitution)
+    #[arg(long, value_name = "PATH")]
+    pub data: Option<PathBuf>,
+
+    /// Override the --data source format (csv, tsv, ndjson); inferred from the
+    /// file extension when omitted
+    #[arg(long, value_name = "FORMAT", requires = "data")]
+    pub data_format: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -708,7 +794,6 @@ impl Cli {
         };
 
         if parallel == "auto" {
-            // Auto-detect CPU count
             std::thread::available_parallelism()
                 .ok()
                 .map(|n| n.get())

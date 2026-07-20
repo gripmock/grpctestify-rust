@@ -40,7 +40,6 @@ impl Plugin for HeaderExtractPlugin {
     }
 
     fn execute(&self, args: &[Value], context: &PluginContext) -> Result<PluginResult> {
-        // Check argument count
         if args.is_empty() {
             return Ok(PluginResult::Assertion(AssertionResult::fail(
                 "@header requires 1 argument: the header name",
@@ -53,7 +52,6 @@ impl Plugin for HeaderExtractPlugin {
             )));
         }
 
-        // Get header name
         let header_name = match &args[0] {
             Value::String(name) => name.to_lowercase(),
             _ => {
@@ -63,7 +61,6 @@ impl Plugin for HeaderExtractPlugin {
             }
         };
 
-        // Get headers from context
         let headers = match context.headers {
             Some(h) => h,
             None => {
@@ -115,7 +112,6 @@ impl Plugin for HasHeaderPlugin {
     }
 
     fn execute(&self, args: &[Value], context: &PluginContext) -> Result<PluginResult> {
-        // Check argument count
         if args.is_empty() {
             return Ok(PluginResult::Assertion(AssertionResult::fail(
                 "@has_header requires 1 argument: the header name",
@@ -128,7 +124,6 @@ impl Plugin for HasHeaderPlugin {
             )));
         }
 
-        // Get header name
         let header_name = match &args[0] {
             Value::String(name) => name.to_lowercase(),
             _ => {
@@ -138,7 +133,6 @@ impl Plugin for HasHeaderPlugin {
             }
         };
 
-        // Get headers from context
         let headers = match context.headers {
             Some(h) => h,
             None => {
@@ -194,7 +188,6 @@ mod tests {
         let plugin = HeaderExtractPlugin;
         let context = create_context_with_headers();
 
-        // Test different case variations
         let result1 = plugin
             .execute(&[Value::String("Authorization".to_string())], &context)
             .unwrap();

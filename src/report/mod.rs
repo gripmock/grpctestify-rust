@@ -7,7 +7,6 @@ pub mod bench;
 pub mod coverage;
 pub mod kernel;
 
-// Re-export agnostic reporters from crate
 pub use apif_report::{
     ConsoleMode, ConsoleReporter, JsonReporter, JunitReporter, Reporter, StreamingJsonReporter,
     YamlReporter,

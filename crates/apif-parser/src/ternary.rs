@@ -118,8 +118,8 @@ fn find_top_level_question_mark(expr: &str) -> Option<usize> {
                 in_quotes = true;
                 quote_char = c;
             }
-            '(' => paren_depth += 1,
-            ')' => paren_depth -= 1,
+            '(' | '{' => paren_depth += 1,
+            ')' | '}' => paren_depth -= 1,
             '[' => bracket_depth += 1,
             ']' => bracket_depth -= 1,
             '?' if paren_depth == 0 && bracket_depth == 0 => {
@@ -158,8 +158,8 @@ fn find_matching_colon(expr: &str) -> Option<usize> {
                 in_quotes = true;
                 quote_char = c;
             }
-            '(' => paren_depth += 1,
-            ')' => paren_depth -= 1,
+            '(' | '{' => paren_depth += 1,
+            ')' | '}' => paren_depth -= 1,
             '[' => bracket_depth += 1,
             ']' => bracket_depth -= 1,
             '?' if paren_depth == 0 && bracket_depth == 0 => {
@@ -311,6 +311,16 @@ mod tests {
         let input = format!("{}.x{}", "(".repeat(100_000), ")".repeat(100_000));
         let result = ternary_to_jq(&input);
         assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_ternary_with_object_literal_branches() {
+        // Regression: a ':' inside a jq object literal `{...}` in a ternary
+        // branch must not be mistaken for the ternary's ':' separator. Braces
+        // must be tracked as nesting like parens/brackets.
+        let input = ".x == 0 ? {a: 1} : {b: 2}";
+        let expected = "if .x == 0 then {a: 1} else {b: 2} end";
+        assert_eq!(ternary_to_jq(input), expected);
     }
 
     #[test]

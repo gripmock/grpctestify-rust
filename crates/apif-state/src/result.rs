@@ -1,5 +1,3 @@
-// Test result structures
-
 use crate::TestStatus;
 use serde::Serialize;
 
@@ -38,7 +36,6 @@ impl TestMeta {
     }
 }
 
-/// Test result
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TestResult {
     /// File path (used as fallback name)

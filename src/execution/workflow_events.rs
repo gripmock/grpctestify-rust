@@ -205,12 +205,10 @@ impl Workflow {
         let mut events = Vec::new();
         let backend = plan.connection.backend.clone();
 
-        // Test loaded
         events.push(WorkflowEvent::TestLoaded {
             file_path: plan.file_path.clone(),
         });
 
-        // Connect to backend
         events.push(WorkflowEvent::Connect {
             backend: backend.clone(),
             address: plan.connection.address.clone(),
@@ -220,7 +218,6 @@ impl Workflow {
             address: plan.connection.address.clone(),
         });
 
-        // Load descriptors
         events.push(WorkflowEvent::LoadDescriptors {
             backend: backend.clone(),
             service: plan.target.endpoint.clone(),
@@ -231,11 +228,6 @@ impl Workflow {
             method_count: 1,
         });
 
-        // Process requests, responses, extractions, assertions in order
-        // For now, we use the order from ExecutionPlan
-        // In future, we'll track explicit ordering from .gctf file
-
-        // Requests
         for request in &plan.requests {
             events.push(WorkflowEvent::SendRequest {
                 backend: backend.clone(),
@@ -249,7 +241,6 @@ impl Workflow {
             });
         }
 
-        // Expectations (responses or error)
         for expectation in &plan.expectations {
             events.push(WorkflowEvent::ReceiveResponse {
                 backend: backend.clone(),
@@ -257,7 +248,6 @@ impl Workflow {
                 expectation_type: expectation.expectation_type.clone(),
             });
 
-            // If this is an error expectation, add Error event
             if expectation.expectation_type == "error"
                 && let Some(content) = &expectation.content
             {
@@ -278,7 +268,6 @@ impl Workflow {
             });
         }
 
-        // Extractions
         for extraction in &plan.extractions {
             events.push(WorkflowEvent::Extract {
                 variables: extraction.variables.keys().cloned().collect(),
@@ -290,7 +279,6 @@ impl Workflow {
             });
         }
 
-        // Assertions
         for assertion in &plan.assertions {
             events.push(WorkflowEvent::Assert {
                 count: assertion.assertions.len(),
@@ -303,7 +291,6 @@ impl Workflow {
             });
         }
 
-        // Complete
         events.push(WorkflowEvent::Complete {
             total_requests: plan.requests.len(),
             total_responses: plan.expectations.len(),
@@ -312,7 +299,6 @@ impl Workflow {
             backends_used: vec![backend.clone()],
         });
 
-        // Detect streaming mode
         let has_streaming = plan.requests.len() > 1 || plan.expectations.len() > 1;
         let has_bidi_streaming = plan.requests.len() > 1 && plan.expectations.len() > 1;
 
@@ -401,12 +387,10 @@ impl Workflow {
     pub fn validate(&self) -> ValidationResult {
         let mut errors = Vec::new();
 
-        // Must start with TestLoaded
         if !matches!(self.events.first(), Some(WorkflowEvent::TestLoaded { .. })) {
             errors.push("Workflow must start with TestLoaded event".to_string());
         }
 
-        // Must have Connect
         if !self
             .events
             .iter()
@@ -415,12 +399,10 @@ impl Workflow {
             errors.push("Workflow must have Connect event".to_string());
         }
 
-        // Must end with Complete
         if !matches!(self.events.last(), Some(WorkflowEvent::Complete { .. })) {
             errors.push("Workflow must end with Complete event".to_string());
         }
 
-        // Each SendRequest should be followed by RequestSent
         let send_count = self
             .events
             .iter()
@@ -438,7 +420,6 @@ impl Workflow {
             ));
         }
 
-        // Each ReceiveResponse should be followed by ResponseReceived
         let receive_count = self
             .events
             .iter()
@@ -469,7 +450,6 @@ impl Workflow {
         let request_count = self.requests().len();
         let response_count = self.responses().len();
 
-        // Analyze event interleaving
         let mut max_consecutive_requests = 0;
         let mut max_consecutive_responses = 0;
         let mut current_requests = 0;
@@ -517,12 +497,10 @@ impl Workflow {
     pub fn from_document_with_analysis(doc: &crate::parser::GctfDocument) -> Workflow {
         let mut events = Vec::new();
 
-        // Test loaded
         events.push(WorkflowEvent::TestLoaded {
             file_path: doc.file_path.clone(),
         });
 
-        // Run semantic analysis
         let type_mismatches: Vec<SemanticError> =
             crate::semantics::collect_assertion_type_mismatches(doc)
                 .into_iter()
@@ -552,7 +530,6 @@ impl Workflow {
             unknown_plugins,
         });
 
-        // Run optimizer analysis
         let hints: Vec<OptimizationHint> = crate::optimizer::collect_assertion_optimizations(
             doc,
             optimizer::OptimizeLevel::Advisory,
@@ -570,7 +547,6 @@ impl Workflow {
             events.push(WorkflowEvent::OptimizationFound { hints });
         }
 
-        // Run validation
         let validation_result = crate::parser::validate_document(doc);
         let passed = validation_result.is_ok();
         let errors = match validation_result {
@@ -580,11 +556,9 @@ impl Workflow {
 
         events.push(WorkflowEvent::ValidationResult { passed, errors });
 
-        // Build execution plan events from document
         let plan = crate::execution::ExecutionPlan::from_document(doc);
         Self::add_execution_events_from_plan(&mut events, &plan);
 
-        // Detect streaming mode
         let has_streaming = plan.requests.len() > 1 || plan.expectations.len() > 1;
         let has_bidi_streaming = plan.requests.len() > 1 && plan.expectations.len() > 1;
 
@@ -611,7 +585,6 @@ impl Workflow {
     ) {
         let backend = "default".to_string();
 
-        // Connect to backend
         events.push(WorkflowEvent::Connect {
             backend: backend.clone(),
             address: plan.connection.address.clone(),
@@ -621,7 +594,6 @@ impl Workflow {
             address: plan.connection.address.clone(),
         });
 
-        // Load descriptors
         events.push(WorkflowEvent::LoadDescriptors {
             backend: backend.clone(),
             service: plan.target.endpoint.clone(),
@@ -632,7 +604,6 @@ impl Workflow {
             method_count: 1,
         });
 
-        // Requests
         for request in &plan.requests {
             events.push(WorkflowEvent::SendRequest {
                 backend: backend.clone(),
@@ -646,7 +617,6 @@ impl Workflow {
             });
         }
 
-        // Expectations (responses or error)
         for expectation in &plan.expectations {
             events.push(WorkflowEvent::ReceiveResponse {
                 backend: backend.clone(),
@@ -674,7 +644,6 @@ impl Workflow {
             });
         }
 
-        // Extractions
         for extraction in &plan.extractions {
             events.push(WorkflowEvent::Extract {
                 variables: extraction.variables.keys().cloned().collect(),
@@ -686,7 +655,6 @@ impl Workflow {
             });
         }
 
-        // Assertions
         for assertion in &plan.assertions {
             events.push(WorkflowEvent::Assert {
                 count: assertion.assertions.len(),
@@ -699,7 +667,6 @@ impl Workflow {
             });
         }
 
-        // Complete
         events.push(WorkflowEvent::Complete {
             total_requests: plan.requests.len(),
             total_responses: plan.expectations.len(),

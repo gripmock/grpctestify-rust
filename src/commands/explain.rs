@@ -65,10 +65,8 @@ fn sorted_bench_key_values(map: &std::collections::HashMap<String, String>) -> V
 
 #[derive(Serialize)]
 struct ExplainJsonOutput {
-    semantic_plan: ExecutionPlan,
+    plan: ExecutionPlan,
     optimization_trace: Vec<optimizer::OptimizationHint>,
-    optimized_plan: ExecutionPlan,
-    execution_plan: ExecutionPlan,
     #[serde(skip_serializing_if = "Option::is_none")]
     bench_resolved: Option<Vec<crate::report::BenchResolvedOption>>,
 }
@@ -195,15 +193,11 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
         // Backward compatible: single doc uses original format
         if doc.is_single_document() {
             let workflow = Workflow::from_document_with_analysis(&doc);
-            let semantic_plan = ExecutionPlan::from_document(&doc);
+            let plan = ExecutionPlan::from_document(&doc);
             let optimization_trace = optimization_hints_from_workflow(&workflow);
-            let optimized_plan = semantic_plan.clone();
-            let execution_plan = optimized_plan.clone();
             let output = ExplainJsonOutput {
-                semantic_plan,
+                plan,
                 optimization_trace,
-                optimized_plan,
-                execution_plan,
                 bench_resolved: bench_resolved_options(&doc),
             };
             println!("{}", serde_json::to_string_pretty(&output)?);
@@ -345,12 +339,10 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
     println!("SCENARIO {}: {}", doc_idx, endpoint);
     println!("  {}", "-".repeat(60));
 
-    // Connection
     if let Some(addr) = doc.get_address(None) {
         println!("  → Connect: {}", addr);
     }
 
-    // Request headers
     if let Some(headers) = doc.get_request_headers() {
         println!("  → Request headers:");
         for (key, value) in sorted_key_values(&headers) {
@@ -358,7 +350,6 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
         }
     }
 
-    // Options
     if let Some(options) = doc.get_options()
         && !options.is_empty()
     {
@@ -393,7 +384,6 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
         );
     }
 
-    // TLS
     if let Some(tls) = doc.get_tls_config()
         && !tls.is_empty()
     {
@@ -403,7 +393,6 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
         }
     }
 
-    // Proto
     if let Some(proto) = doc.get_proto_config()
         && !proto.is_empty()
     {
@@ -413,7 +402,6 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
         }
     }
 
-    // Requests
     let requests = doc.get_requests();
     if !requests.is_empty() {
         if requests.len() == 1 {
@@ -436,7 +424,6 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
         }
     }
 
-    // Expected response
     for section in &doc.sections {
         match section.section_type {
             SectionType::Response => {
@@ -492,7 +479,6 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
         }
     }
 
-    // Extract
     let extractions: Vec<_> = doc
         .sections
         .iter()
@@ -513,7 +499,6 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
         }
     }
 
-    // Assertions from workflow
     let workflow = Workflow::from_document_with_analysis(doc);
     for event in &workflow.events {
         if let crate::execution::WorkflowEvent::Assert {
@@ -613,7 +598,6 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
         println!();
     }
 
-    // Connection info
     println!("CONNECTION");
     println!("----------");
     if let Some(addr) = doc.get_address(None) {
@@ -646,7 +630,6 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
     }
     println!();
 
-    // Endpoint
     println!("TARGET ENDPOINT");
     println!("---------------");
     if let Some(endpoint) = doc.get_endpoint() {
@@ -661,13 +644,11 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
     }
     println!();
 
-    // Workflow
     let workflow = Workflow::from_document_with_analysis(doc);
 
     println!("EXECUTION WORKFLOW");
     println!("------------------");
 
-    // Headers
     if let Some(headers) = doc.get_request_headers() {
         println!();
         println!("REQUEST HEADERS");
@@ -954,7 +935,6 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
         }
     }
 
-    // Summary
     println!();
     println!("EXECUTION SUMMARY");
     println!("-----------------");

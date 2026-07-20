@@ -49,7 +49,8 @@ pub fn strip_assertion_comments(line: &str) -> Option<String> {
                 // expression; otherwise strip it as a comment.
                 let next = chars.clone().find(|c| !c.is_whitespace());
                 let looks_like_jq_operand = next.is_some_and(|c| {
-                    c.is_ascii_digit() || matches!(c, '.' | '$' | '"' | '\'' | '(' | '[' | '{' | '@')
+                    c.is_ascii_digit()
+                        || matches!(c, '.' | '$' | '"' | '\'' | '(' | '[' | '{' | '@')
                 });
                 if !looks_like_jq_operand {
                     break;

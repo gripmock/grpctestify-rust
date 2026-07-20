@@ -6,7 +6,6 @@ pub use result::{TestMeta, TestResult};
 
 use serde::Serialize;
 
-/// Test status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum TestStatus {
     Pass,

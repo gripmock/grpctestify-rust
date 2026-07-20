@@ -23,15 +23,29 @@ fn normalize_assertion_lines(raw: &str) -> Vec<String> {
             }
             // Try to parse as assertion expression for canonical formatting
             let expr = crate::parser::assertion_ast::parse_assertion(trimmed);
-            let serialized = crate::parser::assertion_ast::assertion_to_string(&expr);
-            if !matches!(&expr, crate::parser::assertion_ast::AssertionExpr::Raw(_)) {
-                // Preserve original indentation
-                let indent_len = line.len() - trimmed.len();
-                let indent = &line[..indent_len];
-                format!("{}{}", indent, serialized)
-            } else {
-                line
+            if matches!(&expr, crate::parser::assertion_ast::AssertionExpr::Raw(_)) {
+                return line;
             }
+            let serialized = crate::parser::assertion_ast::assertion_to_string(&expr);
+            // Round-trip guard: only rewrite to the canonical form when that form
+            // parses back to itself. Otherwise the parser can't re-read what we
+            // emit and a second format pass would change the output. This is the
+            // case for `if..then..else..end`, which serializes to a `? :` ternary
+            // the parser does not accept back (root cause: apif-ast
+            // assertion_to_string/parse_assertion asymmetry).
+            let reparsed = crate::parser::assertion_ast::parse_assertion(&serialized);
+            let stable = !matches!(
+                &reparsed,
+                crate::parser::assertion_ast::AssertionExpr::Raw(_)
+            ) && crate::parser::assertion_ast::assertion_to_string(&reparsed)
+                == serialized;
+            if !stable {
+                return line;
+            }
+            // Preserve original indentation
+            let indent_len = line.len() - trimmed.len();
+            let indent = &line[..indent_len];
+            format!("{}{}", indent, serialized)
         })
         .collect()
 }
@@ -66,6 +80,19 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
         for _ in 0..indent {
             buf.push_str("  ");
         }
+    }
+
+    // Move to a fresh, correctly-indented line. Any pending indentation on an
+    // otherwise-empty line is stripped first, so we never emit a blank line
+    // (which would also make a second format pass non-idempotent).
+    fn newline_indent(buf: &mut String, indent: usize) {
+        while buf.ends_with(' ') {
+            buf.pop();
+        }
+        if !buf.ends_with('\n') {
+            buf.push('\n');
+        }
+        push_indent(buf, indent);
     }
 
     let mut out = String::new();
@@ -117,6 +144,9 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
         }
 
         if ch == '"' {
+            if saw_newline_gap {
+                newline_indent(&mut out, indent);
+            }
             in_string = true;
             out.push(ch);
             saw_newline_gap = false;
@@ -134,10 +164,7 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
 
         if ch == '#' || slash_comment_kind.is_some() {
             if saw_newline_gap {
-                if !out.ends_with('\n') {
-                    out.push('\n');
-                }
-                push_indent(&mut out, indent);
+                newline_indent(&mut out, indent);
             } else if !out.is_empty() && !out.ends_with('\n') && !out.ends_with(' ') {
                 out.push(' ');
             }
@@ -167,6 +194,9 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
 
         match ch {
             '{' | '[' => {
+                if saw_newline_gap {
+                    newline_indent(&mut out, indent);
+                }
                 out.push(ch);
                 out.push('\n');
                 indent += 1;
@@ -207,6 +237,9 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
                 }
             }
             _ => {
+                if saw_newline_gap {
+                    newline_indent(&mut out, indent);
+                }
                 out.push(ch);
                 saw_newline_gap = false;
             }
@@ -411,6 +444,11 @@ fn format_section_lines(section: &crate::parser::ast::Section) -> Vec<String> {
         (crate::parser::ast::SectionType::Asserts, _) => {
             return normalize_assertion_lines(&section.raw_content);
         }
+        // META is YAML — `#` is its comment marker, so preserve lines verbatim
+        // (rewriting `#` to `//` would corrupt the YAML).
+        (crate::parser::ast::SectionType::Meta, _) => {
+            section.raw_content.lines().map(str::to_string).collect()
+        }
         (
             crate::parser::ast::SectionType::Options,
             crate::parser::ast::SectionContent::KeyValues(_),
@@ -543,6 +581,27 @@ fn apply_optimizer_rewrites(
     rewritten
 }
 
+/// Write `content` to `path` atomically: write to a temp file in the same
+/// directory, then rename it over the target. A crash mid-write can therefore
+/// never leave a user's `.gctf` file truncated or half-written.
+fn write_atomic(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => std::path::Path::new("."),
+    };
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("out.gctf");
+    let tmp_path = parent.join(format!(".{}.{}.tmp", file_name, std::process::id()));
+    std::fs::write(&tmp_path, content)?;
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+    Ok(())
+}
+
 pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
     let level = cli.optimize_level(optimizer::OptimizeLevel::Safe);
     let mut files = Vec::new();
@@ -646,7 +705,7 @@ pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
             let formatted_cmp = normalize_eol_for_compare(&formatted);
             let original_cmp = normalize_eol_for_compare(&original);
             if formatted_cmp != original_cmp
-                && let Err(e) = std::fs::write(&file, &formatted)
+                && let Err(e) = write_atomic(&file, &formatted)
             {
                 error!("Failed to write {}: {}", file.display(), e);
                 has_error = true;
@@ -685,10 +744,114 @@ pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::format_gctf_content;
+    use super::{format_gctf_content, write_atomic};
 
     fn to_crlf(input: &str) -> String {
         input.replace('\n', "\r\n")
+    }
+
+    const HDR: &str = "--- ENDPOINT ---\ntest.Service/Method\n\n--- REQUEST ---\n{}\n\n";
+
+    /// Assert `fmt(fmt(x)) == fmt(x)` — the core formatter idempotency property.
+    fn assert_idempotent(src: &str) -> String {
+        let once = format_gctf_content(src, "t.gctf").unwrap();
+        let twice = format_gctf_content(&once, "t.gctf").unwrap();
+        assert_eq!(
+            once, twice,
+            "not idempotent\n--- once ---\n{}\n--- twice ---\n{}",
+            once, twice
+        );
+        once
+    }
+
+    // Regression: a `//` comment on the same line as an opening brace used to
+    // gain a spurious blank line on the SECOND format pass (non-idempotent).
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn test_fmt_json_comment_after_brace_idempotent() {
+        let src = format!("{}--- RESPONSE ---\n{{ // opener\n  \"a\": 1\n}}\n", HDR);
+        let out = assert_idempotent(&src);
+        assert!(
+            out.contains("{\n  // opener\n  \"a\": 1\n}"),
+            "comment should sit on its own indented line with no blank line: {out}"
+        );
+        assert!(!out.contains("{\n  \n"), "no spurious blank line: {out}");
+    }
+
+    // Regression: a standalone `/* block */` comment used to be glued directly
+    // onto the following key (`/* block */"a"`) because the value token did not
+    // honor the pending newline.
+    #[test]
+    fn test_fmt_json_block_comment_not_glued() {
+        let src = format!(
+            "{}--- RESPONSE ---\n{{\n  /* block */\n  \"a\": 1\n}}\n",
+            HDR
+        );
+        let out = assert_idempotent(&src);
+        assert!(
+            out.contains("/* block */\n  \"a\": 1"),
+            "block comment must not be glued to the next key: {out}"
+        );
+    }
+
+    // Regression: a `#` hash comment inside JSON re-indents onto its own line
+    // as `//` without a spurious leading blank line.
+    #[test]
+    fn test_fmt_json_hash_comment_idempotent() {
+        let src = format!("{}--- RESPONSE ---\n{{\n  # note\n  \"a\": 1\n}}\n", HDR);
+        let out = assert_idempotent(&src);
+        assert!(out.contains("{\n  // note\n  \"a\": 1\n}"), "{out}");
+    }
+
+    // Regression: META is YAML, whose comment marker is `#`. The formatter used
+    // to rewrite `#` to `//`, corrupting the YAML. It must be preserved verbatim.
+    #[test]
+    fn test_fmt_meta_yaml_hash_comment_preserved() {
+        let src = "--- META ---\n# a comment\nsuite: demo\n\n--- ENDPOINT ---\ntest.Service/Method\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n";
+        let out = assert_idempotent(src);
+        assert!(
+            out.contains("--- META ---\n# a comment\nsuite: demo"),
+            "META `#` comment must stay `#`, not become `//`: {out}"
+        );
+        assert!(
+            !out.contains("// a comment"),
+            "must not convert to //: {out}"
+        );
+    }
+
+    // Regression: `if..then..else..end` serializes to a `? :` ternary the parser
+    // cannot read back, so rewriting to it broke idempotency. The formatter now
+    // keeps the original form when the canonical form does not round-trip.
+    #[test]
+    fn test_fmt_asserts_ternary_idempotent() {
+        let src = format!(
+            "{}--- RESPONSE with_asserts ---\n{{}}\n\n--- ASSERTS ---\nif .x == 1 then true else false end\n",
+            HDR
+        );
+        let out = assert_idempotent(&src);
+        assert!(
+            out.contains("if .x == 1 then true else false end"),
+            "non-round-trippable assertion must be preserved verbatim: {out}"
+        );
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn test_write_atomic_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("fmt_atomic_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sample.gctf");
+        std::fs::write(&path, "old contents\n").unwrap();
+        write_atomic(&path, "new contents\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new contents\n");
+        // No leftover temp files in the directory.
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp file left behind: {leftovers:?}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

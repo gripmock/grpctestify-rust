@@ -1,4 +1,4 @@
-import Editor from '@monaco-editor/react';
+import { MonacoEditor as Editor } from '../MonacoEditor';
 import { useState } from 'react';
 import { useStore } from '../../lib/store';
 import { colors } from '../../lib/theme';
@@ -65,7 +65,6 @@ export function ResponsePanel() {
 
       {response && response.status !== 'pending' && (
         <>
-          {}
           <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: 8 }}>
             {(['response', 'headers'] as const).map(tab => (
               <button key={tab} onClick={() => setResponseTab(tab)} style={{
@@ -80,7 +79,6 @@ export function ResponsePanel() {
             ))}
           </div>
 
-          {}
           {responseTab === 'response' && (
             <div>
               {msgCount === 0 && (
@@ -89,17 +87,14 @@ export function ResponsePanel() {
                 </div>
               )}
 
-              {}
               {isStreaming && msgCount > 0 && (
                 <div style={{ marginBottom: 12 }}>
-                  {}
                   <div style={{ display: 'flex', gap: 6, marginBottom: 6, fontSize: 10, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                     <span style={{ width: 32 }}>#</span>
                     <span style={{ width: 60 }}>Time</span>
                     <span>Message</span>
                   </div>
 
-                  {}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                     {msgs.map((msg, i) => (
                       <div key={i} onClick={() => setSelectedMsg(i)} style={{
@@ -126,7 +121,6 @@ export function ResponsePanel() {
                 </div>
               )}
 
-              {}
               {msgCount > 0 && (
                 <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
                   <Editor
@@ -145,7 +139,6 @@ export function ResponsePanel() {
             </div>
           )}
 
-          {}
           {responseTab === 'headers' && (
             <div style={{ border: '1px solid var(--border)', borderRadius: 6, padding: 8, fontSize: 12.5, fontFamily: 'monospace' }}>
               <div style={{ marginBottom: 8 }}>

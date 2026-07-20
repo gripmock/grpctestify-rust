@@ -55,11 +55,48 @@ pub fn build_semantic_tokens(content: &str) -> SemanticTokens {
     encode_tokens(tokens)
 }
 
+/// UTF-16 column of character offset `char_off` within `line`.
+fn char_off_to_utf16(line: &str, char_off: usize) -> u32 {
+    line.chars()
+        .take(char_off)
+        .map(|c| c.len_utf16() as u32)
+        .sum()
+}
+
+/// Push a token whose span is relative to the trimmed assertion string.
+///
+/// `tokenize_assertion` runs on the leading-whitespace-trimmed line and reports
+/// *character* offsets into that trimmed string, but LSP semantic tokens use
+/// UTF-16 code-unit columns measured from the start of the *original* line. Add
+/// back the indentation (`indent`, in characters) and convert character offsets
+/// to UTF-16 so tokens land correctly on indented lines and lines containing
+/// astral (surrogate-pair) characters.
+fn push_span(
+    tokens: &mut Vec<SrcToken>,
+    line: &str,
+    indent: usize,
+    line_num: u32,
+    start_c: usize,
+    end_c: usize,
+    token_type: u32,
+) {
+    let start = char_off_to_utf16(line, indent + start_c);
+    let end = char_off_to_utf16(line, indent + end_c);
+    tokens.push(SrcToken {
+        line: line_num,
+        start,
+        length: end.saturating_sub(start),
+        token_type,
+    });
+}
+
 fn tokenize_line_as_assertion(line: &str, line_num: u32, tokens: &mut Vec<SrcToken>) {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return;
     }
+    // Number of leading-whitespace characters stripped by the trim above.
+    let indent = line.chars().count() - line.trim_start().chars().count();
 
     let toks = tokenize_assertion(trimmed);
 
@@ -81,12 +118,7 @@ fn tokenize_line_as_assertion(line: &str, line_num: u32, tokens: &mut Vec<SrcTok
                 end = toks[j + 1].span.end;
                 j += 2;
             }
-            tokens.push(SrcToken {
-                line: line_num,
-                start: start as u32,
-                length: (end - start) as u32,
-                token_type: FUNCTION,
-            });
+            push_span(tokens, line, indent, line_num, start, end, FUNCTION);
             continue;
         }
 
@@ -120,12 +152,15 @@ fn tokenize_line_as_assertion(line: &str, line_num: u32, tokens: &mut Vec<SrcTok
             TokenKind::Ident(_) => VARIABLE,
         };
 
-        tokens.push(SrcToken {
-            line: line_num,
-            start: tok.span.start as u32,
-            length: tok.span.len() as u32,
+        push_span(
+            tokens,
+            line,
+            indent,
+            line_num,
+            tok.span.start,
+            tok.span.end,
             token_type,
-        });
+        );
     }
 }
 
@@ -212,5 +247,53 @@ mod tests {
         let tokens = build_semantic_tokens(content);
         assert!(tokens.data.iter().any(|t| t.token_type == OPERATOR));
         assert!(tokens.data.iter().any(|t| t.token_type == STRING));
+    }
+
+    /// Decode the delta-encoded tokens back to absolute (line, start, length).
+    fn absolute(tokens: &SemanticTokens) -> Vec<(u32, u32, u32, u32)> {
+        let mut out = Vec::new();
+        let mut line = 0u32;
+        let mut start = 0u32;
+        for t in &tokens.data {
+            if t.delta_line == 0 {
+                start += t.delta_start;
+            } else {
+                line += t.delta_line;
+                start = t.delta_start;
+            }
+            out.push((line, start, t.length, t.token_type));
+        }
+        out
+    }
+
+    #[test]
+    fn test_semantic_tokens_indented_line_keeps_column() {
+        // The number `123` sits at column 8 because of the 2-space indent.
+        // Tokenizing the trimmed line dropped the indent, mislocating it at 6.
+        let content = "--- REQUEST ---\n  \"id\": 123\n";
+        let toks = absolute(&build_semantic_tokens(content));
+        let number = toks
+            .iter()
+            .find(|(line, _, _, tt)| *line == 1 && *tt == NUMBER)
+            .expect("number token on line 1");
+        assert_eq!(number.1, 8, "indent must be preserved in the column");
+    }
+
+    #[test]
+    fn test_semantic_tokens_astral_utf16_column() {
+        // The emoji key is a single `char` but two UTF-16 code units, so `42`
+        // sits at char offset 6 but UTF-16 column 7. Emitting the raw char
+        // offset mislocates the highlight by one on every following token.
+        let content = "--- REQUEST ---\n{\"😀\": 42}\n";
+        let toks = absolute(&build_semantic_tokens(content));
+        let number = toks
+            .iter()
+            .find(|(line, _, _, tt)| *line == 1 && *tt == NUMBER)
+            .expect("number token on line 1");
+        assert_eq!(
+            number.1, 7,
+            "column must be a UTF-16 offset (emoji is 2 code units)"
+        );
+        assert_eq!(number.2, 2, "length of `42` is 2 UTF-16 units");
     }
 }

@@ -1,5 +1,3 @@
-// AST helper utilities
-
 /// Convert a section-relative line index to an absolute line number.
 ///
 /// `start_line` is the line where the section header begins.

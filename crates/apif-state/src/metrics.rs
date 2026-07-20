@@ -1,8 +1,5 @@
-// Execution metrics
-
 use serde::Serialize;
 
-/// Execution metrics
 #[derive(Debug, Clone, Serialize)]
 pub struct ExecutionMetrics {
     pub total_duration_ms: u64,

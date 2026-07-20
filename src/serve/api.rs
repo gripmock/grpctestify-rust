@@ -537,7 +537,6 @@ pub async fn save_collection_structured(
     require_gctf(&req.path)?;
     let file_path = primary_dir(&state).join(&req.path);
 
-    // Build base doc via builder, then merge preserved sections
     let mut builder = crate::parser::GctfDocumentBuilder::new().with_file_path(&req.path);
 
     if let Some(ref addr) = req.address
@@ -675,7 +674,6 @@ pub async fn reflect_server(
         None
     };
 
-    // Resolve proto config from collection if provided
     let proto_config = if let Some(ref coll_path) = req.collection_path {
         if reject_traversal(coll_path).is_err() {
             return Json(ReflectResponse {
@@ -820,7 +818,6 @@ pub async fn schema_fill(
     }
     let (full_service, method_name) = (parts[0], parts[1]);
 
-    // Build TLS config
     let tls_config = if req.tls.unwrap_or(false) {
         Some(crate::grpc::TlsConfig {
             ca_cert_path: None,
@@ -833,7 +830,6 @@ pub async fn schema_fill(
         None
     };
 
-    // Resolve proto config from collection if provided
     let proto_config = if let Some(ref coll_path) = req.collection_path {
         if reject_traversal(coll_path).is_err() {
             return Json(SchemaFillResponse {
@@ -900,7 +896,6 @@ pub async fn schema_fill(
         }
     };
 
-    // Generate JSON template from input message descriptor
     let input_desc = method.input();
     let template = generate_json_template(&input_desc);
 
@@ -1062,8 +1057,10 @@ fn fake_value(field_name: &str, kind: &prost_reflect::Kind) -> serde_json::Value
 }
 
 /// Recursively generate a JSON template from a protobuf message descriptor.
-/// Fills in fake/realistic data based on field names.
-fn generate_json_template(desc: &prost_reflect::MessageDescriptor) -> serde_json::Value {
+/// Fills in fake/realistic data based on field names. Shared with the
+/// `scaffold` command so both the playground and CLI pre-fill request bodies
+/// from the same generator.
+pub fn generate_json_template(desc: &prost_reflect::MessageDescriptor) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
 
     for field in desc.fields() {
@@ -1128,7 +1125,6 @@ pub async fn execute_call(
     State(state): State<Arc<PlayState>>,
     Json(req): Json<CallRequest>,
 ) -> Result<Json<CallResponse>, (StatusCode, String)> {
-    // Resolve endpoint
     let parts: Vec<&str> = req.endpoint.split('/').collect();
     if parts.len() != 2 {
         return Err((
@@ -1155,7 +1151,6 @@ pub async fn execute_call(
         return Err((StatusCode::BAD_REQUEST, "No request messages".to_string()));
     }
 
-    // Build TLS config
     let tls_config = if req.tls.unwrap_or(false) {
         Some(crate::grpc::TlsConfig {
             ca_cert_path: None,
@@ -1168,7 +1163,6 @@ pub async fn execute_call(
         None
     };
 
-    // Resolve proto config from collection if provided
     let proto_config = if let Some(ref coll_path) = req.collection_path {
         if reject_traversal(coll_path).is_err() {
             return Err((StatusCode::NOT_FOUND, "Invalid collection_path".to_string()));
@@ -1197,7 +1191,6 @@ pub async fn execute_call(
         None
     };
 
-    // Resolve wire protocol
     let protocol = parse_protocol(req.protocol.as_deref());
 
     let address = req
@@ -1205,7 +1198,6 @@ pub async fn execute_call(
         .clone()
         .unwrap_or_else(|| crate::grpc::default_address_for(protocol).to_string());
 
-    // Substitute environment variables in headers
     let env_ref = req.environment.as_ref();
     let substituted_headers: Option<std::collections::HashMap<String, String>> =
         req.headers.as_ref().map(|h| {
@@ -1222,7 +1214,6 @@ pub async fn execute_call(
                 .collect()
         });
 
-    // Create gRPC client
     let grpc_config = crate::grpc::GrpcClientConfig {
         address: address.to_string(),
         timeout_seconds: 30,
@@ -1264,14 +1255,15 @@ pub async fn execute_call(
             resp_headers = result.headers;
         }
         if let Some(e) = result.error {
-            response_error = Some(e);
+            // TransportResult.error is now a structured GrpcError; this endpoint
+            // reports the error as a display string.
+            response_error = Some(e.to_string());
             break;
         }
     }
 
     let success = response_error.is_none();
 
-    // Auto-save history entry if session_id is provided
     if let Some(sid) = req.session_id.clone() {
         let hist_body = req.bodies_raw.clone().unwrap_or_default();
         let hist_headers = req.headers.clone().unwrap_or_default();
@@ -1315,8 +1307,6 @@ pub async fn execute_call(
         error: response_error,
     }))
 }
-
-/* ── Share API ─────────────────────────────────────── */
 
 #[derive(Deserialize)]
 pub struct ShareRequest {
@@ -1427,16 +1417,12 @@ pub async fn get_share(
     Ok(Json(share))
 }
 
-/* ── Project mode helpers ──────────────────────────── */
-
 fn require_project(state: &PlayState) -> Result<std::path::PathBuf, (StatusCode, String)> {
     state
         .project_root
         .clone()
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Not in project mode".into()))
 }
-
-/* ── Project mode API handlers ───────────────────────────── */
 
 #[derive(Serialize)]
 pub struct ProjectInfo {
@@ -1722,8 +1708,6 @@ pub async fn delete_collection(
     Ok(Json(()))
 }
 
-/* ── Directory and file operations ──────────────────── */
-
 /// POST /api/dir/{*path} — create a directory (mkdir -p)
 pub async fn create_directory(
     State(state): State<Arc<PlayState>>,
@@ -1773,7 +1757,6 @@ pub async fn move_item(
         ));
     }
 
-    // Ensure parent directory of destination exists
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             (
@@ -1865,6 +1848,7 @@ mod tests {
     }
 
     #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_get_collection_returns_404_for_directory() {
         let dir = tempfile::tempdir().unwrap();
@@ -1888,6 +1872,7 @@ mod tests {
     }
 
     #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_get_collection_ok_for_gctf_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -1916,6 +1901,7 @@ mod tests {
     }
 
     #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_list_collections_includes_empty_dirs() {
         let dir = tempfile::tempdir().unwrap();
@@ -1952,6 +1938,7 @@ mod tests {
     }
 
     #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_list_collections_empty_dir_with_gitkeep() {
         let dir = tempfile::tempdir().unwrap();

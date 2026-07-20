@@ -32,5 +32,6 @@ pub use validator::{
     BENCH_ASSERT_MODE_VALUES, BENCH_CACHE_VALUES, BENCH_DURATION_KEYS, BENCH_DURATION_STOP_VALUES,
     BENCH_LOAD_SCHEDULE_VALUES, BENCH_MODE_VALUES, BENCH_NUMERIC_KEYS, ErrorSeverity,
     ValidationError, allowed_values_message, canonical_bench_key, is_allowed_value,
-    supported_bench_keys, validate_document, validate_document_diagnostics,
+    supported_bench_keys, validate_document, validate_document_chain,
+    validate_document_chain_diagnostics, validate_document_diagnostics,
 };

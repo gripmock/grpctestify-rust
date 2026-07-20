@@ -497,6 +497,12 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_inline_options_redact_with_spaces() {
+        let result = parse_inline_options(r#"redact=["token", "password"]"#).unwrap();
+        assert_eq!(result.redact, vec!["token", "password"]);
+    }
+
+    #[test]
     fn test_parse_inline_options_redact_empty_array() {
         let result = parse_inline_options("redact=[]").unwrap();
         assert!(result.redact.is_empty());

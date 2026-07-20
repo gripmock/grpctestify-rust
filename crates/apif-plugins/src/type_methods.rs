@@ -205,7 +205,14 @@ impl Plugin for EmailDomain {
             Value::String(s) => s,
             _ => return Ok(PluginResult::Value(Value::Null)),
         };
-        let domain = s.split('@').nth(1).unwrap_or("").to_string();
+        // Domain is everything after the FIRST '@', mirroring `EmailLocalPart`
+        // (which takes everything before the first '@') so local + "@" + domain
+        // round-trips the input. `split('@').nth(1)` dropped anything after a
+        // second '@' (e.g. "a@b@c" wrongly yielded "b" instead of "b@c").
+        let domain = s
+            .split_once('@')
+            .map_or("", |(_, domain)| domain)
+            .to_string();
         Ok(PluginResult::Value(Value::String(domain)))
     }
     fn signature(&self) -> PluginSignature {
@@ -289,7 +296,9 @@ impl Plugin for UuidVersion {
         // Parse the UUID rather than blindly reading a character position, so
         // invalid input returns Null instead of a garbage version number.
         match uuid::Uuid::parse_str(s) {
-            Ok(u) => Ok(PluginResult::Value(Value::Number(u.get_version_num().into()))),
+            Ok(u) => Ok(PluginResult::Value(Value::Number(
+                u.get_version_num().into(),
+            ))),
             Err(_) => Ok(PluginResult::Value(Value::Null)),
         }
     }
@@ -512,6 +521,23 @@ mod tests {
             .execute(&[json!("user@example.com")], &ctx())
             .unwrap();
         assert_eq!(result, PluginResult::Value(json!("example.com")));
+    }
+
+    #[test]
+    fn test_email_domain_multiple_at() {
+        // Regression: input with more than one '@'. The domain is everything
+        // after the FIRST '@' (consistent with EmailLocalPart taking everything
+        // before it), not just the segment between the first two.
+        let r = EmailDomain.execute(&[json!("a@b@c")], &ctx()).unwrap();
+        assert_eq!(r, PluginResult::Value(json!("b@c")));
+        let local = EmailLocalPart.execute(&[json!("a@b@c")], &ctx()).unwrap();
+        assert_eq!(local, PluginResult::Value(json!("a")));
+
+        // Normal single-'@' email still behaves as before.
+        let r = EmailDomain
+            .execute(&[json!("user@example.com")], &ctx())
+            .unwrap();
+        assert_eq!(r, PluginResult::Value(json!("example.com")));
     }
 
     #[test]

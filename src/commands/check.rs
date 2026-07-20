@@ -245,7 +245,7 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
                     );
                 }
 
-                let validation_diagnostics = parser::validate_document_diagnostics(&doc);
+                let validation_diagnostics = parser::validate_document_chain_diagnostics(&doc);
                 for d in validation_diagnostics {
                     let line = d.line.unwrap_or(1);
                     let mut mapped = match d.severity {

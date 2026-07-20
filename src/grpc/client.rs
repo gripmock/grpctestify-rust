@@ -233,25 +233,28 @@ impl GrpcClient {
     }
 
     /// Convert TransportResult fields into a Vec of StreamItems for unified stream output.
+    ///
+    /// The error arrives already structured (`Option<GrpcError>`), so it is
+    /// carried straight through — code/message/details verbatim. Response
+    /// trailers and headers are folded into the error metadata (headers do not
+    /// override trailer entries), preserving the prior StreamItem error shape.
     fn convert_result(
         messages: Vec<Value>,
         trailers: HashMap<String, String>,
-        error: Option<String>,
+        error: Option<GrpcError>,
         headers: HashMap<String, String>,
     ) -> Vec<Result<StreamItem, GrpcError>> {
-        use crate::grpc::GrpcError;
         let mut items: Vec<Result<StreamItem, GrpcError>> = Vec::new();
 
-        if let Some(err_msg) = error {
-            let (code, message, details_bytes) = parse_structured_grpc_error(&err_msg);
+        if let Some(err) = error {
             let mut err_trailers = trailers;
             for (k, v) in &headers {
                 err_trailers.entry(k.clone()).or_insert_with(|| v.clone());
             }
             items.push(Err(GrpcError::with_metadata(
-                code,
-                message,
-                details_bytes,
+                err.code,
+                err.message,
+                err.details,
                 err_trailers,
             )));
         } else {
@@ -267,128 +270,45 @@ impl GrpcClient {
     }
 }
 
-/// Parse the structured gRPC error carried across the transport boundary.
-///
-/// `TransportResult.error` is a `String`, so the structured status has been
-/// formatted as one of:
-///   `gRPC error: code=<CODE> message=<MSG>`
-///   `gRPC error: code=<CODE> message=<MSG> details=[<DETAILS>]`
-///
-/// Parsing is anchored to the known prefix and the trailing `details=[...]`
-/// suffix, so a message that itself contains `code=`, `message=` or `details=[`
-/// is preserved verbatim instead of corrupting extraction. Any string that does
-/// not match the known prefix is returned as an opaque UNKNOWN(2) message.
-fn parse_structured_grpc_error(err_msg: &str) -> (u32, String, Vec<u8>) {
-    let after_code = err_msg
-        .strip_prefix("gRPC error: code=")
-        .or_else(|| err_msg.strip_prefix("gRPC error code="));
-    let Some(after_code) = after_code else {
-        return (2, err_msg.to_string(), Vec::new());
-    };
-
-    // Code token: everything up to the first whitespace.
-    let (code_token, rest) = match after_code.split_once(char::is_whitespace) {
-        Some((c, r)) => (c, r),
-        None => (after_code, ""),
-    };
-    let code = parse_grpc_code(code_token);
-
-    // The remainder starts with the `message=` marker; everything after it is
-    // the message plus an optional trailing `details=[...]` suffix.
-    let message_part = rest.strip_prefix("message=").unwrap_or(rest);
-    let (message, details_bytes) = split_details_suffix(message_part);
-    (code, message.to_string(), details_bytes)
-}
-
-/// Split a trailing ` details=[...]` suffix (anchored to the end of the string)
-/// off a gRPC error message. The suffix is always emitted last, so the *last*
-/// ` details=[` that closes with a final `]` is treated as the details payload;
-/// everything before it is the opaque message.
-fn split_details_suffix(s: &str) -> (&str, Vec<u8>) {
-    const MARKER: &str = " details=[";
-    if let Some(idx) = s.rfind(MARKER)
-        && s.ends_with(']')
-    {
-        let inner = &s[idx + MARKER.len()..s.len() - 1];
-        return (&s[..idx], inner.as_bytes().to_vec());
-    }
-    (s, Vec::new())
-}
-
-/// Parse a gRPC status code token: numeric first, then canonical lowercase name.
-fn parse_grpc_code(token: &str) -> u32 {
-    token.parse::<u32>().unwrap_or(match token {
-        "cancelled" => 1,
-        "unknown" => 2,
-        "invalid_argument" => 3,
-        "deadline_exceeded" => 4,
-        "not_found" => 5,
-        "already_exists" => 6,
-        "permission_denied" => 7,
-        "resource_exhausted" => 8,
-        "failed_precondition" => 9,
-        "aborted" => 10,
-        "out_of_range" => 11,
-        "unimplemented" => 12,
-        "internal" => 13,
-        "unavailable" => 14,
-        "data_loss" => 15,
-        "unauthenticated" => 16,
-        _ => 2,
-    })
-}
-
 #[cfg(test)]
-mod error_parse_tests {
-    use super::parse_structured_grpc_error;
+mod convert_result_tests {
+    use super::*;
 
     #[test]
-    fn parses_plain_code_and_message() {
-        let (code, msg, details) =
-            parse_structured_grpc_error("gRPC error: code=5 message=not found");
-        assert_eq!(code, 5);
-        assert_eq!(msg, "not found");
-        assert!(details.is_empty());
+    fn structured_error_passes_through_with_trailers_folded() {
+        let mut trailers = HashMap::new();
+        trailers.insert("x-trace".to_string(), "t-1".to_string());
+        let mut headers = HashMap::new();
+        headers.insert("x-h".to_string(), "hv".to_string());
+
+        // A message that itself contains the old formatting markers must survive
+        // verbatim — the exact bug the deleted string parser had.
+        let nasty = "bad: code=42 message=nested details=[inline]";
+        let err = GrpcError::with_details(3, nasty, b"[{\"k\":\"v\"}]".to_vec());
+
+        let items = GrpcClient::convert_result(vec![], trailers, Some(err), headers);
+        assert_eq!(items.len(), 1);
+        let e = items.into_iter().next().unwrap().unwrap_err();
+        assert_eq!(e.code, 3);
+        assert_eq!(e.message, nasty);
+        assert_eq!(e.details, b"[{\"k\":\"v\"}]".to_vec());
+        assert_eq!(e.metadata.get("x-trace").unwrap(), "t-1");
+        assert_eq!(e.metadata.get("x-h").unwrap(), "hv");
     }
 
     #[test]
-    fn message_containing_code_marker_is_not_corrupted() {
-        // The message itself contains `code=` and `message=` — these must not
-        // hijack extraction now that parsing is anchored to the known prefix.
-        let (code, msg, details) = parse_structured_grpc_error(
-            "gRPC error: code=3 message=bad request: code=42 message=nested",
+    fn no_error_emits_messages_then_trailers() {
+        let mut trailers = HashMap::new();
+        trailers.insert("grpc-status".to_string(), "0".to_string());
+        let items = GrpcClient::convert_result(
+            vec![Value::String("m".into())],
+            trailers,
+            None,
+            HashMap::new(),
         );
-        assert_eq!(code, 3);
-        assert_eq!(msg, "bad request: code=42 message=nested");
-        assert!(details.is_empty());
-    }
-
-    #[test]
-    fn message_containing_details_marker_is_preserved() {
-        let (code, msg, details) = parse_structured_grpc_error(
-            "gRPC error: code=13 message=see details=[inline] in log details=[[{\"x\":1}]]",
-        );
-        assert_eq!(code, 13);
-        // Only the trailing details=[...] suffix is peeled off; the inline
-        // `details=[inline]` stays part of the message.
-        assert_eq!(msg, "see details=[inline] in log");
-        assert_eq!(details, b"[{\"x\":1}]".to_vec());
-    }
-
-    #[test]
-    fn named_code_is_mapped() {
-        let (code, msg, _) =
-            parse_structured_grpc_error("gRPC error: code=unavailable message=down");
-        assert_eq!(code, 14);
-        assert_eq!(msg, "down");
-    }
-
-    #[test]
-    fn unknown_shape_is_opaque_message() {
-        let (code, msg, details) = parse_structured_grpc_error("connection refused code=14");
-        assert_eq!(code, 2);
-        assert_eq!(msg, "connection refused code=14");
-        assert!(details.is_empty());
+        assert_eq!(items.len(), 2);
+        assert!(matches!(items[0], Ok(StreamItem::Message(_))));
+        assert!(matches!(items[1], Ok(StreamItem::Trailers(_))));
     }
 }
 

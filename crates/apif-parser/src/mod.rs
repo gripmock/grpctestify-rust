@@ -53,5 +53,6 @@ pub use error_recovery::{ErrorRecoveryResult, parse_content_with_recovery, parse
 pub use ternary::{process_extract_value, ternary_to_jq};
 pub use ternary_ast::{ExtractValue, ExtractVar};
 pub use validator::{
-    ErrorSeverity, ValidationError, validate_document, validate_document_diagnostics,
+    ErrorSeverity, ValidationError, validate_document, validate_document_chain,
+    validate_document_chain_diagnostics, validate_document_diagnostics,
 };

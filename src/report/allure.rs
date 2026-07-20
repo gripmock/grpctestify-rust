@@ -262,7 +262,6 @@ impl Reporter for AllureReporter {
 
         let steps = build_grpc_steps(test_name, result, start, now).or(fallback_step);
 
-        // Build labels from META
         let mut labels = vec![
             Label {
                 name: "language".to_string(),
@@ -286,7 +285,6 @@ impl Reporter for AllureReporter {
             },
         ];
 
-        // Add owner label if present
         if let Some(ref owner) = result.meta.owner {
             labels.push(Label {
                 name: "owner".to_string(),
@@ -294,7 +292,6 @@ impl Reporter for AllureReporter {
             });
         }
 
-        // Add tags as labels
         for tag in &result.meta.tags {
             labels.push(Label {
                 name: "tag".to_string(),
@@ -403,6 +400,7 @@ pkg.Service/M
 {}
 ";
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_build_grpc_steps_marks_unreached_document_skipped() {
         let dir = tempfile::tempdir().unwrap();
@@ -435,6 +433,7 @@ pkg.Service/M
         assert_eq!(steps[2].status, "skipped");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_allure_result_written_atomically_as_valid_json() {
         let dir = tempfile::tempdir().unwrap();

@@ -20,7 +20,13 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
-          if (id.includes('node_modules/monaco-editor')) return 'monaco-editor';
+          // NOTE: do NOT force monaco-editor into a single manualChunk. Doing so
+          // makes rolldown host the shared __vitePreload runtime helper inside
+          // that (huge) chunk, and the entry then statically imports the helper —
+          // dragging all ~4MB of monaco back onto the startup path. Left alone,
+          // monaco is reached only through the dynamic import() in
+          // src/components/MonacoEditor.tsx, so it is code-split into async chunks
+          // (editor core + per-language grammars + workers) that load on demand.
           if (id.includes('node_modules/react-dom') || id.includes('node_modules/react/')) return 'react-vendor';
           if (id.includes('node_modules/lucide-react')) return 'lucide';
           if (id.includes('node_modules/zustand')) return 'zustand';

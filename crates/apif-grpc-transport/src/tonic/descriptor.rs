@@ -209,7 +209,6 @@ mod tests {
     fn pool_includes_well_known_types() {
         let pool = new_pool_with_wkt();
 
-        // google.protobuf.StringValue should be available
         assert!(
             pool.get_message_by_name("google.protobuf.StringValue")
                 .is_some(),

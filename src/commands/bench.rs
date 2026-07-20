@@ -18,6 +18,9 @@ use std::time::{Duration, Instant};
 use tokio::task::JoinSet;
 use tracing::{info, warn};
 
+/// Safety cap on the number of per-response `details` retained for the report.
+/// Latency percentiles no longer use this — they come from the bounded
+/// [`LatencyHistogram`] — so this only bounds the memory of the raw detail log.
 const MAX_LATENCY_SAMPLES: usize = 100_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +66,9 @@ impl DurationStopMode {
 pub struct BenchConfigResolved {
     pub profile: String,
     pub mode: String,
+    /// Wire protocol override for the whole bench run (from `--protocol`).
+    /// Mirrors `run`/`call`: takes priority over each file's OPTIONS.protocol.
+    pub protocol: crate::grpc::WireProtocol,
     pub concurrency: u32,
     pub requests: Option<u64>,
     pub duration: Option<Duration>,
@@ -110,6 +116,7 @@ impl Default for BenchConfigResolved {
         Self {
             profile: "functional".to_string(),
             mode: "fixed".to_string(),
+            protocol: crate::grpc::WireProtocol::Grpc,
             concurrency: 1,
             requests: Some(100),
             duration: None,
@@ -433,6 +440,12 @@ impl BenchConfigResolved {
             if let Some(sr) = bench_value(bench, "sample_rate") {
                 config.sample_rate = sr.parse().unwrap_or(1.0);
             }
+            if let Some(v) = bench_value(bench, "skip_first") {
+                config.skip_first = v.parse().unwrap_or(0);
+            }
+            if let Some(v) = bench_value(bench, "count_errors_in_latency") {
+                config.count_errors_in_latency = v == "true" || v == "1";
+            }
             if let Some(v) = bench_value(bench, "latency_percentiles") {
                 config.latency_percentiles = parse_latency_percentiles(v);
             }
@@ -614,6 +627,12 @@ impl BenchConfigResolved {
             if let Some(sr) = bench_value(bench, "sample_rate") {
                 config.sample_rate = sr.parse().unwrap_or(1.0);
             }
+            if let Some(v) = bench_value(bench, "skip_first") {
+                config.skip_first = v.parse().unwrap_or(0);
+            }
+            if let Some(v) = bench_value(bench, "count_errors_in_latency") {
+                config.count_errors_in_latency = v == "true" || v == "1";
+            }
             if let Some(v) = bench_value(bench, "latency_percentiles") {
                 config.latency_percentiles = parse_latency_percentiles(v);
             }
@@ -655,6 +674,10 @@ impl BenchConfigResolved {
         }
 
         // Override with CLI args (highest priority)
+        // `--protocol` selects the wire protocol for the whole run, overriding
+        // each file's OPTIONS.protocol — consistent with `run`/`call`, which
+        // parse this flag and apply it as a runner-level override.
+        config.protocol = cli.protocol.parse().unwrap_or_default();
         cli_config_field!(string_clone, config, cli, profile, "profile");
         cli_config_field!(string_clone, config, cli, mode, "mode");
         cli_config_field!(direct, config, cli, concurrency, "concurrency");
@@ -866,6 +889,124 @@ fn apply_profile_defaults(config: &mut BenchConfigResolved, profile_name: &str) 
     }
 }
 
+// Bounded log-linear (HDR-style) latency histogram.
+//
+// Buckets are laid out by octave: each power-of-two range `[2^e, 2^(e+1))` is
+// split into `SUB_BUCKETS` equal-width linear sub-buckets, preceded by a linear
+// region of unit-width buckets for values below `SUB_BUCKETS`. A bucket in
+// octave `e` spans `2^(e-SUB_BUCKET_BITS)` and the smallest value it can hold is
+// `2^e`, so the width relative to the value is at most
+// `2^(e-SUB_BUCKET_BITS)/2^e = 2^-SUB_BUCKET_BITS = 1/SUB_BUCKETS`. With 128
+// sub-buckets that is a guaranteed relative error of ~0.78%, independent of the
+// number of samples recorded — percentiles interpolate within the containing
+// bucket, so the reported value is within one bucket-width of the true value.
+//
+// Memory is O(number of buckets) (`HIST_BUCKETS` = 4608 u64 counts ≈ 37 KB) no
+// matter how many samples are recorded, and two histograms merge losslessly by
+// bucket-wise addition — which is what makes cross-worker aggregation unbiased.
+const SUB_BUCKET_BITS: u32 = 7;
+const SUB_BUCKETS: u64 = 1 << SUB_BUCKET_BITS; // 128
+/// Highest octave tracked; ~2^42 ns ≈ 73 min. Larger values saturate the top bucket.
+const MAX_EXPONENT: u32 = 41;
+const HIST_BUCKETS: usize =
+    SUB_BUCKETS as usize + (MAX_EXPONENT - SUB_BUCKET_BITS + 1) as usize * SUB_BUCKETS as usize;
+
+/// Index of the bucket containing `v` (latency in ns).
+fn hist_bucket_index(v: u64) -> usize {
+    if v < SUB_BUCKETS {
+        return v as usize;
+    }
+    let e = (63 - v.leading_zeros()).min(MAX_EXPONENT); // floor(log2 v), clamped
+    let base = SUB_BUCKETS as usize + (e - SUB_BUCKET_BITS) as usize * SUB_BUCKETS as usize;
+    let shift = e - SUB_BUCKET_BITS;
+    let sub = ((v - (1u64 << e)) >> shift).min(SUB_BUCKETS - 1) as usize;
+    base + sub
+}
+
+/// Inclusive-lower / exclusive-upper ns bounds of bucket `index`.
+fn hist_bucket_bounds(index: usize) -> (u64, u64) {
+    if (index as u64) < SUB_BUCKETS {
+        return (index as u64, index as u64 + 1);
+    }
+    let rel = index - SUB_BUCKETS as usize;
+    let e = SUB_BUCKET_BITS + (rel / SUB_BUCKETS as usize) as u32;
+    let sub = (rel % SUB_BUCKETS as usize) as u64;
+    let width = 1u64 << (e - SUB_BUCKET_BITS);
+    let lower = (1u64 << e) + sub * width;
+    (lower, lower + width)
+}
+
+#[derive(Debug, Clone)]
+struct LatencyHistogram {
+    buckets: Vec<u64>,
+    total: u64,
+    min: u64,
+    max: u64,
+}
+
+impl Default for LatencyHistogram {
+    fn default() -> Self {
+        Self {
+            buckets: vec![0; HIST_BUCKETS],
+            total: 0,
+            min: u64::MAX,
+            max: 0,
+        }
+    }
+}
+
+impl LatencyHistogram {
+    fn record(&mut self, v: u64) {
+        self.buckets[hist_bucket_index(v)] += 1;
+        self.total += 1;
+        self.min = self.min.min(v);
+        self.max = self.max.max(v);
+    }
+
+    fn merge(&mut self, other: &Self) {
+        for (a, b) in self.buckets.iter_mut().zip(other.buckets.iter()) {
+            *a += *b;
+        }
+        self.total += other.total;
+        if other.total > 0 {
+            self.min = self.min.min(other.min);
+            self.max = self.max.max(other.max);
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.total == 0
+    }
+
+    /// Value at the `p`-th percentile (0..=100), interpolated within the
+    /// containing bucket and clamped to the exact recorded [min, max].
+    fn percentile(&self, p: f64) -> u64 {
+        if self.total == 0 {
+            return 0;
+        }
+        if self.min == self.max {
+            return self.min;
+        }
+        let p = p.clamp(0.0, 100.0);
+        // 1-indexed target rank into the sorted sample set.
+        let target = ((p / 100.0 * self.total as f64).ceil().max(1.0) as u64).min(self.total);
+        let mut cumulative = 0u64;
+        for (i, &c) in self.buckets.iter().enumerate() {
+            if c == 0 {
+                continue;
+            }
+            if cumulative + c >= target {
+                let (lower, upper) = hist_bucket_bounds(i);
+                let frac = (target - cumulative) as f64 / c as f64;
+                let val = lower as f64 + frac * (upper - lower) as f64;
+                return (val.round() as u64).clamp(self.min, self.max);
+            }
+            cumulative += c;
+        }
+        self.max
+    }
+}
+
 /// Shared metrics accumulator for bench results
 #[derive(Default, Debug)]
 struct BenchMetrics {
@@ -877,21 +1018,63 @@ struct BenchMetrics {
     slowest_ns: u64,
     grpc_status: BTreeMap<String, u64>,
     error_dist: BTreeMap<String, u64>,
-    latencies: Vec<u64>,
+    latency: LatencyHistogram,
     per_endpoint: BTreeMap<String, PerEndpointData>,
     details: Vec<crate::report::bench::BenchDetail>,
+    /// When false, latencies of error responses are excluded from the latency
+    /// distribution (percentiles/histogram). Throughput and overall timing
+    /// counters (count/rps/fastest/slowest/average) are never affected.
+    count_errors_in_latency: bool,
+    /// Deterministic latency sampling stride: record one latency sample every
+    /// `sample_stride` requests (`0` or `1` records all). Derived from
+    /// `sample_rate` via [`sample_stride_from_rate`].
+    sample_stride: u64,
+    /// Running request counter that drives `sample_stride`.
+    sample_counter: u64,
+    /// Warm-up outliers to discard from the latency distribution: the first
+    /// `skip_first_remaining` sampled latencies are counted for throughput but
+    /// held out of the histogram (decremented as they are skipped). Applied per
+    /// accumulator; per-endpoint stats are unaffected, matching prior behaviour.
+    skip_first_remaining: u32,
+}
+
+/// Convert a `sample_rate` in `[0.0, 1.0]` into a deterministic recording
+/// stride: record one latency sample every `N` requests where `N = round(1/rate)`.
+/// `rate >= 1.0` records every request (stride 1); `rate <= 0.0` records none.
+fn sample_stride_from_rate(rate: f64) -> u64 {
+    if rate >= 1.0 {
+        1
+    } else if rate <= 0.0 {
+        u64::MAX
+    } else {
+        (1.0 / rate).round().max(1.0) as u64
+    }
 }
 
 impl BenchMetrics {
-    fn with_capacity(hint: usize) -> Self {
+    fn with_capacity(_hint: usize) -> Self {
         let mut grpc_status = BTreeMap::new();
         grpc_status.insert("OK".to_string(), 0);
         grpc_status.insert("ERROR".to_string(), 0);
         Self {
-            latencies: Vec::with_capacity(hint),
             grpc_status,
             ..Default::default()
         }
+    }
+
+    /// Per-worker metrics accumulator preconfigured with the latency-sampling
+    /// options from the resolved bench config.
+    fn for_worker(
+        hint: usize,
+        count_errors_in_latency: bool,
+        sample_stride: u64,
+        skip_first: u32,
+    ) -> Self {
+        let mut m = Self::with_capacity(hint);
+        m.count_errors_in_latency = count_errors_in_latency;
+        m.sample_stride = sample_stride;
+        m.skip_first_remaining = skip_first;
+        m
     }
 }
 
@@ -899,13 +1082,14 @@ impl BenchMetrics {
 struct PerEndpointData {
     count: u64,
     errors: u64,
-    latencies: Vec<u64>,
+    latency: LatencyHistogram,
 }
 
 impl BenchMetrics {
     fn record(&mut self, latency_ns: u64, status: &str, error: Option<&str>, endpoint: &str) {
         self.count += 1;
-        if status == "OK" || status.is_empty() {
+        let is_ok = status == "OK" || status.is_empty();
+        if is_ok {
             self.ok += 1;
         } else {
             self.errors += 1;
@@ -920,16 +1104,23 @@ impl BenchMetrics {
             *self.error_dist.entry(category).or_insert(0) += 1;
         }
 
-        // Per-endpoint tracking — pre-allocate to reduce reallocations
+        // Decide whether this request contributes a *latency sample* (percentiles
+        // and histogram). Governed by `sample_rate` (deterministic every-Nth
+        // sampling) and `count_errors_in_latency` (exclude error responses when
+        // false). Throughput and overall-timing counters below are unaffected.
+        self.sample_counter += 1;
+        let sampled = self.sample_stride <= 1 || (self.sample_counter % self.sample_stride == 1);
+        let contributes = sampled && (is_ok || self.count_errors_in_latency);
+
+        // Per-endpoint tracking
         let ep = self.per_endpoint.entry(endpoint.to_string()).or_default();
-        if ep.latencies.capacity() == 0 {
-            ep.latencies.reserve(64);
-        }
         ep.count += 1;
-        if status != "OK" && !status.is_empty() {
+        if !is_ok {
             ep.errors += 1;
         }
-        ep.latencies.push(latency_ns);
+        if contributes {
+            ep.latency.record(latency_ns);
+        }
 
         self.total_ns += latency_ns;
 
@@ -940,10 +1131,16 @@ impl BenchMetrics {
             self.slowest_ns = latency_ns;
         }
 
-        if self.latencies.len() >= MAX_LATENCY_SAMPLES {
-            downsample_latencies(&mut self.latencies);
+        // `skip_first` gates only the global distribution (per-endpoint keeps
+        // all sampled latencies, as before): hold out the first N sampled
+        // values as warm-up outliers.
+        if contributes {
+            if self.skip_first_remaining > 0 {
+                self.skip_first_remaining -= 1;
+            } else {
+                self.latency.record(latency_ns);
+            }
         }
-        self.latencies.push(latency_ns);
 
         // Collect per-response detail (capped at 100k)
         if self.details.len() < MAX_LATENCY_SAMPLES {
@@ -957,21 +1154,7 @@ impl BenchMetrics {
     }
 
     fn compute_percentile(&self, p: f64) -> u64 {
-        if self.latencies.is_empty() {
-            return 0;
-        }
-        let mut sorted = self.latencies.clone();
-        sorted.sort();
-        let idx = ((p / 100.0) * (sorted.len() - 1) as f64).round() as usize;
-        sorted[idx.min(sorted.len() - 1)]
-    }
-
-    fn percentile_from_sorted(sorted: &[u64], p: f64) -> u64 {
-        if sorted.is_empty() {
-            return 0;
-        }
-        let idx = ((p / 100.0) * (sorted.len() - 1) as f64).round() as usize;
-        sorted[idx.min(sorted.len() - 1)]
+        self.latency.percentile(p)
     }
 
     fn to_percentiles(&self, requested: &[String]) -> Vec<BenchPercentile> {
@@ -983,7 +1166,7 @@ impl BenchMetrics {
             {
                 result.push(BenchPercentile {
                     percentile: pct,
-                    latency_ns: self.compute_percentile(pct),
+                    latency_ns: self.latency.percentile(pct),
                 });
             }
         }
@@ -991,28 +1174,28 @@ impl BenchMetrics {
         result
     }
 
+    /// Render the bounded histogram as `bucket_count` linear display buckets
+    /// spanning the exact [min, max] range. Counts are folded in from the
+    /// log-linear buckets by their representative (mid-point) value, keeping the
+    /// report's `histogram` shape (lower_ns/upper_ns/count/frequency) unchanged.
     fn to_histogram(&self, bucket_count: usize) -> Vec<BenchHistogramBucket> {
-        if self.latencies.is_empty() || bucket_count == 0 {
+        if self.latency.is_empty() || bucket_count == 0 {
             return vec![];
         }
 
-        let mut sorted = self.latencies.clone();
-        sorted.sort();
-        let min = sorted[0];
-        let max = sorted[sorted.len() - 1];
+        let min = self.latency.min;
+        let max = self.latency.max;
 
         if min == max {
             return vec![BenchHistogramBucket {
                 lower_ns: min,
                 upper_ns: max,
-                count: sorted.len() as u64,
+                count: self.latency.total,
                 frequency: 1.0,
             }];
         }
 
-        // Guard against zero-width buckets: with few distinct latencies close
-        // together, integer division `(max - min) / bucket_count` can be 0,
-        // which would panic (divide/modulo by zero) when bucketing below.
+        // Guard against zero-width display buckets when min/max are close.
         let width = ((max - min) / bucket_count as u64).max(1);
         let mut buckets: Vec<BenchHistogramBucket> = (0..bucket_count)
             .map(|i| BenchHistogramBucket {
@@ -1023,12 +1206,17 @@ impl BenchMetrics {
             })
             .collect();
 
-        for &lat in &sorted {
-            let idx = (((lat - min) / width).min((bucket_count - 1) as u64)) as usize;
-            buckets[idx].count += 1;
+        for (i, &c) in self.latency.buckets.iter().enumerate() {
+            if c == 0 {
+                continue;
+            }
+            let (lo, hi) = hist_bucket_bounds(i);
+            let mid = ((lo + hi) / 2).clamp(min, max); // representative value of this source bucket
+            let idx = (((mid - min) / width).min((bucket_count - 1) as u64)) as usize;
+            buckets[idx].count += c;
         }
 
-        let total = sorted.len() as f64;
+        let total = self.latency.total as f64;
         for b in &mut buckets {
             b.frequency = b.count as f64 / total;
         }
@@ -1056,11 +1244,14 @@ impl BenchMetrics {
             *self.error_dist.entry(k).or_insert(0) += v;
         }
 
-        for lat in other.latencies {
-            if self.latencies.len() >= MAX_LATENCY_SAMPLES {
-                downsample_latencies(&mut self.latencies);
-            }
-            self.latencies.push(lat);
+        // Lossless bucket-wise merge of the per-worker latency distribution —
+        // the key correctness win over the old downsample-on-merge.
+        self.latency.merge(&other.latency);
+        for (endpoint, data) in other.per_endpoint {
+            let ep = self.per_endpoint.entry(endpoint).or_default();
+            ep.count += data.count;
+            ep.errors += data.errors;
+            ep.latency.merge(&data.latency);
         }
 
         self.details.extend(other.details);
@@ -1068,19 +1259,6 @@ impl BenchMetrics {
             self.details.truncate(MAX_LATENCY_SAMPLES);
         }
     }
-}
-
-fn downsample_latencies(samples: &mut Vec<u64>) {
-    if samples.len() <= 1 {
-        return;
-    }
-    let len = samples.len();
-    let mut write = 0;
-    for i in (0..len).step_by(2) {
-        samples[write] = samples[i];
-        write += 1;
-    }
-    samples.truncate(write);
 }
 
 fn categorize_error(message: &str) -> String {
@@ -1100,6 +1278,67 @@ fn categorize_error(message: &str) -> String {
     }
 }
 
+/// Emit warnings for bench options that are accepted but do not (yet) influence
+/// measurement, so users are not misled into thinking they took effect.
+///
+/// - `keepalive`: the bench harness constructs a fresh `TestRunner` (and thus a
+///   fresh transport) per request, so there is no persistent gRPC channel on
+///   which to set keepalive without channel pooling in the (frozen) transport
+///   layer. Currently a no-op.
+/// - `ramp_up` without a target RPS: with unbounded load there is no target to
+///   ramp toward, so ramp-up has no observable effect.
+/// - `cpus`: the tokio worker-thread count is fixed when the runtime starts in
+///   `main.rs`; the bench harness cannot repartition it, so `cpus` is a no-op.
+///   Use `--concurrency` to control the number of parallel workers.
+/// - `mode`: only the closed-loop execution model is implemented. Any other
+///   mode (e.g. `open`/`adaptive`) is accepted but ignored.
+fn warn_ineffective_options(config: &BenchConfigResolved) {
+    if config.cpus.is_some() {
+        warn!(
+            "bench: `cpus` is parsed but not honored — the tokio worker-thread count is fixed at runtime startup and the bench harness cannot repartition it; use `--concurrency` to control parallel workers"
+        );
+    }
+    let mode = config.mode.trim_ascii().to_ascii_lowercase();
+    match exec_model_for(&mode) {
+        ExecModel::Open if mode == "adaptive" => {
+            warn!(
+                "bench: `mode` = 'adaptive' runs the open-model (arrival-rate) executor; adaptive rate control is not yet implemented"
+            );
+        }
+        ExecModel::Open => {}
+        ExecModel::Closed
+            if !matches!(
+                mode.as_str(),
+                "fixed" | "closed" | "closed-loop" | "closed_loop"
+            ) =>
+        {
+            warn!(
+                "bench: `mode` = '{}' is not recognized — using the closed-loop execution model",
+                config.mode
+            );
+        }
+        ExecModel::Closed => {}
+    }
+    if config.keepalive.is_some() {
+        warn!(
+            "bench: `keepalive` is parsed but not applied — the harness builds a fresh transport per request and cannot set channel keepalive without gRPC channel pooling; option is currently a no-op"
+        );
+    }
+    if config.ramp_up.is_some() {
+        let has_target = config.max_rps.is_some()
+            || config.load_start.is_some()
+            || !config
+                .load_schedule
+                .trim_ascii()
+                .eq_ignore_ascii_case("const");
+        if !has_target {
+            warn!(
+                "bench: `ramp_up` is set but no target RPS (max_rps / load_start / load schedule) is configured; with unbounded load there is nothing to ramp and the option has no effect"
+            );
+        }
+    }
+}
+
 /// Run actual benchmark with the given config
 async fn run_benchmark(
     test_paths: &[std::path::PathBuf],
@@ -1108,7 +1347,6 @@ async fn run_benchmark(
 ) -> Result<BenchReport> {
     let start_ts = crate::polyfill::runtime::now_timestamp();
 
-    // Collect test files
     let mut test_files = Vec::new();
     for path in test_paths {
         if path.is_dir() {
@@ -1132,6 +1370,7 @@ async fn run_benchmark(
         .collect();
 
     info!("Bench: found {} test files", test_files.len());
+    warn_ineffective_options(config);
 
     // Graceful shutdown via SIGINT/SIGTERM
     let shutdown_requested = Arc::new(AtomicBool::new(false));
@@ -1217,20 +1456,63 @@ async fn run_benchmark(
         })
     };
 
+    // Select the execution model. `open`/`adaptive` need a target rate; without
+    // one the open model has no defined arrival schedule, so fall back to
+    // closed-loop with a warning.
+    let exec_model = exec_model_for(&config.mode);
+    let use_open = exec_model == ExecModel::Open && has_target_rate(config);
+    if exec_model == ExecModel::Open && !has_target_rate(config) {
+        warn!(
+            "bench: open/adaptive mode needs a target rate (max_rps / load_start / load schedule); none configured — falling back to closed-loop"
+        );
+    }
+    eprintln!(
+        "Execution model: {}",
+        if use_open {
+            "open (arrival-rate)"
+        } else {
+            "closed-loop"
+        }
+    );
+
     // Run with duration or count limit
-    if let Some(dur) = config.duration {
+    if use_open && (has_duration || total_requests > 0) {
+        let bound = if let Some(dur) = config.duration {
+            RunBound::Duration(dur)
+        } else {
+            RunBound::Count(request_passes(total_requests, test_docs.len()))
+        };
+        metrics = run_open_model(
+            &test_docs,
+            config,
+            bound,
+            run_start,
+            Arc::clone(&progress_count),
+            Arc::clone(&progress_errors),
+            Arc::clone(&shutdown_requested),
+            source_config.clone(),
+        )
+        .await;
+    } else if let Some(dur) = config.duration {
         let mut join_set = JoinSet::new();
         let schedule_start = run_start;
 
-        for _ in 0..config.concurrency {
+        for worker_id in 0..config.concurrency {
             let docs = test_docs.clone();
             let cfg = config.clone();
             let progress_count = Arc::clone(&progress_count);
             let progress_errors = Arc::clone(&progress_errors);
             let sc = source_config.clone();
             let shutdown = Arc::clone(&shutdown_requested);
+            // Spread workers across `connections` distinct client channels.
+            let connection_id = worker_connection_id(worker_id, config.connections);
             join_set.spawn(async move {
-                let mut local = BenchMetrics::with_capacity(1000);
+                let mut local = BenchMetrics::for_worker(
+                    1000,
+                    cfg.count_errors_in_latency,
+                    sample_stride_from_rate(cfg.sample_rate),
+                    cfg.skip_first,
+                );
                 let mut next_slot = Instant::now();
                 let deadline = Instant::now() + dur;
                 while Instant::now() < deadline && !shutdown.load(Ordering::Relaxed) {
@@ -1263,7 +1545,13 @@ async fn run_benchmark(
                         };
 
                         let (lat_ns, status, error, endpoint) =
-                            execute_single_bench_iteration_with_vars(gctf_doc, &cfg, vars).await;
+                            execute_single_bench_iteration_with_vars(
+                                gctf_doc,
+                                &cfg,
+                                vars,
+                                connection_id,
+                            )
+                            .await;
                         let finished_at = Instant::now();
                         if should_record_after_deadline(cfg.duration_stop, finished_at, deadline) {
                             local.record(lat_ns, &status, error.as_deref(), &endpoint);
@@ -1315,9 +1603,16 @@ async fn run_benchmark(
             };
             let sc = source_config.clone();
             let shutdown = Arc::clone(&shutdown_requested);
+            // Spread workers across `connections` distinct client channels.
+            let connection_id = worker_connection_id(worker_id, config.connections);
 
             join_set.spawn(async move {
-                let mut local = BenchMetrics::with_capacity(worker_requests as usize);
+                let mut local = BenchMetrics::for_worker(
+                    worker_requests as usize,
+                    cfg.count_errors_in_latency,
+                    sample_stride_from_rate(cfg.sample_rate),
+                    cfg.skip_first,
+                );
                 let mut next_slot = Instant::now();
                 for _ in 0..worker_requests {
                     if shutdown.load(Ordering::Relaxed) {
@@ -1364,7 +1659,13 @@ async fn run_benchmark(
                         };
 
                         let (lat_ns, status, error, endpoint) =
-                            execute_single_bench_iteration_with_vars(gctf_doc, &cfg, vars).await;
+                            execute_single_bench_iteration_with_vars(
+                                gctf_doc,
+                                &cfg,
+                                vars,
+                                connection_id,
+                            )
+                            .await;
                         local.record(lat_ns, &status, error.as_deref(), &endpoint);
                         progress_count.fetch_add(1, Ordering::Relaxed);
                         if status != "OK" {
@@ -1517,6 +1818,18 @@ fn target_rps_at(config: &BenchConfigResolved, elapsed: Duration) -> f64 {
         }
     };
 
+    // Ramp-up overlay: linearly scale the target load from ~0 up to the computed
+    // steady-state target over the first `ramp_up` seconds. Only meaningful when a
+    // target RPS exists (max_rps / load schedule); with unbounded load `rps == 0`
+    // and there is nothing to ramp.
+    if let Some(ramp) = config.ramp_up {
+        let ramp_secs = ramp.as_secs_f64();
+        let t = elapsed.as_secs_f64();
+        if ramp_secs > 0.0 && t < ramp_secs {
+            return (rps * (t / ramp_secs)).max(0.0);
+        }
+    }
+
     // Cool-down overlay: if elapsed exceeds duration, ramp RPS to 0
     if let (Some(dur), Some(cd)) = (config.duration, config.cool_down) {
         let dur_secs = dur.as_secs_f64();
@@ -1529,6 +1842,338 @@ fn target_rps_at(config: &BenchConfigResolved, elapsed: Duration) -> f64 {
     }
 
     rps
+}
+
+/// Load-generation execution model selected by the `mode` option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecModel {
+    /// Each worker issues one request, awaits it, then paces to the next slot.
+    /// Throughput is bounded by server latency (coordinated omission).
+    Closed,
+    /// Requests arrive on a fixed schedule regardless of completion; latency is
+    /// measured from the *scheduled* arrival so backpressure is captured.
+    Open,
+}
+
+/// Pure `mode` → execution-model dispatch. `open`/`adaptive` select the open
+/// model (adaptive currently maps to open — no adaptive rate control yet);
+/// everything else (`fixed`/`closed`/`closed-loop`/unknown) stays closed-loop.
+fn exec_model_for(mode: &str) -> ExecModel {
+    match mode.trim_ascii().to_ascii_lowercase().as_str() {
+        "open" | "adaptive" => ExecModel::Open,
+        _ => ExecModel::Closed,
+    }
+}
+
+/// The open model needs a defined arrival rate. True when any target RPS is
+/// configured (explicit cap, load_start, or a non-const load schedule).
+fn has_target_rate(config: &BenchConfigResolved) -> bool {
+    config.max_rps.is_some()
+        || config.load_start.is_some()
+        || !config
+            .load_schedule
+            .trim_ascii()
+            .eq_ignore_ascii_case("const")
+}
+
+/// How long the open model runs: a wall-clock window (`-d`) or a fixed number
+/// of scheduled arrivals (`-n`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunBound {
+    Duration(Duration),
+    Count(u64),
+}
+
+/// Idle step used when the instantaneous target rate is zero (e.g. the start of
+/// a ramp or the off-phase of a spike): advance the schedule cursor without
+/// emitting an arrival so a temporarily-idle schedule cannot spin.
+const OPEN_IDLE_STEP: Duration = Duration::from_millis(5);
+
+/// Lazy generator of open-model arrival offsets (relative to schedule start).
+/// Successive arrivals are spaced by `1 / target_rps` sampled at the current
+/// cursor, so ramp/step/sine/spike/custom schedules shape the arrival stream.
+/// Pure and time-free, so scheduling behaviour is unit-testable.
+struct ArrivalSchedule<F> {
+    rate_at: F,
+    cursor: Duration,
+    bound: RunBound,
+    emitted: u64,
+}
+
+impl<F: Fn(Duration) -> f64> ArrivalSchedule<F> {
+    fn new(rate_at: F, bound: RunBound) -> Self {
+        Self {
+            rate_at,
+            cursor: Duration::ZERO,
+            bound,
+            emitted: 0,
+        }
+    }
+}
+
+impl<F: Fn(Duration) -> f64> Iterator for ArrivalSchedule<F> {
+    type Item = Duration;
+
+    fn next(&mut self) -> Option<Duration> {
+        loop {
+            match self.bound {
+                RunBound::Count(n) if self.emitted >= n => return None,
+                RunBound::Duration(d) if self.cursor >= d => return None,
+                _ => {}
+            }
+
+            let rate = (self.rate_at)(self.cursor);
+            if rate > 0.0 {
+                let arrival = self.cursor;
+                self.cursor += Duration::from_secs_f64(1.0 / rate);
+                self.emitted += 1;
+                return Some(arrival);
+            }
+
+            self.cursor += OPEN_IDLE_STEP;
+        }
+    }
+}
+
+/// Coordinated-omission-correct latency: measured from the request's *intended*
+/// arrival slot to completion, so any wait for an in-flight permit (backpressure
+/// when the concurrency cap is saturated) is included in the sample.
+fn latency_ns_from_arrival(arrival: Instant, finished: Instant) -> u64 {
+    finished.saturating_duration_since(arrival).as_nanos() as u64
+}
+
+/// Pull the next data-source variable row (with reset-on-exhaustion), mirroring
+/// the closed-loop source handling. Called from the scheduler thread so row
+/// ordering stays deterministic.
+fn next_source_vars(
+    source_config: &Option<Arc<crate::bench::sources::SourceDrivenConfig>>,
+) -> HashMap<String, serde_json::Value> {
+    match source_config {
+        Some(sdc) => match sdc.next_row_variables() {
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                if let Err(e) = sdc
+                    .primary
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("{e}"))
+                    .and_then(|mut r| r.reset())
+                {
+                    warn!("source reset failed: {e}");
+                }
+                match sdc.next_row_variables() {
+                    Ok(Some(v)) => v,
+                    _ => HashMap::new(),
+                }
+            }
+            Err(_) => HashMap::new(),
+        },
+        None => HashMap::new(),
+    }
+}
+
+/// Map a run's numeric gRPC status into the label used for the bench status
+/// distribution. Reuses the canonical gRPC code→name table so codes bucket by
+/// their real status (`OK`, `Unavailable`, `NotFound`, ...) instead of a flat
+/// `OK`/`ERROR`. Falls back to the pass/fail outcome when the run produced no
+/// gRPC status at all (e.g. a pure assertion or config failure).
+fn grpc_status_label(grpc_status: Option<u32>, passed: bool) -> String {
+    match grpc_status {
+        Some(code) => crate::execution::TestRunner::grpc_code_name_from_numeric(code as i64)
+            .map(|name| name.to_string())
+            .unwrap_or_else(|| format!("CODE_{code}")),
+        None => if passed { "OK" } else { "ERROR" }.to_string(),
+    }
+}
+
+/// Connection-pool slot for a closed-loop worker: worker index modulo the pool
+/// size, so `connections` workers cycle over `connections` distinct channels.
+fn worker_connection_id(worker_index: u32, connections: u32) -> u64 {
+    (worker_index % connections.max(1)) as u64
+}
+
+/// Round-robin slot for the k-th open-model request across a pool of `pool_size`
+/// prebuilt runners: task k dispatches on `runners[k % pool_size]`.
+fn round_robin_index(task_index: usize, pool_size: usize) -> usize {
+    task_index % pool_size.max(1)
+}
+
+/// Run a single request against a *prebuilt, shared* runner. Returns the
+/// outcome only — the caller computes latency from the scheduled arrival.
+async fn run_request_with_runner(
+    runner: &crate::execution::TestRunner,
+    doc: &GctfDocument,
+    vars: HashMap<String, serde_json::Value>,
+) -> (String, Option<String>, String) {
+    use crate::execution::TestExecutionStatus;
+
+    let endpoint = doc.get_endpoint().unwrap_or_else(|| "unknown".to_string());
+    match runner.run_test_with_variables(doc, vars).await {
+        Ok(result) => {
+            let passed = matches!(result.status, TestExecutionStatus::Pass);
+            let status = grpc_status_label(result.grpc_status, passed);
+            let error = match result.status {
+                TestExecutionStatus::Pass => None,
+                TestExecutionStatus::Fail(msg) => Some(msg),
+            };
+            (status, error, endpoint)
+        }
+        Err(e) => ("ERROR".to_string(), Some(e.to_string()), endpoint),
+    }
+}
+
+/// Open-model (arrival-rate) executor.
+///
+/// Scheduling is decoupled from completion: the scheduler sleeps until each
+/// arrival slot (derived from `target_rps_at`) and spawns the request as a task
+/// *without* awaiting the previous one. A `Semaphore` bounds concurrent
+/// in-flight requests to `concurrency`; crucially the permit is acquired
+/// *inside* the spawned task, never by the scheduler, so a saturated cap applies
+/// backpressure to requests but never stalls arrival scheduling. Each sample's
+/// latency is taken from `latency_ns_from_arrival`, i.e. the intended slot, so
+/// permit-wait time counts against latency — the coordinated-omission fix.
+#[allow(clippy::too_many_arguments)]
+async fn run_open_model(
+    test_docs: &[(std::path::PathBuf, GctfDocument)],
+    config: &BenchConfigResolved,
+    bound: RunBound,
+    schedule_start: Instant,
+    progress_count: Arc<AtomicU64>,
+    progress_errors: Arc<AtomicU64>,
+    shutdown: Arc<AtomicBool>,
+    source_config: Option<Arc<crate::bench::sources::SourceDrivenConfig>>,
+) -> BenchMetrics {
+    use crate::execution::TestRunner;
+
+    if test_docs.is_empty() {
+        return BenchMetrics::for_worker(
+            0,
+            config.count_errors_in_latency,
+            sample_stride_from_rate(config.sample_rate),
+            config.skip_first,
+        );
+    }
+
+    // Prebuild `connections` runners, one per distinct client channel, and
+    // round-robin spawned requests across them. Channels and descriptors are
+    // globally cached (keyed by connection_id), so N distinct ids open N
+    // distinct HTTP/2 channels while keeping client construction off the
+    // per-request hot path.
+    let timeout_seconds = config.duration.map_or(30, |d| d.as_secs()).max(1);
+    let no_assert = config.no_assert || config.assert_mode == "off" || config.assert_mode == "skip";
+    let runners: Vec<Arc<TestRunner>> = (0..config.connections.max(1))
+        .map(|i| {
+            Arc::new(
+                TestRunner::new(false, timeout_seconds, no_assert, false, false, None)
+                    .with_protocol(config.protocol)
+                    .with_connection_id(i as u64),
+            )
+        })
+        .collect();
+
+    // Share docs behind Arc so per-arrival dispatch clones a pointer, not the AST.
+    let docs: Vec<Arc<GctfDocument>> = test_docs
+        .iter()
+        .map(|(_, doc)| Arc::new(doc.clone()))
+        .collect();
+
+    let hint = match bound {
+        RunBound::Count(n) => n as usize,
+        RunBound::Duration(_) => 1000,
+    };
+    let metrics = Arc::new(tokio::sync::Mutex::new(BenchMetrics::for_worker(
+        hint,
+        config.count_errors_in_latency,
+        sample_stride_from_rate(config.sample_rate),
+        config.skip_first,
+    )));
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(
+        config.concurrency.max(1) as usize
+    ));
+
+    // Stop scheduling once the run window (or `--max-duration`) is reached.
+    let deadline = match bound {
+        RunBound::Duration(d) => Some(schedule_start + d),
+        RunBound::Count(_) => config.max_duration.map(|d| schedule_start + d),
+    };
+
+    let cfg_for_rate = config.clone();
+    let schedule =
+        ArrivalSchedule::new(move |elapsed| target_rps_at(&cfg_for_rate, elapsed), bound);
+
+    let mut tasks = JoinSet::new();
+
+    for (doc_cursor, arrival_offset) in schedule.enumerate() {
+        if shutdown.load(Ordering::Relaxed) {
+            break;
+        }
+        if let Some(dl) = deadline
+            && Instant::now() >= dl
+        {
+            break;
+        }
+
+        let arrival_instant = schedule_start + arrival_offset;
+        let now = Instant::now();
+        if arrival_instant > now {
+            tokio::time::sleep(arrival_instant - now).await;
+        }
+        if shutdown.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let doc = Arc::clone(&docs[doc_cursor % docs.len()]);
+        let vars = next_source_vars(&source_config);
+
+        let permits = Arc::clone(&semaphore);
+        // Round-robin task k across the `connections` channels: k -> runners[k % N].
+        let runner = Arc::clone(&runners[round_robin_index(doc_cursor, runners.len())]);
+        let metrics = Arc::clone(&metrics);
+        let progress_count = Arc::clone(&progress_count);
+        let progress_errors = Arc::clone(&progress_errors);
+        let duration_stop = config.duration_stop;
+
+        tasks.spawn(async move {
+            // Acquire the in-flight permit HERE (inside the task): if the cap is
+            // saturated we queue, and because latency is measured from
+            // `arrival_instant` the queuing delay is captured in the sample.
+            let _permit = permits.acquire_owned().await;
+            let (status, error, endpoint) = run_request_with_runner(&runner, &doc, vars).await;
+            let finished_at = Instant::now();
+            let lat_ns = latency_ns_from_arrival(arrival_instant, finished_at);
+
+            let record = match deadline {
+                Some(dl) => should_record_after_deadline(duration_stop, finished_at, dl),
+                None => true,
+            };
+            if record {
+                let mut m = metrics.lock().await;
+                m.record(lat_ns, &status, error.as_deref(), &endpoint);
+                drop(m);
+                progress_count.fetch_add(1, Ordering::Relaxed);
+                if status != "OK" {
+                    progress_errors.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        });
+
+        // Reap already-finished tasks so the JoinSet doesn't accumulate handles.
+        while tasks.try_join_next().is_some() {}
+    }
+
+    // Drain outstanding in-flight requests per the `duration_stop` policy.
+    match config.duration_stop {
+        DurationStopMode::Close => {
+            // Don't wait for stragglers; requests already recorded stay counted.
+            tasks.abort_all();
+        }
+        DurationStopMode::Wait | DurationStopMode::Ignore => {}
+    }
+    while tasks.join_next().await.is_some() {}
+
+    Arc::try_unwrap(metrics)
+        .map(tokio::sync::Mutex::into_inner)
+        .unwrap_or_else(|_| unreachable!("all bench tasks joined; metrics Arc must be unique"))
 }
 
 fn print_progress_snapshot(
@@ -1560,13 +2205,15 @@ async fn execute_single_bench_iteration(
     config: &BenchConfigResolved,
 ) -> (u64, String, Option<String>, String) {
     let parse_result = crate::parser::parse_with_recovery(file);
-    execute_single_bench_iteration_with_vars(&parse_result.document, config, HashMap::new()).await
+    execute_single_bench_iteration_with_vars(&parse_result.document, config, HashMap::new(), 0)
+        .await
 }
 
 async fn execute_single_bench_iteration_with_vars(
     doc: &GctfDocument,
     config: &BenchConfigResolved,
     source_variables: HashMap<String, serde_json::Value>,
+    connection_id: u64,
 ) -> (u64, String, Option<String>, String) {
     use crate::execution::{TestExecutionStatus, TestRunner};
 
@@ -1577,22 +2224,20 @@ async fn execute_single_bench_iteration_with_vars(
     let timeout_seconds = config.duration.map_or(30, |d| d.as_secs()).max(1);
     let no_assert = config.no_assert || config.assert_mode == "off" || config.assert_mode == "skip";
 
-    let runner = TestRunner::new(false, timeout_seconds, no_assert, false, false, None);
+    let runner = TestRunner::new(false, timeout_seconds, no_assert, false, false, None)
+        .with_protocol(config.protocol)
+        .with_connection_id(connection_id);
     match runner.run_test_with_variables(doc, source_variables).await {
-        Ok(result) => match result.status {
-            TestExecutionStatus::Pass => (
-                start.elapsed().as_nanos() as u64,
-                "OK".to_string(),
-                None,
-                endpoint.clone(),
-            ),
-            TestExecutionStatus::Fail(msg) => (
-                start.elapsed().as_nanos() as u64,
-                "ERROR".to_string(),
-                Some(msg),
-                endpoint.clone(),
-            ),
-        },
+        Ok(result) => {
+            let latency = start.elapsed().as_nanos() as u64;
+            let passed = matches!(result.status, TestExecutionStatus::Pass);
+            let status = grpc_status_label(result.grpc_status, passed);
+            let error = match result.status {
+                TestExecutionStatus::Pass => None,
+                TestExecutionStatus::Fail(msg) => Some(msg),
+            };
+            (latency, status, error, endpoint)
+        }
         Err(e) => (
             start.elapsed().as_nanos() as u64,
             "ERROR".to_string(),
@@ -1865,6 +2510,9 @@ fn build_report(
             .to_string()
     };
 
+    // `skip_first` warm-up trimming is applied per accumulator as samples are
+    // recorded (see `BenchMetrics::record`), so the merged histogram already
+    // excludes those outliers here.
     let count = metrics.count;
     let avg_ns = metrics.total_ns.checked_div(count).unwrap_or(0);
 
@@ -1973,7 +2621,20 @@ fn build_report(
         error_distribution: metrics.error_dist,
         threshold_evaluation: threshold_results,
         details: metrics.details,
-        tags: BTreeMap::new(),
+        tags: {
+            // Record the execution model actually used (open falls back to
+            // closed when no target rate is configured).
+            let effective_model =
+                if exec_model_for(&config.mode) == ExecModel::Open && has_target_rate(config) {
+                    "open"
+                } else {
+                    "closed"
+                };
+            let mut tags = BTreeMap::new();
+            tags.insert("exec_model".to_string(), effective_model.to_string());
+            tags.insert("mode".to_string(), config.mode.clone());
+            tags
+        },
         sources_runtime: source_config.map(|sc| {
             let stats = sc.runtime_stats.snapshot();
             let mut source_stats = std::collections::BTreeMap::new();
@@ -1993,21 +2654,17 @@ fn build_report(
         per_endpoint: metrics
             .per_endpoint
             .into_iter()
-            .map(|(endpoint, data)| {
-                let p50 = BenchMetrics::percentile_from_sorted(&data.latencies, 50.0);
-                let p90 = BenchMetrics::percentile_from_sorted(&data.latencies, 90.0);
-                let p95 = BenchMetrics::percentile_from_sorted(&data.latencies, 95.0);
-                let p99 = BenchMetrics::percentile_from_sorted(&data.latencies, 99.0);
-                crate::report::bench::PerEndpointSummary {
+            .map(
+                |(endpoint, data)| crate::report::bench::PerEndpointSummary {
                     endpoint,
                     count: data.count,
                     errors: data.errors,
-                    latency_p50: p50,
-                    latency_p90: p90,
-                    latency_p95: p95,
-                    latency_p99: p99,
-                }
-            })
+                    latency_p50: data.latency.percentile(50.0),
+                    latency_p90: data.latency.percentile(90.0),
+                    latency_p95: data.latency.percentile(95.0),
+                    latency_p99: data.latency.percentile(99.0),
+                },
+            )
             .collect(),
     };
 
@@ -2023,6 +2680,15 @@ pub fn validate_bench_config(doc: &crate::parser::GctfDocument) -> Result<()> {
 }
 
 /// Main bench command handler
+/// Canonicalize the `--log-format` value. `ndjson` (the value advertised in the
+/// flag help) is an alias for the per-response JSON Lines format `detail-json`.
+fn canonical_bench_format(fmt: &str) -> &str {
+    match fmt {
+        "ndjson" => "detail-json",
+        other => other,
+    }
+}
+
 pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
     // Handle --list-profiles
     if args.list_profiles {
@@ -2218,7 +2884,7 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
     }
 
     // Output report based on format
-    match args.format.as_str() {
+    match canonical_bench_format(args.format.as_str()) {
         "json" => {
             let json = serde_json::to_string_pretty(&report)?;
             if let Some(output) = &args.output {
@@ -2302,6 +2968,95 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_exec_model_dispatch() {
+        assert_eq!(exec_model_for("open"), ExecModel::Open);
+        assert_eq!(exec_model_for("adaptive"), ExecModel::Open);
+        assert_eq!(exec_model_for(" OPEN "), ExecModel::Open);
+        assert_eq!(exec_model_for("closed"), ExecModel::Closed);
+        assert_eq!(exec_model_for("fixed"), ExecModel::Closed);
+        assert_eq!(exec_model_for("closed-loop"), ExecModel::Closed);
+        assert_eq!(exec_model_for("closed_loop"), ExecModel::Closed);
+        // Unknown modes stay closed-loop (the safe default).
+        assert_eq!(exec_model_for("stepping"), ExecModel::Closed);
+    }
+
+    #[test]
+    fn test_open_schedule_count_exactly_n() {
+        // Request-count open mode schedules exactly N arrivals.
+        let arrivals: Vec<Duration> =
+            ArrivalSchedule::new(|_| 100.0, RunBound::Count(500)).collect();
+        assert_eq!(arrivals.len(), 500);
+        // Fixed 100 rps → 10ms spacing.
+        assert_eq!(arrivals[0], Duration::ZERO);
+        assert_eq!(arrivals[1], Duration::from_millis(10));
+    }
+
+    #[test]
+    fn test_open_schedule_duration_arrival_count() {
+        // Fixed rate + duration produces ≈ rate * duration arrivals.
+        let rate = 50.0;
+        let dur = Duration::from_secs(2);
+        let arrivals: Vec<Duration> =
+            ArrivalSchedule::new(|_| rate, RunBound::Duration(dur)).collect();
+        let expected = (rate * dur.as_secs_f64()) as usize; // 100
+        assert!(
+            (arrivals.len() as i64 - expected as i64).abs() <= 1,
+            "expected ≈{expected} arrivals, got {}",
+            arrivals.len()
+        );
+    }
+
+    #[test]
+    fn test_open_schedule_ramp_from_zero_terminates() {
+        // Zero-rate window at the start must idle-advance (not spin) and still
+        // terminate on the duration bound once the rate turns positive.
+        let arrivals: Vec<Duration> = ArrivalSchedule::new(
+            |t| {
+                if t < Duration::from_millis(100) {
+                    0.0
+                } else {
+                    100.0
+                }
+            },
+            RunBound::Duration(Duration::from_secs(1)),
+        )
+        .collect();
+        assert!(!arrivals.is_empty());
+        assert!(arrivals[0] >= Duration::from_millis(100));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_latency_measured_from_arrival() {
+        // A request whose permit acquisition is delayed still reports latency
+        // ≥ the induced delay (coordinated-omission correctness).
+        let arrival = Instant::now();
+        let delay = Duration::from_millis(20);
+        std::thread::sleep(delay);
+        let finished = Instant::now();
+        let lat_ns = latency_ns_from_arrival(arrival, finished);
+        assert!(
+            lat_ns >= delay.as_nanos() as u64,
+            "latency {lat_ns}ns should be >= induced delay {}ns",
+            delay.as_nanos()
+        );
+    }
+
+    #[test]
+    fn test_has_target_rate() {
+        let mut cfg = BenchConfigResolved::default();
+        assert!(!has_target_rate(&cfg)); // const schedule, no rate
+        cfg.max_rps = Some(100.0);
+        assert!(has_target_rate(&cfg));
+        cfg.max_rps = None;
+        cfg.load_start = Some(50.0);
+        assert!(has_target_rate(&cfg));
+        cfg.load_start = None;
+        cfg.load_schedule = "step".to_string();
+        assert!(has_target_rate(&cfg));
+    }
+
+    #[test]
     fn test_parse_duration_seconds() {
         let d = parse_duration("30s").unwrap();
         assert_eq!(d.as_secs(), 30);
@@ -2351,13 +3106,19 @@ mod tests {
         assert_eq!(points[1], (2.0, 100.0));
     }
 
+    // Feed a set of samples into the histogram distribution.
+    fn metrics_with_latencies(samples: &[u64]) -> BenchMetrics {
+        let mut m = BenchMetrics::default();
+        for &s in samples {
+            m.latency.record(s);
+        }
+        m
+    }
+
     // Bug 1: near-equal latencies must not cause a divide-by-zero panic.
     #[test]
     fn test_to_histogram_zero_width_no_panic() {
-        let metrics = BenchMetrics {
-            latencies: vec![10, 10, 11, 12, 12],
-            ..Default::default()
-        };
+        let metrics = metrics_with_latencies(&[10, 10, 11, 12, 12]);
         // (max-min)/bucket_count = (12-10)/10 = 0 in integer math -> was a panic.
         let buckets = metrics.to_histogram(10);
         assert!(!buckets.is_empty());
@@ -2424,6 +3185,37 @@ mod tests {
         assert_eq!(config.duration_stop, DurationStopMode::Wait);
         assert_eq!(config.sample_rate, 1.0);
         assert!(config.cache);
+    }
+
+    #[test]
+    fn ndjson_format_is_alias_for_detail_json() {
+        // `ndjson` is advertised in --log-format help; it must map to the real
+        // per-response JSON Lines format `detail-json` instead of erroring.
+        assert_eq!(canonical_bench_format("ndjson"), "detail-json");
+        assert_eq!(canonical_bench_format("detail-json"), "detail-json");
+        assert_eq!(canonical_bench_format("json"), "json");
+        assert_eq!(canonical_bench_format("console"), "console");
+    }
+
+    #[test]
+    fn bench_protocol_override_resolves_from_cli() {
+        use crate::cli::args::{Cli, Commands};
+        use clap::Parser;
+
+        let cli = Cli::parse_from(["grpctestify", "bench", "tests/", "--protocol", "grpc-web"]);
+        let Some(Commands::Bench(args)) = cli.command else {
+            panic!("expected bench command");
+        };
+        let config = BenchConfigResolved::from_cli_and_bench(&args, None).unwrap();
+        assert_eq!(config.protocol, crate::grpc::WireProtocol::GrpcWeb);
+
+        // Default (flag omitted) resolves to grpc.
+        let cli = Cli::parse_from(["grpctestify", "bench", "tests/"]);
+        let Some(Commands::Bench(args)) = cli.command else {
+            panic!("expected bench command");
+        };
+        let config = BenchConfigResolved::from_cli_and_bench(&args, None).unwrap();
+        assert_eq!(config.protocol, crate::grpc::WireProtocol::Grpc);
     }
 
     #[test]
@@ -2890,22 +3682,105 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn test_downsample_latencies_keeps_every_second_sample() {
-        let mut samples = vec![1, 2, 3, 4, 5, 6];
-        downsample_latencies(&mut samples);
-        assert_eq!(samples, vec![1, 3, 5]);
+    // Relative-error bound of the log-linear histogram: any percentile must be
+    // within ~1/SUB_BUCKETS of the true value.
+    const HIST_TOLERANCE: f64 = 1.0 / SUB_BUCKETS as f64;
+
+    fn assert_within_tolerance(got: u64, expected: u64, ctx: &str) {
+        let rel = (got as f64 - expected as f64).abs() / (expected as f64).max(1.0);
+        assert!(
+            rel <= HIST_TOLERANCE,
+            "{ctx}: got {got}, expected {expected}, rel error {rel:.4} > {HIST_TOLERANCE:.4}"
+        );
     }
 
+    // Percentiles are accurate over a wide, dense distribution (1..=100_000).
     #[test]
-    fn test_metrics_record_caps_latency_sample_growth() {
+    fn test_histogram_percentile_accuracy() {
+        let mut h = LatencyHistogram::default();
+        for v in 1..=100_000u64 {
+            h.record(v);
+        }
+        assert_within_tolerance(h.percentile(50.0), 50_000, "p50");
+        assert_within_tolerance(h.percentile(90.0), 90_000, "p90");
+        assert_within_tolerance(h.percentile(99.0), 99_000, "p99");
+        assert_within_tolerance(h.percentile(99.9), 99_900, "p99.9");
+        // min/max are tracked exactly.
+        assert_eq!(h.min, 1);
+        assert_eq!(h.max, 100_000);
+        assert_eq!(h.percentile(100.0), 100_000);
+    }
+
+    // Anti-bias: a distribution whose early samples are small and late samples
+    // are large. The old "keep every other sample" downsample-on-merge biased
+    // the aggregate toward the last-appended (large) samples; the bounded
+    // histogram weights every sample equally, so p50 stays in the low mode.
+    #[test]
+    fn test_histogram_not_biased_toward_late_samples() {
+        let mut h = LatencyHistogram::default();
+        // 90k low samples recorded first, then 10k high samples.
+        for _ in 0..90_000 {
+            h.record(1_000);
+        }
+        for _ in 0..10_000 {
+            h.record(1_000_000);
+        }
+        // True p50 is firmly in the low mode; a late-biased estimator would
+        // report a value orders of magnitude too high.
+        assert_within_tolerance(h.percentile(50.0), 1_000, "p50");
+        assert_within_tolerance(h.percentile(85.0), 1_000, "p85");
+        // The high mode only shows up above the 90th percentile.
+        assert_within_tolerance(h.percentile(99.0), 1_000_000, "p99");
+    }
+
+    // Mergeability: two per-worker histograms merged bucket-wise equal one
+    // histogram fed all the samples (exactly — no loss on merge).
+    #[test]
+    fn test_histogram_merge_is_lossless() {
+        let mut whole = LatencyHistogram::default();
+        let mut a = LatencyHistogram::default();
+        let mut b = LatencyHistogram::default();
+        for v in 1..=50_000u64 {
+            a.record(v);
+            whole.record(v);
+        }
+        for v in 50_001..=100_000u64 {
+            b.record(v);
+            whole.record(v);
+        }
+        a.merge(&b);
+        assert_eq!(a.total, whole.total);
+        assert_eq!(a.min, whole.min);
+        assert_eq!(a.max, whole.max);
+        assert_eq!(a.buckets, whole.buckets);
+        for p in [50.0, 90.0, 95.0, 99.0, 99.9] {
+            assert_eq!(a.percentile(p), whole.percentile(p), "p{p}");
+        }
+    }
+
+    // Memory is bounded independent of sample count: recording far more than the
+    // old 100k cap never grows the fixed bucket array, and every sample counts.
+    #[test]
+    fn test_histogram_memory_is_bounded() {
         let mut metrics = BenchMetrics::default();
-        for i in 0..(MAX_LATENCY_SAMPLES + 10) {
+        let n = MAX_LATENCY_SAMPLES + 10;
+        for i in 0..n {
             metrics.record(i as u64, "OK", None, "test");
         }
+        assert_eq!(metrics.latency.buckets.len(), HIST_BUCKETS);
+        assert_eq!(metrics.latency.total, n as u64);
+        assert_eq!(metrics.count, n as u64);
+    }
 
-        assert!(metrics.latencies.len() <= MAX_LATENCY_SAMPLES);
-        assert_eq!(metrics.count, (MAX_LATENCY_SAMPLES + 10) as u64);
+    // mean is computed exactly from the running sum/count, not the histogram.
+    #[test]
+    fn test_mean_is_exact() {
+        let mut m = BenchMetrics::default();
+        for v in [10u64, 20, 30, 40, 100] {
+            m.record(v, "OK", None, "e");
+        }
+        // total 200 over 5 requests -> exact 40.
+        assert_eq!(m.total_ns / m.count, 40);
     }
 
     #[test]
@@ -3012,5 +3887,195 @@ mod tests {
         assert!((target_rps_at(&cfg, Duration::from_secs(0)) - 200.0).abs() < f64::EPSILON);
         assert!((target_rps_at(&cfg, Duration::from_secs(10)) - 180.0).abs() < f64::EPSILON);
         assert!((target_rps_at(&cfg, Duration::from_secs(100)) - 100.0).abs() < f64::EPSILON);
+    }
+
+    // skip_first: hold back the first N sampled latencies (warm-up outliers)
+    // from the global distribution as they are recorded.
+    #[test]
+    fn test_skip_first_discards_leading_samples() {
+        let mut m = BenchMetrics {
+            skip_first_remaining: 2,
+            ..Default::default()
+        };
+        for v in [9999, 9998, 10, 11, 12] {
+            m.record(v, "OK", None, "e");
+        }
+        // The two warm-up outliers never enter the global histogram.
+        assert_eq!(m.latency.total, 3);
+        assert_eq!(m.latency.min, 10);
+        assert_eq!(m.latency.max, 12);
+        assert_eq!(m.compute_percentile(100.0), 12);
+        // Per-endpoint stats keep every sample (skip gates only the global one).
+        assert_eq!(m.per_endpoint["e"].latency.total, 5);
+    }
+
+    #[test]
+    fn test_skip_first_saturates_without_panic() {
+        let mut m = BenchMetrics {
+            skip_first_remaining: 10,
+            ..Default::default()
+        };
+        m.record(1, "OK", None, "e");
+        m.record(2, "OK", None, "e");
+        assert_eq!(m.latency.total, 0);
+        // Zero skip is a no-op.
+        let mut m2 = BenchMetrics::default();
+        for v in [1, 2, 3] {
+            m2.record(v, "OK", None, "e");
+        }
+        assert_eq!(m2.latency.total, 3);
+    }
+
+    // count_errors_in_latency=false (default): error latencies are EXCLUDED from
+    // the latency distribution, but still counted in throughput and overall timing.
+    #[test]
+    fn test_count_errors_excluded_from_latency_by_default() {
+        let mut m = BenchMetrics::default();
+        m.record(100, "OK", None, "e");
+        m.record(9999, "ERROR", Some("boom"), "e");
+        // Only the OK latency enters the distribution (value 100 -> linear bucket).
+        assert_eq!(m.latency.total, 1);
+        assert_eq!(m.latency.buckets[100], 1);
+        assert_eq!(m.per_endpoint["e"].latency.total, 1);
+        // Throughput + overall timing still see the error.
+        assert_eq!(m.count, 2);
+        assert_eq!(m.errors, 1);
+        assert_eq!(m.slowest_ns, 9999);
+    }
+
+    // count_errors_in_latency=true: error latencies are INCLUDED in the distribution.
+    #[test]
+    fn test_count_errors_included_when_flag_set() {
+        let mut m = BenchMetrics {
+            count_errors_in_latency: true,
+            ..Default::default()
+        };
+        m.record(100, "OK", None, "e");
+        m.record(200, "ERROR", Some("boom"), "e");
+        // Both latencies (< 256 -> bucket index == value) enter the distribution.
+        assert_eq!(m.latency.total, 2);
+        assert_eq!(m.latency.buckets[100], 1);
+        assert_eq!(m.latency.buckets[200], 1);
+        assert_eq!(m.per_endpoint["e"].latency.total, 2);
+    }
+
+    // sample_rate: deterministic every-Nth recording (N = round(1/rate)).
+    #[test]
+    fn test_sample_stride_from_rate() {
+        assert_eq!(sample_stride_from_rate(1.0), 1);
+        assert_eq!(sample_stride_from_rate(0.5), 2);
+        assert_eq!(sample_stride_from_rate(0.25), 4);
+        assert_eq!(sample_stride_from_rate(0.0), u64::MAX);
+        assert_eq!(sample_stride_from_rate(2.0), 1); // clamped to record-all
+    }
+
+    #[test]
+    fn test_sample_rate_records_every_nth() {
+        let mut m = BenchMetrics {
+            sample_stride: sample_stride_from_rate(0.5),
+            ..Default::default()
+        };
+        for i in 0..6 {
+            m.record(i, "OK", None, "e");
+        }
+        // stride 2 -> records requests 1,3,5 (i = 0,2,4); all 6 still counted.
+        assert_eq!(m.latency.total, 3);
+        assert_eq!(m.latency.buckets[0], 1);
+        assert_eq!(m.latency.buckets[2], 1);
+        assert_eq!(m.latency.buckets[4], 1);
+        assert_eq!(m.count, 6);
+    }
+
+    #[test]
+    fn test_sample_rate_full_records_all() {
+        let mut m = BenchMetrics {
+            sample_stride: sample_stride_from_rate(1.0),
+            ..Default::default()
+        };
+        for i in 0..4 {
+            m.record(i, "OK", None, "e");
+        }
+        assert_eq!(m.latency.total, 4);
+    }
+
+    // ramp_up: linearly scale the target load from ~0 to the steady-state target
+    // over the first `ramp_up` seconds.
+    #[test]
+    fn test_ramp_up_scales_target_rps() {
+        let cfg = BenchConfigResolved {
+            load_schedule: "const".to_string(),
+            max_rps: Some(100.0),
+            ramp_up: Some(Duration::from_secs(10)),
+            ..Default::default()
+        };
+        assert!(target_rps_at(&cfg, Duration::from_secs(0)) < 1.0);
+        assert!((target_rps_at(&cfg, Duration::from_secs(5)) - 50.0).abs() < 1e-6);
+        // At/after the ramp end the full target applies.
+        assert!((target_rps_at(&cfg, Duration::from_secs(10)) - 100.0).abs() < 1e-6);
+        assert!((target_rps_at(&cfg, Duration::from_secs(20)) - 100.0).abs() < 1e-6);
+    }
+
+    // count_errors_in_latency / skip_first are also settable via the BENCH section.
+    #[test]
+    fn test_bench_section_parses_skip_first_and_count_errors() {
+        let mut bench_section = HashMap::new();
+        bench_section.insert("skip_first".to_string(), "7".to_string());
+        bench_section.insert("count_errors_in_latency".to_string(), "true".to_string());
+        let config = BenchConfigResolved::from_bench_section(Some(&bench_section)).unwrap();
+        assert_eq!(config.skip_first, 7);
+        assert!(config.count_errors_in_latency);
+    }
+
+    // Feature 1: each closed-loop worker maps to `worker % connections`, so
+    // `connections` workers cycle over exactly `connections` distinct channels.
+    #[test]
+    fn test_worker_connection_id_assignment() {
+        // 4 workers, pool of 2 -> ids 0,1,0,1.
+        let ids: Vec<u64> = (0..4).map(|w| worker_connection_id(w, 2)).collect();
+        assert_eq!(ids, vec![0, 1, 0, 1]);
+
+        // connections == concurrency -> every worker gets a distinct channel.
+        let ids: Vec<u64> = (0..4).map(|w| worker_connection_id(w, 4)).collect();
+        assert_eq!(ids, vec![0, 1, 2, 3]);
+        let distinct: std::collections::BTreeSet<u64> = ids.iter().copied().collect();
+        assert_eq!(distinct.len(), 4, "N connections -> N distinct channel ids");
+
+        // Degenerate pool size is clamped to 1 (single shared channel).
+        assert_eq!(worker_connection_id(3, 0), 0);
+    }
+
+    // Feature 1: the open-model round-robin sends task k to runners[k % N].
+    #[test]
+    fn test_round_robin_index_picks_k_mod_n() {
+        let picks: Vec<usize> = (0..7).map(|k| round_robin_index(k, 3)).collect();
+        assert_eq!(picks, vec![0, 1, 2, 0, 1, 2, 0]);
+        assert_eq!(round_robin_index(5, 0), 0);
+    }
+
+    // Feature 2: the real numeric gRPC code maps to its canonical status bucket;
+    // OK and errored codes land in distinct buckets.
+    #[test]
+    fn test_grpc_status_label_mapping() {
+        assert_eq!(grpc_status_label(Some(0), true), "OK");
+        assert_eq!(grpc_status_label(Some(14), false), "Unavailable");
+        assert_eq!(grpc_status_label(Some(5), true), "NotFound");
+        // No gRPC status observed -> fall back to the pass/fail outcome.
+        assert_eq!(grpc_status_label(None, true), "OK");
+        assert_eq!(grpc_status_label(None, false), "ERROR");
+    }
+
+    // Feature 2: recording real status labels buckets them separately and keeps
+    // OK vs non-OK accounting correct.
+    #[test]
+    fn test_record_buckets_by_real_status() {
+        let mut m = BenchMetrics::with_capacity(4);
+        m.record(10, "OK", None, "svc/M");
+        m.record(20, "OK", None, "svc/M");
+        m.record(30, "Unavailable", Some("boom"), "svc/M");
+
+        assert_eq!(m.grpc_status.get("OK"), Some(&2));
+        assert_eq!(m.grpc_status.get("Unavailable"), Some(&1));
+        assert_eq!(m.ok, 2);
+        assert_eq!(m.errors, 1);
     }
 }

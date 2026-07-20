@@ -12,7 +12,6 @@ impl JsonComparator {
     ) -> Vec<AssertionResult> {
         let mut results = Vec::new();
 
-        // 1. Redact fields if needed
         if options.redact.is_empty() {
             Self::compare_recursive(actual, expected, "$", options, &mut results);
         } else {
@@ -50,14 +49,12 @@ impl JsonComparator {
         options: &InlineOptions,
         results: &mut Vec<AssertionResult>,
     ) {
-        // Handle Wildcard "*"
         if let Value::String(s) = expected
             && s == "*"
         {
             return; // Matches anything
         }
 
-        // Type mismatch check
         // Numbers can be float/int, so strictly checking discriminants might be too harsh if serde parses differently.
         // But generally types should match.
         // Exception: expected "*" string matches any actual type (handled above).
@@ -82,7 +79,6 @@ impl JsonComparator {
                     }
                 }
 
-                // If NOT partial, check that actual doesn't have extra keys
                 if !options.partial {
                     for k in act_map.keys() {
                         if !exp_map.contains_key(k) {
@@ -95,7 +91,6 @@ impl JsonComparator {
                 }
             }
             (Value::Array(act_arr), Value::Array(exp_arr)) => {
-                // Array length check
                 if !options.partial && act_arr.len() != exp_arr.len() {
                     results.push(AssertionResult::fail_with_diff(
                         format!(
@@ -109,7 +104,6 @@ impl JsonComparator {
                     ));
                 }
 
-                // If unordered_arrays is set, we need special handling
                 if options.unordered_arrays {
                     // OPTIMIZED: Hash-based O(n) comparison instead of O(n²)
                     // Strategy: Hash each item and compare hash sets
@@ -119,13 +113,11 @@ impl JsonComparator {
                     let mut hash_to_indices: std::collections::HashMap<u64, Vec<usize>> =
                         std::collections::HashMap::new();
 
-                    // Build hash map for actual items
                     for (i, act_item) in act_arr.iter().enumerate() {
                         let hash = Self::hash_value(act_item);
                         hash_to_indices.entry(hash).or_default().push(i);
                     }
 
-                    // Match expected items against actual items using hash map
                     for exp_item in exp_arr {
                         let exp_hash = Self::hash_value(exp_item);
                         let mut found = false;
@@ -137,7 +129,6 @@ impl JsonComparator {
                                     continue;
                                 }
 
-                                // Verify with deep comparison
                                 let mut temp_results = Vec::new();
                                 Self::compare_recursive(
                                     &act_arr[idx],
@@ -192,7 +183,6 @@ impl JsonComparator {
                         }
                     }
 
-                    // Check for extra items in actual (if not partial)
                     if !options.partial && matched_actual_indices.len() < act_arr.len() {
                         results.push(AssertionResult::fail(format!(
                             "Unordered array at '{}' has {} extra items",
@@ -204,7 +194,6 @@ impl JsonComparator {
                     return;
                 }
 
-                // Iterate (up to min length)
                 // If partial is true, we usually still expect the items we defined to match the *first* N items
                 // OR we strictly match what we have.
                 // Let's implement strict index matching for the common case.
@@ -238,7 +227,6 @@ impl JsonComparator {
                 }
             }
             (Value::Number(a), Value::Number(e)) => {
-                // Handle tolerance if provided
                 if let Some(tol) = options.tolerance
                     && let (Some(af), Some(ef)) = (a.as_f64(), e.as_f64())
                 {
@@ -299,7 +287,6 @@ impl JsonComparator {
             }
             (Value::Null, Value::Null) => {}
             _ => {
-                // Type mismatch
                 results.push(AssertionResult::fail_with_diff(
                     format!(
                         "Type mismatch at '{}': expected {:?}, got {:?}",
@@ -618,7 +605,6 @@ mod tests {
 
     #[test]
     fn test_unordered_arrays_optimized() {
-        // Test that unordered arrays work correctly with hash-based optimization
         let actual = json!([3, 1, 2]);
         let expected = json!([1, 2, 3]);
         let options = InlineOptions {
@@ -632,7 +618,6 @@ mod tests {
 
     #[test]
     fn test_unordered_arrays_with_objects() {
-        // Test unordered arrays with complex objects
         let actual = json!([
             {"id": 3, "name": "c"},
             {"id": 1, "name": "a"},
@@ -654,7 +639,6 @@ mod tests {
 
     #[test]
     fn test_unordered_arrays_missing_item() {
-        // Test that missing items are detected
         let actual = json!([1, 2]);
         let expected = json!([1, 2, 3]);
         let options = InlineOptions {
@@ -668,7 +652,6 @@ mod tests {
 
     #[test]
     fn test_unordered_arrays_extra_item() {
-        // Test that extra items are detected
         let actual = json!([1, 2, 3, 4]);
         let expected = json!([1, 2, 3]);
         let options = InlineOptions {
@@ -682,7 +665,6 @@ mod tests {
 
     #[test]
     fn test_unordered_arrays_partial() {
-        // Test that partial matching works with unordered arrays
         let actual = json!([1, 2, 3, 4]);
         let expected = json!([1, 3]);
         let options = InlineOptions {
@@ -837,7 +819,6 @@ mod tests {
 
     #[test]
     fn test_hash_value_consistency() {
-        // Test that hash_value produces consistent results
         let value1 = json!({"id": 1, "name": "test"});
         let value2 = json!({"id": 1, "name": "test"});
         let value3 = json!({"name": "test", "id": 1}); // Different key order

@@ -4,6 +4,7 @@ use crate::diagnostics::{Diagnostic, DiagnosticSeverity};
 use anyhow::Result;
 
 pub mod bench;
+pub mod bench_compare;
 pub mod call;
 pub mod check;
 pub mod explain;
@@ -18,6 +19,7 @@ pub mod lsp;
 pub mod query_cmd;
 pub mod reflect;
 pub mod run;
+pub mod scaffold;
 pub mod serve;
 
 pub use bench::handle_bench;
@@ -35,6 +37,7 @@ pub use lsp::handle_lsp;
 pub use query_cmd::handle_query;
 pub use reflect::handle_reflect;
 pub use run::run_tests;
+pub use scaffold::handle_scaffold;
 pub use serve::handle_play;
 
 /// Print diagnostic to stderr

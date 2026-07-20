@@ -124,8 +124,6 @@ impl BinaryOp {
     }
 }
 
-// ─── Display ───────────────────────────────────────────────────────────
-
 impl std::fmt::Display for Expr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -246,7 +244,11 @@ fn fmt_assertion(e: &AssertionExpr, f: &mut std::fmt::Formatter<'_>, prec: u8) -
     }
 }
 
-// ─── Parser ────────────────────────────────────────────────────────────
+/// Maximum nesting depth for the recursive-descent parser. Guards against
+/// stack overflow on adversarial input such as thousands of nested `(` or `!`
+/// (each level recurses through `parse_unary`). Legitimate assertions nest far
+/// below this; over-limit expressions safely fall back to `Raw`.
+const MAX_PARSE_DEPTH: usize = 256;
 
 /// Parse a raw assertion string into an AST.
 /// Falls back to `Raw` if parsing fails.
@@ -256,7 +258,7 @@ pub fn parse_assertion(raw: &str) -> AssertionExpr {
         return AssertionExpr::Raw(raw.to_string());
     }
     let mut pos = 0;
-    let expr = parse_pipe(&tokens, &mut pos);
+    let expr = parse_pipe(&tokens, &mut pos, 0);
     if pos >= tokens.len() {
         expr
     } else {
@@ -264,8 +266,11 @@ pub fn parse_assertion(raw: &str) -> AssertionExpr {
     }
 }
 
-fn parse_pipe(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
-    let mut expr = parse_or(ts, p);
+fn parse_pipe(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> AssertionExpr {
+    if d > MAX_PARSE_DEPTH {
+        return AssertionExpr::Raw(String::new());
+    }
+    let mut expr = parse_or(ts, p, d);
     while *p < ts.len() {
         if !matches!(ts[*p].kind, TokenKind::Pipe) {
             break;
@@ -285,11 +290,11 @@ fn parse_pipe(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
     expr
 }
 
-fn parse_or(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
-    let mut left = parse_xor(ts, p);
+fn parse_or(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> AssertionExpr {
+    let mut left = parse_xor(ts, p, d);
     while *p < ts.len() && is_keyword(ts, *p, "or") {
         *p += 1;
-        let right = parse_xor(ts, p);
+        let right = parse_xor(ts, p, d);
         left = AssertionExpr::Or {
             left: Box::new(left),
             right: Box::new(right),
@@ -298,11 +303,11 @@ fn parse_or(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
     left
 }
 
-fn parse_xor(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
-    let mut left = parse_and(ts, p);
+fn parse_xor(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> AssertionExpr {
+    let mut left = parse_and(ts, p, d);
     while *p < ts.len() && is_keyword(ts, *p, "xor") {
         *p += 1;
-        let right = parse_and(ts, p);
+        let right = parse_and(ts, p, d);
         left = AssertionExpr::Xor {
             left: Box::new(left),
             right: Box::new(right),
@@ -311,11 +316,11 @@ fn parse_xor(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
     left
 }
 
-fn parse_and(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
-    let mut left = parse_bin(ts, p);
+fn parse_and(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> AssertionExpr {
+    let mut left = parse_bin(ts, p, d);
     while *p < ts.len() && is_keyword(ts, *p, "and") {
         *p += 1;
-        let right = parse_bin(ts, p);
+        let right = parse_bin(ts, p, d);
         left = AssertionExpr::And {
             left: Box::new(left),
             right: Box::new(right),
@@ -324,8 +329,8 @@ fn parse_and(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
     left
 }
 
-fn parse_bin(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
-    let mut left = parse_unary(ts, p);
+fn parse_bin(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> AssertionExpr {
+    let mut left = parse_unary(ts, p, d);
     loop {
         let op = match ts.get(*p).map(|t| &t.kind) {
             // Unknown operators (e.g. `-`, `=`) must not parse as a binary
@@ -344,7 +349,7 @@ fn parse_bin(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
         };
 
         *p += 1;
-        let right = parse_unary(ts, p);
+        let right = parse_unary(ts, p, d);
         left = AssertionExpr::Binary {
             op,
             left: Box::new(left),
@@ -354,7 +359,12 @@ fn parse_bin(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
     left
 }
 
-fn parse_unary(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
+fn parse_unary(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> AssertionExpr {
+    // Every recursion cycle (nested parens, `!`/`not`, plugin args, if/then)
+    // passes through here, so a single depth guard bounds total stack usage.
+    if d > MAX_PARSE_DEPTH {
+        return AssertionExpr::Raw(String::new());
+    }
     if *p >= ts.len() {
         return AssertionExpr::Raw(String::new());
     }
@@ -363,10 +373,10 @@ fn parse_unary(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
             *p += 1;
             if *p < ts.len() && matches!(ts[*p].kind, TokenKind::Bang) {
                 *p += 1;
-                let inner = parse_unary(ts, p);
+                let inner = parse_unary(ts, p, d + 1);
                 AssertionExpr::NotNot(Box::new(inner))
             } else {
-                let inner = parse_unary(ts, p);
+                let inner = parse_unary(ts, p, d + 1);
                 AssertionExpr::Not(Box::new(inner))
             }
         }
@@ -374,39 +384,39 @@ fn parse_unary(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
             *p += 1;
             if *p < ts.len() && matches!(ts[*p].kind, TokenKind::Ident(ref s2) if s2 == "not") {
                 *p += 1;
-                let inner = parse_unary(ts, p);
+                let inner = parse_unary(ts, p, d + 1);
                 AssertionExpr::NotNot(Box::new(inner))
             } else {
-                let inner = parse_unary(ts, p);
+                let inner = parse_unary(ts, p, d + 1);
                 AssertionExpr::Not(Box::new(inner))
             }
         }
-        TokenKind::Ident(s) if s == "if" => parse_if(ts, p),
+        TokenKind::Ident(s) if s == "if" => parse_if(ts, p, d),
         TokenKind::LParen => {
             *p += 1;
-            let inner = parse_pipe(ts, p);
+            let inner = parse_pipe(ts, p, d + 1);
             if *p < ts.len() && matches!(ts[*p].kind, TokenKind::RParen) {
                 *p += 1;
             }
             AssertionExpr::Paren(Box::new(inner))
         }
-        _ => parse_atom(ts, p),
+        _ => parse_atom(ts, p, d),
     }
 }
 
-fn parse_if(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
+fn parse_if(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> AssertionExpr {
     *p += 1;
-    let cond = parse_pipe(ts, p);
+    let cond = parse_pipe(ts, p, d + 1);
     if *p >= ts.len() || !is_keyword(ts, *p, "then") {
         return AssertionExpr::Raw("if..then missing".into());
     }
     *p += 1;
-    let then_b = parse_pipe(ts, p);
+    let then_b = parse_pipe(ts, p, d + 1);
     if *p >= ts.len() || !is_keyword(ts, *p, "else") {
         return AssertionExpr::Raw("if..else missing".into());
     }
     *p += 1;
-    let else_b = parse_pipe(ts, p);
+    let else_b = parse_pipe(ts, p, d + 1);
     if *p < ts.len() && is_keyword(ts, *p, "end") {
         *p += 1;
     }
@@ -417,7 +427,7 @@ fn parse_if(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
     }
 }
 
-fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
+fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> AssertionExpr {
     if *p >= ts.len() {
         return AssertionExpr::Atom(Expr::JqPath(String::new()));
     }
@@ -483,7 +493,7 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
                 *p += 1;
                 let mut args = Vec::with_capacity(4);
                 while *p < ts.len() && !matches!(ts[*p].kind, TokenKind::RParen) {
-                    let arg = parse_pipe(ts, p);
+                    let arg = parse_pipe(ts, p, d + 1);
                     args.push(arg);
                     if *p < ts.len() && matches!(ts[*p].kind, TokenKind::Comma) {
                         *p += 1;
@@ -750,8 +760,6 @@ fn is_keyword_token(k: &TokenKind) -> bool {
     )
 }
 
-// ─── Public helpers ─────────────────────────────────────────────────────
-
 /// Convert AssertionExpr back to string (ternary for if-then-else).
 pub fn assertion_to_string(expr: &AssertionExpr) -> String {
     let mut out = String::with_capacity(64);
@@ -862,13 +870,16 @@ fn push_assertion(expr: &AssertionExpr, out: &mut String, prec: u8) {
             then_branch,
             else_branch,
         } => {
-            out.push('(');
+            // Serialize as `if..then..else..end` — the only conditional form the
+            // parser accepts. The older `(cond ? then : else)` output did not
+            // round-trip (no `? :` reader), breaking `fmt` idempotency.
+            out.push_str("if ");
             push_assertion(condition, out, 0);
-            out.push_str(" ? ");
+            out.push_str(" then ");
             push_assertion(then_branch, out, 0);
-            out.push_str(" : ");
+            out.push_str(" else ");
             push_assertion(else_branch, out, 0);
-            out.push(')');
+            out.push_str(" end");
         }
         AssertionExpr::Paren(inner) => {
             out.push('(');
@@ -916,8 +927,6 @@ pub fn remove_redundant_parens(expr: &AssertionExpr) -> AssertionExpr {
     }
 }
 
-// ─── Tests ──────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -953,7 +962,7 @@ mod tests {
         bench_phase("ast_phase_simple_parse_from_tokens", 200_000, || {
             let tokens = tokenize_assertion(black_box(expr));
             let mut pos = 0;
-            let ast = parse_pipe(&tokens, &mut pos);
+            let ast = parse_pipe(&tokens, &mut pos, 0);
             black_box(matches!(ast, AssertionExpr::Raw(_)));
             black_box(pos);
         });
@@ -978,7 +987,7 @@ mod tests {
         bench_phase("ast_phase_complex_parse_from_tokens", 100_000, || {
             let tokens = tokenize_assertion(black_box(expr));
             let mut pos = 0;
-            let ast = parse_pipe(&tokens, &mut pos);
+            let ast = parse_pipe(&tokens, &mut pos, 0);
             black_box(matches!(ast, AssertionExpr::Raw(_)));
             black_box(pos);
         });
@@ -1208,11 +1217,18 @@ mod tests {
     }
 
     #[test]
-    fn test_if_then_else_serializes_as_ternary() {
-        let expr = parse_assertion("if .x == 0 then true else false end");
+    fn test_if_then_else_roundtrips() {
+        // Must serialize back to `if..then..else..end` (the only form the parser
+        // reads), so the output re-parses to the same AST — required for `fmt`
+        // idempotency.
+        let original = "if .x == 0 then true else false end";
+        let expr = parse_assertion(original);
         let s = assertion_to_string(&expr);
-        assert!(s.contains('?'), "Should contain ternary: {}", s);
-        assert!(s.contains(':'), "Should contain colon: {}", s);
+        assert_eq!(s, original);
+        assert!(matches!(
+            parse_assertion(&s),
+            AssertionExpr::IfThenElse { .. }
+        ));
     }
 
     #[test]
@@ -1234,7 +1250,11 @@ mod tests {
             panic!("Expected IfThenElse");
         }
         let s = assertion_to_string(&expr);
-        assert!(s.contains('('), "Nested ternary should have parens: {}", s);
+        assert!(
+            matches!(parse_assertion(&s), AssertionExpr::IfThenElse { .. }),
+            "Nested if should re-parse to IfThenElse: {}",
+            s
+        );
     }
 
     #[test]
@@ -1395,11 +1415,12 @@ mod tests {
         let original = "if .x == 1 then if .y == 2 then true else false end else false end";
         let expr = parse_assertion(original);
         let s = assertion_to_string(&expr);
-        assert!(s.contains('?'), "Should contain ternary: {}", s);
-        assert!(s.contains('('), "Should contain parens: {}", s);
+        assert_eq!(s, original, "nested if must round-trip");
+        assert!(matches!(
+            parse_assertion(&s),
+            AssertionExpr::IfThenElse { .. }
+        ));
     }
-
-    // ─── Type cast tests ───────────────────────────────────────────────
 
     #[test]
     fn test_parse_type_cast_number() {
@@ -1592,6 +1613,35 @@ mod tests {
             let s = assertion_to_string(&expr);
             assert_eq!(s.as_str(), *original, "Roundtrip failed for: {}", original);
         }
+    }
+
+    #[test]
+    fn test_deeply_nested_parens_does_not_overflow() {
+        // Regression: unbounded recursion on deeply nested `(` aborted the
+        // process with a stack overflow. It must now terminate and fall back
+        // to `Raw` instead of crashing.
+        let src = "(".repeat(100_000);
+        let expr = parse_assertion(&src);
+        assert_eq!(expr, AssertionExpr::Raw(src));
+    }
+
+    #[test]
+    fn test_deeply_nested_bang_does_not_overflow() {
+        let src = "!".repeat(100_000);
+        let expr = parse_assertion(&src);
+        assert_eq!(expr, AssertionExpr::Raw(src));
+    }
+
+    #[test]
+    fn test_moderate_paren_nesting_still_parses() {
+        // Nesting well under the depth limit must still parse normally.
+        let src = format!("{}.x == 1{}", "(".repeat(20), ")".repeat(20));
+        let expr = parse_assertion(&src);
+        assert!(
+            !matches!(expr, AssertionExpr::Raw(_)),
+            "expected structured parse, got Raw: {:?}",
+            expr
+        );
     }
 
     #[test]

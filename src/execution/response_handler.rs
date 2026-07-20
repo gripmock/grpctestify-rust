@@ -47,9 +47,7 @@ impl ResponseHandler {
             return Ok(());
         }
 
-        let expected_clone = expected.clone();
-
-        let diffs = JsonComparator::compare(actual, &expected_clone, options);
+        let diffs = JsonComparator::compare(actual, expected, options);
 
         if !diffs.is_empty() {
             let mut messages = Vec::new();
@@ -89,7 +87,6 @@ impl ResponseHandler {
         match &section.content {
             SectionContent::Json(value) => {
                 let mut expected = value.clone();
-                // Substitute variables in expected value
                 Self::substitute_variables_in_value(&mut expected, variables);
                 vec![expected]
             }

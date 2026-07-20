@@ -405,8 +405,6 @@ mod tests {
         assert_eq!(parsed, vec![json!({"ok": true, "count": 2})]);
     }
 
-    // ── Parameterized format tests ─────────────────────────
-
     fn p(args: &[&str]) -> ParsedGrpcurl {
         ParsedGrpcurl::parse(&args.iter().map(|s| (*s).to_string()).collect::<Vec<_>>()).unwrap()
     }

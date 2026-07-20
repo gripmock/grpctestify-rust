@@ -32,7 +32,6 @@ pub fn parse_gctf_from_str(content: &str, file_path: &str) -> Result<GctfDocumen
     let (all_sections, _) = parse_sections_from_str(content)?;
     let source_lines: Vec<&str> = content.lines().collect();
 
-    // Split sections into documents based on implicit boundaries
     let documents = crate::document_splitter::split_sections_by_boundary_owned(all_sections);
 
     if documents.is_empty() {
@@ -57,8 +56,6 @@ pub fn parse_gctf_from_str(content: &str, file_path: &str) -> Result<GctfDocumen
     head.ok_or_else(|| anyhow::anyhow!("No documents parsed"))
 }
 
-/// Split sections into documents based on implicit boundaries.
-///
 /// Extract source lines for a document from the original content.
 fn extract_doc_source_from_lines(sections: &[Section], lines: &[&str]) -> String {
     if sections.is_empty() {
@@ -104,7 +101,6 @@ pub fn parse_gctf_with_diagnostics(file_path: &Path) -> Result<(GctfDocument, Pa
     let (sections, section_headers) = parse_sections_from_str(&source)?;
     let parse_sections_ms = parse_sections_start.elapsed().as_secs_f64() * 1000.0;
 
-    // Split into documents using implicit boundaries
     let documents = crate::document_splitter::split_sections_by_boundary_owned(sections);
 
     let build_start = Instant::now();

@@ -226,8 +226,11 @@ fn detect_type_mismatch(
     let (op, op_idx, op_len) = operator_from_tokens(&tokens)?;
     // Token spans are char indices (the tokenizer iterates over chars), so
     // convert them to byte offsets before slicing the source string.
-    let char_to_byte =
-        |char_idx: usize| -> usize { expr.char_indices().nth(char_idx).map_or(expr.len(), |(b, _)| b) };
+    let char_to_byte = |char_idx: usize| -> usize {
+        expr.char_indices()
+            .nth(char_idx)
+            .map_or(expr.len(), |(b, _)| b)
+    };
     let lhs = expr[..char_to_byte(op_idx)].trim();
     let rhs = expr[char_to_byte(op_idx + op_len)..].trim();
     if lhs.is_empty() || rhs.is_empty() {
@@ -383,7 +386,6 @@ pub fn collect_deprecated_plugin_calls(doc: &parser::GctfDocument) -> Vec<Deprec
             for (old_name, new_name) in DEPRECATED_PLUGINS {
                 let old_call = format!("@{}(", old_name);
                 if trimmed.contains(&old_call) {
-                    let _name_start = trimmed.find(&old_call).unwrap();
                     deprecated.push(DeprecatedPluginCall {
                         rule_id: "SEM_D001".to_string(),
                         line: section_content_line(section.start_line, idx),
@@ -506,11 +508,8 @@ test.Service/Method
         // Must not panic; multibyte lhs/rhs must split on the operator correctly.
         let _ = collect_assertion_type_mismatches(&doc);
 
-        let mismatch = detect_type_mismatch(
-            ".na\u{ef}ve == \"x\"",
-            plugin_signatures(),
-            &HashMap::new(),
-        );
+        let mismatch =
+            detect_type_mismatch(".na\u{ef}ve == \"x\"", plugin_signatures(), &HashMap::new());
         // `.naïve` is Any, `"x"` is String — compatible, so no mismatch,
         // and crucially no panic or mis-split lhs/rhs.
         assert!(mismatch.is_none(), "got: {:?}", mismatch);

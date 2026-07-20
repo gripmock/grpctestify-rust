@@ -67,6 +67,7 @@ mod tests {
         assert_eq!(reporter.output_path.to_str(), Some("test.yaml"));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_yaml_reporter_lifecycle() {
         use crate::Reporter;

@@ -69,6 +69,7 @@ mod tests {
         assert_eq!(reporter.output_path.to_str(), Some("test.json"));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
     fn test_json_reporter_lifecycle() {
@@ -81,7 +82,6 @@ mod tests {
         reporter.on_test_end("test1", &pass);
         let results = apif_state::TestResults::new();
         assert!(reporter.on_suite_end(&results).is_ok());
-        // Cleanup
         let _ = std::fs::remove_file(&path);
     }
 

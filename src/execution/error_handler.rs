@@ -61,7 +61,6 @@ fn normalize_field_names(
                 .cloned();
             if let Some(found) = normalized_key {
                 let val = result.remove(&found).unwrap_or(Value::Null);
-                // Recurse for nested objects
                 let val = match (exp_val, val.clone()) {
                     (Value::Object(exp_obj), Value::Object(act_obj)) => {
                         Value::Object(normalize_field_names(&act_obj, exp_obj))
@@ -318,7 +317,6 @@ impl ErrorHandler {
     }
 
     fn message_matches_error_text(error_text: &str, expected: &Value) -> bool {
-        // Check message
         if let Some(expected_msg) = expected.get("message").and_then(|v| v.as_str()) {
             if !error_text.contains(expected_msg) {
                 return false;
@@ -348,7 +346,6 @@ impl ErrorHandler {
     }
 
     fn code_matches_error_text(error_text: &str, expected: &Value) -> bool {
-        // Check code
         if let Some(code) = expected.get("code").and_then(|v| v.as_i64())
             && let Some(code_name) = Self::grpc_code_name_from_numeric(code)
         {

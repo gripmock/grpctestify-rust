@@ -7,7 +7,6 @@ gRPC Testify builds persistent indexes for data source columns to enable fast ro
 When a data source has `indexed_by` configured, the CLI builds a **SourceIndex** — a binary file (`.gcti`) containing:
 
 - **Key column name** and inferred **key type** (string, u64, i64, UUID, etc.)
-- **Bloom filter** or **Xor filter** for fast negative lookup (O(1) "does not exist" check)
 - **Entry table** mapping each key to its byte offset and row length in the source file
 - **CRC32 checksum** for corruption detection
 
@@ -35,14 +34,9 @@ grpctestify index --stats data/users.gcti
 | DatePacked | `YYYY-MM-DD` | Packed u32 |
 | TimePacked | `HH:MM:SS` | Packed u32 |
 
-## Filter Types
-
-- **BloomFilter** — configurable false-positive rate. Best for general use
-- **XorFilter** — more compact (~1.23 bits per entry vs ~10 for bloom). Best for large datasets
-
 ## Performance
 
-Index lookup is O(log n) for numeric keys (binary search) and O(1) with bloom filter pre-check:
+Index lookup is O(log n) for numeric keys (binary search) and O(log n) for string keys (sorted BTreeMap):
 
 - 500K entries: ~2µs per lookup
 - Index file: ~50MB for 500K string keys

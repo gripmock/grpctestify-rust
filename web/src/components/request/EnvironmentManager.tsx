@@ -215,7 +215,6 @@ export function EnvironmentManager({ onClose }: Props) {
         width: projectRoot ? 720 : 540, maxHeight: '85vh', display: 'flex', flexDirection: 'column',
       }} onClick={e => e.stopPropagation()}>
 
-        {}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
           {view.kind !== 'list' && <button onClick={() => setView({ kind: 'list' })} style={btn('ghost', 'sm')}><ArrowLeft size={14} /></button>}
           <Settings size={16} />
@@ -227,7 +226,6 @@ export function EnvironmentManager({ onClose }: Props) {
           <button onClick={onClose} style={btn('ghost', 'sm')}><X size={14} /></button>
         </div>
 
-        {}
         {view.kind === 'list' && projectRoot && (
           <nav style={{ display: 'flex', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
             {(['project', 'browser'] as const).map(t => (
@@ -245,20 +243,16 @@ export function EnvironmentManager({ onClose }: Props) {
           </nav>
         )}
 
-        {}
         <div style={{ flex: 1, overflow: 'auto', padding: 12 }}>
 
-          {}
           {(view.kind === 'edit' || view.kind === 'new') && (
             <div>
-              {}
               <div style={{ marginBottom: 8 }}>
                 <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 3 }}>Name</div>
                 <input value={editName} onChange={e => setEditName(e.target.value)} placeholder="my-environment"
                   style={{ width: '100%', padding: '6px 8px', fontSize: 13, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none', boxSizing: 'border-box', fontFamily: 'monospace' }} />
               </div>
 
-              {}
               <div style={{
                 padding: 8, borderRadius: 6, border: '1px solid var(--border)', marginBottom: 10,
                 background: 'var(--bg-primary)',
@@ -280,7 +274,6 @@ export function EnvironmentManager({ onClose }: Props) {
                 </button>
               </div>
 
-              {}
               <div style={{
                 padding: 8, borderRadius: 6, border: `1px solid ${colors.warning}30`, marginBottom: 10,
                 background: `${colors.warning}04`,
@@ -311,14 +304,12 @@ export function EnvironmentManager({ onClose }: Props) {
                 })}
               </div>
 
-              {}
               {editMuted.size > 0 && (
                 <div style={{ fontSize: 10, color: colors.warning, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
                   <Info size={10} /> {editMuted.size} variable{editMuted.size > 1 ? 's' : ''} muted — excluded from <code style={{ background: `${colors.warning}12`, padding: '0 3px', borderRadius: 2, fontSize: 10 }}>{'{{KEY}}'}</code> substitution
                 </div>
               )}
 
-              {}
               <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
                 <button onClick={saveEdit} disabled={!editName.trim()} style={{ ...btn('primary'), fontSize: 12, opacity: editName.trim() ? 1 : 0.5 }}>
                   <Check size={12} /> {view.kind === 'new' ? 'Create Environment' : 'Save Changes'}
@@ -328,10 +319,8 @@ export function EnvironmentManager({ onClose }: Props) {
             </div>
           )}
 
-          {}
           {view.kind === 'list' && tab === 'project' && projectRoot && (
             <div style={{ display: 'flex', gap: 12, minHeight: 320 }}>
-              {}
               <div style={{ width: 180, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>.env files</div>
                 {projectEnvNames.length === 0 && <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '8px 0' }}>No .env files yet</div>}
@@ -360,7 +349,6 @@ export function EnvironmentManager({ onClose }: Props) {
                 </div>
               </div>
 
-              {}
               <div style={{ flex: 1, minWidth: 0 }}>
                 {loadingEnv && <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: 20 }}>Loading…</div>}
                 {!loadingEnv && selectedEnv && (
@@ -407,10 +395,8 @@ export function EnvironmentManager({ onClose }: Props) {
             </div>
           )}
 
-          {}
           {view.kind === 'list' && tab === 'browser' && (
             <div>
-              {}
               <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6, border: '1px solid var(--border)', borderRadius: 5, padding: '3px 6px', background: 'var(--bg-primary)' }}>
                 <Search size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
                 <input value={envSearch} onChange={e => setEnvSearch(e.target.value)} placeholder="Filter environments…"
@@ -442,7 +428,6 @@ export function EnvironmentManager({ onClose }: Props) {
                     onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
                     onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
                   >
-                    {}
                     <button onClick={() => setActiveEnvironment(isActive ? null : env.name)} style={{
                       ...btn('ghost', 'sm'), flexShrink: 0, width: 24, height: 24, padding: 0,
                       color: isActive ? colors.accent : 'var(--text-muted)',
@@ -450,7 +435,6 @@ export function EnvironmentManager({ onClose }: Props) {
                       {isActive ? <Check size={14} /> : <span style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid var(--border)', display: 'block' }} />}
                     </button>
 
-                    {}
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{
                         fontSize: 12, fontWeight: isActive ? 600 : 400,
@@ -467,7 +451,6 @@ export function EnvironmentManager({ onClose }: Props) {
                       </div>
                     </div>
 
-                    {}
                     <button onClick={() => openEdit(env)} style={btn('ghost', 'sm')} title="Edit"><Pencil size={13} /></button>
                     <button onClick={() => { addEnvironment({ ...env, name: `${env.name} (copy)` }); }} style={btn('ghost', 'sm')} title="Duplicate"><Copy size={13} /></button>
                     <button onClick={async () => { if (await modal.confirm('Delete', `Delete "${env.name}"?`)) deleteEnvironment(env.name); }} style={btn('ghost', 'sm')} title="Delete"><Trash2 size={13} /></button>
@@ -478,7 +461,6 @@ export function EnvironmentManager({ onClose }: Props) {
           )}
         </div>
 
-        {}
         <div style={{ padding: '8px 12px', borderTop: '1px solid var(--border)', display: 'flex', gap: 6, flexShrink: 0 }}>
           {view.kind === 'list' && tab === 'browser' && <button onClick={openNew} style={btn('primary', 'sm')}><Plus size={12} /> New Environment</button>}
           {view.kind === 'list' && tab === 'project' && selectedEnv && (

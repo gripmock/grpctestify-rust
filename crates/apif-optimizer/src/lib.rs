@@ -625,11 +625,7 @@ fn suggest_double_negation_rewrite(
 /// of string literals. This prevents corrupting expected values that happen to
 /// contain the operator text (e.g. `.msg == "run startswith now"`).
 /// Returns `None` when no replacement outside of string literals was made.
-fn replace_outside_string_literals(
-    expr: &str,
-    needle: &str,
-    replacement: &str,
-) -> Option<String> {
+fn replace_outside_string_literals(expr: &str, needle: &str, replacement: &str) -> Option<String> {
     let mut result = String::with_capacity(expr.len());
     let mut in_quotes = false;
     let mut quote_char = '\0';
@@ -1167,8 +1163,13 @@ fn suggest_plugin_length_simplification(
     }
 
     fn rewrite_len_zero_cmp(op: &str, inner: &str, len_on_left: bool) -> Option<String> {
+        // `@len(x)` is unsigned, so it is always `>= 0`. The rewrite must be
+        // operand-side aware: `@len(x) <= 0` collapses to `@empty(x)`, but
+        // `0 <= @len(x)` is a tautology and must not become `@empty(x)`.
         match (op, len_on_left) {
-            ("==", _) | ("<=", _) => Some(format!("@empty({})", inner)),
+            ("==", _) => Some(format!("@empty({})", inner)),
+            ("<=", true) => Some(format!("@empty({})", inner)),
+            ("<=", false) => Some("true".to_string()),
             ("!=", _) => Some(format!("@len({}) > 0", inner)),
             (">", true) => None,
             (">", false) => Some("false".to_string()),
@@ -1459,7 +1460,6 @@ fn rewrite_assertion_expression_with_context(
         return Some((rule_id, rewrite));
     }
 
-    // Redundant parentheses removal
     if let Some((rule_id, rewrite)) = suggest_redundant_parens(expr, level) {
         return Some((rule_id, rewrite));
     }
@@ -1485,32 +1485,26 @@ fn rewrite_assertion_expression_with_context(
         return Some((rule_id, rewrite));
     }
 
-    // Boolean identity/absorption laws
     if let Some((rule_id, rewrite)) = suggest_boolean_identity_laws(expr, level) {
         return Some((rule_id, rewrite));
     }
 
-    // Plugin-specific optimizations
     if let Some((rule_id, rewrite)) = suggest_plugin_length_simplification(expr, level) {
         return Some((rule_id, rewrite));
     }
 
-    // Type-aware optimizations based on TypeInfo
     if let Some((rule_id, rewrite)) = suggest_type_aware_numeric_comparison(expr, level) {
         return Some((rule_id, rewrite));
     }
 
-    // Redundant type annotation removal
     if let Some((rule_id, rewrite)) = suggest_redundant_type_cast(expr, signatures, level) {
         return Some((rule_id, rewrite));
     }
 
-    // Deprecated plugin rename
     if let Some((rule_id, rewrite)) = suggest_deprecated_plugin_rename(expr, signatures, level) {
         return Some((rule_id, rewrite));
     }
 
-    // Comparison negation normalization
     suggest_comparison_negation(expr, level)
 }
 
@@ -2209,6 +2203,24 @@ if .status == 200 then false else true end
                 .unwrap();
         assert_eq!(rule_id, rule_ids::P001);
         assert_eq!(rewritten, "@empty(.items)");
+    }
+
+    #[test]
+    fn test_plugin_length_le_zero_is_operand_side_aware() {
+        // @len(x) <= 0 is `@empty(x)` (len is unsigned, so <= 0 means == 0).
+        let (rule_id, rewritten) =
+            suggest_plugin_length_simplification("@len(.items) <= 0", OptimizeLevel::Advisory)
+                .unwrap();
+        assert_eq!(rule_id, rule_ids::P001);
+        assert_eq!(rewritten, "@empty(.items)");
+
+        // 0 <= @len(x) is always true (len is unsigned) — must NOT become @empty(x).
+        let (rule_id, rewritten) =
+            suggest_plugin_length_simplification("0 <= @len(.items)", OptimizeLevel::Advisory)
+                .unwrap();
+        assert_eq!(rule_id, rule_ids::P001);
+        assert_eq!(rewritten, "true");
+        assert_ne!(rewritten, "@empty(.items)");
     }
 
     #[test]

@@ -1,9 +1,24 @@
 use serde_json::Value;
 
+/// Maximum structural nesting depth accepted before parsing.
+///
+/// The underlying `json5` parser is recursive, so pathologically deep input
+/// (e.g. thousands of nested `[`/`{`) overflows the stack and aborts the whole
+/// process — an abort that cannot be caught. This bound is far above any real
+/// gRPC payload while keeping recursion safely shallow.
+const MAX_JSON_DEPTH: usize = 256;
+
 /// Parse JSON5 string into serde_json::Value
 /// Supports: comments (`//`, `#`, `/* */`), trailing commas, unquoted keys
 pub fn from_str(json_str: &str) -> Result<Value, anyhow::Error> {
-    let cleaned = tokenize_strip_comments(json_str);
+    let (cleaned, max_depth) = tokenize_strip_comments(json_str);
+    if max_depth > MAX_JSON_DEPTH {
+        return Err(anyhow::anyhow!(
+            "Failed to parse JSON5: nesting depth {} exceeds maximum of {}",
+            max_depth,
+            MAX_JSON_DEPTH
+        ));
+    }
     json5::from_str(&cleaned).map_err(|e| anyhow::anyhow!("Failed to parse JSON5: {}", e))
 }
 
@@ -14,13 +29,22 @@ pub fn from_str(json_str: &str) -> Result<Value, anyhow::Error> {
 ///   Normal → String → Escaped
 ///   Normal → LineComment (`//`, `#`) → end of line
 ///   Normal → BlockComment (`/*`) → `*/`
-fn tokenize_strip_comments(input: &str) -> String {
+/// Returns the comment-stripped output and the maximum structural nesting
+/// depth (`[`/`{` outside strings and comments) seen along the way.
+fn tokenize_strip_comments(input: &str) -> (String, usize) {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
+    let mut depth: usize = 0;
+    let mut max_depth: usize = 0;
 
     while let Some(ch) = chars.next() {
         match ch {
-            '"' => {
+            // JSON5 permits both double- and single-quoted strings. Comment
+            // markers (`//`, `#`, `/* */`) inside either kind of string must be
+            // preserved verbatim, so track the actual opening quote and only
+            // terminate on the matching one.
+            '"' | '\'' => {
+                let quote = ch;
                 out.push(ch);
                 while let Some(c) = chars.next() {
                     out.push(c);
@@ -28,7 +52,7 @@ fn tokenize_strip_comments(input: &str) -> String {
                         if let Some(escaped) = chars.next() {
                             out.push(escaped);
                         }
-                    } else if c == '"' {
+                    } else if c == quote {
                         break;
                     }
                 }
@@ -77,12 +101,20 @@ fn tokenize_strip_comments(input: &str) -> String {
                 }
             }
             c => {
+                match c {
+                    '{' | '[' => {
+                        depth += 1;
+                        max_depth = max_depth.max(depth);
+                    }
+                    '}' | ']' => depth = depth.saturating_sub(1),
+                    _ => {}
+                }
                 out.push(c);
             }
         }
     }
 
-    out
+    (out, max_depth)
 }
 
 #[cfg(test)]
@@ -201,6 +233,66 @@ mod tests {
         let input = r#"{"text": "say \"hello\" // not a comment"}"#;
         let result = from_str(input).unwrap();
         assert_eq!(result["text"], "say \"hello\" // not a comment");
+    }
+
+    #[test]
+    fn test_deeply_nested_rejected_without_overflow() {
+        // Regression: deeply nested input previously reached the recursive json5
+        // parser and overflowed the stack (uncatchable process abort). It must
+        // now be rejected with a clean error instead.
+        let n = 20_000;
+        let input = format!("{}{}", "[".repeat(n), "]".repeat(n));
+        let err = from_str(&input).unwrap_err().to_string();
+        assert!(err.contains("nesting depth"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn test_moderately_nested_still_parses() {
+        let n = 100;
+        let input = format!("{}1{}", "[".repeat(n), "]".repeat(n));
+        assert!(from_str(&input).is_ok());
+    }
+
+    #[test]
+    fn test_brackets_inside_string_not_counted_as_depth() {
+        // Brackets inside a string must not contribute to nesting depth.
+        let input = "{a: \"[[[[[[[[[[\"}";
+        let result = from_str(input).unwrap();
+        assert_eq!(result["a"], "[[[[[[[[[[");
+    }
+
+    #[test]
+    fn test_single_quoted_string_hash_not_comment() {
+        // Regression: `#` inside a single-quoted JSON5 string must not be
+        // stripped as a comment.
+        let input = "{a: '# not a comment'}";
+        let result = from_str(input).unwrap();
+        assert_eq!(result["a"], "# not a comment");
+    }
+
+    #[test]
+    fn test_single_quoted_string_double_slash_not_comment() {
+        // Regression: `//` inside a single-quoted string (e.g. a URL) must be
+        // preserved, not treated as a line comment.
+        let input = "{url: 'http://example.com/path'}";
+        let result = from_str(input).unwrap();
+        assert_eq!(result["url"], "http://example.com/path");
+    }
+
+    #[test]
+    fn test_single_quoted_string_block_comment_preserved() {
+        // Regression: `/* */` inside a single-quoted string must not be stripped
+        // (previously silently corrupted the value).
+        let input = "{a: 'has /* stars */ inside'}";
+        let result = from_str(input).unwrap();
+        assert_eq!(result["a"], "has /* stars */ inside");
+    }
+
+    #[test]
+    fn test_double_quote_inside_single_quoted_string() {
+        let input = "{a: 'say \"hi\"'}";
+        let result = from_str(input).unwrap();
+        assert_eq!(result["a"], "say \"hi\"");
     }
 
     #[test]

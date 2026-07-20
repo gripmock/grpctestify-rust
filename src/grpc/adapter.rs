@@ -131,7 +131,7 @@ impl CallClient for HttpCallClient {
             .await;
 
         if let Some(e) = result.error {
-            return Err(anyhow::anyhow!(e));
+            return Err(anyhow::anyhow!("{}", e));
         }
 
         let items: Vec<_> = result

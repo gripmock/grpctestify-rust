@@ -509,6 +509,7 @@ pkg.Service/MethodC
         assert_eq!(extract_error_line("gRPC code 5 (NOT_FOUND)"), None);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_chain_has_three_documents() {
         let (_dir, path) = write_fixture();
@@ -516,6 +517,7 @@ pkg.Service/MethodC
         assert_eq!(doc.document_count(), 3);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_failure_attributed_to_actual_document_not_last() {
         let (_dir, path) = write_fixture();
@@ -544,10 +546,7 @@ pkg.Service/MethodC
 
         // Its phases must not claim "passed" either.
         assert!(
-            calls[2]
-                .phases
-                .iter()
-                .all(|p| p.status == "skipped"),
+            calls[2].phases.iter().all(|p| p.status == "skipped"),
             "skipped call phases: {:?}",
             calls[2].phases
         );
@@ -558,21 +557,18 @@ pkg.Service/MethodC
         assert_eq!(failures[0].call_index, 2);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_failure_without_line_falls_back_to_last_document() {
         let (_dir, path) = write_fixture();
-        let result = TestResult::fail(
-            path.clone(),
-            "connection refused".to_string(),
-            10,
-            None,
-        );
+        let result = TestResult::fail(path.clone(), "connection refused".to_string(), 10, None);
         let calls = build_kernel_calls(&path, &result).unwrap();
         assert_eq!(calls[0].status, "passed");
         assert_eq!(calls[1].status, "passed");
         assert_eq!(calls[2].status, "failed");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_passing_chain_marks_all_passed() {
         let (_dir, path) = write_fixture();

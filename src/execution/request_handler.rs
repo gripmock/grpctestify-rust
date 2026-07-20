@@ -67,9 +67,7 @@ impl RequestHandler {
         _msg_type: Option<&MessageDescriptor>,
     ) -> RequestSendResult {
         // Coverage: record request fields (simplified - would need message type name)
-        if let Some(_collector) = &self.coverage_collector {
-            // collector.record_fields_from_json(msg_type_name, &request_value);
-        }
+        if let Some(_collector) = &self.coverage_collector {}
 
         match tx.send(request_value).await {
             Ok(_) => RequestSendResult {
@@ -234,7 +232,7 @@ impl RequestHandler {
 
         GrpcClientConfig {
             address: address.to_string(),
-            timeout_seconds: 30, // Default timeout
+            timeout_seconds: 30,
             tls_config,
             proto_config,
             metadata: document.get_request_headers(),

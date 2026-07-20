@@ -50,7 +50,6 @@ impl Plugin for EnvPlugin {
     }
 
     fn execute(&self, args: &[Value], _context: &PluginContext) -> Result<PluginResult> {
-        // Check argument count
         if args.is_empty() {
             return Ok(PluginResult::Assertion(AssertionResult::fail(
                 "@env requires at least 1 argument: the variable name",
@@ -63,7 +62,6 @@ impl Plugin for EnvPlugin {
             )));
         }
 
-        // Get variable name
         let var_name = match &args[0] {
             Value::String(name) => name,
             _ => {
@@ -73,7 +71,6 @@ impl Plugin for EnvPlugin {
             }
         };
 
-        // Get optional default value
         let default_value = if args.len() > 1 {
             match &args[1] {
                 Value::String(s) => Some(s.clone()),

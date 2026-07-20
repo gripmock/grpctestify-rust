@@ -4,11 +4,17 @@ use anyhow::Result;
 use apif_source_error::SourceError;
 use std::io::{BufReader, Read, Seek};
 
+/// Rewinds a `csv::Reader` back to the first data row. Boxed so the rewind
+/// capability (which needs `R: Seek`) can be captured at construction time and
+/// invoked later through the non-`Seek` `SourceReader` trait object.
+type TsvRewind<R> = Box<dyn Fn(&mut csv::Reader<BufReader<R>>) -> Result<()> + Send>;
+
 pub struct TsvReader<R> {
     reader: csv::Reader<BufReader<R>>,
     headers: Vec<String>,
     row_number: usize,
     finished: bool,
+    rewind: Option<TsvRewind<R>>,
 }
 
 impl<R: Read> TsvReader<R> {
@@ -43,7 +49,24 @@ impl<R: Read> TsvReader<R> {
             headers,
             row_number: 1,
             finished: false,
+            rewind: None,
         })
+    }
+}
+
+impl<R: Read + Seek + Send> TsvReader<R> {
+    /// Like [`TsvReader::new`], but over a seekable reader so that [`reset`]
+    /// can rewind to the first data row (the record after the header).
+    ///
+    /// [`reset`]: SourceReader::reset
+    pub fn new_seekable(reader: BufReader<R>) -> Result<Self> {
+        let mut this = Self::new(reader)?;
+        let start = this.reader.position().clone();
+        this.rewind = Some(Box::new(move |rdr: &mut csv::Reader<BufReader<R>>| {
+            rdr.seek(start.clone())
+                .map_err(|e| anyhow::anyhow!("failed to rewind TSV reader: {e}"))
+        }));
+        Ok(this)
     }
 }
 
@@ -84,16 +107,18 @@ impl<R: Read + Send> SourceReader for TsvReader<R> {
         &self.headers
     }
 
-    fn reset(&mut self) -> Result<()> {
-        Ok(())
+    fn supports_reset(&self) -> bool {
+        self.rewind.is_some()
     }
-}
 
-impl<R: Read + Seek + Send> TsvReader<R> {
-    pub fn reset_seekable(&mut self) -> Result<()> {
-        Err(anyhow::anyhow!(
-            "reset_seekable not supported with csv crate reader"
-        ))
+    fn reset(&mut self) -> Result<()> {
+        let Some(rewind) = self.rewind.as_ref() else {
+            return Ok(());
+        };
+        rewind(&mut self.reader)?;
+        self.row_number = 1;
+        self.finished = false;
+        Ok(())
     }
 }
 

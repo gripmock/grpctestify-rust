@@ -53,7 +53,6 @@ mod tests {
         let diff = get_json_diff(&expected, &actual);
         println!("{}", diff);
 
-        // We check that the distinct values are present.
         // The output format is now character-based diff without +/- prefixes for partial lines.
         assert!(diff.contains("Alice"));
         assert!(diff.contains("Bob"));

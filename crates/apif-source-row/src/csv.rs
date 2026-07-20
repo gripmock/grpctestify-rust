@@ -4,12 +4,18 @@ use anyhow::Result;
 use apif_source_error::SourceError;
 use std::io::{BufReader, Read, Seek};
 
+/// Rewinds a `csv::Reader` back to the first data row. Boxed so the rewind
+/// capability (which needs `R: Seek`) can be captured at construction time and
+/// invoked later through the non-`Seek` `SourceReader` trait object.
+type CsvRewind<R> = Box<dyn Fn(&mut csv::Reader<BufReader<R>>) -> Result<()> + Send>;
+
 pub struct CsvReader<R> {
     reader: csv::Reader<BufReader<R>>,
     headers: Vec<String>,
     _delimiter: u8,
     row_number: usize,
     finished: bool,
+    rewind: Option<CsvRewind<R>>,
 }
 
 impl<R: Read> CsvReader<R> {
@@ -45,7 +51,26 @@ impl<R: Read> CsvReader<R> {
             _delimiter: delimiter,
             row_number: 1,
             finished: false,
+            rewind: None,
         })
+    }
+}
+
+impl<R: Read + Seek + Send> CsvReader<R> {
+    /// Like [`CsvReader::new`], but over a seekable reader so that [`reset`]
+    /// can rewind to the first data row. The position captured here is the
+    /// start of the first record after the header, so a reset restarts
+    /// iteration at the first data row (not the header).
+    ///
+    /// [`reset`]: SourceReader::reset
+    pub fn new_seekable(reader: BufReader<R>, delimiter: u8) -> Result<Self> {
+        let mut this = Self::new(reader, delimiter)?;
+        let start = this.reader.position().clone();
+        this.rewind = Some(Box::new(move |rdr: &mut csv::Reader<BufReader<R>>| {
+            rdr.seek(start.clone())
+                .map_err(|e| anyhow::anyhow!("failed to rewind CSV reader: {e}"))
+        }));
+        Ok(this)
     }
 }
 
@@ -86,18 +111,18 @@ impl<R: Read + Send> SourceReader for CsvReader<R> {
         &self.headers
     }
 
-    fn reset(&mut self) -> Result<()> {
-        Ok(())
+    fn supports_reset(&self) -> bool {
+        self.rewind.is_some()
     }
-}
 
-impl<R: Read + Seek + Send> CsvReader<R> {
-    pub fn reset_seekable(&mut self) -> Result<()> {
-        // csv::Reader doesn't expose the inner writer,
-        // so we need to replace it entirely by seeking the raw reader
-        Err(anyhow::anyhow!(
-            "reset_seekable not supported with csv crate reader"
-        ))
+    fn reset(&mut self) -> Result<()> {
+        let Some(rewind) = self.rewind.as_ref() else {
+            return Ok(());
+        };
+        rewind(&mut self.reader)?;
+        self.row_number = 1;
+        self.finished = false;
+        Ok(())
     }
 }
 
@@ -178,5 +203,50 @@ mod tests {
         let mut reader = CsvReader::new(cursor(data), b';').unwrap();
         let row = reader.next_row().unwrap().unwrap();
         assert_eq!(row.get("name"), Some("Alice"));
+    }
+
+    #[test]
+    fn csv_non_seekable_reader_does_not_claim_reset() {
+        let data = "id,name\n1,Alice\n";
+        let reader = CsvReader::new(cursor(data), b',').unwrap();
+        assert!(!reader.supports_reset());
+    }
+
+    /// Regression: in duration/soak bench mode the engine `reset()`s the
+    /// exhausted primary source to keep feeding rows. A no-op reset silently
+    /// yielded empty rows forever; after the fix, reset rewinds to the first
+    /// data row so the original rows repeat.
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn csv_reset_rewinds_to_first_data_row() {
+        let data = "id,name\n1,Alice\n2,Bob\n";
+        let mut reader = CsvReader::new_seekable(cursor(data), b',').unwrap();
+        assert!(reader.supports_reset());
+
+        let read_all = |r: &mut CsvReader<Cursor<&str>>| {
+            let mut rows = Vec::new();
+            while let Some(row) = r.next_row().unwrap() {
+                rows.push((row.get_or("id", ""), row.get_or("name", "")));
+            }
+            rows
+        };
+
+        let first_pass = read_all(&mut reader);
+        assert_eq!(
+            first_pass,
+            vec![("1".into(), "Alice".into()), ("2".into(), "Bob".into())]
+        );
+
+        reader.reset().unwrap();
+
+        // The next read after reset must return the FIRST data row, not empty.
+        let after = reader.next_row().unwrap().unwrap();
+        assert_eq!(after.get("id"), Some("1"));
+        assert_eq!(after.get("name"), Some("Alice"));
+
+        // And the rest of the pass repeats the original rows.
+        let row2 = reader.next_row().unwrap().unwrap();
+        assert_eq!(row2.get("name"), Some("Bob"));
+        assert!(reader.next_row().unwrap().is_none());
     }
 }

@@ -186,7 +186,6 @@ export function PlayLayout() {
         />
         </>}
 
-        {}
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <div style={{ flex: 1, overflow: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
             <RequestPanel />

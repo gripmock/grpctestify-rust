@@ -266,10 +266,7 @@ pub fn build_rename_edits(
                     let start = byte_to_utf16_col(line, name_byte) as u32;
                     let end = byte_to_utf16_col(line, name_byte + var_name.len()) as u32;
                     edits.push(TextEdit::new(
-                        Range::new(
-                            Position::new(line_num, start),
-                            Position::new(line_num, end),
-                        ),
+                        Range::new(Position::new(line_num, start), Position::new(line_num, end)),
                         new_name.to_string(),
                     ));
                 }
@@ -285,10 +282,7 @@ pub fn build_rename_edits(
                 let start = byte_to_utf16_col(line, byte_start) as u32;
                 let end = byte_to_utf16_col(line, byte_end) as u32;
                 edits.push(TextEdit::new(
-                    Range::new(
-                        Position::new(line_num, start),
-                        Position::new(line_num, end),
-                    ),
+                    Range::new(Position::new(line_num, start), Position::new(line_num, end)),
                     replacement,
                 ));
             }
@@ -346,6 +340,22 @@ mod tests {
         let line = "Authorization: Bearer {{ token }}";
         let result = extract_variable_at_position(line, 0);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_variable_at_position_non_ascii_utf16() {
+        // The `references` handler receives an LSP UTF-16 column and must
+        // convert it to a byte offset before slicing; a raw UTF-16 index on a
+        // non-ASCII line mislocates (or panics mid-multibyte).
+        let line = "Заголовок: Bearer {{ token }}";
+        // UTF-16 column pointing inside "{{ token }}" (each Cyrillic char is one
+        // UTF-16 unit but two UTF-8 bytes).
+        let utf16_col = line.chars().take_while(|&c| c != 't').count();
+        let byte_idx = crate::lsp::position::utf16_col_to_byte(line, utf16_col);
+        assert_eq!(
+            extract_variable_at_position(line, byte_idx),
+            Some("token".to_string())
+        );
     }
 
     #[test]

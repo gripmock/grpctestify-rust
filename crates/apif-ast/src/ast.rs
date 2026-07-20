@@ -1236,8 +1236,6 @@ mod tests {
         assert!(debug_str.contains("test.gctf"));
     }
 
-    // ─── Document chain (linked-list) tests ───
-
     #[test]
     fn test_document_chain_single() {
         let doc = GctfDocument::new("test.gctf".to_string());

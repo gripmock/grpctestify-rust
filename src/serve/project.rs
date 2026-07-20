@@ -40,8 +40,6 @@ fn default_tls_insecure() -> bool {
     true
 }
 
-/* ── private file helpers ───────────────────────────── */
-
 fn env_path(root: &Path, name: &str) -> PathBuf {
     root.join(format!(".env.{}", name))
 }
@@ -70,8 +68,6 @@ fn delete_text_file(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-
-/* ── public API ─────────────────────────────────────── */
 
 /// Detect whether a `.grpctestify` project directory exists.
 pub fn detect_project(dir: &Path) -> Option<PathBuf> {
@@ -196,8 +192,6 @@ pub fn append_history_entry(root: &Path, session: &str, entry: &str) -> Result<(
         .with_context(|| format!("Failed to append to {}", path.display()))?;
     Ok(())
 }
-
-/* ── share helpers ─────────────────────────────────── */
 
 pub fn ensure_shares_dir(shares_dir: &Path) -> Result<PathBuf> {
     fs::create_dir_all(shares_dir)?;

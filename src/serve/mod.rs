@@ -120,9 +120,6 @@ pub async fn info_handler(State(state): State<Arc<PlayState>>) -> Json<InfoRespo
     })
 }
 
-// ANSI color codes for terminal output
-/* ── ANSI colors (respects NO_COLOR) ────────────── */
-
 fn use_color() -> bool {
     std::env::var_os("NO_COLOR").is_none()
 }
@@ -166,8 +163,6 @@ fn fmt_size(bytes: &str) -> String {
         bytes.to_string()
     }
 }
-
-/* ── Access log ──────────────────────────────────── */
 
 async fn access_log_middleware(
     req: axum::http::Request<Body>,
@@ -397,7 +392,6 @@ pub async fn start_play_server(host: &str, port: u16, dir: PathBuf) -> Result<()
         .filter(|p| p.is_dir())
         .unwrap_or_else(|| dir.clone());
 
-    // Resolve extra collections dirs from project settings
     let collections_dirs = if let Some(ref root) = project_root {
         let mut dirs = vec![collections_dir.clone()];
         if let Ok(settings) = project::load_project_settings(root)
@@ -444,7 +438,6 @@ pub async fn start_play_server(host: &str, port: u16, dir: PathBuf) -> Result<()
         collections_mtime,
     });
 
-    // Cleanup expired shares on startup
     tokio::task::spawn_blocking(move || {
         let _ = project::cleanup_expired_shares(&shares_dir);
     });

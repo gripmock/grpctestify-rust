@@ -380,7 +380,7 @@ impl<'a> Parser<'a> {
                             ..
                         })
                     ) {
-                        self.advance(); // consume comma
+                        self.advance();
                         if let Some(Token {
                             kind:
                                 TokenKind::Ident(s) | TokenKind::StringLit(s) | TokenKind::NumberLit(s),

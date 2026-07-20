@@ -79,17 +79,11 @@ fn inspect_contract_view(json: &serde_json::Value) -> serde_json::Value {
 
 fn explain_contract_view(json: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
-        "has_semantic_plan": json.get("semantic_plan").is_some(),
+        "has_plan": json.get("plan").is_some(),
         "has_optimization_trace": json.get("optimization_trace").is_some(),
-        "has_optimized_plan": json.get("optimized_plan").is_some(),
-        "has_execution_plan": json.get("execution_plan").is_some(),
         "optimization_trace": json["optimization_trace"],
-        "semantic_summary": json["semantic_plan"]["summary"],
-        "optimized_summary": json["optimized_plan"]["summary"],
-        "execution_summary": json["execution_plan"]["summary"],
-        "semantic_target": json["semantic_plan"]["target"],
-        "optimized_target": json["optimized_plan"]["target"],
-        "execution_target": json["execution_plan"]["target"],
+        "plan_summary": json["plan"]["summary"],
+        "plan_target": json["plan"]["target"],
     })
 }
 
@@ -816,10 +810,8 @@ fn test_explain_valid_file_json_output() {
     let output = run_cli(&["explain", &file, "--format", "json"]);
     let json = parse_json_stdout(&output);
 
-    assert!(json.get("semantic_plan").is_some());
+    assert!(json.get("plan").is_some());
     assert!(json.get("optimization_trace").is_some());
-    assert!(json.get("optimized_plan").is_some());
-    assert!(json.get("execution_plan").is_some());
 }
 
 #[test]
@@ -870,12 +862,10 @@ fn test_explain_json_golden_contract() {
 
     let actual = explain_contract_view(&json);
     let expected = serde_json::json!({
-        "has_semantic_plan": true,
+        "has_plan": true,
         "has_optimization_trace": true,
-        "has_optimized_plan": true,
-        "has_execution_plan": true,
         "optimization_trace": [],
-        "semantic_summary": {
+        "plan_summary": {
             "total_requests": 1,
             "total_responses": 1,
             "total_errors": 0,
@@ -884,37 +874,7 @@ fn test_explain_json_golden_contract() {
             "variable_extractions": 0,
             "rpc_mode_name": "Unary"
         },
-        "optimized_summary": {
-            "total_requests": 1,
-            "total_responses": 1,
-            "total_errors": 0,
-            "error_expected": false,
-            "assertion_blocks": 0,
-            "variable_extractions": 0,
-            "rpc_mode_name": "Unary"
-        },
-        "execution_summary": {
-            "total_requests": 1,
-            "total_responses": 1,
-            "total_errors": 0,
-            "error_expected": false,
-            "assertion_blocks": 0,
-            "variable_extractions": 0,
-            "rpc_mode_name": "Unary"
-        },
-        "semantic_target": {
-            "endpoint": "example.v1.Greeter/SayHello",
-            "package": "example.v1",
-            "service": "Greeter",
-            "method": "SayHello"
-        },
-        "optimized_target": {
-            "endpoint": "example.v1.Greeter/SayHello",
-            "package": "example.v1",
-            "service": "Greeter",
-            "method": "SayHello"
-        },
-        "execution_target": {
+        "plan_target": {
             "endpoint": "example.v1.Greeter/SayHello",
             "package": "example.v1",
             "service": "Greeter",

@@ -34,7 +34,6 @@ pub fn get_workflow_summary(sections: &[Section]) -> WorkflowSummary {
         .filter(|s| s.section_type == SectionType::Asserts)
         .count();
 
-    // Detect streaming based on multiple requests/responses
     let has_streaming = total_requests > 1 || total_responses > 1;
 
     WorkflowSummary {

@@ -117,9 +117,7 @@ async fn create_tls_channel(config: &GrpcClientConfig, tls_config: &TlsConfig) -
 mod insecure {
     use rustls::DigitallySignedStruct;
     use rustls::SignatureScheme;
-    use rustls::client::danger::{
-        HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
-    };
+    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
     use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
     use std::sync::Arc;
 

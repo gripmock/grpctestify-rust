@@ -116,6 +116,7 @@ fake = "5.1"
 reqwest = { version = "0.13", default-features = false, features = [
   "rustls",
   "http2",
+  "stream",
 ] }
 
 # Web UI (play command)
@@ -165,9 +166,18 @@ tonic = { workspace = true, features = [
   "gzip",
 ] }
 tonic-prost = { workspace = true, optional = true }
+# grpc-web server support — used ONLY by the test-servers feature to expose the
+# tonic reference services over grpc-web for integration tests. Pure Rust; never
+# linked into the default (shipped) CLI build.
+tonic-web = { version = "0.14", optional = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
 tonic-reflection = { workspace = true }
+
+# Pure-Rust gzip (miniz_oxide backend) for grpc-web/connect message compression.
+# Already pulled transitively via tonic's `gzip` feature; declared directly here
+# so the HTTP transports can gzip/gunzip framed messages.
+flate2 = "1"
 
 # JSON/YAML
 serde = { workspace = true }
@@ -311,6 +321,7 @@ test-servers = [
   "dep:tonic-prost",
   "dep:tonic-prost-build",
   "dep:protoc-bin-vendored",
+  "dep:tonic-web",
 ]
 
 [build-dependencies]
@@ -342,4 +353,4 @@ harness = false
 [package.metadata.cargo-machete]
 # Used only in feature-gated proto generation paths (`proto-build`, `test-servers`)
 # and referenced by generated code.
-ignored = ["tonic-prost", "tonic-prost-build", "protoc-bin-vendored"]
+ignored = ["tonic-prost", "tonic-prost-build", "protoc-bin-vendored", "tonic-web"]

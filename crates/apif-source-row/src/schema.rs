@@ -334,7 +334,6 @@ pub fn register_custom_profile(name: &str, keys: HashMap<String, String>) {
 /// Apply a custom (or built-in) profile, returning key-value pairs.
 /// Returns empty vec if the profile is not found.
 pub fn apply_profile_dynamic(name: &str) -> Vec<(String, String)> {
-    // Check built-in first
     let builtin = apply_profile(name);
     if !builtin.is_empty() {
         return builtin
@@ -342,7 +341,6 @@ pub fn apply_profile_dynamic(name: &str) -> Vec<(String, String)> {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
     }
-    // Check custom profiles
     if let Some(keys) = CUSTOM_PROFILES.read().unwrap().get(name) {
         return keys.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     }

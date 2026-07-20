@@ -476,317 +476,6 @@ fn is_time(s: &str) -> bool {
 }
 
 #[derive(Debug, Clone)]
-pub struct BloomFilter {
-    bits: Vec<u64>,
-    hash_count: u32,
-    bit_count: usize,
-}
-
-impl BloomFilter {
-    pub fn new(expected_elements: usize, false_positive_rate: f64) -> Self {
-        let m = Self::optimal_bit_count(expected_elements, false_positive_rate);
-        let k = Self::optimal_hash_count(m, expected_elements);
-        let bits = vec![0u64; m.div_ceil(64)];
-        Self {
-            bits,
-            hash_count: k as u32,
-            bit_count: m,
-        }
-    }
-
-    pub fn with_capacity(bit_count: usize, hash_count: u32) -> Self {
-        let bits = vec![0u64; bit_count.div_ceil(64)];
-        Self {
-            bits,
-            hash_count,
-            bit_count,
-        }
-    }
-
-    fn optimal_bit_count(n: usize, p: f64) -> usize {
-        let n = n.max(1) as f64;
-        let p = p.clamp(0.0001, 0.9999);
-        let m = -n * p.ln() / (std::f64::consts::LN_2 * std::f64::consts::LN_2);
-        m.ceil() as usize
-    }
-
-    fn optimal_hash_count(m: usize, n: usize) -> usize {
-        let m = m.max(1) as f64;
-        let n = n.max(1) as f64;
-        let k = (m / n * std::f64::consts::LN_2).ceil();
-        k.max(1.0) as usize
-    }
-
-    pub fn insert(&mut self, key: &str) {
-        for i in 0..self.hash_count {
-            let idx = self.hash(key, i);
-            self.bits[idx / 64] |= 1 << (idx % 64);
-        }
-    }
-
-    #[must_use]
-    pub fn contains(&self, key: &str) -> bool {
-        for i in 0..self.hash_count {
-            let idx = self.hash(key, i);
-            if self.bits[idx / 64] & (1 << (idx % 64)) == 0 {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn hash(&self, key: &str, salt: u32) -> usize {
-        let h1 = Self::fnv1a(key, 0);
-        let h2 = Self::fnv1a(key, 0xdeadbeef);
-        let combined = (h1 as u64).wrapping_add((h2 as u64).wrapping_mul(salt as u64));
-        (combined as usize) % self.bit_count
-    }
-
-    fn fnv1a(data: &str, salt: u32) -> u32 {
-        let mut hash: u32 = 2166136261u32.wrapping_add(salt);
-        for byte in data.bytes() {
-            hash ^= byte as u32;
-            hash = hash.wrapping_mul(16777619);
-        }
-        hash
-    }
-
-    pub fn bit_count(&self) -> usize {
-        self.bit_count
-    }
-
-    pub fn hash_count(&self) -> u32 {
-        self.hash_count
-    }
-
-    pub fn memory_bits(&self) -> usize {
-        self.bits.len() * 64
-    }
-
-    pub fn write_to(&self, writer: &mut impl Write) -> Result<()> {
-        writer.write_all(&self.bit_count.to_le_bytes())?;
-        writer.write_all(&self.hash_count.to_le_bytes())?;
-        for chunk in self.bits.chunks(8192) {
-            let bytes = chunk
-                .iter()
-                .fold(Vec::with_capacity(chunk.len() * 8), |mut acc, &w| {
-                    acc.extend_from_slice(&w.to_le_bytes());
-                    acc
-                });
-            writer.write_all(&bytes)?;
-        }
-        Ok(())
-    }
-
-    pub fn read_from(reader: &mut impl Read) -> Result<Self> {
-        let mut bit_buf = [0u8; 8];
-        reader.read_exact(&mut bit_buf)?;
-        let bit_count = usize::from_le_bytes(bit_buf);
-
-        let mut hash_buf = [0u8; 4];
-        reader.read_exact(&mut hash_buf)?;
-        let hash_count = u32::from_le_bytes(hash_buf);
-
-        let bits = vec![0u64; bit_count.div_ceil(64)];
-        let mut result = Self {
-            bits,
-            hash_count,
-            bit_count,
-        };
-
-        let byte_count = bit_count.div_ceil(8);
-        let mut buf = vec![0u8; byte_count];
-        reader.read_exact(&mut buf)?;
-        for (i, chunk) in buf.chunks(8).enumerate() {
-            let mut word = [0u8; 8];
-            word[..chunk.len()].copy_from_slice(chunk);
-            result.bits[i] = u64::from_le_bytes(word);
-        }
-        Ok(result)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct XorFilter {
-    fingerprint_bits: u32,
-    array_size: usize,
-    seed: u64,
-    fingerprints: Vec<u8>,
-}
-
-impl XorFilter {
-    pub fn new(expected_elements: usize, false_positive_rate: f64) -> Self {
-        let fpr = false_positive_rate.clamp(0.0001, 0.9999);
-        let fingerprint_bits = Self::optimal_fingerprint_bits(fpr);
-        let array_size = Self::optimal_array_size(expected_elements);
-        let fingerprints = vec![0u8; array_size];
-        Self {
-            fingerprint_bits,
-            array_size,
-            seed: 0x9e3779b97f4a7c15,
-            fingerprints,
-        }
-    }
-
-    fn optimal_fingerprint_bits(p: f64) -> u32 {
-        let p = p.clamp(0.0001, 0.9999);
-        ((-p.log2()).ceil() as u32).clamp(4, 16)
-    }
-
-    fn optimal_array_size(n: usize) -> usize {
-        let n = n.max(1);
-        let c = 1.23;
-        let size = ((n as f64) * c).ceil() as usize;
-        size.next_power_of_two()
-    }
-
-    fn murmurhash64(data: &[u8], seed: u64) -> u64 {
-        let c1: u64 = 0x9e3779b97f4a7c15;
-        let c2: u64 = 0x9e3779b97f4a7c15;
-        let mut h: u64 = seed;
-        let len = data.len();
-
-        let mut i = 0;
-        while i + 8 <= len {
-            let mut k = u64::from_le_bytes([
-                data[i],
-                data[i + 1],
-                data[i + 2],
-                data[i + 3],
-                data[i + 4],
-                data[i + 5],
-                data[i + 6],
-                data[i + 7],
-            ]);
-            k = k.wrapping_mul(c1);
-            k = k.rotate_left(31);
-            k = k.wrapping_mul(c2);
-            h ^= k;
-            h = h.rotate_left(27);
-            h = h.wrapping_add(0x9e3779b97f4a7c15);
-            h = h.wrapping_mul(c1);
-            i += 8;
-        }
-
-        let mut k: u64 = 0;
-        match len % 8 {
-            7 => k ^= (data[i + 6] as u64) << 48,
-            6 => k ^= (data[i + 5] as u64) << 40,
-            5 => k ^= (data[i + 4] as u64) << 32,
-            4 => k ^= (data[i + 3] as u64) << 24,
-            3 => k ^= (data[i + 2] as u64) << 16,
-            2 => k ^= (data[i + 1] as u64) << 8,
-            1 => k ^= data[i] as u64,
-            _ => {}
-        }
-        if !len.is_multiple_of(8) {
-            k ^= (len as u64).wrapping_mul(c2);
-            k = k.wrapping_mul(c1);
-            h ^= k;
-            h = h.rotate_left(31);
-            h = h.wrapping_mul(c2);
-        } else {
-            h ^= (len as u64).wrapping_mul(c1);
-            h ^= h.rotate_left(31);
-            h ^= h.rotate_right(33);
-        }
-
-        h = h.wrapping_add(h << 15);
-        h ^= h.rotate_right(41);
-        h = h.wrapping_add(h << 13);
-        h ^= h.rotate_right(35);
-        h = h.wrapping_add(h << 9);
-        h ^= h.rotate_right(49);
-        h = h.wrapping_add(h << 15);
-        h ^= h.rotate_right(33);
-        h = h.wrapping_add(h << 17);
-        h ^= h.rotate_right(41);
-        h
-    }
-
-    fn compute_positions(&self, key: &str) -> [usize; 3] {
-        let h = Self::murmurhash64(key.as_bytes(), self.seed);
-        let h2 = Self::murmurhash64(key.as_bytes(), self.seed ^ 0x9e3779b97f4a7c15);
-
-        let mask = self.array_size - 1;
-        let h0 = (h as usize) & mask;
-        let h1 = ((h >> 32) as usize) & mask;
-        let h2 = (h2 as usize) & mask;
-
-        [h0, h1, h2]
-    }
-
-    fn compute_fingerprint(&self, key: &str) -> u8 {
-        let h = Self::murmurhash64(key.as_bytes(), self.seed ^ 0xdeadbeef);
-        let fb = self.fingerprint_bits;
-        ((h >> 32) ^ h) as u8 & ((1u8 << fb) - 1)
-    }
-
-    pub fn insert(&mut self, key: &str) -> bool {
-        let [h0, h1, h2] = self.compute_positions(key);
-        let f = self.compute_fingerprint(key);
-
-        self.fingerprints[h0] ^= f;
-        self.fingerprints[h1] ^= f;
-        self.fingerprints[h2] ^= f;
-
-        true
-    }
-
-    #[must_use]
-    pub fn contains(&self, key: &str) -> bool {
-        let [h0, h1, h2] = self.compute_positions(key);
-        let f = self.compute_fingerprint(key);
-
-        let expected = self.fingerprints[h0] ^ self.fingerprints[h1] ^ self.fingerprints[h2];
-        expected == f
-    }
-
-    pub fn array_size(&self) -> usize {
-        self.array_size
-    }
-
-    pub fn fingerprint_bits(&self) -> u32 {
-        self.fingerprint_bits
-    }
-
-    pub fn memory_bits(&self) -> usize {
-        self.fingerprints.len() * 8
-    }
-
-    pub fn build_from_keys(keys: &[String]) -> Option<Self> {
-        let n = keys.len();
-        if n == 0 {
-            return Some(Self::new(1, 0.01));
-        }
-
-        let mut filter = Self::new(n, 0.01);
-        let mut retry_count = 0;
-        const MAX_RETRIES: usize = 100;
-
-        for key in keys {
-            if !filter.insert(key) {
-                retry_count += 1;
-                if retry_count >= MAX_RETRIES {
-                    return None;
-                }
-                filter = Self::new(n, 0.01);
-                for k in keys {
-                    if !filter.insert(k) {
-                        retry_count += 1;
-                        if retry_count >= MAX_RETRIES {
-                            return None;
-                        }
-                    }
-                }
-            }
-        }
-
-        Some(filter)
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct IndexEntry {
     pub offset: u64,
     pub row_length: u32,
@@ -866,7 +555,6 @@ enum KeyStorage {
 pub struct SourceIndex {
     storage: KeyStorage,
     header: IndexHeader,
-    filter: Option<XorFilter>,
 }
 
 impl SourceIndex {
@@ -880,7 +568,6 @@ impl SourceIndex {
                 data_offset: 0,
                 entry_count: 0,
             },
-            filter: None,
         }
     }
 
@@ -899,13 +586,7 @@ impl SourceIndex {
                 data_offset: 0,
                 entry_count: 0,
             },
-            filter: None,
         }
-    }
-
-    pub fn with_filter(mut self, filter: XorFilter) -> Self {
-        self.filter = Some(filter);
-        self
     }
 
     pub fn key_type(&self) -> KeyType {
@@ -1004,20 +685,10 @@ impl SourceIndex {
     }
 
     pub fn lookup(&self, key: &str) -> Option<&IndexEntry> {
-        if let Some(filter) = &self.filter
-            && !filter.contains(key)
-        {
-            return None;
-        }
         self.binary_search(key)
     }
 
     pub fn lookup_all(&self, key: &str) -> Option<&[IndexEntry]> {
-        if let Some(filter) = &self.filter
-            && !filter.contains(key)
-        {
-            return None;
-        }
         match &self.storage {
             KeyStorage::String(map) => map.get(key).map(|v| v.as_slice()),
             KeyStorage::Numeric(vec) => {
@@ -1032,19 +703,7 @@ impl SourceIndex {
 
     #[must_use]
     pub fn contains(&self, key: &str) -> bool {
-        if let Some(filter) = &self.filter
-            && !filter.contains(key)
-        {
-            return false;
-        }
         self.lookup_all(key).is_some()
-    }
-
-    pub fn fast_negative_lookup(&self, key: &str) -> bool {
-        if let Some(filter) = &self.filter {
-            return filter.contains(key);
-        }
-        true
     }
 
     pub fn lookup_range(&self, start: &str, end: &str) -> Vec<&IndexEntry> {
@@ -1311,7 +970,6 @@ impl SourceIndex {
                 data_offset,
                 entry_count,
             },
-            filter: None,
         })
     }
 
@@ -1509,6 +1167,7 @@ mod tests {
     use std::io::Cursor;
 
     #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn write_and_read_roundtrip() {
         let dir = std::env::temp_dir().join("gctf_index_test");
@@ -1538,6 +1197,7 @@ mod tests {
     }
 
     #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn invalid_magic_fails() {
         let dir = std::env::temp_dir().join("gctf_index_test");
@@ -1591,6 +1251,7 @@ mod tests {
     }
 
     #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn empty_index_roundtrip() {
         let dir = std::env::temp_dir().join("gctf_index_test");
@@ -1608,6 +1269,7 @@ mod tests {
     }
 
     #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn unicode_keys() {
         let dir = std::env::temp_dir().join("gctf_index_test");
@@ -1628,6 +1290,7 @@ mod tests {
     }
 
     #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn duplicate_keys_are_preserved() {
         let dir = std::env::temp_dir().join("gctf_index_dup_test");

@@ -82,7 +82,7 @@ impl GrpcClient for TonicGrpcClient {
             .ok_or_else(|| GrpcError::new(3, "Invalid path"))?
             .clone();
 
-        let mut requests = requests; // shadow for mutability
+        let mut requests = requests;
         let codec = DynamicCodec::new(m.input(), m.output());
         let mut client = self.client.clone();
         client
@@ -282,16 +282,25 @@ fn convert_request_json(
     let json_str = serde_json::to_string(&json).map_err(|e| {
         GrpcError::new(
             3,
-            format!("Failed to convert request message #{} to protobuf: {}", index, e),
+            format!(
+                "Failed to convert request message #{} to protobuf: {}",
+                index, e
+            ),
         )
     })?;
-    DynamicMessage::deserialize(desc.clone(), &mut serde_json::Deserializer::from_str(&json_str))
-        .map_err(|e| {
-            GrpcError::new(
-                3,
-                format!("Failed to convert request message #{} to protobuf: {}", index, e),
-            )
-        })
+    DynamicMessage::deserialize(
+        desc.clone(),
+        &mut serde_json::Deserializer::from_str(&json_str),
+    )
+    .map_err(|e| {
+        GrpcError::new(
+            3,
+            format!(
+                "Failed to convert request message #{} to protobuf: {}",
+                index, e
+            ),
+        )
+    })
 }
 
 /// Turn a streaming response into a `StreamItem` stream that, after the last
@@ -323,9 +332,7 @@ fn streaming_response_to_items(
                         }
                     }
                     Ok(None) => None,
-                    Err(status) => {
-                        Some((Err(tonic_status_to_grpc_error(&status)), Phase::Done))
-                    }
+                    Err(status) => Some((Err(tonic_status_to_grpc_error(&status)), Phase::Done)),
                 },
                 Err(status) => Some((
                     Err(tonic_status_to_grpc_error(&status)),
@@ -637,7 +644,11 @@ mod tests {
         use prost_reflect::ReflectMessage;
         let desc = prost_types::Timestamp::default().descriptor();
         let result = convert_request_json(0, serde_json::json!("2024-06-15T10:30:00Z"), &desc);
-        assert!(result.is_ok(), "valid timestamp should convert: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "valid timestamp should convert: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -652,6 +663,26 @@ mod tests {
             err.message.contains("request message #2"),
             "error should name the bad message index: {}",
             err.message
+        );
+    }
+
+    #[test]
+    fn test_tonic_status_to_grpc_error_carries_code_message_details() {
+        use tonic::{Code, Status};
+        // Proto-encoded google.rpc.Status detail bytes (opaque here); the point
+        // is they survive verbatim across the boundary.
+        let details = prost::bytes::Bytes::from_static(&[0x08, 0x05, 0x12, 0x02, 0x68, 0x69]);
+        // Message deliberately contains the literal `code=`/`message=` markers
+        // that the old string parser would have corrupted.
+        let msg = "boom: code=42 message=nested details=[x]";
+        let status = Status::with_details(Code::NotFound, msg, details.clone());
+        let e = tonic_status_to_grpc_error(&status);
+        assert_eq!(e.code, 5, "NotFound -> 5");
+        assert_eq!(e.message, msg, "message survives verbatim");
+        assert_eq!(
+            e.details,
+            details.to_vec(),
+            "proto detail bytes carried as-is"
         );
     }
 

@@ -415,18 +415,30 @@ pub fn get_variable_completions(
     items
 }
 
+/// Return the index of the section containing 0-based `line`, if any.
+///
+/// A section spans the half-open 0-based line range `[start_line, end_line)`
+/// (`start_line` is the header line; `end_line` is the next header's line, or
+/// the total line count for the last section). Comparing directly in 0-based
+/// coordinates avoids the off-by-one that a `line + 1` vs 0-based `start_line`
+/// mix produced at the line just above a section header.
+pub fn section_index_at_line(sections: &[parser::ast::Section], line: usize) -> Option<usize> {
+    sections
+        .iter()
+        .position(|s| s.start_line <= line && line < s.end_line)
+}
+
 /// Find which document (0-based index) contains the given line.
 fn find_document_index_at_line(doc: &crate::parser::GctfDocument, line_0based: usize) -> usize {
-    let line_1based = line_0based + 1;
     for (idx, d) in doc.iter_chain().enumerate() {
         if let (Some(first), Some(last)) = (d.sections.first(), d.sections.last())
-            && line_1based >= first.start_line
-            && line_1based <= last.end_line
+            && line_0based >= first.start_line
+            && line_0based < last.end_line
         {
             return idx;
         }
     }
-    // If line is before first section, it's in the first document
+    // If line is before the first section, treat it as the first document.
     0
 }
 
@@ -765,8 +777,6 @@ fn collect_optimizer_rewrites_with_ranges(
     rewrites
 }
 
-// ─── Unused Variable Detection (AST-based) ───
-
 /// Result of unused variable detection
 #[derive(Debug, Clone)]
 pub struct UnusedVariable {
@@ -785,10 +795,8 @@ pub struct UnusedVariable {
 /// A variable is "unused" if it was defined in an EXTRACT section but never
 /// referenced via `{{ var_name }}` in any subsequent document.
 pub fn collect_unused_variables(doc: &crate::parser::GctfDocument) -> Vec<UnusedVariable> {
-    // Step 1: Extract all variables from EXTRACT sections via AST
     let defined_vars = extract_all_vars(doc);
 
-    // Step 2: For each variable, check if it's used in any subsequent document
     defined_vars
         .into_iter()
         .filter(|(def_doc_idx, var_name, _, _)| {
@@ -1166,10 +1174,6 @@ pub fn create_apply_all_optimizer_rewrite_action(
         ..CodeAction::default()
     }
 }
-
-// ============================================================================
-// TESTS
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -1729,6 +1733,48 @@ test.Service/Method
         // `{{` begins at UTF-16 column 16; column 20 is inside `name`.
         let hover = get_var_hover(&doc, 7, 20);
         assert!(hover.is_some());
+    }
+
+    #[test]
+    fn test_section_index_at_line_half_open() {
+        // Leading comment + blank push the first header off line 0.
+        let content = "# note\n\n--- ENDPOINT ---\nsvc.M\n\n--- ASSERTS ---\n.id == 1\n";
+        let doc = parser::parse_gctf_from_str(content, "t.gctf").unwrap();
+        let sections = &doc.sections;
+        let ep = sections
+            .iter()
+            .position(|s| s.section_type == SectionType::Endpoint)
+            .unwrap();
+        let ep_start = sections[ep].start_line;
+        assert!(
+            ep_start >= 1,
+            "leading lines should push ENDPOINT past line 0"
+        );
+        // The line directly above the header is in no section. The old
+        // `line + 1` comparison wrongly attributed it to this section.
+        assert_eq!(section_index_at_line(sections, ep_start - 1), None);
+        // The header line and the following body line belong to ENDPOINT.
+        assert_eq!(section_index_at_line(sections, ep_start), Some(ep));
+        assert_eq!(section_index_at_line(sections, ep_start + 1), Some(ep));
+        // The exclusive end (next header) does not belong to ENDPOINT.
+        assert_ne!(
+            section_index_at_line(sections, sections[ep].end_line),
+            Some(ep)
+        );
+    }
+
+    #[test]
+    fn test_find_document_index_at_line_multidoc_boundaries() {
+        let content = "--- ENDPOINT ---\nsvc.A\n\n--- ASSERTS ---\n.a == 1\n\n\
+--- ENDPOINT ---\nsvc.B\n\n--- ASSERTS ---\n.b == 2\n";
+        let doc = parser::parse_gctf_from_str(content, "t.gctf").unwrap();
+        assert!(!doc.is_single_document(), "expected two chained documents");
+        // First document owns the first header and its trailing blank line.
+        assert_eq!(find_document_index_at_line(&doc, 0), 0);
+        assert_eq!(find_document_index_at_line(&doc, 5), 0);
+        // Second document starts at its own ENDPOINT header (line 6).
+        assert_eq!(find_document_index_at_line(&doc, 6), 1);
+        assert_eq!(find_document_index_at_line(&doc, 10), 1);
     }
 
     #[test]

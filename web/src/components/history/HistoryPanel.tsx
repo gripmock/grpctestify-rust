@@ -51,7 +51,6 @@ export function HistoryPanel() {
         )}
       </div>
 
-      {}
       {history.length > 0 && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6, border: '1px solid var(--border)', borderRadius: 5, padding: '3px 6px', background: 'var(--bg-primary)' }}>
           <Search size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
@@ -61,7 +60,6 @@ export function HistoryPanel() {
         </div>
       )}
 
-      {}
       {sessions.length > 0 && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6, fontSize: 10, flexWrap: 'wrap' }}>
           <button onClick={() => setSessionFilter('all')} style={{

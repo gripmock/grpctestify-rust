@@ -172,14 +172,10 @@ export function RequestPanel() {
 
   return (
     <section>
-      {}
       <TabBar />
 
-      {}
       <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-        {}
         <div style={{ flex: 1, position: 'relative' }}>
-          {}
           <div style={{ display: 'flex', border: `1px solid var(--border)`, borderRadius: 6, overflow: 'hidden' }}>
             <input ref={inputRef} value={request.endpoint}
               onChange={e => { setEndpoint(e.target.value); setShowDropdown(true); setDropdownSearch(e.target.value); }}
@@ -194,7 +190,6 @@ export function RequestPanel() {
             </button>
           </div>
 
-          {}
           {showDropdown && reflectionMethods.length > 0 && (
             <div ref={dropdownRef} style={{
               position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 100,
@@ -202,7 +197,6 @@ export function RequestPanel() {
               borderRadius: 6, boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
               maxHeight: 320, overflow: 'auto', marginTop: 2,
             }}>
-              {}
               <div style={{ padding: '4px 6px', borderBottom: '1px solid var(--border)' }}>
                 <input value={dropdownSearch} onChange={e => setDropdownSearch(e.target.value)} placeholder="Search…" autoFocus
                   style={{ width: '100%', border: 'none', background: 'transparent', fontSize: 12, color: 'var(--text-primary)', outline: 'none', padding: '4px' }} />
@@ -234,7 +228,6 @@ export function RequestPanel() {
           )}
         </div>
 
-        {}
         <button onClick={handleAutoFill} disabled={!request.endpoint || filling} style={{
           ...btn(), opacity: request.endpoint && !filling ? 1 : 0.4,
           cursor: request.endpoint && !filling ? 'pointer' : 'not-allowed',
@@ -295,7 +288,6 @@ export function RequestPanel() {
         </div>
       )}
 
-      {}
       <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: 8 }}>
         {(['body', 'headers', 'env'] as const).map(tab => (
           <button key={tab} onClick={() => setRequestTab(tab)} style={{
