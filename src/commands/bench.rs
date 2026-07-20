@@ -2255,7 +2255,7 @@ fn evaluate_thresholds(
     for (key, expr) in thresholds {
         let (op, rhs_str) = parse_threshold_expr(expr);
         // Parse the numeric part, tolerating unit suffixes (e.g. "5%", "200ms",
-        // "1.5s"). An unparseable threshold must ERROR rather than silently
+        // "1.5s"). An unparsable threshold must ERROR rather than silently
         // collapsing to 0.0 (which would make e.g. "< 5%" compare against 0).
         let rhs = match parse_threshold_number(rhs_str) {
             Some(v) => v,
@@ -3154,7 +3154,7 @@ mod tests {
         assert!(results[0].passed, "2% should pass a < 5% threshold");
     }
 
-    // Bug 2: unparseable thresholds must error instead of defaulting to 0.0.
+    // Bug 2: unparsable thresholds must error instead of defaulting to 0.0.
     #[test]
     fn test_evaluate_thresholds_invalid_value_errors() {
         let metrics = BenchMetrics {

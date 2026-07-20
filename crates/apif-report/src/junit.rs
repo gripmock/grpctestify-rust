@@ -20,7 +20,7 @@ fn escape_xml(s: &str) -> String {
             '\t' | '\n' | '\r' => out.push(c),
             // Strip other C0 control chars (0x00-0x08, 0x0B, 0x0C, 0x0E-0x1F):
             // they are forbidden in XML 1.0 documents — even as numeric
-            // character references — and make the output unparseable by CI tools.
+            // character references — and make the output unparsable by CI tools.
             c if (c as u32) < 0x20 => {}
             c => out.push(c),
         }

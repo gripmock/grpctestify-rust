@@ -511,7 +511,7 @@ test.Service/Method
         let mismatch =
             detect_type_mismatch(".na\u{ef}ve == \"x\"", plugin_signatures(), &HashMap::new());
         // `.naïve` is Any, `"x"` is String — compatible, so no mismatch,
-        // and crucially no panic or mis-split lhs/rhs.
+        // and crucially no panic or incorrectly split lhs/rhs.
         assert!(mismatch.is_none(), "got: {:?}", mismatch);
     }
 

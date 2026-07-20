@@ -2379,7 +2379,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
 
     #[test]
     fn test_base64_decode_roundtrip_all_pad_widths() {
-        for payload in [&b""[..], b"f", b"fo", b"foo", b"foob", b"fooba", b"foobar"] {
+        for payload in [&b""[..], b"a", b"ab", b"abc", b"abcd", b"abcde", b"abcdef"] {
             let enc = base64_encode(payload);
             assert_eq!(
                 base64_decode(enc.as_bytes()).unwrap(),
