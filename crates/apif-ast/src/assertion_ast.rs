@@ -328,22 +328,17 @@ fn parse_bin(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
     let mut left = parse_unary(ts, p);
     loop {
         let op = match ts.get(*p).map(|t| &t.kind) {
-            Some(TokenKind::Op(s)) => match s.as_str() {
-                "==" => BinaryOp::Eq,
-                "!=" => BinaryOp::Ne,
-                ">" => BinaryOp::Gt,
-                "<" => BinaryOp::Lt,
-                ">=" => BinaryOp::Ge,
-                "<=" => BinaryOp::Le,
-                "contains" => BinaryOp::Contains,
-                "matches" => BinaryOp::Matches,
-                "startsWith" | "startswith" => BinaryOp::StartsWith,
-                "endsWith" | "endswith" => BinaryOp::EndsWith,
-                _ => BinaryOp::EndsWith,
+            // Unknown operators (e.g. `-`, `=`) must not parse as a binary
+            // expression: stop here so the leftover token makes
+            // `parse_assertion` fall back to `Raw` (jq path).
+            Some(TokenKind::Op(s)) => match BinaryOp::try_parse(s) {
+                Some(op) => op,
+                None => break,
             },
-            Some(TokenKind::Ident(s)) if is_bin_op_keyword(s) => {
-                BinaryOp::try_parse(s).unwrap_or(BinaryOp::EndsWith)
-            }
+            Some(TokenKind::Ident(s)) if is_bin_op_keyword(s) => match BinaryOp::try_parse(s) {
+                Some(op) => op,
+                None => break,
+            },
             None => break,
             _ => break,
         };
@@ -685,13 +680,13 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize) -> AssertionExpr {
     };
 
     // Parse optional `:TypeName` type annotation
-    if *p < ts.len() && matches!(&ts[*p].kind, TokenKind::Colon) {
-        *p += 1; // consume ':'
-        if let TokenKind::Ident(type_name) = &ts[*p].kind {
-            let name = type_name.clone();
-            *p += 1; // consume type name
-            expr = Expr::As(Box::new(expr), name);
-        }
+    if *p + 1 < ts.len()
+        && matches!(&ts[*p].kind, TokenKind::Colon)
+        && let TokenKind::Ident(type_name) = &ts[*p + 1].kind
+    {
+        let name = type_name.clone();
+        *p += 2; // consume ':' and type name
+        expr = Expr::As(Box::new(expr), name);
     }
 
     AssertionExpr::Atom(expr)
@@ -1305,7 +1300,7 @@ mod tests {
                 if let AssertionExpr::Atom(a) = &args[1] {
                     if let Expr::RegExp { pattern, flags } = &a {
                         assert_eq!(pattern, "^hello");
-                        assert_eq!(flags, "");
+                        assert_eq!(flags, "i");
                     } else {
                         panic!("Expected RegExp");
                     }
@@ -1317,6 +1312,58 @@ mod tests {
             }
         } else {
             panic!("Expected Binary");
+        }
+    }
+
+    #[test]
+    fn test_parse_trailing_colon_no_panic() {
+        // Regression: a trailing `:` used to index past the token list and panic.
+        let expr = parse_assertion(".x:");
+        assert_eq!(expr, AssertionExpr::Raw(".x:".to_string()));
+    }
+
+    #[test]
+    fn test_parse_unknown_operator_falls_back_to_raw() {
+        // Regression: unknown operators in binary position used to silently
+        // parse as `endsWith`. They must fall back to Raw (jq path) instead.
+        assert_eq!(
+            parse_assertion("@len(.x) - 1 == 0"),
+            AssertionExpr::Raw("@len(.x) - 1 == 0".to_string())
+        );
+        assert_eq!(
+            parse_assertion("\"abc\" - \"c\""),
+            AssertionExpr::Raw("\"abc\" - \"c\"".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_lone_equals_falls_back_to_raw() {
+        // Regression: `.x = 5` (typo for `==`) used to drop the `=` and parse
+        // as `.x 5`. It must not parse as a valid assertion.
+        assert_eq!(
+            parse_assertion(".x = 5"),
+            AssertionExpr::Raw(".x = 5".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_known_binary_operators_still_parse() {
+        for (src, op) in [
+            (".x == 1", BinaryOp::Eq),
+            (".x != 1", BinaryOp::Ne),
+            (".x > 1", BinaryOp::Gt),
+            (".x < 1", BinaryOp::Lt),
+            (".x >= 1", BinaryOp::Ge),
+            (".x <= 1", BinaryOp::Le),
+            (".x contains \"a\"", BinaryOp::Contains),
+            (".x matches \"^a\"", BinaryOp::Matches),
+            (".x startsWith \"a\"", BinaryOp::StartsWith),
+            (".x endsWith \"a\"", BinaryOp::EndsWith),
+        ] {
+            match parse_assertion(src) {
+                AssertionExpr::Binary { op: parsed, .. } => assert_eq!(parsed, op, "{}", src),
+                other => panic!("Expected Binary for {}, got: {:?}", src, other),
+            }
         }
     }
 

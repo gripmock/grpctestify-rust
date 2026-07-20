@@ -160,7 +160,17 @@ pub fn tokenize_assertion(source: &str) -> Vec<Token> {
                     Span { start: s, end: i },
                 ));
             }
-            '=' => i += 1,
+            '=' => {
+                // Lone `=` is not a valid GCTF operator (likely a typo for
+                // `==`). Emit it so the parser rejects the expression instead
+                // of silently dropping the character.
+                let s = i;
+                i += 1;
+                out.push(Token::new(
+                    TokenKind::Op("=".into()),
+                    Span { start: s, end: i },
+                ));
+            }
             '>' => {
                 if i + 1 < cs.len() && cs[i + 1] == '=' {
                     let s = i;
@@ -270,6 +280,7 @@ pub fn tokenize_assertion(source: &str) -> Vec<Token> {
                 let mut j = i + 1;
                 let mut is_regex = true;
                 let mut pattern = String::new();
+                let mut flags = String::new();
                 let mut escaped = false;
                 let mut in_cc = false;
                 while j < cs.len() {
@@ -291,7 +302,6 @@ pub fn tokenize_assertion(source: &str) -> Vec<Token> {
                         j += 1;
                     } else if cs[j] == '/' && !in_cc {
                         j += 1;
-                        let mut flags = String::new();
                         while j < cs.len()
                             && cs[j].is_ascii_alphabetic()
                             && "gimsuy".contains(cs[j])
@@ -316,10 +326,7 @@ pub fn tokenize_assertion(source: &str) -> Vec<Token> {
                 }
                 if is_regex && !pattern.is_empty() && j > i + 1 {
                     out.push(Token::new(
-                        TokenKind::RegExpLit {
-                            pattern,
-                            flags: String::new(),
-                        },
+                        TokenKind::RegExpLit { pattern, flags },
                         Span { start: s, end: j },
                     ));
                     i = j;
@@ -417,6 +424,28 @@ mod tests {
             tokens
                 .iter()
                 .any(|t| matches!(&t.kind, TokenKind::StringLit(s) if s == "hello world"))
+        );
+    }
+
+    #[test]
+    fn test_tokenize_regex_flags_preserved() {
+        // Regression: flags were parsed but dropped (`/Foo/i` lost its `i`).
+        let tokens = tokenize_assertion("@regex(.x, /Foo/i) == true");
+        assert!(tokens.iter().any(|t| matches!(
+            &t.kind,
+            TokenKind::RegExpLit { pattern, flags } if pattern == "Foo" && flags == "i"
+        )));
+    }
+
+    #[test]
+    fn test_tokenize_lone_equals_emitted() {
+        // Regression: a lone `=` was silently discarded, so `.x = 5`
+        // tokenized as `.x 5` and slipped through as a jq assignment.
+        let tokens = tokenize_assertion(".x = 5");
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(&t.kind, TokenKind::Op(s) if s == "="))
         );
     }
 

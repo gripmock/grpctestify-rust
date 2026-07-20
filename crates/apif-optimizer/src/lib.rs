@@ -621,16 +621,71 @@ fn suggest_double_negation_rewrite(
     None
 }
 
+/// Replace `needle` with `replacement`, but only where `needle` occurs OUTSIDE
+/// of string literals. This prevents corrupting expected values that happen to
+/// contain the operator text (e.g. `.msg == "run startswith now"`).
+/// Returns `None` when no replacement outside of string literals was made.
+fn replace_outside_string_literals(
+    expr: &str,
+    needle: &str,
+    replacement: &str,
+) -> Option<String> {
+    let mut result = String::with_capacity(expr.len());
+    let mut in_quotes = false;
+    let mut quote_char = '\0';
+    let mut escaped = false;
+    let mut replaced = false;
+    let mut chars = expr.char_indices().peekable();
+
+    while let Some((i, c)) = chars.next() {
+        if in_quotes {
+            result.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == quote_char {
+                in_quotes = false;
+            }
+            continue;
+        }
+
+        if c == '"' || c == '\'' {
+            in_quotes = true;
+            quote_char = c;
+            result.push(c);
+            continue;
+        }
+
+        if expr[i..].starts_with(needle) {
+            result.push_str(replacement);
+            replaced = true;
+            // Skip the remaining chars of the matched needle.
+            let end = i + needle.len();
+            while let Some(&(j, _)) = chars.peek() {
+                if j < end {
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        result.push(c);
+    }
+
+    if replaced { Some(result) } else { None }
+}
+
 fn suggest_operator_canonicalization(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
     if !level.is_enabled(OptimizeLevel::Safe) {
         return None;
     }
-    if expr.contains(" startswith ") {
-        let rewritten = expr.replace(" startswith ", " startsWith ");
+    if let Some(rewritten) = replace_outside_string_literals(expr, " startswith ", " startsWith ") {
         return Some((rule_ids::N001, rewritten));
     }
-    if expr.contains(" endswith ") {
-        let rewritten = expr.replace(" endswith ", " endsWith ");
+    if let Some(rewritten) = replace_outside_string_literals(expr, " endswith ", " endsWith ") {
         return Some((rule_ids::N001, rewritten));
     }
     None
@@ -1087,11 +1142,28 @@ fn suggest_plugin_length_simplification(
         return None;
     }
     fn extract_len_inner(s: &str) -> Option<&str> {
-        if s.starts_with("@len(") && s.ends_with(')') {
-            Some(&s[5..s.len() - 1])
-        } else {
-            None
+        // Match the close paren belonging to the FIRST `@len(` via depth
+        // counting, and only accept it when that call spans the whole side.
+        // Otherwise `@len(a) and @len(b)` would wrongly extract `a) and @len(b`.
+        let rest = s.strip_prefix("@len(")?;
+        let mut depth = 1usize;
+        for (i, c) in rest.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return if i == rest.len() - 1 {
+                            Some(&rest[..i])
+                        } else {
+                            None
+                        };
+                    }
+                }
+                _ => {}
+            }
         }
+        None
     }
 
     fn rewrite_len_zero_cmp(op: &str, inner: &str, len_on_left: bool) -> Option<String> {
@@ -1335,6 +1407,7 @@ fn suggest_deprecated_plugin_rename(
         let not_at_name = format!("!@{}", name);
         if let Some(rest) = trimmed.strip_prefix(&not_at_name)
             && rest.starts_with('(')
+            && rest.ends_with(')')
         {
             let args = &rest[1..rest.len() - 1];
             // If the canonical replacement is `is_empty`, skip to `@has_value` directly
@@ -2728,5 +2801,60 @@ test.Service/Method
         assert!(!hints.is_empty(), "Expected at least one optimization hint");
         assert_eq!(hints[0].rule_id, rule_ids::T002);
         assert_eq!(hints[0].after, "@len(.items) >= 0");
+    }
+
+    #[test]
+    fn test_operator_canonicalization_skips_string_literals() {
+        // Regression: `startswith`/`endswith` inside a string literal must NOT
+        // be rewritten (previously a blind str::replace corrupted the value).
+        assert_eq!(
+            suggest_operator_canonicalization(
+                r#".msg == "run startswith now""#,
+                OptimizeLevel::Safe
+            ),
+            None
+        );
+        assert_eq!(
+            suggest_operator_canonicalization(r#".msg == "x endswith y""#, OptimizeLevel::Safe),
+            None
+        );
+        // A genuine operator token is still canonicalized.
+        assert_eq!(
+            suggest_operator_canonicalization(r#".msg startswith "abc""#, OptimizeLevel::Safe),
+            Some((rule_ids::N001, r#".msg startsWith "abc""#.to_string()))
+        );
+    }
+
+    #[test]
+    fn test_len_zero_simplification_requires_whole_lhs() {
+        // Regression: the @len(...) call must span the entire compared side.
+        // `@len(a) and @len(b) == 0` must not become `@empty(a) and @len(b)`.
+        assert_eq!(
+            suggest_plugin_length_simplification(
+                "@len(a) and @len(b) == 0",
+                OptimizeLevel::Advisory
+            ),
+            None
+        );
+        // Simple whole-LHS case still works.
+        assert_eq!(
+            suggest_plugin_length_simplification("@len(.x) == 0", OptimizeLevel::Advisory),
+            Some((rule_ids::P001, "@empty(.x)".to_string()))
+        );
+        // Nested parens inside the argument are matched correctly.
+        assert_eq!(
+            suggest_plugin_length_simplification("@len(f(.x)) == 0", OptimizeLevel::Advisory),
+            Some((rule_ids::P001, "@empty(f(.x))".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_deprecated_rename_no_panic_on_unclosed_paren() {
+        // Regression: `!@<deprecated>(` with no closing paren must not panic
+        // on the slice `rest[1..rest.len()-1]`.
+        assert_eq!(
+            suggest_deprecated_plugin_rename("!@uuid(", plugin_signatures(), OptimizeLevel::Safe),
+            None
+        );
     }
 }

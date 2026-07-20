@@ -574,6 +574,32 @@ impl GrpctestifyLsp {
             .unwrap_or(-1)
     }
 
+    /// Store a document's content and version atomically.
+    ///
+    /// Both write locks are held together (consistent ordering: `documents`
+    /// before `doc_versions`) so a concurrent reader never observes a content
+    /// and version from different edits.
+    async fn set_document(&self, uri: &Url, content: String, version: i32) {
+        let mut docs = self.documents.write().await;
+        let mut vers = self.doc_versions.write().await;
+        docs.insert(uri.to_string(), content);
+        vers.insert(uri.to_string(), version);
+    }
+
+    /// Read a document's content and version atomically.
+    ///
+    /// Both read locks are held together, matching the write ordering in
+    /// [`set_document`], so the returned `(content, version)` pair always
+    /// belongs to the same edit. This prevents caching a parse of one revision
+    /// under the version number of another.
+    async fn document_snapshot(&self, uri: &Url) -> Option<(String, i32)> {
+        let docs = self.documents.read().await;
+        let vers = self.doc_versions.read().await;
+        let content = docs.get(&uri.to_string())?.clone();
+        let version = vers.get(&uri.to_string()).copied().unwrap_or(-1);
+        Some((content, version))
+    }
+
     async fn invalidate_analysis_cache(&self, uri: &Url) {
         let uri_key = uri.to_string();
         self.parsed_docs.write().await.remove(&uri_key);
@@ -585,9 +611,13 @@ impl GrpctestifyLsp {
         inlay_cache.retain(|k, _| !k.starts_with(&prefix));
     }
 
-    async fn get_or_parse_document(&self, uri: &Url, content: &str) -> Option<GctfDocument> {
+    async fn get_or_parse_document(
+        &self,
+        uri: &Url,
+        content: &str,
+        version: i32,
+    ) -> Option<GctfDocument> {
         let uri_key = uri.to_string();
-        let version = self.current_doc_version(uri).await;
 
         {
             let parsed = self.parsed_docs.read().await;
@@ -619,7 +649,7 @@ impl GrpctestifyLsp {
         Some(parsed)
     }
 
-    async fn publish_diagnostics(&self, uri: &Url, content: &str) {
+    async fn publish_diagnostics(&self, uri: &Url, content: &str, version: i32) {
         let file_name = uri
             .to_file_path()
             .ok()
@@ -628,11 +658,13 @@ impl GrpctestifyLsp {
 
         match parser::parse_gctf_from_str(content, &file_name) {
             Ok(document) => {
+                // Cache the parse under the version that matches `content`
+                // (passed in atomically with it), never a re-read that a
+                // concurrent edit may have already bumped.
                 self.parsed_docs
                     .write()
                     .await
                     .insert(uri.to_string(), document.clone());
-                let version = self.current_doc_version(uri).await;
                 self.parsed_doc_versions
                     .write()
                     .await
@@ -799,16 +831,9 @@ impl LanguageServer for GrpctestifyLsp {
         let uri = params.text_document.uri;
         let content = params.text_document.text;
         let version = params.text_document.version;
-        self.documents
-            .write()
-            .await
-            .insert(uri.to_string(), content.clone());
-        self.doc_versions
-            .write()
-            .await
-            .insert(uri.to_string(), version);
+        self.set_document(&uri, content.clone(), version).await;
         self.invalidate_analysis_cache(&uri).await;
-        self.publish_diagnostics(&uri, &content).await;
+        self.publish_diagnostics(&uri, &content, version).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -817,28 +842,21 @@ impl LanguageServer for GrpctestifyLsp {
         let Some(content) = params.content_changes.last().map(|c| c.text.clone()) else {
             return;
         };
-        self.documents
-            .write()
-            .await
-            .insert(uri.to_string(), content.clone());
-        self.doc_versions
-            .write()
-            .await
-            .insert(uri.to_string(), version);
+        self.set_document(&uri, content.clone(), version).await;
         self.invalidate_analysis_cache(&uri).await;
-        self.publish_diagnostics(&uri, &content).await;
+        self.publish_diagnostics(&uri, &content, version).await;
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let uri = params.text_document.uri;
         if let Ok(content) = tokio::fs::read_to_string(uri.to_file_path().unwrap_or_default()).await
         {
-            self.documents
-                .write()
-                .await
-                .insert(uri.to_string(), content.clone());
+            // did_save carries no version; reuse the current one and store
+            // content+version together so the cache stays consistent.
+            let version = self.current_doc_version(&uri).await;
+            self.set_document(&uri, content.clone(), version).await;
             self.invalidate_analysis_cache(&uri).await;
-            self.publish_diagnostics(&uri, &content).await;
+            self.publish_diagnostics(&uri, &content, version).await;
         }
     }
 
@@ -865,12 +883,9 @@ impl LanguageServer for GrpctestifyLsp {
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
 
-        let content = {
-            let docs = self.documents.read().await;
-            match docs.get(&uri.to_string()) {
-                Some(c) => c.clone(),
-                None => return Ok(None),
-            }
+        let (content, doc_version) = match self.document_snapshot(&uri).await {
+            Some(snapshot) => snapshot,
+            None => return Ok(None),
         };
 
         let mut items = Vec::new();
@@ -891,7 +906,10 @@ impl LanguageServer for GrpctestifyLsp {
         }
 
         // Use AST for context-aware completions
-        if let Some(doc) = self.get_or_parse_document(&uri, &content).await {
+        if let Some(doc) = self
+            .get_or_parse_document(&uri, &content, doc_version)
+            .await
+        {
             let line_num = position.line as usize + 1;
 
             let in_any_section = doc
@@ -1010,14 +1028,14 @@ impl LanguageServer for GrpctestifyLsp {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
-        let content = {
-            let docs = self.documents.read().await;
-            match docs.get(&uri.to_string()) {
-                Some(c) => c.clone(),
-                None => return Ok(None),
-            }
+        let (content, doc_version) = match self.document_snapshot(&uri).await {
+            Some(snapshot) => snapshot,
+            None => return Ok(None),
         };
-        if let Some(doc) = self.get_or_parse_document(&uri, &content).await {
+        if let Some(doc) = self
+            .get_or_parse_document(&uri, &content, doc_version)
+            .await
+        {
             let line = position.line as usize + 1;
 
             // First check if cursor is on a {{var}} reference
@@ -1084,14 +1102,14 @@ impl LanguageServer for GrpctestifyLsp {
         params: DocumentSymbolParams,
     ) -> LspResult<Option<DocumentSymbolResponse>> {
         let uri = params.text_document.uri;
-        let content = {
-            let docs = self.documents.read().await;
-            match docs.get(&uri.to_string()) {
-                Some(c) => c.clone(),
-                None => return Ok(None),
-            }
+        let (content, doc_version) = match self.document_snapshot(&uri).await {
+            Some(snapshot) => snapshot,
+            None => return Ok(None),
         };
-        if let Some(doc) = self.get_or_parse_document(&uri, &content).await {
+        if let Some(doc) = self
+            .get_or_parse_document(&uri, &content, doc_version)
+            .await
+        {
             let section_children =
                 |s: &crate::parser::ast::Section| -> Option<Vec<DocumentSymbol>> {
                     crate::lsp::build_section_children_for_doc(&doc)
@@ -1313,7 +1331,9 @@ impl LanguageServer for GrpctestifyLsp {
         }
 
         let line = lines[line_idx];
-        let char_idx = position.character as usize;
+        // LSP `character` is a UTF-16 code-unit offset; convert to a byte index.
+        let char_idx =
+            crate::lsp::position::utf16_col_to_byte(line, position.character as usize);
         if char_idx >= line.len() {
             return Ok(None);
         }
@@ -1323,9 +1343,16 @@ impl LanguageServer for GrpctestifyLsp {
             // Find the range of the variable reference
             if let Some(start) = line[..char_idx].rfind("{{") {
                 if let Some(end) = line[char_idx..].find("}}") {
+                    let end_byte = char_idx + end + 2;
                     let range = Range::new(
-                        Position::new(line_idx as u32, start as u32),
-                        Position::new(line_idx as u32, (start + end + 2) as u32),
+                        Position::new(
+                            line_idx as u32,
+                            crate::lsp::position::byte_to_utf16_col(line, start) as u32,
+                        ),
+                        Position::new(
+                            line_idx as u32,
+                            crate::lsp::position::byte_to_utf16_col(line, end_byte) as u32,
+                        ),
                     );
                     // Return Range variant of PrepareRenameResponse
                     Ok(Some(PrepareRenameResponse::Range(range)))
@@ -1359,32 +1386,30 @@ impl LanguageServer for GrpctestifyLsp {
         }
 
         let line = lines[line_idx];
-        let char_idx = position.character as usize;
+        // LSP `character` is a UTF-16 code-unit offset; convert to a byte index.
+        let char_idx =
+            crate::lsp::position::utf16_col_to_byte(line, position.character as usize);
         if char_idx >= line.len() {
             return Ok(None);
         }
 
         // Get variable name at position
         if let Some(var_name) = variable_definition::extract_variable_at_position(line, char_idx) {
-            // Find all references to this variable
-            let locations =
-                variable_definition::find_variable_references(content, &var_name, uri.as_str());
-
-            if locations.is_empty() {
-                return Ok(None);
+            // Build edits that preserve each reference's sigil form (`{{ }}`
+            // vs `$`), match whole identifiers only, and also rename the
+            // EXTRACT definition site.
+            match variable_definition::build_rename_edits(
+                content,
+                &var_name,
+                &new_name,
+                uri.as_str(),
+            ) {
+                Some(changes) => Ok(Some(WorkspaceEdit {
+                    changes: Some(changes),
+                    ..Default::default()
+                })),
+                None => Ok(None),
             }
-
-            // Create text edits for all references
-            let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
-            for location in locations {
-                let edit = TextEdit::new(location.range, format!("{{{{ {} }}}}", new_name));
-                changes.entry(location.uri).or_default().push(edit);
-            }
-
-            Ok(Some(WorkspaceEdit {
-                changes: Some(changes),
-                ..Default::default()
-            }))
         } else {
             Ok(None)
         }
@@ -1411,7 +1436,9 @@ impl LanguageServer for GrpctestifyLsp {
         }
 
         let line = lines[line_idx];
-        let char_idx = position.character as usize;
+        // LSP `character` is a UTF-16 code-unit offset; convert to a byte index.
+        let char_idx =
+            crate::lsp::position::utf16_col_to_byte(line, position.character as usize);
         if char_idx >= line.len() {
             return Ok(None);
         }
@@ -1448,7 +1475,12 @@ impl LanguageServer for GrpctestifyLsp {
         params: SemanticTokensParams,
     ) -> LspResult<Option<SemanticTokensResult>> {
         let uri = params.text_document.uri;
-        let version = self.current_doc_version(&uri).await;
+        // Read content and version atomically so tokens are never cached under
+        // a version that a concurrent edit already advanced past.
+        let (content, version) = match self.document_snapshot(&uri).await {
+            Some(snapshot) => snapshot,
+            None => return Ok(None),
+        };
 
         if let Some((cached_ver, cached_tokens)) = self
             .semantic_tokens_cache
@@ -1461,13 +1493,7 @@ impl LanguageServer for GrpctestifyLsp {
             return Ok(Some(SemanticTokensResult::Tokens(cached_tokens)));
         }
 
-        let docs = self.documents.read().await;
-        let content = match docs.get(&uri.to_string()) {
-            Some(c) => c,
-            None => return Ok(None),
-        };
-
-        let tokens = crate::lsp::build_semantic_tokens(content);
+        let tokens = crate::lsp::build_semantic_tokens(&content);
         self.semantic_tokens_cache
             .write()
             .await
@@ -1494,7 +1520,11 @@ impl LanguageServer for GrpctestifyLsp {
     async fn inlay_hint(&self, params: InlayHintParams) -> LspResult<Option<Vec<InlayHint>>> {
         let uri = params.text_document.uri;
         let range = params.range;
-        let version = self.current_doc_version(&uri).await;
+        // Read content and version atomically to keep cached hints consistent.
+        let (content, version) = match self.document_snapshot(&uri).await {
+            Some(snapshot) => snapshot,
+            None => return Ok(None),
+        };
         let cache_key = Self::inlay_cache_key(&uri, &range);
 
         if let Some((cached_ver, cached_hints)) =
@@ -1504,13 +1534,7 @@ impl LanguageServer for GrpctestifyLsp {
             return Ok(Some(cached_hints));
         }
 
-        let docs = self.documents.read().await;
-        let content = match docs.get(&uri.to_string()) {
-            Some(c) => c,
-            None => return Ok(None),
-        };
-
-        let hints = crate::lsp::build_inlay_hints(content, range);
+        let hints = crate::lsp::build_inlay_hints(&content, range);
         self.inlay_hints_cache
             .write()
             .await

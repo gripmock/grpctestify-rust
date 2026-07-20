@@ -16,14 +16,45 @@ pub struct ApiError {
     pub error: String,
 }
 
-/// Reject paths containing `..` to prevent directory traversal.
+/// Reject directory traversal. `..` is only dangerous as a full path
+/// component — filenames like `foo..gctf` are legal — so split on both `/`
+/// and `\` (Windows) and check components. Absolute paths (unix `/…`,
+/// Windows `C:\…` or `\\server\…`) are rejected too.
 fn reject_traversal(path: &str) -> Result<(), (StatusCode, String)> {
-    if path.contains("..") {
-        return Err((StatusCode::NOT_FOUND, "File not found".to_string()));
+    let not_found = || (StatusCode::NOT_FOUND, "File not found".to_string());
+    if path.starts_with('/') || path.starts_with('\\') {
+        return Err(not_found());
     }
-    // Also reject absolute paths and paths starting with /
-    if path.starts_with('/') {
-        return Err((StatusCode::NOT_FOUND, "File not found".to_string()));
+    // Windows drive-letter absolute path (e.g. `C:\...` or `C:/...`)
+    if path.as_bytes().get(1) == Some(&b':') {
+        return Err(not_found());
+    }
+    if path.split(['/', '\\']).any(|component| component == "..") {
+        return Err(not_found());
+    }
+    Ok(())
+}
+
+/// Writes via /api/save and /api/save-structured are limited to .gctf files
+/// (the UI always saves .gctf; .proto uploads have their own endpoint).
+fn require_gctf(path: &str) -> Result<(), (StatusCode, String)> {
+    if !path.to_ascii_lowercase().ends_with(".gctf") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Only .gctf files can be saved".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Env names become part of `.env.{name}` file names under the project root;
+/// reject separators and traversal so a crafted name can't escape it.
+fn validate_env_name(name: &str) -> Result<(), (StatusCode, String)> {
+    if name.is_empty() || name.contains(['/', '\\', ':']) || name.contains("..") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Invalid environment name".to_string(),
+        ));
     }
     Ok(())
 }
@@ -33,10 +64,16 @@ fn parse_protocol(s: Option<&str>) -> crate::grpc::WireProtocol {
 }
 
 /// Resolve a relative path across all collections dirs. Returns first match.
+/// Defense in depth: the canonicalized result must stay inside the
+/// canonicalized collections dir (catches anything reject_traversal missed
+/// and symlinks pointing outside the collection roots).
 fn resolve_file(state: &PlayState, rel: &str) -> Option<std::path::PathBuf> {
     for dir in &state.collections_dirs {
         let fp = dir.join(rel);
-        if fp.exists() {
+        if fp.exists()
+            && let (Ok(canon), Ok(dir_canon)) = (fp.canonicalize(), dir.canonicalize())
+            && canon.starts_with(&dir_canon)
+        {
             return Some(fp);
         }
     }
@@ -470,6 +507,7 @@ pub async fn save_collection(
     Json(req): Json<SaveRequest>,
 ) -> Result<Json<()>, (StatusCode, String)> {
     reject_traversal(&req.path)?;
+    require_gctf(&req.path)?;
     let state = state.clone();
     let path_str = req.path.clone();
     let content = req.content.clone();
@@ -496,6 +534,7 @@ pub async fn save_collection_structured(
     Json(req): Json<SaveRequestStructured>,
 ) -> Result<Json<()>, (StatusCode, String)> {
     reject_traversal(&req.path)?;
+    require_gctf(&req.path)?;
     let file_path = primary_dir(&state).join(&req.path);
 
     // Build base doc via builder, then merge preserved sections
@@ -526,7 +565,7 @@ pub async fn save_collection_structured(
 
     // Preserve non-edited sections from original file
     if let Some(ref orig_path) = req.original_path {
-        if orig_path.contains("..") || orig_path.starts_with('/') {
+        if reject_traversal(orig_path).is_err() {
             return Err((StatusCode::NOT_FOUND, "Invalid original_path".to_string()));
         }
         let orig_file =
@@ -570,7 +609,7 @@ pub async fn proto_upload(
             "Filename must end with .proto".to_string(),
         ));
     }
-    if filename.contains("..") || filename.contains('/') {
+    if filename.contains(['/', '\\']) || reject_traversal(&filename).is_err() {
         return Err((StatusCode::BAD_REQUEST, "Invalid filename".to_string()));
     }
     let file_path = primary_dir(&state).join(&filename);
@@ -600,7 +639,9 @@ pub async fn proto_files(State(state): State<Arc<PlayState>>) -> Json<Vec<ProtoI
                     && let Ok(meta) = path.metadata()
                 {
                     files.push(ProtoInfo {
-                        path: path.to_string_lossy().to_string(),
+                        // Relative name only — never leak absolute server
+                        // paths to the browser (UI uses name/size anyway).
+                        path: name.clone(),
                         name,
                         size: meta.len(),
                     });
@@ -636,7 +677,7 @@ pub async fn reflect_server(
 
     // Resolve proto config from collection if provided
     let proto_config = if let Some(ref coll_path) = req.collection_path {
-        if coll_path.contains("..") {
+        if reject_traversal(coll_path).is_err() {
             return Json(ReflectResponse {
                 services: vec![],
                 error: Some("Invalid collection_path".into()),
@@ -794,7 +835,7 @@ pub async fn schema_fill(
 
     // Resolve proto config from collection if provided
     let proto_config = if let Some(ref coll_path) = req.collection_path {
-        if coll_path.contains("..") {
+        if reject_traversal(coll_path).is_err() {
             return Json(SchemaFillResponse {
                 schema: None,
                 error: Some("Invalid collection_path".into()),
@@ -1129,7 +1170,7 @@ pub async fn execute_call(
 
     // Resolve proto config from collection if provided
     let proto_config = if let Some(ref coll_path) = req.collection_path {
-        if coll_path.contains("..") {
+        if reject_traversal(coll_path).is_err() {
             return Err((StatusCode::NOT_FOUND, "Invalid collection_path".to_string()));
         }
         let state = state.clone();
@@ -1506,6 +1547,7 @@ pub async fn project_env_get(
     Path(name): Path<String>,
 ) -> Result<Json<String>, (StatusCode, String)> {
     let root = require_project(&state)?;
+    validate_env_name(&name)?;
     let content = super::project::read_dotenv(&root, &name)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| {
@@ -1528,6 +1570,7 @@ pub async fn project_env_put(
     Json(body): Json<EnvPutBody>,
 ) -> Result<Json<()>, (StatusCode, String)> {
     let root = require_project(&state)?;
+    validate_env_name(&name)?;
     super::project::write_dotenv(&root, &name, &body.content)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(()))
@@ -1551,6 +1594,7 @@ pub async fn project_env_merged(
     Path(name): Path<String>,
 ) -> Result<Json<EnvMergedResponse>, (StatusCode, String)> {
     let root = require_project(&state)?;
+    validate_env_name(&name)?;
     let shared_raw = super::project::read_dotenv(&root, &name)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .unwrap_or_default();
@@ -1595,6 +1639,7 @@ pub async fn project_env_local_get(
     Path(name): Path<String>,
 ) -> Result<Json<EnvLocalStatus>, (StatusCode, String)> {
     let root = require_project(&state)?;
+    validate_env_name(&name)?;
     let content = super::project::read_dotenv_local(&root, &name)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(EnvLocalStatus {
@@ -1609,6 +1654,7 @@ pub async fn project_env_local_put(
     Json(body): Json<EnvPutBody>,
 ) -> Result<Json<()>, (StatusCode, String)> {
     let root = require_project(&state)?;
+    validate_env_name(&name)?;
     super::project::write_dotenv_local(&root, &name, &body.content)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(()))
@@ -1619,6 +1665,7 @@ pub async fn project_env_local_delete(
     Path(name): Path<String>,
 ) -> Result<Json<()>, (StatusCode, String)> {
     let root = require_project(&state)?;
+    validate_env_name(&name)?;
     super::project::delete_dotenv_local(&root, &name)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(()))
@@ -1761,13 +1808,45 @@ mod tests {
         assert!(reject_traversal("foo.gctf").is_ok());
         assert!(reject_traversal("dir/foo.gctf").is_ok());
         assert!(reject_traversal("a/b/c.gctf").is_ok());
+        // `..` inside a filename is not traversal
+        assert!(reject_traversal("foo..gctf").is_ok());
+        assert!(reject_traversal("dir/foo..bar.gctf").is_ok());
+        assert!(reject_traversal("my..dir/foo.gctf").is_ok());
     }
 
     #[test]
     fn test_reject_traversal_invalid() {
         assert!(reject_traversal("../foo.gctf").is_err());
         assert!(reject_traversal("dir/../../foo.gctf").is_err());
+        assert!(reject_traversal("dir/..").is_err());
         assert!(reject_traversal("/etc/passwd").is_err());
+        // Windows-style traversal and absolute paths
+        assert!(reject_traversal("..\\foo.gctf").is_err());
+        assert!(reject_traversal("dir\\..\\..\\foo.gctf").is_err());
+        assert!(reject_traversal("\\server\\share").is_err());
+        assert!(reject_traversal("C:\\Windows\\system32").is_err());
+        assert!(reject_traversal("C:/Windows/system32").is_err());
+    }
+
+    #[test]
+    fn test_require_gctf() {
+        assert!(require_gctf("foo.gctf").is_ok());
+        assert!(require_gctf("dir/foo.GCTF").is_ok());
+        assert!(require_gctf("foo.proto").is_err());
+        assert!(require_gctf("foo.sh").is_err());
+        assert!(require_gctf("gctf").is_err());
+    }
+
+    #[test]
+    fn test_validate_env_name() {
+        assert!(validate_env_name("staging").is_ok());
+        assert!(validate_env_name("prod-eu.1").is_ok());
+        assert!(validate_env_name("").is_err());
+        assert!(validate_env_name("../secrets").is_err());
+        assert!(validate_env_name("..").is_err());
+        assert!(validate_env_name("a/b").is_err());
+        assert!(validate_env_name("a\\b").is_err());
+        assert!(validate_env_name("C:x").is_err());
     }
 
     #[cfg(not(miri))]

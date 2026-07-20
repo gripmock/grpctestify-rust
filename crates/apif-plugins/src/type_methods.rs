@@ -243,14 +243,13 @@ impl Plugin for IpVersion {
             Value::String(s) => s,
             _ => return Ok(PluginResult::Value(Value::Null)),
         };
-        let version = if s.contains(':') {
-            6
-        } else if s.chars().all(|c| c.is_ascii_digit() || c == '.') {
-            4
-        } else {
-            return Ok(PluginResult::Value(Value::Null));
-        };
-        Ok(PluginResult::Value(Value::Number(version.into())))
+        // Actually parse the address so invalid input (e.g. "999.999.999.999"
+        // or a bare ":") returns Null instead of a bogus version number.
+        match s.parse::<std::net::IpAddr>() {
+            Ok(std::net::IpAddr::V4(_)) => Ok(PluginResult::Value(Value::Number(4.into()))),
+            Ok(std::net::IpAddr::V6(_)) => Ok(PluginResult::Value(Value::Number(6.into()))),
+            Err(_) => Ok(PluginResult::Value(Value::Null)),
+        }
     }
     fn signature(&self) -> PluginSignature {
         PluginSignature {
@@ -287,8 +286,12 @@ impl Plugin for UuidVersion {
             Value::String(s) => s,
             _ => return Ok(PluginResult::Value(Value::Null)),
         };
-        let v = s.chars().nth(14).and_then(|c| c.to_digit(10)).unwrap_or(0);
-        Ok(PluginResult::Value(Value::Number(v.into())))
+        // Parse the UUID rather than blindly reading a character position, so
+        // invalid input returns Null instead of a garbage version number.
+        match uuid::Uuid::parse_str(s) {
+            Ok(u) => Ok(PluginResult::Value(Value::Number(u.get_version_num().into()))),
+            Err(_) => Ok(PluginResult::Value(Value::Null)),
+        }
     }
     fn signature(&self) -> PluginSignature {
         PluginSignature {
@@ -545,9 +548,17 @@ mod tests {
         let r6 = IpVersion.execute(&[json!("::1")], &ctx()).unwrap();
         assert_eq!(r6, PluginResult::Value(json!(6)));
 
-        // Invalid — empty string matches the all-digit-or-dot check, so returns 4
+        // Regression: invalid input must return Null, not a bogus version.
         let r = IpVersion.execute(&[json!("")], &ctx()).unwrap();
-        assert_eq!(r, PluginResult::Value(json!(4)));
+        assert_eq!(r, PluginResult::Value(Value::Null));
+
+        let r = IpVersion
+            .execute(&[json!("999.999.999.999")], &ctx())
+            .unwrap();
+        assert_eq!(r, PluginResult::Value(Value::Null));
+
+        let r = IpVersion.execute(&[json!(":")], &ctx()).unwrap();
+        assert_eq!(r, PluginResult::Value(Value::Null));
 
         let r = IpVersion.execute(&[], &ctx()).unwrap();
         assert_eq!(r, PluginResult::Value(Value::Null));
@@ -569,8 +580,16 @@ mod tests {
             .unwrap();
         assert_eq!(r, PluginResult::Value(json!(5)));
 
+        // Regression: invalid UUIDs must return Null, not a garbage version.
         let r = UuidVersion.execute(&[json!("not-a-uuid")], &ctx()).unwrap();
-        assert_eq!(r, PluginResult::Value(json!(0)));
+        assert_eq!(r, PluginResult::Value(Value::Null));
+
+        // A well-formed layout with a non-hex char at the version position must
+        // also fail to parse and return Null (previously returned a digit).
+        let r = UuidVersion
+            .execute(&[json!("550e8400-e29b-x1d4-a716-446655440000")], &ctx())
+            .unwrap();
+        assert_eq!(r, PluginResult::Value(Value::Null));
 
         let r = UuidVersion.execute(&[], &ctx()).unwrap();
         assert_eq!(r, PluginResult::Value(Value::Null));

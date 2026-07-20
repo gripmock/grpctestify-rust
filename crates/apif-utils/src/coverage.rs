@@ -144,7 +144,10 @@ impl CoverageCollector {
             }
 
             let methods: Vec<_> = service.methods().collect();
-            let called_methods = calls.get(service_name).cloned().unwrap_or_default();
+            // Calls are recorded under the fully-qualified service name
+            // ("package.Service", see runner.rs). Look up with the same
+            // FQN so services inside a proto `package` aren't reported 0%.
+            let called_methods = calls.get(service.full_name()).cloned().unwrap_or_default();
 
             let covered = methods
                 .iter()
@@ -247,7 +250,8 @@ impl CoverageCollector {
 
             report.push_str(&format!("Service: {}\n", service_name));
 
-            let called_methods = calls.get(service_name).cloned().unwrap_or_default();
+            // Match the fully-qualified name used when recording calls.
+            let called_methods = calls.get(service.full_name()).cloned().unwrap_or_default();
 
             let mut methods: Vec<_> = service.methods().collect();
             methods.sort_by(|a, b| a.name().cmp(b.name()));
@@ -322,5 +326,60 @@ impl CoverageCollector {
 impl Default for CoverageCollector {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prost_reflect::prost_types::{
+        DescriptorProto, FileDescriptorProto, MethodDescriptorProto, ServiceDescriptorProto,
+    };
+
+    /// Build a pool with a service inside a proto `package`, so its
+    /// fully-qualified name ("my.pkg.Greeter") differs from its short name.
+    fn pool_with_packaged_service() -> DescriptorPool {
+        let mut pool = DescriptorPool::new();
+        let file = FileDescriptorProto {
+            name: Some("test.proto".to_string()),
+            package: Some("my.pkg".to_string()),
+            message_type: vec![DescriptorProto {
+                name: Some("Empty".to_string()),
+                ..Default::default()
+            }],
+            service: vec![ServiceDescriptorProto {
+                name: Some("Greeter".to_string()),
+                method: vec![MethodDescriptorProto {
+                    name: Some("SayHello".to_string()),
+                    input_type: Some(".my.pkg.Empty".to_string()),
+                    output_type: Some(".my.pkg.Empty".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        pool.add_file_descriptor_proto(file).unwrap();
+        pool
+    }
+
+    // Bug 6: calls are recorded under the fully-qualified service name, so
+    // coverage lookup must use the same FQN or packaged services report 0%.
+    #[test]
+    fn coverage_matches_fully_qualified_service_name() {
+        let collector = CoverageCollector::new();
+        collector.register_pool(&pool_with_packaged_service());
+        // Recorded exactly as runner.rs does: "package.Service".
+        collector.record_call("my.pkg.Greeter", "SayHello");
+
+        let report = collector.generate_json_report();
+        assert_eq!(report.summary.total, 1, "one method total");
+        assert_eq!(
+            report.summary.covered, 1,
+            "packaged service call should be counted as covered"
+        );
+
+        let text = collector.generate_text_report();
+        assert!(text.contains("100.0%"), "text report: {text}");
     }
 }

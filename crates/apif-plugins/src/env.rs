@@ -5,6 +5,7 @@
 use anyhow::Result;
 use serde_json::Value;
 use std::env;
+use std::env::VarError;
 
 use crate::{
     ArgTypeInfo, Plugin, PluginContext, PluginPurity, PluginResult, PluginSignature, TypeInfo,
@@ -82,10 +83,24 @@ impl Plugin for EnvPlugin {
             None
         };
 
-        // Get environment variable
+        // SECURITY: `@env` exposes the process environment to test files. Any
+        // variable readable by the process (including secrets such as tokens or
+        // credentials) can be pulled into a test via `@env("SECRET")`. There is
+        // currently no allowlist mechanism in the plugin context to scope this,
+        // so operators should treat `.apif`/`.gctf` files as trusted input and
+        // avoid running them in environments holding sensitive variables.
+        //
+        // Get environment variable. We deliberately distinguish the three cases:
+        //   * present + valid UTF-8 -> return the value
+        //   * present + non-UTF-8   -> hard error (do NOT silently fall back to
+        //     the default or Null, which would mask a real misconfiguration)
+        //   * not present           -> default value, else Null
         match env::var(var_name) {
             Ok(value) => Ok(PluginResult::Value(Value::String(value))),
-            Err(_) => {
+            Err(VarError::NotUnicode(_)) => Ok(PluginResult::Assertion(AssertionResult::fail(
+                format!("@env: variable '{var_name}' is set but its value is not valid UTF-8"),
+            ))),
+            Err(VarError::NotPresent) => {
                 if let Some(default) = default_value {
                     Ok(PluginResult::Value(Value::String(default)))
                 } else {
@@ -248,6 +263,41 @@ mod tests {
             result,
             PluginResult::Assertion(AssertionResult::Fail { .. })
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_env_plugin_non_utf8_errors_not_treated_as_unset() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        // Arrange: set a variable to a value that is not valid UTF-8.
+        let plugin = EnvPlugin;
+        unsafe {
+            env::set_var("TEST_VAR_NON_UTF8", OsStr::from_bytes(&[0x66, 0x80, 0x6f]));
+        }
+
+        // Act: a default is supplied, but a present-but-non-UTF8 var must NOT
+        // silently fall back to it — it is a distinct error condition.
+        let result = plugin
+            .execute(
+                &[
+                    Value::String("TEST_VAR_NON_UTF8".to_string()),
+                    Value::String("fallback".to_string()),
+                ],
+                &PluginContext::new(&Value::Null),
+            )
+            .unwrap();
+
+        // Assert
+        assert!(matches!(
+            result,
+            PluginResult::Assertion(AssertionResult::Fail { .. })
+        ));
+
+        unsafe {
+            env::remove_var("TEST_VAR_NON_UTF8");
+        }
     }
 
     #[test]

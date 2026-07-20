@@ -714,7 +714,8 @@ impl Cli {
                 .map(|n| n.get())
                 .unwrap_or(4)
         } else {
-            parallel.parse().unwrap_or(1)
+            // Clamp to at least 1: buffer_unordered(0) never polls (deadlock).
+            parallel.parse().unwrap_or(1).max(1)
         }
     }
 
@@ -831,6 +832,11 @@ impl HasFormat for BenchArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct PlayArgs {
+    /// Host/interface to bind. Defaults to loopback only; pass e.g. 0.0.0.0
+    /// to expose the playground on the network (no auth — trusted networks only)
+    #[arg(long, default_value = "127.0.0.1")]
+    pub host: String,
+
     /// Port to listen on (default: 4755)
     #[arg(long, default_value = "4755")]
     pub port: u16,
@@ -859,6 +865,24 @@ impl RunArgs {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn parallel_jobs_clamps_zero_to_one() {
+        let cli = Cli::parse_from(["grpctestify", "run", "-p", "0", "test.gctf"]);
+        assert_eq!(cli.parallel_jobs(), 1);
+    }
+
+    #[test]
+    fn parallel_jobs_invalid_defaults_to_one() {
+        let cli = Cli::parse_from(["grpctestify", "run", "-p", "bogus", "test.gctf"]);
+        assert_eq!(cli.parallel_jobs(), 1);
+    }
+
+    #[test]
+    fn parallel_jobs_auto_is_at_least_one() {
+        let cli = Cli::parse_from(["grpctestify", "run", "test.gctf"]);
+        assert!(cli.parallel_jobs() >= 1);
+    }
 
     #[test]
     fn parse_call_defaults() {

@@ -441,7 +441,9 @@ pub fn get_var_hover(
 
     let line_str = doc.metadata.source.as_deref()?.lines().nth(line_0based)?;
 
-    let char_pos = character as usize;
+    // LSP `character` is a UTF-16 code-unit offset; convert to a byte index
+    // before slicing so non-ASCII lines don't panic.
+    let char_pos = crate::lsp::position::utf16_col_to_byte(line_str, character as usize);
     if char_pos >= line_str.len() {
         return None;
     }
@@ -511,8 +513,16 @@ pub fn get_plugin_hover(
         return None;
     }
 
-    let col = character as usize;
-    let at_pos = line_str[..=col.min(line_str.len().saturating_sub(1))].rfind('@')?;
+    // LSP `character` is a UTF-16 code-unit offset; convert to a byte index.
+    let col = crate::lsp::position::utf16_col_to_byte(line_str, character as usize);
+    // Search up to and including the character under the cursor (byte boundary
+    // safe: `end` always lands on a char boundary).
+    let end = line_str[col..]
+        .chars()
+        .next()
+        .map(|c| col + c.len_utf8())
+        .unwrap_or(col);
+    let at_pos = line_str[..end].rfind('@')?;
 
     let rest = &line_str[at_pos..];
     let name_end = rest[1..]
@@ -589,8 +599,11 @@ pub fn validation_error_to_diagnostic(
         crate::parser::validator::ErrorSeverity::Info => DiagnosticSeverity::INFORMATION,
     };
 
-    // AST line is 1-based, LSP is 0-based
-    let line_num = (error.line.unwrap_or(1) - 1) as u32;
+    // ValidationError.line is the section's 0-based start line (see
+    // `Section::start_line`), which matches LSP's 0-based line numbering. Use it
+    // directly — subtracting 1 here shifted every diagnostic one line up and
+    // underflowed for line-0 sections.
+    let line_num = error.line.unwrap_or(0) as u32;
     let line_len = content
         .lines()
         .nth(line_num as usize)
@@ -759,7 +772,7 @@ fn collect_optimizer_rewrites_with_ranges(
 pub struct UnusedVariable {
     /// Variable name
     pub name: String,
-    /// 1-based line number where the variable is defined (EXTRACT section)
+    /// 0-based line number where the variable is defined (EXTRACT section)
     pub line: usize,
     /// 0-based character where the variable name starts on that line
     pub character: usize,
@@ -792,7 +805,7 @@ pub fn collect_unused_variables(doc: &crate::parser::GctfDocument) -> Vec<Unused
 
 /// Extract all EXTRACT variables from the document chain with their AST source locations.
 fn extract_all_vars(doc: &crate::parser::GctfDocument) -> Vec<(usize, String, usize, usize)> {
-    // (doc_index, var_name, 1-based line, 0-based char)
+    // (doc_index, var_name, 0-based line, 0-based char)
     let mut vars = Vec::new();
 
     for (doc_idx, curr_doc) in doc.iter_chain().enumerate() {
@@ -807,7 +820,9 @@ fn extract_all_vars(doc: &crate::parser::GctfDocument) -> Vec<(usize, String, us
                         continue;
                     }
                     if let Some(extract_var) = parser::ExtractVar::parse(trimmed) {
-                        let global_line = section.start_line + local_line;
+                        // start_line is the 0-based header line; the first
+                        // content line sits at start_line + 1.
+                        let global_line = section.start_line + local_line + 1;
                         let char_pos = raw_line.find(&extract_var.name).unwrap_or(0);
                         vars.push((doc_idx, extract_var.name, global_line, char_pos));
                     }
@@ -822,7 +837,7 @@ fn extract_all_vars(doc: &crate::parser::GctfDocument) -> Vec<(usize, String, us
                         // Find in raw_content to get line info
                         for (local_line, raw_line) in section.raw_content.lines().enumerate() {
                             if raw_line.trim().starts_with(var_name) {
-                                let global_line = section.start_line + local_line;
+                                let global_line = section.start_line + local_line + 1;
                                 let char_pos = raw_line.find(var_name).unwrap_or(0);
                                 vars.push((doc_idx, var_name.clone(), global_line, char_pos));
                                 break;
@@ -943,7 +958,8 @@ fn doc_contains_var_reference_excluding_extract(
 
 /// Convert unused variables to LSP diagnostics
 pub fn unused_variable_to_diagnostic(var: &UnusedVariable) -> Diagnostic {
-    let lsp_line = var.line.saturating_sub(1) as u32;
+    // var.line is already 0-based (matches LSP line numbering).
+    let lsp_line = var.line as u32;
     let char_start = var.character as u32;
     let char_end = (var.character + var.name.len()) as u32;
 
@@ -1259,8 +1275,24 @@ test.Service/Method
         let diagnostic = validation_error_to_diagnostic(&error, content);
 
         assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
-        assert_eq!(diagnostic.range.start.line, 4); // 0-based
+        // ValidationError.line is already 0-based, so it maps through unchanged.
+        assert_eq!(diagnostic.range.start.line, 5);
         assert_eq!(diagnostic.message, "Test error");
+    }
+
+    #[test]
+    fn test_validation_error_to_diagnostic_line_zero() {
+        // A section starting at 0-based line 0 must not underflow and must land
+        // on line 0 (regression for the `line - 1` underflow bug).
+        let error = crate::parser::validator::ValidationError {
+            message: "Line zero error".to_string(),
+            line: Some(0),
+            severity: crate::parser::validator::ErrorSeverity::Error,
+        };
+        let content = "--- ENDPOINT ---\ntest.Service/Method\n";
+        let diagnostic = validation_error_to_diagnostic(&error, content);
+        assert_eq!(diagnostic.range.start.line, 0);
+        assert_eq!(diagnostic.range.end.line, 0);
     }
 
     #[test]
@@ -1686,6 +1718,17 @@ test.Service/Method
     fn test_get_section_header_option_completions_others() {
         assert!(get_section_header_option_completions(&SectionType::Address).is_empty());
         assert!(get_section_header_option_completions(&SectionType::Request).is_empty());
+    }
+
+    #[test]
+    fn test_get_var_hover_multibyte_line_no_panic() {
+        // A REQUEST line with non-ASCII text before `{{ name }}`. Slicing with
+        // the UTF-16 cursor offset as a byte offset used to panic here.
+        let content = "--- ENDPOINT ---\nsvc.M\n\n--- EXTRACT ---\nname = .n\n\n--- REQUEST ---\n{\"msg\": \"Привет {{ name }}\"}\n";
+        let doc = parser::parse_gctf_from_str(content, "t.gctf").unwrap();
+        // `{{` begins at UTF-16 column 16; column 20 is inside `name`.
+        let hover = get_var_hover(&doc, 7, 20);
+        assert!(hover.is_some());
     }
 
     #[test]

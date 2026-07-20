@@ -955,6 +955,10 @@ impl TestRunner {
         let mut captured_trailers: HashMap<String, String> = HashMap::new();
         let mut failure_reasons: Vec<String> = Vec::new();
         let mut assertion_timing = AssertionScopeTimingState::default();
+        // Transport-level failures (connection refused, stream startup errors,
+        // stream read timeouts, ...) must never be masked in write mode and
+        // must never trigger a snapshot rewrite.
+        let mut transport_failure = false;
 
         // Iterator for sections
         // We iterate by index to allow lookahead
@@ -974,6 +978,7 @@ impl TestRunner {
         if !has_request_sections && let Some(tx_ref) = tx.as_mut() {
             if let Err(e) = tx_ref.send(Value::Object(serde_json::Map::new())).await {
                 failure_reasons.push(format!("Failed to send implicit empty request: {}", e));
+                transport_failure = true;
             }
             drop(tx.take());
         }
@@ -1006,11 +1011,13 @@ impl TestRunner {
                         }
                         Ok(Err(e)) => {
                             failure_reasons.push(format!("Failed to start gRPC stream: {}", e));
+                            transport_failure = true;
                             break;
                         }
                         Err(e) => {
                             failure_reasons
                                 .push(format!("Failed to join gRPC stream startup task: {}", e));
+                            transport_failure = true;
                             break;
                         }
                     }
@@ -1154,6 +1161,7 @@ impl TestRunner {
                             && let Some(error) = result.error_message
                         {
                             failure_reasons.push(error);
+                            transport_failure = true;
                         }
                     }
                     SectionType::Response => {
@@ -1192,11 +1200,37 @@ impl TestRunner {
                                 "No response stream available for RESPONSE section at line {}",
                                 section.start_line
                             ));
+                            transport_failure = true;
                             break;
                         };
 
+                        let read_timeout_secs = get_timeout().unwrap_or(effective_timeout_seconds);
+                        let mut stream_read_timed_out = false;
                         for expected_template in expected_values {
-                            match stream.next().await {
+                            // Bound each stream read: tonic's Endpoint::timeout only
+                            // covers the request/headers phase, not stalled streams.
+                            let next_item = if read_timeout_secs > 0 {
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_secs(read_timeout_secs),
+                                    stream.next(),
+                                )
+                                .await
+                                {
+                                    Ok(item) => item,
+                                    Err(_) => {
+                                        failure_reasons.push(format!(
+                                            "Timed out after {}s waiting for stream message for RESPONSE section at line {}",
+                                            read_timeout_secs, section.start_line
+                                        ));
+                                        transport_failure = true;
+                                        stream_read_timed_out = true;
+                                        break;
+                                    }
+                                }
+                            } else {
+                                stream.next().await
+                            };
+                            match next_item {
                                 Some(Ok(item)) => {
                                     match item {
                                         crate::grpc::client::StreamItem::Message(msg) => {
@@ -1313,6 +1347,12 @@ impl TestRunner {
                             }
                         }
 
+                        if stream_read_timed_out {
+                            // The stream is stalled; drop it so later sections
+                            // fail fast instead of timing out one by one.
+                            response_stream = None;
+                        }
+
                         if section.inline_options.with_asserts
                             && let Some(next_section) = sections.get(i + 1)
                             && next_section.section_type == SectionType::Asserts
@@ -1407,7 +1447,30 @@ impl TestRunner {
                             continue;
                         };
 
-                        match stream.next().await {
+                        let read_timeout_secs = get_timeout().unwrap_or(effective_timeout_seconds);
+                        let next_item = if read_timeout_secs > 0 {
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(read_timeout_secs),
+                                stream.next(),
+                            )
+                            .await
+                            {
+                                Ok(item) => item,
+                                Err(_) => {
+                                    failure_reasons.push(format!(
+                                        "Timed out after {}s waiting for stream message for ASSERTS section at line {}",
+                                        read_timeout_secs, section.start_line
+                                    ));
+                                    transport_failure = true;
+                                    response_stream = None;
+                                    continue;
+                                }
+                            }
+                        } else {
+                            stream.next().await
+                        };
+
+                        match next_item {
                             Some(Ok(crate::grpc::client::StreamItem::Message(msg))) => {
                                 let scope_start_ms =
                                     assertion_timing.last_message_elapsed_ms.unwrap_or(0);
@@ -1557,6 +1620,18 @@ impl TestRunner {
                                 }
                                 Ok(Err(_e)) => {
                                     let e = _e;
+                                    if let Some(resp) = &mut captured_response {
+                                        match e.downcast_ref::<apif_grpc_transport::GrpcError>() {
+                                            // Code 14 = UNAVAILABLE: connection-level
+                                            // failure, not a genuine server response —
+                                            // never snapshot it.
+                                            Some(status) if status.code() != 14 => {
+                                                resp.error =
+                                                    Some(status.message().to_string());
+                                            }
+                                            _ => transport_failure = true,
+                                        }
+                                    }
                                     let mut error_assert_target: Option<Value> = None;
                                     if !effective_no_assert {
                                         if let SectionContent::Json(expected_json) =
@@ -1726,6 +1801,7 @@ impl TestRunner {
                                         "Failed to join gRPC stream startup task: {}",
                                         e
                                     ));
+                                    transport_failure = true;
                                     break;
                                 }
                             }
@@ -1737,9 +1813,32 @@ impl TestRunner {
                                 "No response stream available for ERROR section at line {}",
                                 section.start_line
                             ));
+                            transport_failure = true;
                             break;
                         };
-                        match error_stream.next().await {
+                        let read_timeout_secs = get_timeout().unwrap_or(effective_timeout_seconds);
+                        let next_item = if read_timeout_secs > 0 {
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(read_timeout_secs),
+                                error_stream.next(),
+                            )
+                            .await
+                            {
+                                Ok(item) => item,
+                                Err(_) => {
+                                    failure_reasons.push(format!(
+                                        "Timed out after {}s waiting for stream error for ERROR section at line {}",
+                                        read_timeout_secs, section.start_line
+                                    ));
+                                    transport_failure = true;
+                                    response_stream = None;
+                                    break;
+                                }
+                            }
+                        } else {
+                            error_stream.next().await
+                        };
+                        match next_item {
                             Some(Err(status)) => {
                                 let scope_start_ms =
                                     assertion_timing.last_message_elapsed_ms.unwrap_or(0);
@@ -1750,6 +1849,11 @@ impl TestRunner {
 
                                 let status_message = status.message();
                                 last_error_message = Some(status_message.to_string());
+                                if let Some(resp) = &mut captured_response {
+                                    // Genuine error response received from an
+                                    // established stream — capture for snapshots.
+                                    resp.error = Some(status_message.to_string());
+                                }
                                 let error_json =
                                     super::error_handler::ErrorHandler::status_to_json(&status);
                                 last_error_json = Some(error_json.clone());
@@ -1907,7 +2011,15 @@ impl TestRunner {
                         resp.headers = h;
                         response_stream = Some(stream);
                     }
-                    Ok(Err(_)) | Err(_) => {
+                    Ok(Err(e)) => {
+                        failure_reasons.push(format!("Failed to start gRPC stream: {}", e));
+                        transport_failure = true;
+                        response_stream = None;
+                    }
+                    Err(e) => {
+                        failure_reasons
+                            .push(format!("Failed to join gRPC stream startup task: {}", e));
+                        transport_failure = true;
                         response_stream = None;
                     }
                 }
@@ -1915,7 +2027,26 @@ impl TestRunner {
 
             loop {
                 let next_item = if let Some(stream) = response_stream.as_mut() {
-                    stream.next().await
+                    if effective_timeout_seconds > 0 {
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(effective_timeout_seconds),
+                            stream.next(),
+                        )
+                        .await
+                        {
+                            Ok(item) => item,
+                            Err(_) => {
+                                failure_reasons.push(format!(
+                                    "Timed out after {}s draining response stream in write mode",
+                                    effective_timeout_seconds
+                                ));
+                                transport_failure = true;
+                                None
+                            }
+                        }
+                    } else {
+                        stream.next().await
+                    }
                 } else {
                     None
                 };
@@ -1941,16 +2072,15 @@ impl TestRunner {
         let grpc_duration = start_time.elapsed().as_millis() as u64;
 
         if !failure_reasons.is_empty() {
-            // Even if failed, we might want to return captured response?
-            // Usually snapshot update only happens if user asks for it.
-            // If write_mode is true, we should probably ignore failures?
-            if effective_write_mode {
-                // In write mode, failures (mismatches) are expected because we are updating!
-                // But validation errors (like invalid JSON) might still be relevant.
-                // Let's assume update mode implies "I want to overwrite whatever happens".
-                if let Some(resp) = captured_response {
-                    return Ok(TestExecutionResult::pass(Some(grpc_duration)).with_response(resp));
-                }
+            // In write mode, assertion mismatches are expected because we are
+            // updating snapshots — but transport failures (connection refused,
+            // stream startup errors, timeouts) must stay failures and must not
+            // rewrite the file with an empty/partial response.
+            if effective_write_mode
+                && !transport_failure
+                && let Some(resp) = captured_response
+            {
+                return Ok(TestExecutionResult::pass(Some(grpc_duration)).with_response(resp));
             }
 
             return Ok(TestExecutionResult::fail(
@@ -1960,7 +2090,7 @@ impl TestRunner {
         }
 
         let mut result = TestExecutionResult::pass(Some(grpc_duration));
-        if let Some(resp) = captured_response {
+        if !transport_failure && let Some(resp) = captured_response {
             result = result.with_response(resp);
         }
         Ok(result)

@@ -47,6 +47,8 @@ export function PlayLayout() {
         const data = await res.json();
         if (data.collections_mtime !== undefined && data.collections_mtime !== collectionsMtime) {
           refreshCollections();
+          // Persist the new mtime so we don't refetch every tick forever.
+          useStore.setState({ collectionsMtime: data.collections_mtime });
         }
       } catch {  }
     };

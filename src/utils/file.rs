@@ -7,7 +7,7 @@ use apif_utils::trailing_blank_line_count;
 
 use crate::grpc::GrpcResponse;
 use crate::parser::GctfDocument;
-use crate::parser::ast::{InlineOptions, SectionType};
+use crate::parser::ast::{InlineOptions, SectionContent, SectionType};
 
 // Re-export base FileUtils from crate — all shared methods live there
 pub use apif_utils::file_utils::FileUtils;
@@ -34,10 +34,21 @@ pub fn update_test_file(
             current_line += 1;
         }
 
-        if section.section_type == SectionType::Response {
+        let remaining = response.messages.len().saturating_sub(msg_idx);
+
+        if section.section_type == SectionType::Response && remaining > 0 {
             let with_asserts = section.inline_options.with_asserts;
-            let remaining = response.messages.len().saturating_sub(msg_idx);
-            let expected_count = if with_asserts { remaining } else { 1 };
+            // Preserve the message count the section originally declared:
+            // a streaming (JsonLines) section keeps all of its messages,
+            // while `with_asserts` sections capture every remaining message.
+            let expected_count = if with_asserts {
+                remaining
+            } else {
+                match &section.content {
+                    SectionContent::JsonLines(values) => values.len().max(1),
+                    _ => 1,
+                }
+            };
 
             new_lines.push(format!(
                 "--- RESPONSE{} ---",
@@ -65,18 +76,18 @@ pub fn update_test_file(
 
             msg_idx += expected_count.min(remaining);
             current_line = section_end;
-        } else if section.section_type == SectionType::Error {
+        } else if section.section_type == SectionType::Error && response.error.is_some() {
             new_lines.push(format!(
                 "--- ERROR{} ---",
                 format_inline_options(&section.inline_options)
             ));
             if let Some(error_msg) = &response.error {
                 new_lines.push(error_msg.clone());
-            } else {
-                new_lines.push("{}".to_string());
             }
             current_line = section_end;
         } else {
+            // Non-snapshot section, or a RESPONSE/ERROR section with no
+            // captured data — keep the original content untouched.
             while current_line < section_end && current_line < lines.len() {
                 new_lines.push(lines[current_line].to_string());
                 current_line += 1;
@@ -89,8 +100,32 @@ pub fn update_test_file(
         current_line += 1;
     }
 
-    let new_content = new_lines.join("\n");
-    fs::write(path, new_content)?;
+    let mut new_content = new_lines.join("\n");
+    if content.ends_with('\n') {
+        new_content.push('\n');
+    }
+
+    write_atomic(path, &new_content)?;
+    Ok(())
+}
+
+/// Writes `content` to a temp file in the same directory, then atomically
+/// renames it over `path` so a crash mid-write cannot corrupt the file.
+fn write_atomic(path: &Path, content: &str) -> Result<()> {
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("snapshot.gctf");
+    let tmp_path = parent.join(format!(".{}.{}.tmp", file_name, std::process::id()));
+    fs::write(&tmp_path, content)?;
+    if let Err(e) = fs::rename(&tmp_path, path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e.into());
+    }
     Ok(())
 }
 
@@ -206,5 +241,83 @@ mod tests {
             error: None,
         };
         assert!(update_test_file(temp_file.path(), &doc, &response).is_ok());
+    }
+
+    #[test]
+    fn test_update_test_file_preserves_streaming_message_count() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
+        let temp_file = NamedTempFile::new().unwrap();
+        // A single RESPONSE section with two streamed messages (JsonLines).
+        let content = "--- ENDPOINT ---\nService/Method\n\n--- RESPONSE ---\n{\"index\": 0}\n{\"index\": 1}\n";
+        std::fs::write(temp_file.path(), content).unwrap();
+        let doc = crate::parser::parse_gctf(temp_file.path()).unwrap();
+        let response = crate::grpc::GrpcResponse {
+            headers: std::collections::HashMap::new(),
+            trailers: std::collections::HashMap::new(),
+            messages: vec![
+                serde_json::json!({"index": 10}),
+                serde_json::json!({"index": 11}),
+            ],
+            error: None,
+        };
+        assert!(update_test_file(temp_file.path(), &doc, &response).is_ok());
+        let updated = std::fs::read_to_string(temp_file.path()).unwrap();
+        // Both streamed messages must survive the rewrite, not just the first.
+        assert!(updated.contains("\"index\": 10"), "updated: {updated}");
+        assert!(updated.contains("\"index\": 11"), "updated: {updated}");
+    }
+
+    #[test]
+    fn test_update_test_file_empty_response_preserves_original_content() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
+        let temp_file = NamedTempFile::new().unwrap();
+        let content = "--- ENDPOINT ---\nService/Method\n\n--- RESPONSE ---\n{\"result\": \"old\"}\n\n--- ERROR ---\n{\"code\": 5}\n";
+        std::fs::write(temp_file.path(), content).unwrap();
+        let doc = crate::parser::parse_gctf(temp_file.path()).unwrap();
+        // Nothing captured (e.g. server down) — snapshot must not be emptied.
+        let response = crate::grpc::GrpcResponse {
+            headers: HashMap::new(),
+            trailers: HashMap::new(),
+            messages: vec![],
+            error: None,
+        };
+        assert!(update_test_file(temp_file.path(), &doc, &response).is_ok());
+        let updated = std::fs::read_to_string(temp_file.path()).unwrap();
+        assert!(updated.contains("\"result\": \"old\""), "updated: {updated}");
+        assert!(updated.contains("\"code\": 5"), "updated: {updated}");
+    }
+
+    #[test]
+    fn test_update_test_file_preserves_trailing_newline_and_no_temp_leftover() {
+        if !runtime::supports(runtime::Capability::IsolatedFsIo) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot.gctf");
+        let content =
+            "--- ENDPOINT ---\nService/Method\n\n--- RESPONSE ---\n{\"result\": \"old\"}\n";
+        std::fs::write(&path, content).unwrap();
+        let doc = crate::parser::parse_gctf(&path).unwrap();
+        let response = crate::grpc::GrpcResponse {
+            headers: HashMap::new(),
+            trailers: HashMap::new(),
+            messages: vec![serde_json::json!({"result": "new"})],
+            error: None,
+        };
+        assert!(update_test_file(&path, &doc, &response).is_ok());
+        let updated = std::fs::read_to_string(&path).unwrap();
+        assert!(updated.contains("\"result\": \"new\""));
+        assert!(updated.ends_with('\n'), "trailing newline must be preserved");
+        // Atomic write must not leave temp files behind.
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
     }
 }

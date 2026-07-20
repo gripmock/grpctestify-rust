@@ -219,16 +219,28 @@ fn parse_custom_profile(s: &str) -> Option<Vec<(f64, f64)>> {
     Some(points)
 }
 
+/// Number of round-robin passes to schedule in fixed-request mode.
+///
+/// Each pass issues one request per test doc, so to honour `--requests` as the
+/// *total* request budget across all endpoints (per its help text), the pass
+/// count is the budget divided by the number of docs. This keeps the overall
+/// request count at ~`total_requests` instead of `total_requests * docs.len()`.
+fn request_passes(total_requests: u64, doc_count: usize) -> u64 {
+    total_requests / (doc_count as u64).max(1)
+}
+
 fn parse_duration_sec(s: &str) -> Option<f64> {
     let s = s.trim().to_ascii_lowercase();
+    // Check longest / most-specific suffixes first: "ms" must be matched before
+    // the single-char "s", otherwise "500ms" gets stripped to "500m" and fails.
     if let Some(rest) = s.strip_suffix('h') {
         rest.parse::<f64>().ok().map(|v| v * 3600.0)
-    } else if let Some(rest) = s.strip_suffix('m') {
-        rest.parse::<f64>().ok().map(|v| v * 60.0)
-    } else if let Some(rest) = s.strip_suffix('s') {
-        rest.parse::<f64>().ok()
     } else if let Some(rest) = s.strip_suffix("ms") {
         rest.parse::<f64>().ok().map(|v| v / 1000.0)
+    } else if let Some(rest) = s.strip_suffix('s') {
+        rest.parse::<f64>().ok()
+    } else if let Some(rest) = s.strip_suffix('m') {
+        rest.parse::<f64>().ok().map(|v| v * 60.0)
     } else {
         s.parse::<f64>().ok()
     }
@@ -998,7 +1010,10 @@ impl BenchMetrics {
             }];
         }
 
-        let width = (max - min) / bucket_count as u64;
+        // Guard against zero-width buckets: with few distinct latencies close
+        // together, integer division `(max - min) / bucket_count` can be 0,
+        // which would panic (divide/modulo by zero) when bucketing below.
+        let width = ((max - min) / bucket_count as u64).max(1);
         let mut buckets: Vec<BenchHistogramBucket> = (0..bucket_count)
             .map(|i| BenchHistogramBucket {
                 lower_ns: min + i as u64 * width,
@@ -1277,7 +1292,13 @@ async fn run_benchmark(
         }
     } else if total_requests > 0 {
         let mut join_set = JoinSet::new();
-        let requests_per_worker = total_requests / config.concurrency as u64;
+        // `--requests` is the TOTAL request budget across all endpoints (per its
+        // help text: "Total number of requests to send"). Each worker pass below
+        // issues one request per doc, so scale the pass count by the number of
+        // docs to keep the overall request count equal to `total_requests`
+        // instead of `total_requests * docs.len()`.
+        let total_passes = request_passes(total_requests, test_docs.len());
+        let passes_per_worker = total_passes / config.concurrency as u64;
         let max_deadline = config.max_duration.map(|d| Instant::now() + d);
         let schedule_start = run_start;
 
@@ -1288,9 +1309,9 @@ async fn run_benchmark(
             let progress_errors = Arc::clone(&progress_errors);
             let is_last = worker_id == config.concurrency - 1;
             let worker_requests = if is_last {
-                requests_per_worker + (total_requests % config.concurrency as u64)
+                passes_per_worker + (total_passes % config.concurrency as u64)
             } else {
-                requests_per_worker
+                passes_per_worker
             };
             let sc = source_config.clone();
             let shutdown = Arc::clone(&shutdown_requested);
@@ -1588,7 +1609,22 @@ fn evaluate_thresholds(
     let mut results = Vec::new();
     for (key, expr) in thresholds {
         let (op, rhs_str) = parse_threshold_expr(expr);
-        let rhs = rhs_str.parse::<f64>().unwrap_or(0.0);
+        // Parse the numeric part, tolerating unit suffixes (e.g. "5%", "200ms",
+        // "1.5s"). An unparseable threshold must ERROR rather than silently
+        // collapsing to 0.0 (which would make e.g. "< 5%" compare against 0).
+        let rhs = match parse_threshold_number(rhs_str) {
+            Some(v) => v,
+            None => {
+                results.push(BenchThresholdResult {
+                    metric: key.clone(),
+                    expr: expr.clone(),
+                    passed: false,
+                    actual: "unknown".to_string(),
+                    reason: Some(format!("invalid threshold value '{}'", rhs_str)),
+                });
+                continue;
+            }
+        };
 
         let actual_f64 = resolve_metric_value(metrics, key);
         if actual_f64.is_none() {
@@ -1644,6 +1680,29 @@ fn parse_threshold_expr(expr: &str) -> (&str, &str) {
     } else {
         ("", v)
     }
+}
+
+/// Parse the numeric part of a threshold right-hand side, stripping a trailing
+/// unit suffix (`%`, `ms`, `us`, `ns`, `s`, `m`) and surrounding whitespace.
+/// Returns `None` when the remaining text is not a valid number.
+fn parse_threshold_number(rhs: &str) -> Option<f64> {
+    let v = rhs.trim();
+    let num = if let Some(rest) = v.strip_suffix('%') {
+        rest
+    } else if let Some(rest) = v.strip_suffix("ms") {
+        rest
+    } else if let Some(rest) = v.strip_suffix("us") {
+        rest
+    } else if let Some(rest) = v.strip_suffix("ns") {
+        rest
+    } else if let Some(rest) = v.strip_suffix('s') {
+        rest
+    } else if let Some(rest) = v.strip_suffix('m') {
+        rest
+    } else {
+        v
+    };
+    num.trim().parse::<f64>().ok()
 }
 
 fn invert_op(op: &str) -> &str {
@@ -2271,6 +2330,87 @@ mod tests {
         assert!(parse_duration("").is_err());
         assert!(parse_duration("abc").is_err());
         assert!(parse_duration("30x").is_err());
+    }
+
+    // Bug 4: "ms" must be parsed before the single-char "s" suffix.
+    #[test]
+    fn test_parse_duration_sec_units() {
+        assert_eq!(parse_duration_sec("500ms"), Some(0.5));
+        assert_eq!(parse_duration_sec("2s"), Some(2.0));
+        assert_eq!(parse_duration_sec("1m"), Some(60.0));
+        assert_eq!(parse_duration_sec("1h"), Some(3600.0));
+        assert_eq!(parse_duration_sec("10"), Some(10.0));
+    }
+
+    // Bug 4: load_profile points with "ms" durations must not be dropped.
+    #[test]
+    fn test_parse_custom_profile_with_ms() {
+        let points = parse_custom_profile("500ms:10, 2s:100").expect("should parse");
+        assert_eq!(points.len(), 2);
+        assert_eq!(points[0], (0.5, 10.0));
+        assert_eq!(points[1], (2.0, 100.0));
+    }
+
+    // Bug 1: near-equal latencies must not cause a divide-by-zero panic.
+    #[test]
+    fn test_to_histogram_zero_width_no_panic() {
+        let metrics = BenchMetrics {
+            latencies: vec![10, 10, 11, 12, 12],
+            ..Default::default()
+        };
+        // (max-min)/bucket_count = (12-10)/10 = 0 in integer math -> was a panic.
+        let buckets = metrics.to_histogram(10);
+        assert!(!buckets.is_empty());
+        let total: u64 = buckets.iter().map(|b| b.count).sum();
+        assert_eq!(total, 5);
+    }
+
+    // Bug 3: `--requests` is the TOTAL budget across all docs.
+    #[test]
+    fn test_request_passes_honours_total_budget() {
+        // 100 total requests over 3 docs -> ~33 passes (33*3 = 99 requests).
+        assert_eq!(request_passes(100, 3), 33);
+        // Single doc: passes == requests (unchanged behaviour).
+        assert_eq!(request_passes(100, 1), 100);
+        // Zero docs must not divide by zero.
+        assert_eq!(request_passes(100, 0), 100);
+    }
+
+    // Bug 2: unit-suffixed thresholds must parse, not silently become 0.0.
+    #[test]
+    fn test_evaluate_thresholds_percent_suffix() {
+        let mut metrics = BenchMetrics {
+            count: 100,
+            errors: 2,
+            ..Default::default()
+        };
+        metrics.ok = 98;
+        let mut thresholds = HashMap::new();
+        thresholds.insert("error_rate_pct".to_string(), "< 5%".to_string());
+        let results = evaluate_thresholds(&metrics, &thresholds);
+        assert_eq!(results.len(), 1);
+        // 2% < 5% must PASS. With the old unwrap_or(0.0), rhs was 0 -> failed.
+        assert!(results[0].passed, "2% should pass a < 5% threshold");
+    }
+
+    // Bug 2: unparseable thresholds must error instead of defaulting to 0.0.
+    #[test]
+    fn test_evaluate_thresholds_invalid_value_errors() {
+        let metrics = BenchMetrics {
+            count: 100,
+            ..Default::default()
+        };
+        let mut thresholds = HashMap::new();
+        thresholds.insert("error_rate_pct".to_string(), "< abc".to_string());
+        let results = evaluate_thresholds(&metrics, &thresholds);
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].passed);
+        assert!(
+            results[0]
+                .reason
+                .as_deref()
+                .is_some_and(|r| r.contains("invalid threshold value"))
+        );
     }
 
     #[test]

@@ -1,6 +1,13 @@
 import { useEffect } from 'react';
 import { useStore } from './store';
 import type { ShareState } from './types';
+import { parseDeepLink } from './deeplink';
+
+export { parseDeepLink, encodeCollectionLink } from './deeplink';
+export type { DeepLink } from './deeplink';
+
+// Dedupe React StrictMode's double-invoke (and any remount) by path.
+let handledDeepLink: string | null = null;
 
 export function useDeepLink() {
   const loadCollection = useStore(s => s.loadCollection);
@@ -8,17 +15,21 @@ export function useDeepLink() {
 
   useEffect(() => {
     const path = window.location.pathname;
+    if (path === handledDeepLink) return;
 
-    const cMatch = path.match(/^\/c\/(.+)/);
-    if (cMatch) {
-      loadCollection(cMatch[1]);
+    const link = parseDeepLink(path);
+    if (!link) return;
+
+    if (link.kind === 'collection') {
+      handledDeepLink = path;
+      loadCollection(link.value);
       window.history.replaceState({}, '', '/');
       return;
     }
 
-    const sMatch = path.match(/^\/s\/(.+)/);
-    if (sMatch) {
-      const shareId = sMatch[1];
+    {
+      handledDeepLink = path;
+      const shareId = link.value;
       fetch(`/api/share/${shareId}`)
         .then(async res => {
           if (res.status === 404) {

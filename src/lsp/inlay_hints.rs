@@ -41,7 +41,8 @@ pub fn build_inlay_hints(content: &str, range: Range) -> Vec<InlayHint> {
     let total_docs = head.document_count();
     for (doc_idx, d) in head.iter_chain().enumerate() {
         for section in &d.sections {
-            let section_line = ((section.start_line as i32) - 1).max(0) as u32;
+            // start_line is already 0-based (the section header line).
+            let section_line = section.start_line as u32;
             if section_line < range.start.line || section_line > range.end.line {
                 continue;
             }
@@ -99,8 +100,7 @@ pub fn build_inlay_hints(content: &str, range: Range) -> Vec<InlayHint> {
                             break;
                         }
                     }
-                    let line_num =
-                        hint_line.unwrap_or(((section.start_line as i32) - 1).max(0) as u32);
+                    let line_num = hint_line.unwrap_or(section.start_line as u32);
                     if line_num >= range.start.line && line_num <= range.end.line {
                         hints.push(InlayHint {
                             position: Position {
@@ -147,7 +147,8 @@ pub fn build_inlay_hints(content: &str, range: Range) -> Vec<InlayHint> {
         }
     }
     for unused_var in handlers::collect_unused_variables(&head) {
-        let line_num = (unused_var.line as i32 - 1).max(0) as u32;
+        // unused_var.line is already 0-based.
+        let line_num = unused_var.line as u32;
         if line_num < range.start.line || line_num > range.end.line {
             continue;
         }

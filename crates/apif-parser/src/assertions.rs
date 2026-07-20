@@ -37,10 +37,29 @@ pub fn strip_assertion_comments(line: &str) -> Option<String> {
         }
 
         if ch == '/' && chars.next_if_eq(&'/').is_some() {
-            let prev_is_whitespace = out.chars().last().is_none_or(char::is_whitespace);
-            if !saw_non_whitespace || prev_is_whitespace {
+            // Full-line comment: nothing but whitespace before `//`.
+            if !saw_non_whitespace {
                 break;
             }
+            let prev_is_whitespace = out.chars().last().is_none_or(char::is_whitespace);
+            if prev_is_whitespace {
+                // Ambiguity: ` // ` may start an inline comment or be jq's
+                // alternative operator (`.value // "default"`). Keep it as jq
+                // `//` when the next token looks like the start of a jq
+                // expression; otherwise strip it as a comment.
+                let next = chars.clone().find(|c| !c.is_whitespace());
+                let looks_like_jq_operand = next.is_some_and(|c| {
+                    c.is_ascii_digit() || matches!(c, '.' | '$' | '"' | '\'' | '(' | '[' | '{' | '@')
+                });
+                if !looks_like_jq_operand {
+                    break;
+                }
+            }
+            // Not a comment: keep both slashes (jq `//` alternative operator,
+            // or `//` glued between operands like `1//2`).
+            out.push('/');
+            out.push('/');
+            continue;
         }
 
         if !ch.is_whitespace() {
@@ -76,6 +95,29 @@ mod tests {
         assert_eq!(
             strip_assertion_comments("@scope.message_count() == 2 # two messages"),
             Some("@scope.message_count() == 2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_preserves_jq_alternative_operator() {
+        // Regression: ` // ` followed by a jq operand is jq's alternative
+        // operator, not a comment.
+        assert_eq!(
+            strip_assertion_comments(".value // \"default\" == \"x\""),
+            Some(".value // \"default\" == \"x\"".to_string())
+        );
+        assert_eq!(
+            strip_assertion_comments(".a // .b == 1"),
+            Some(".a // .b == 1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_preserves_double_slash_between_operands() {
+        // Regression: `1//2` used to lose a slash and become `1/2`.
+        assert_eq!(
+            strip_assertion_comments(".a == 1//2"),
+            Some(".a == 1//2".to_string())
         );
     }
 

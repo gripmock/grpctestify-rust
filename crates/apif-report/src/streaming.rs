@@ -2,50 +2,69 @@ use anyhow::Result;
 use apif_state::{TestResult, TestResults};
 use serde_json::json;
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Once;
 
 use super::Reporter;
 
 pub struct StreamingJsonReporter {
-    suite_started: AtomicBool,
+    /// Guarantees `suite_start` is emitted exactly once, and that the emit
+    /// completes before any concurrent caller proceeds — so no `test_start`
+    /// can ever race ahead of `suite_start` under parallel execution.
+    suite_started: Once,
     test_count: usize,
+    #[cfg(test)]
+    captured: std::sync::Mutex<Vec<String>>,
 }
 
 impl StreamingJsonReporter {
     pub fn new(test_count: usize) -> Self {
         Self {
-            suite_started: AtomicBool::new(false),
+            suite_started: Once::new(),
             test_count,
+            #[cfg(test)]
+            captured: std::sync::Mutex::new(Vec::new()),
         }
     }
 
+    /// Emit `suite_start` exactly once, blocking concurrent callers until it has
+    /// been written. `Once::call_once` provides the ordering guarantee.
+    fn ensure_suite_started(&self) {
+        self.suite_started.call_once(|| {
+            self.emit(&json!({
+                "event": "suite_start",
+                "testCount": self.test_count,
+                "timestamp": apif_cfg_runtime::now_rfc3339(),
+            }));
+        });
+    }
+
     fn emit(&self, event: &serde_json::Value) {
-        let mut stdout = io::stdout().lock();
         match serde_json::to_string(event) {
-            Ok(s) => {
-                if let Err(e) = writeln!(stdout, "{}", s) {
-                    tracing::warn!("Failed to write streaming JSON to stdout: {e}");
-                }
-                if let Err(e) = stdout.flush() {
-                    tracing::warn!("Failed to flush stdout: {e}");
-                }
-            }
+            Ok(s) => self.write_line(&s),
             Err(e) => {
                 tracing::warn!("Failed to serialize streaming event: {e}");
             }
+        }
+    }
+
+    fn write_line(&self, s: &str) {
+        #[cfg(test)]
+        if let Ok(mut cap) = self.captured.lock() {
+            cap.push(s.to_string());
+        }
+        let mut stdout = io::stdout().lock();
+        if let Err(e) = writeln!(stdout, "{}", s) {
+            tracing::warn!("Failed to write streaming JSON to stdout: {e}");
+        }
+        if let Err(e) = stdout.flush() {
+            tracing::warn!("Failed to flush stdout: {e}");
         }
     }
 }
 
 impl Reporter for StreamingJsonReporter {
     fn on_test_start(&self, test_name: &str) {
-        if !self.suite_started.swap(true, Ordering::SeqCst) {
-            self.emit(&json!({
-                "event": "suite_start",
-                "testCount": self.test_count,
-                "timestamp": apif_cfg_runtime::now_rfc3339(),
-            }));
-        }
+        self.ensure_suite_started();
 
         self.emit(&json!({
             "event": "test_start",
@@ -106,7 +125,7 @@ mod tests {
     fn test_streaming_reporter_new() {
         let reporter = StreamingJsonReporter::new(5);
         assert_eq!(reporter.test_count, 5);
-        assert!(!reporter.suite_started.load(Ordering::SeqCst));
+        assert!(!reporter.suite_started.is_completed());
     }
 
     #[test]
@@ -144,8 +163,45 @@ mod tests {
         let reporter = StreamingJsonReporter::new(1);
         // First call sets suite_started
         reporter.on_test_start("t1");
-        assert!(reporter.suite_started.load(Ordering::SeqCst));
+        assert!(reporter.suite_started.is_completed());
         // Subsequent calls should not re-emit suite_start
         reporter.on_test_start("t2");
+        let cap = reporter.captured.lock().unwrap();
+        assert_eq!(
+            cap.iter().filter(|l| l.contains("suite_start")).count(),
+            1,
+            "suite_start must be emitted exactly once: {cap:?}"
+        );
+    }
+
+    #[test]
+    fn test_streaming_suite_start_precedes_test_start_under_parallelism() {
+        use std::sync::Arc;
+        let reporter = Arc::new(StreamingJsonReporter::new(16));
+        let mut handles = Vec::new();
+        for i in 0..16 {
+            let r = Arc::clone(&reporter);
+            handles.push(std::thread::spawn(move || {
+                r.on_test_start(&format!("test{i}"));
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let cap = reporter.captured.lock().unwrap();
+        // suite_start emitted exactly once...
+        assert_eq!(
+            cap.iter().filter(|l| l.contains("suite_start")).count(),
+            1,
+            "suite_start must be emitted exactly once: {cap:?}"
+        );
+        // ...and strictly before the first test_start.
+        let suite_pos = cap.iter().position(|l| l.contains("suite_start")).unwrap();
+        let first_test_pos = cap.iter().position(|l| l.contains("test_start")).unwrap();
+        assert!(
+            suite_pos < first_test_pos,
+            "suite_start must precede every test_start: {cap:?}"
+        );
     }
 }

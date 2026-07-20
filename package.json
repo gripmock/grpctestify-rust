@@ -1,7 +1,6 @@
 {
   "name": "grpctestify-docs",
-  "version": "1.0.0",
-  "_comment": "Version is managed via src/bashly.yml - this is for npm only",
+  "version": "1.9.0",
   "description": "gRPC Testify Documentation",
   "type": "module",
   "scripts": {

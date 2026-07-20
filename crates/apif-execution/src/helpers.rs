@@ -261,6 +261,13 @@ pub fn resolve_effective_runtime_options(
         }
     };
 
+    // Canonical compression precedence: section attribute > OPTIONS > env/CLI default.
+    //
+    // NOTE: `execution::runner` currently resolves compression via OPTIONS→env and
+    // ignores section attributes, so it diverges from the precedence reported here.
+    // Full reconciliation belongs in `runner.rs` (frozen); this helper is the
+    // canonical source and — per the fix below — now *errors* on an invalid OPTIONS
+    // value instead of silently falling back to `none`. Follow-up: align runner.rs.
     let compression_from_attr = document
         .sections
         .iter()
@@ -271,9 +278,17 @@ pub fn resolve_effective_runtime_options(
             value: v,
             source: RuntimeOptionSource::SectionAttribute,
         }
-    } else if options.contains_key("compression") {
+    } else if let Some(raw) = options.get("compression") {
+        // An explicit-but-unknown OPTIONS.compression is a configuration error,
+        // not a silent fall-back to `none`.
+        let mode = parse_compression_option(&options).ok_or_else(|| {
+            format!(
+                "OPTIONS.compression must be 'gzip' or 'none', got '{}'",
+                raw
+            )
+        })?;
         RuntimeOptionWithSource {
-            value: match parse_compression_option(&options).unwrap_or(CompressionMode::None) {
+            value: match mode {
                 CompressionMode::Gzip => "gzip".to_string(),
                 CompressionMode::None => "none".to_string(),
             },
@@ -1003,6 +1018,22 @@ mod tests {
             result.compression.source,
             RuntimeOptionSource::SectionAttribute
         );
+    }
+
+    #[test]
+    fn test_resolve_compression_invalid_options_value_errors() {
+        // An explicit-but-unknown OPTIONS.compression must be a hard error, not
+        // a silent fall-back to `none`.
+        let doc = make_doc(vec![
+            make_section(SectionType::Options, kv(&[("compression", "brotli")])),
+            make_section(
+                SectionType::Endpoint,
+                SectionContent::Single("svc/Method".into()),
+            ),
+        ]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("compression"));
     }
 
     #[test]

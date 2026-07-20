@@ -652,6 +652,85 @@ pub(crate) fn enrich_grpc_web_error(messages: &mut Vec<Value>, error: &mut Optio
 
 // ─── HTTP POST helper ───────────────────────────────────────
 
+/// Default request timeout (seconds) applied only when no timeout is configured.
+const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 5;
+
+/// Resolve the HTTP request timeout for grpc-web/connect transports.
+///
+/// The configured timeout is honored verbatim; a floor is applied *only* when
+/// the value is 0 (unset), defaulting to [`DEFAULT_HTTP_TIMEOUT_SECS`]. An
+/// explicit small timeout (e.g. `OPTIONS.timeout: 1`) must never be inflated.
+fn effective_request_timeout_secs(configured: u64) -> u64 {
+    if configured == 0 {
+        DEFAULT_HTTP_TIMEOUT_SECS
+    } else {
+        configured
+    }
+}
+
+/// Build the reqwest client for gRPC-Web / ConnectRPC calls, applying the
+/// full TLS configuration: skip-verify, custom CA, and client identity (mTLS).
+pub(crate) fn build_http_client(config: &GrpcClientConfig) -> Result<reqwest::Client> {
+    let user_agent = format!("grpctestify/{}", env!("CARGO_PKG_VERSION"));
+
+    let mut req_builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(effective_request_timeout_secs(
+            config.timeout_seconds,
+        )))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .user_agent(&user_agent);
+
+    if let Some(ref tls) = config.tls_config {
+        if tls.insecure_skip_verify {
+            req_builder = req_builder.danger_accept_invalid_certs(true);
+        }
+
+        if let Some(ref ca_path) = tls.ca_cert_path {
+            let pem = std::fs::read(ca_path)
+                .with_context(|| format!("Failed to read CA certificate '{}'", ca_path))?;
+            let cert = reqwest::Certificate::from_pem(&pem)
+                .with_context(|| format!("Invalid CA certificate '{}'", ca_path))?;
+            req_builder = req_builder.add_root_certificate(cert);
+        }
+
+        match (&tls.client_cert_path, &tls.client_key_path) {
+            (Some(cert_path), Some(key_path)) => {
+                let mut pem = std::fs::read(cert_path).with_context(|| {
+                    format!("Failed to read client certificate '{}'", cert_path)
+                })?;
+                if !pem.ends_with(b"\n") {
+                    pem.push(b'\n');
+                }
+                pem.extend(
+                    std::fs::read(key_path)
+                        .with_context(|| format!("Failed to read client key '{}'", key_path))?,
+                );
+                let identity = reqwest::Identity::from_pem(&pem).with_context(|| {
+                    format!(
+                        "Invalid client identity (cert '{}' + key '{}')",
+                        cert_path, key_path
+                    )
+                })?;
+                req_builder = req_builder.identity(identity);
+            }
+            (None, None) => {}
+            _ => {
+                return Err(anyhow!(
+                    "Both client_cert_path and client_key_path must be set for mTLS (got only one)"
+                ));
+            }
+        }
+    }
+
+    req_builder.build().with_context(|| {
+        if config.tls_config.is_some() {
+            "Failed to build HTTP client (TLS configuration invalid — check ca_cert/client_cert/client_key files)"
+        } else {
+            "Failed to build HTTP client"
+        }
+    })
+}
+
 pub(crate) async fn send_http_post(
     config: &GrpcClientConfig,
     service_name: &str,
@@ -672,24 +751,7 @@ pub(crate) async fn send_http_post(
         format!("{}://{}{}", scheme, config.address, path)
     };
 
-    let user_agent = format!("grpctestify/{}", env!("CARGO_PKG_VERSION"));
-
-    let mut req_builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(
-            config.timeout_seconds.max(5),
-        ))
-        .connect_timeout(std::time::Duration::from_secs(5))
-        .user_agent(&user_agent);
-
-    if let Some(ref tls) = config.tls_config
-        && tls.insecure_skip_verify
-    {
-        req_builder = req_builder.danger_accept_invalid_certs(true);
-    }
-
-    let http_client = req_builder
-        .build()
-        .with_context(|| "Failed to build HTTP client")?;
+    let http_client = build_http_client(config)?;
 
     let mut http_req = http_client.post(&url).header("Content-Type", content_type);
 
@@ -994,6 +1056,146 @@ fn parse_connect_framed(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ── Request timeout floor ────────────────────────────────
+
+    #[test]
+    fn request_timeout_honors_explicit_small_values() {
+        // A configured sub-5s timeout must not be inflated.
+        assert_eq!(effective_request_timeout_secs(1), 1);
+        assert_eq!(effective_request_timeout_secs(3), 3);
+        assert_eq!(effective_request_timeout_secs(60), 60);
+    }
+
+    #[test]
+    fn request_timeout_applies_default_only_when_unset() {
+        // Only an unset (0) timeout falls back to the default floor.
+        assert_eq!(effective_request_timeout_secs(0), DEFAULT_HTTP_TIMEOUT_SECS);
+    }
+
+    // ── TLS client building ──────────────────────────────────
+
+    // Self-signed test certificate (CN=localhost, EC P-256) and its PKCS#8 key.
+    const TEST_CERT_PEM: &str = "-----BEGIN CERTIFICATE-----
+MIIBfTCCASOgAwIBAgIUWcL1fmtrrhRDH/YETZY49ueE6y0wCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDcxOTIwNTI1NloXDTM2MDcxNjIw
+NTI1NlowFDESMBAGA1UEAwwJbG9jYWxob3N0MFkwEwYHKoZIzj0CAQYIKoZIzj0D
+AQcDQgAEEwvceEwaf4E5gBriB1ihbxAa16YERt+/hiIoxPx0E/+uiOEbtTllRxiG
+3kXeO3tDitmuOzsSMy25dN+Mf3Y8G6NTMFEwHQYDVR0OBBYEFDzduoo6/sV0c8vW
+YSamEHiJ6ph2MB8GA1UdIwQYMBaAFDzduoo6/sV0c8vWYSamEHiJ6ph2MA8GA1Ud
+EwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSAAwRQIgY24J4OIquMyFV5Oaa/iaiPjW
+hpDIqr4vdj9UlPaR2xkCIQC5ZTBBiDYr+kXy5QEiqaIuoi75YB8ReyMwL2dMFyxd
+rw==
+-----END CERTIFICATE-----
+";
+    const TEST_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgTWoLVyWn4NUGGIdX
+a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
+37+GIijE/HQT/66I4Ru1OWVHGIbeRd47e0OK2a47OxIzLbl034x/djwb
+-----END PRIVATE KEY-----
+";
+
+    fn tls_test_config(tls: crate::grpc::client::TlsConfig) -> GrpcClientConfig {
+        GrpcClientConfig {
+            address: "localhost:8080".to_string(),
+            tls_config: Some(tls),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_build_http_client_with_ca_cert() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca_path = dir.path().join("ca.pem");
+        std::fs::write(&ca_path, TEST_CERT_PEM).unwrap();
+
+        let config = tls_test_config(crate::grpc::client::TlsConfig {
+            ca_cert_path: Some(ca_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        });
+        let result = build_http_client(&config);
+        assert!(result.is_ok(), "CA cert should be applied: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_build_http_client_with_client_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("client.pem");
+        let key_path = dir.path().join("client.key");
+        std::fs::write(&cert_path, TEST_CERT_PEM).unwrap();
+        std::fs::write(&key_path, TEST_KEY_PEM).unwrap();
+
+        let config = tls_test_config(crate::grpc::client::TlsConfig {
+            client_cert_path: Some(cert_path.to_string_lossy().into_owned()),
+            client_key_path: Some(key_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        });
+        let result = build_http_client(&config);
+        assert!(result.is_ok(), "client identity should be applied: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_build_http_client_unreadable_ca_fails() {
+        let config = tls_test_config(crate::grpc::client::TlsConfig {
+            ca_cert_path: Some("/nonexistent/ca.pem".to_string()),
+            ..Default::default()
+        });
+        let err = build_http_client(&config).expect_err("missing CA file must fail");
+        assert!(
+            err.to_string().contains("/nonexistent/ca.pem"),
+            "error should name the file: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_build_http_client_invalid_ca_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca_path = dir.path().join("ca.pem");
+        // PEM framing with corrupt base64 payload.
+        std::fs::write(
+            &ca_path,
+            "-----BEGIN CERTIFICATE-----\n!!!not-base64!!!\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+
+        let config = tls_test_config(crate::grpc::client::TlsConfig {
+            ca_cert_path: Some(ca_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        });
+        let err = build_http_client(&config).expect_err("corrupt CA must fail");
+        // reqwest defers certificate parsing to build(); the error must still
+        // point the user at the TLS files.
+        assert!(
+            err.to_string().contains("Invalid CA certificate")
+                || err.to_string().contains("TLS configuration invalid"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_build_http_client_cert_without_key_fails() {
+        let config = tls_test_config(crate::grpc::client::TlsConfig {
+            client_cert_path: Some("/tmp/whatever.pem".to_string()),
+            ..Default::default()
+        });
+        let err = build_http_client(&config).expect_err("cert without key must fail");
+        assert!(
+            err.to_string().contains("client_cert_path and client_key_path"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_build_http_client_insecure_ok() {
+        let config = tls_test_config(crate::grpc::client::TlsConfig {
+            insecure_skip_verify: true,
+            ..Default::default()
+        });
+        assert!(build_http_client(&config).is_ok());
+    }
 
     // ── Connect envelope ─────────────────────────────────────
 

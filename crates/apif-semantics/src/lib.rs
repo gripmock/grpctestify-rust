@@ -224,8 +224,12 @@ fn detect_type_mismatch(
 ) -> Option<AssertionTypeMismatch> {
     let tokens = tokenize_assertion(expr);
     let (op, op_idx, op_len) = operator_from_tokens(&tokens)?;
-    let lhs = expr[..op_idx].trim();
-    let rhs = expr[op_idx + op_len..].trim();
+    // Token spans are char indices (the tokenizer iterates over chars), so
+    // convert them to byte offsets before slicing the source string.
+    let char_to_byte =
+        |char_idx: usize| -> usize { expr.char_indices().nth(char_idx).map_or(expr.len(), |(b, _)| b) };
+    let lhs = expr[..char_to_byte(op_idx)].trim();
+    let rhs = expr[char_to_byte(op_idx + op_len)..].trim();
     if lhs.is_empty() || rhs.is_empty() {
         return None;
     }
@@ -490,6 +494,26 @@ test.Service/Method
         let mismatches = collect_assertion_type_mismatches(&doc);
         assert_eq!(mismatches.len(), 1);
         assert_eq!(mismatches[0].rule_id, "SEM_T001");
+    }
+
+    #[test]
+    fn test_semantics_multibyte_expression_no_panic() {
+        // Regression: token spans are char indices, but the expression was
+        // byte-sliced — multibyte identifiers panicked on char boundaries.
+        let content = "--- ENDPOINT ---\ntest.Service/Method\n\n--- ASSERTS ---\n\u{ef}\u{ef} == 1\n.na\u{ef}ve == \"x\"\n";
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        // Must not panic; multibyte lhs/rhs must split on the operator correctly.
+        let _ = collect_assertion_type_mismatches(&doc);
+
+        let mismatch = detect_type_mismatch(
+            ".na\u{ef}ve == \"x\"",
+            plugin_signatures(),
+            &HashMap::new(),
+        );
+        // `.naïve` is Any, `"x"` is String — compatible, so no mismatch,
+        // and crucially no panic or mis-split lhs/rhs.
+        assert!(mismatch.is_none(), "got: {:?}", mismatch);
     }
 
     #[test]

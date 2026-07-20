@@ -118,7 +118,17 @@ impl AssertionEngine {
         ) {
             Ok(Some(result)) => Ok(result),
             Ok(None) => {
-                // AST could not parse it — fall through to JQ
+                // AST could not parse it — fall through to JQ.
+                // A lone `=` (not `==`/`!=`/`<=`/`>=`) reaching this point is almost
+                // always a typo for `==`; jq would silently treat it as assignment
+                // (truthy) and the assertion would false-pass. Reject it explicitly.
+                if let Some(pos) = find_lone_equals(trimmed) {
+                    return Ok(AssertionResult::fail(format!(
+                        "Assertion uses `=` at position {} — did you mean `==`? \
+                         (`=` is not a comparison operator): {}",
+                        pos, trimmed
+                    )));
+                }
                 self.evaluate_jaq(trimmed, response)
             }
             Err(e) => Err(e),
@@ -137,31 +147,26 @@ impl AssertionEngine {
             Err(e) => return Ok(AssertionResult::Error(format!("JQ Parse Error: {}", e))),
         };
 
-        let mut passed = false;
-        let mut seen_false = false;
-
-        for val in out {
-            if matches!(val, JaqVal::Bool(true)) {
-                passed = true;
-            } else {
-                seen_false = true;
+        // JQ truthiness: everything except `false` and `null` is truthy
+        // (so e.g. `.tags | length` returning 3 passes).
+        for val in &out {
+            if matches!(val, JaqVal::Bool(false) | JaqVal::Null) {
+                let rendered = serde_json::to_string(&jaq_to_json(val))
+                    .unwrap_or_else(|_| "<unprintable>".to_string());
+                return Ok(AssertionResult::fail(format!(
+                    "JQ assertion evaluated to falsy value {}: {}",
+                    rendered, expr
+                )));
             }
         }
 
-        if seen_false {
-            return Ok(AssertionResult::fail(format!(
-                "JQ assertion evaluated to false: {}",
-                expr
-            )));
-        }
-
-        if passed {
-            Ok(AssertionResult::Pass)
-        } else {
+        if out.is_empty() {
             Ok(AssertionResult::fail(format!(
                 "JQ assertion produced no output (falsey): {}",
                 expr
             )))
+        } else {
+            Ok(AssertionResult::Pass)
         }
     }
 
@@ -375,6 +380,45 @@ impl Default for AssertionEngine {
     }
 }
 
+/// Find a top-level lone `=` (not part of `==`, `!=`, `<=`, `>=`) outside of
+/// string literals. Returns the byte position of the offending `=`, if any.
+/// Used to catch `.x = 5` typos before they reach jq (where `=` is assignment).
+fn find_lone_equals(expr: &str) -> Option<usize> {
+    let bytes = expr.as_bytes();
+    let mut in_string: Option<u8> = None; // Some(quote_char) while inside a string
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match in_string {
+            Some(q) => {
+                if b == b'\\' {
+                    i += 2; // skip escaped char
+                    continue;
+                }
+                if b == q {
+                    in_string = None;
+                }
+            }
+            None => match b {
+                b'"' | b'\'' => in_string = Some(b),
+                b'=' => {
+                    let prev = if i > 0 { bytes[i - 1] } else { 0 };
+                    let next = if i + 1 < bytes.len() { bytes[i + 1] } else { 0 };
+                    // Skip `==`, and the second `=` of `!=`/`<=`/`>=`/`==`.
+                    let is_double = next == b'=' || prev == b'=';
+                    let is_compound = matches!(prev, b'!' | b'<' | b'>');
+                    if !is_double && !is_compound {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,6 +435,43 @@ mod tests {
                 "value": 42
             }
         })
+    }
+
+    #[test]
+    fn test_find_lone_equals_detects_typo() {
+        assert_eq!(find_lone_equals(".x = 5"), Some(3));
+        assert_eq!(find_lone_equals(".name = \"a\""), Some(6));
+    }
+
+    #[test]
+    fn test_find_lone_equals_ignores_comparisons() {
+        assert_eq!(find_lone_equals(".x == 5"), None);
+        assert_eq!(find_lone_equals(".x != 5"), None);
+        assert_eq!(find_lone_equals(".x <= 5"), None);
+        assert_eq!(find_lone_equals(".x >= 5"), None);
+    }
+
+    #[test]
+    fn test_find_lone_equals_ignores_string_contents() {
+        // `=` inside a string literal is not a typo'd operator
+        assert_eq!(find_lone_equals(".x == \"a=b\""), None);
+        assert_eq!(find_lone_equals(".x == \"a\\\"=b\""), None);
+    }
+
+    #[test]
+    fn test_lone_equals_assertion_fails_not_passes() {
+        let engine = AssertionEngine::new();
+        let response = create_test_response();
+        // `.id = 123` is a typo for `==`; must be a diagnosed failure, not a
+        // silent jq-assignment pass.
+        let result = engine
+            .evaluate(".id = 123", &response, None, None)
+            .unwrap();
+        assert!(
+            matches!(result, AssertionResult::Fail { .. }),
+            "lone `=` must fail, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -800,6 +881,55 @@ mod tests {
             matches!(without_cast, Ok(AssertionResult::Pass)),
             matches!(with_cast, Ok(AssertionResult::Pass)),
             "Type cast should not change evaluation result"
+        );
+    }
+
+    #[test]
+    fn test_jq_fallback_truthy_non_bool_output() {
+        // Regression: jq truthiness — any output except false/null passes,
+        // so `.tags | length` returning 3 must be a Pass.
+        let engine = AssertionEngine::new();
+        let response = create_test_response();
+
+        let result = engine
+            .evaluate(".tags | length", &response, None, None)
+            .unwrap();
+        assert!(
+            matches!(result, AssertionResult::Pass),
+            "Expected Pass, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_jq_fallback_false_output_shows_value() {
+        let engine = AssertionEngine::new();
+        let response = create_test_response();
+
+        // `.tags | length > 10` is 3 > 10 == false — must fail and show the value
+        let result = engine
+            .evaluate(".tags | length > 10", &response, None, None)
+            .unwrap();
+        if let AssertionResult::Fail { message, .. } = result {
+            assert!(message.contains("false"), "message: {}", message);
+        } else {
+            panic!("Expected Fail, got: {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_jq_fallback_null_output_fails() {
+        let engine = AssertionEngine::new();
+        let response = create_test_response();
+
+        // Missing key piped through identity yields null — falsy in jq
+        let result = engine
+            .evaluate(".missing_key | .", &response, None, None)
+            .unwrap();
+        assert!(
+            matches!(result, AssertionResult::Fail { .. }),
+            "Expected Fail, got: {:?}",
+            result
         );
     }
 

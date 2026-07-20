@@ -21,7 +21,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.8.10"
+version = "1.9.0"
 edition = "2024"
 authors = ["bavix"]
 license = "MIT"
@@ -207,17 +207,17 @@ apif-source-row = { path = "crates/apif-source-row", version = "0.2.0" }
 apif-source-error = { path = "crates/apif-source-error", version = "0.1.0" }
 apif-cfg-runtime = { path = "crates/apif-cfg-runtime", version = "0.1.0" }
 apif-diagnostics = { path = "crates/apif-diagnostics", version = "0.1.0" }
-apif-parser = { path = "crates/apif-parser", version = "0.1.0" }
-apif-assert = { path = "crates/apif-assert", version = "0.1.0" }
+apif-parser = { path = "crates/apif-parser", version = "0.2.0" }
+apif-assert = { path = "crates/apif-assert", version = "0.2.0" }
 apif-state = { path = "crates/apif-state", version = "0.1.0" }
-apif-plugins = { path = "crates/apif-plugins", version = "0.1.0" }
+apif-plugins = { path = "crates/apif-plugins", version = "0.2.0" }
 apif-execution = { path = "crates/apif-execution", version = "0.2.0" }
 apif-utils = { path = "crates/apif-utils", version = "0.2.0" }
 apif-report = { path = "crates/apif-report", version = "0.2.0" }
 apif-semantics = { path = "crates/apif-semantics", version = "0.1.0" }
 apif-optimizer = { path = "crates/apif-optimizer", version = "0.1.0" }
 apif-query = { path = "crates/apif-query", version = "0.1.0" }
-apif-grpc-transport = { path = "crates/apif-grpc-transport", version = "0.2.0", features = [
+apif-grpc-transport = { path = "crates/apif-grpc-transport", version = "0.3.0", features = [
   "tonic-transport",
 ] }
 csv = "1.3"

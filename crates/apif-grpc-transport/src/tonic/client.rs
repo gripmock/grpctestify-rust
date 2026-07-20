@@ -85,12 +85,15 @@ impl GrpcClient for TonicGrpcClient {
         let mut requests = requests; // shadow for mutability
         let codec = DynamicCodec::new(m.input(), m.output());
         let mut client = self.client.clone();
-        let _ = client.ready().await;
+        client
+            .ready()
+            .await
+            .map_err(|e| GrpcError::new(14, format!("Failed to establish connection: {}", e)))?;
 
         let is_cs = m.is_client_streaming();
         let is_ss = m.is_server_streaming();
 
-        let result: Result<
+        let mut result: Result<
             (
                 HashMap<String, String>,
                 Pin<Box<dyn Stream<Item = Result<StreamItem, GrpcError>> + Send>>,
@@ -99,22 +102,27 @@ impl GrpcClient for TonicGrpcClient {
         >;
 
         if is_cs {
-            // Client-streaming or bidi: wrap all values via filter_map
+            // Client-streaming or bidi. A message that fails JSON→proto
+            // conversion terminates the request stream and fails the call
+            // (previously it was silently dropped).
             let input_clone = input_desc.clone();
-            let req_stream = Box::pin(requests.filter_map(move |json| {
-                let desc = input_clone.clone();
-                async move {
-                    let mut v = json;
-                    transform_input_json_for_well_known(&mut v, &desc);
-                    serde_json::to_string(&v).ok().and_then(|s| {
-                        DynamicMessage::deserialize(
-                            desc,
-                            &mut serde_json::Deserializer::from_str(&s),
-                        )
-                        .ok()
-                    })
-                }
-            }));
+            let conversion_error: ConversionErrorSlot = Arc::new(std::sync::Mutex::new(None));
+            let req_stream = Box::pin(requests.enumerate().scan(
+                conversion_error.clone(),
+                move |slot, (index, json)| {
+                    let desc = input_clone.clone();
+                    let slot = slot.clone();
+                    async move {
+                        match convert_request_json(index, json, &desc) {
+                            Ok(msg) => Some(msg),
+                            Err(e) => {
+                                *slot.lock().unwrap() = Some(e);
+                                None // end the request stream; error surfaces after the call
+                            }
+                        }
+                    }
+                },
+            ));
             let mut req = Request::new(req_stream);
             insert_metadata(
                 req.metadata_mut(),
@@ -127,31 +135,26 @@ impl GrpcClient for TonicGrpcClient {
                     .await
                     .map(|r| {
                         let h = metadata_map_to_hashmap(r.metadata());
-                        let s: Pin<Box<dyn Stream<Item = Result<StreamItem, GrpcError>> + Send>> =
-                            Box::pin(r.into_inner().map(|item| {
-                                item.map(|msg| StreamItem::Message(dynamic_message_to_json(&msg)))
-                                    .map_err(|s| tonic_status_to_grpc_error(&s))
-                            }));
+                        let s = streaming_response_to_items(
+                            r.into_inner(),
+                            Some(conversion_error.clone()),
+                        );
                         (h, s)
                     })
                     .map_err(|s| tonic_status_to_grpc_error(&s))
             } else {
-                client
-                    .client_streaming(req, path, codec)
-                    .await
-                    .map(|r| {
-                        let h = metadata_map_to_hashmap(r.metadata());
-                        let val = dynamic_message_to_json(&r.into_inner());
-                        let s: Pin<Box<dyn Stream<Item = Result<StreamItem, GrpcError>> + Send>> =
-                            Box::pin(futures::stream::once(async move {
-                                Ok(StreamItem::Message(val))
-                            }));
-                        (h, s)
-                    })
-                    .map_err(|s| tonic_status_to_grpc_error(&s))
+                match client.streaming(req, path, codec).await {
+                    Ok(r) => single_response_to_items(r).await,
+                    Err(s) => Err(tonic_status_to_grpc_error(&s)),
+                }
             };
+            // A request conversion error is the root cause of whatever the
+            // server did with the truncated stream — surface it instead.
+            if let Some(err) = conversion_error.lock().unwrap().take() {
+                result = Err(err);
+            }
         } else {
-            // Unary or server-streaming: get first value directly (bypass filter_map)
+            // Unary or server-streaming: get first value directly
             let json_val = requests
                 .next()
                 .await
@@ -165,40 +168,36 @@ impl GrpcClient for TonicGrpcClient {
                 &mut serde_json::Deserializer::from_str(&json_str),
             )
             .map_err(|e| GrpcError::new(3, format!("Deser error: {}", e)))?;
-            let mut req = Request::new(msg);
-            insert_metadata(
-                req.metadata_mut(),
-                self.config.metadata.as_ref(),
-                &self.config.version,
-            );
             result = if is_ss {
+                let mut req = Request::new(msg);
+                insert_metadata(
+                    req.metadata_mut(),
+                    self.config.metadata.as_ref(),
+                    &self.config.version,
+                );
                 client
                     .server_streaming(req, path, codec)
                     .await
                     .map(|r| {
                         let h = metadata_map_to_hashmap(r.metadata());
-                        let s: Pin<Box<dyn Stream<Item = Result<StreamItem, GrpcError>> + Send>> =
-                            Box::pin(r.into_inner().map(|item| {
-                                item.map(|msg| StreamItem::Message(dynamic_message_to_json(&msg)))
-                                    .map_err(|s| tonic_status_to_grpc_error(&s))
-                            }));
+                        let s = streaming_response_to_items(r.into_inner(), None);
                         (h, s)
                     })
                     .map_err(|s| tonic_status_to_grpc_error(&s))
             } else {
-                client
-                    .unary(req, path, codec)
-                    .await
-                    .map(|r| {
-                        let h = metadata_map_to_hashmap(r.metadata());
-                        let val = dynamic_message_to_json(&r.into_inner());
-                        let s: Pin<Box<dyn Stream<Item = Result<StreamItem, GrpcError>> + Send>> =
-                            Box::pin(futures::stream::once(async move {
-                                Ok(StreamItem::Message(val))
-                            }));
-                        (h, s)
-                    })
-                    .map_err(|s| tonic_status_to_grpc_error(&s))
+                // Unary over the wire is identical to a single-message stream;
+                // going through `streaming` keeps the response trailers
+                // accessible (tonic's `unary` merges them into the headers).
+                let mut req = Request::new(futures::stream::iter(vec![msg]));
+                insert_metadata(
+                    req.metadata_mut(),
+                    self.config.metadata.as_ref(),
+                    &self.config.version,
+                );
+                match client.streaming(req, path, codec).await {
+                    Ok(r) => single_response_to_items(r).await,
+                    Err(s) => Err(tonic_status_to_grpc_error(&s)),
+                }
             };
         }
 
@@ -267,6 +266,121 @@ impl GrpcClient for TonicGrpcClient {
             .ok_or_else(|| GrpcError::new(5, format!("Method not found: {}", p[1])))?;
         Ok(generate_json_template(&m.input()))
     }
+}
+
+type ItemStream = Pin<Box<dyn Stream<Item = Result<StreamItem, GrpcError>> + Send>>;
+type ConversionErrorSlot = Arc<std::sync::Mutex<Option<GrpcError>>>;
+
+/// Convert one request JSON value into a `DynamicMessage`, naming the message
+/// index in the error so a bad message in a stream is easy to locate.
+fn convert_request_json(
+    index: usize,
+    mut json: Value,
+    desc: &MessageDescriptor,
+) -> Result<DynamicMessage, GrpcError> {
+    transform_input_json_for_well_known(&mut json, desc);
+    let json_str = serde_json::to_string(&json).map_err(|e| {
+        GrpcError::new(
+            3,
+            format!("Failed to convert request message #{} to protobuf: {}", index, e),
+        )
+    })?;
+    DynamicMessage::deserialize(desc.clone(), &mut serde_json::Deserializer::from_str(&json_str))
+        .map_err(|e| {
+            GrpcError::new(
+                3,
+                format!("Failed to convert request message #{} to protobuf: {}", index, e),
+            )
+        })
+}
+
+/// Turn a streaming response into a `StreamItem` stream that, after the last
+/// message, fetches and emits the response trailers (needed for `@trailer`
+/// assertions on protocol=grpc). If a request-conversion error slot is
+/// provided, the error (if any) is surfaced after the response stream ends.
+fn streaming_response_to_items(
+    body: tonic::Streaming<DynamicMessage>,
+    conversion_error: Option<ConversionErrorSlot>,
+) -> ItemStream {
+    enum Phase {
+        Messages(Box<tonic::Streaming<DynamicMessage>>),
+        Done,
+    }
+    let items = futures::stream::unfold(Phase::Messages(Box::new(body)), |phase| async move {
+        match phase {
+            Phase::Messages(mut body) => match body.message().await {
+                Ok(Some(msg)) => Some((
+                    Ok(StreamItem::Message(dynamic_message_to_json(&msg))),
+                    Phase::Messages(body),
+                )),
+                Ok(None) => match body.trailers().await {
+                    Ok(Some(trailers)) => {
+                        let map = metadata_map_to_hashmap(&trailers);
+                        if map.is_empty() {
+                            None
+                        } else {
+                            Some((Ok(StreamItem::Trailers(map)), Phase::Done))
+                        }
+                    }
+                    Ok(None) => None,
+                    Err(status) => {
+                        Some((Err(tonic_status_to_grpc_error(&status)), Phase::Done))
+                    }
+                },
+                Err(status) => Some((
+                    Err(tonic_status_to_grpc_error(&status)),
+                    Phase::Messages(body),
+                )),
+            },
+            Phase::Done => None,
+        }
+    });
+    match conversion_error {
+        Some(slot) => {
+            // After the response ends, surface a request-conversion error (if
+            // one occurred while the call was in flight).
+            let tail = futures::stream::unfold(slot, |slot| async move {
+                let err = slot.lock().unwrap().take();
+                err.map(|e| (Err(e), slot))
+            });
+            Box::pin(items.chain(tail))
+        }
+        None => Box::pin(items),
+    }
+}
+
+/// Handle a single-response call (unary / client-streaming) issued through
+/// `Grpc::streaming`: read exactly one message, then fetch the trailers and
+/// emit them as a separate `StreamItem::Trailers`.
+async fn single_response_to_items(
+    response: tonic::Response<tonic::Streaming<DynamicMessage>>,
+) -> Result<(HashMap<String, String>, ItemStream), GrpcError> {
+    let headers = metadata_map_to_hashmap(response.metadata());
+    let mut body = response.into_inner();
+    let first = match body.message().await {
+        Ok(Some(msg)) => msg,
+        Ok(None) => return Err(GrpcError::new(13, "Missing response message.")),
+        Err(status) => {
+            // Mirror tonic's unary behavior: response headers are folded into
+            // the error metadata (without overriding trailer entries).
+            let mut err = tonic_status_to_grpc_error(&status);
+            for (k, v) in &headers {
+                err.metadata.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+            return Err(err);
+        }
+    };
+    let val = dynamic_message_to_json(&first);
+    let trailers = match body.trailers().await {
+        Ok(Some(t)) => metadata_map_to_hashmap(&t),
+        Ok(None) => HashMap::new(),
+        Err(status) => return Err(tonic_status_to_grpc_error(&status)),
+    };
+    let mut items: Vec<Result<StreamItem, GrpcError>> = vec![Ok(StreamItem::Message(val))];
+    if !trailers.is_empty() {
+        items.push(Ok(StreamItem::Trailers(trailers)));
+    }
+    Ok((headers, Box::pin(futures::stream::iter(items))))
 }
 
 fn insert_metadata(
@@ -516,6 +630,29 @@ mod tests {
                 err
             );
         }
+    }
+
+    #[test]
+    fn test_convert_request_json_ok() {
+        use prost_reflect::ReflectMessage;
+        let desc = prost_types::Timestamp::default().descriptor();
+        let result = convert_request_json(0, serde_json::json!("2024-06-15T10:30:00Z"), &desc);
+        assert!(result.is_ok(), "valid timestamp should convert: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_convert_request_json_error_names_message_index() {
+        use prost_reflect::ReflectMessage;
+        let desc = prost_types::Timestamp::default().descriptor();
+        // A JSON object is not a valid google.protobuf.Timestamp representation.
+        let result = convert_request_json(2, serde_json::json!({"bogus": true}), &desc);
+        let err = result.expect_err("invalid message must fail, not be dropped");
+        assert_eq!(err.code, 3);
+        assert!(
+            err.message.contains("request message #2"),
+            "error should name the bad message index: {}",
+            err.message
+        );
     }
 
     #[test]

@@ -35,12 +35,13 @@ grpctestify [OPTIONS] [TEST_PATHS]... [COMMAND]
 - `explain <FILE>` - show execution explanation (`text` or `json`)
 - `list [PATH]` - list discovered tests for tooling and IDE integration
 - `reflect [SYMBOL]` - list reflected services and methods from a target server
+- `grpcurl <FILE>` - generate a `grpcurl` invocation from an existing `.gctf` file
 - `call <FILE>` - call gRPC endpoint without assertions
 - `health <ADDRESS>` - check gRPC service health
 - `lsp` - start language server protocol mode
 - `index <SOURCES...>` - build/rebuild data source indexes
 - `query [FILES...]` - interactive shell or CLI query for data sources
-- `gen grpcurl [--execute] <grpcurl-args>` - generate `.gctf` from grpcurl invocation
+- `gen grpcurl [--execute] <grpcurl-args>` - generate a `.gctf` file from a grpcurl invocation
 
 ## Global options
 
@@ -153,6 +154,69 @@ grpctestify reflect localhost:50051 --format json
 
 # TLS client certificate
 grpctestify reflect localhost:50051 --tls-cert client.pem --tls-key client.key
+```
+
+## List
+
+List discovered `.gctf` test files. Intended for tooling and IDE integration;
+the default output is JSON.
+
+```bash
+grpctestify list [PATH] [--format <text|json>] [--with-range]
+```
+
+Flags:
+
+- `PATH` - file or directory to scan (optional; defaults to the current directory)
+- `--format <text|json>` - output format (default `json`)
+- `--with-range` - include per-test source range information (line spans)
+
+```bash
+# List tests under a directory as JSON with source ranges
+grpctestify list tests/ --with-range
+```
+
+## Grpcurl
+
+Generate an equivalent `grpcurl` invocation from an existing `.gctf` file. Useful
+for reproducing a test call manually or in a shell script.
+
+```bash
+grpctestify grpcurl <FILE> [--doc-index <N>] [--format <text|json>]
+```
+
+Flags:
+
+- `FILE` - `.gctf` file to convert (required)
+- `--doc-index <N>` - document index for multi-document `.gctf` files (1-based)
+- `--format <text|json>` - output format (default `text`)
+
+```bash
+# Print the grpcurl command for a test file
+grpctestify grpcurl tests/user/get_user.gctf
+```
+
+## Gen
+
+Generate a `.gctf` file from an external invocation. The source is selected by a
+sub-subcommand; currently `grpcurl` is supported.
+
+```bash
+grpctestify gen [-o <OUTPUT>] grpcurl [-e|--execute] <grpcurl-args>...
+```
+
+Flags:
+
+- `-o, --output <OUTPUT>` - write the generated `.gctf` to a file (stdout if omitted)
+- `grpcurl <grpcurl-args>...` - the grpcurl arguments to translate (required;
+  hyphen-prefixed flags are passed through verbatim)
+- `-e, --execute` - run the grpcurl invocation and append the captured
+  `RESPONSE`/`ERROR` section to the generated file
+
+```bash
+# Convert a grpcurl call into a .gctf file, executing it to capture the response
+grpctestify gen -o get_user.gctf grpcurl -e -plaintext \
+  -d '{"id":"1"}' localhost:4770 user.UserService/GetUser
 ```
 
 ## Examples

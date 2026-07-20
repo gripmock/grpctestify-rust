@@ -132,18 +132,12 @@ fn build_grpc_steps(
     let per_step = total_span / total_docs as u128;
 
     let mut steps = Vec::with_capacity(calls.len());
-    let failed_index = if result.status == crate::state::TestStatus::Fail {
-        Some(total_docs.saturating_sub(1))
-    } else {
-        None
-    };
 
     for (idx, call) in calls.iter().enumerate() {
-        let status = if failed_index == Some(idx) {
-            "failed"
-        } else {
-            "passed"
-        };
+        // Use the per-call status resolved by the kernel: it attributes the
+        // failure to the actual failing document and marks never-executed
+        // documents as skipped instead of falsely passed.
+        let status = call.status.as_str();
 
         let step_start = start + per_step.saturating_mul(idx as u128);
         let step_stop = if idx + 1 == total_docs {
@@ -192,6 +186,25 @@ fn collect_parameters(test_name: &str) -> Vec<Parameter> {
         .into_iter()
         .map(|(name, value)| Parameter { name, value })
         .collect()
+}
+
+/// Serialize and write an Allure result file atomically: write to a temp file in
+/// the same directory, then rename it into place. This prevents an Allure
+/// consumer (or a crash) from ever observing a partially written JSON file.
+fn write_result_atomically(
+    output_dir: &std::path::Path,
+    file_path: &std::path::Path,
+    report: &AllureResult,
+) -> Result<()> {
+    let bytes = serde_json::to_vec(report)?;
+    let tmp_name = format!(".{}.{}.tmp", report.uuid, std::process::id());
+    let tmp_path = output_dir.join(tmp_name);
+    fs::write(&tmp_path, &bytes)?;
+    if let Err(e) = fs::rename(&tmp_path, file_path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e.into());
+    }
+    Ok(())
 }
 
 impl Reporter for AllureReporter {
@@ -335,19 +348,123 @@ impl Reporter for AllureReporter {
         let file_name = format!("{}-result.json", uuid);
         let file_path = self.output_dir.join(file_name);
 
-        match fs::File::create(&file_path) {
-            Ok(file) => {
-                if let Err(e) = serde_json::to_writer(&file, &report) {
-                    tracing::warn!("Failed to serialize Allure report: {e}");
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to create Allure report file {:?}: {e}", file_path);
-            }
+        if let Err(e) = write_result_atomically(&self.output_dir, &file_path, &report) {
+            tracing::warn!("Failed to write Allure report file {:?}: {e}", file_path);
         }
     }
 
     fn on_suite_end(&self, _results: &crate::state::TestResults) -> Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::TestResult;
+
+    const CHAIN_FIXTURE: &str = "\
+--- ENDPOINT ---
+pkg.Service/MethodA
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+
+--- ENDPOINT ---
+pkg.Service/MethodB
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+
+--- ENDPOINT ---
+pkg.Service/MethodC
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+";
+
+    const SINGLE_FIXTURE: &str = "\
+--- ENDPOINT ---
+pkg.Service/M
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+";
+
+    #[test]
+    fn test_build_grpc_steps_marks_unreached_document_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chain.gctf");
+        std::fs::write(&path, CHAIN_FIXTURE).unwrap();
+        let path_str = path.to_string_lossy().into_owned();
+
+        // Reference a line inside the SECOND document so it is the failing one.
+        let doc = crate::parser::parse_gctf(&path).unwrap();
+        let chain: Vec<_> = doc.iter_chain().collect();
+        let line = chain[1]
+            .sections
+            .iter()
+            .map(|s| s.start_line)
+            .max()
+            .unwrap();
+
+        let result = TestResult::fail(
+            path_str.clone(),
+            format!("Assertion failed (attached to RESPONSE at line {line})"),
+            30,
+            Some(10),
+        );
+
+        let steps = build_grpc_steps(&path_str, &result, 0, 300).unwrap();
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[0].status, "passed");
+        assert_eq!(steps[1].status, "failed");
+        // Never-executed document is skipped, not passed.
+        assert_eq!(steps[2].status, "skipped");
+    }
+
+    #[test]
+    fn test_allure_result_written_atomically_as_valid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let gctf = dir.path().join("t.gctf");
+        std::fs::write(&gctf, SINGLE_FIXTURE).unwrap();
+        let gctf_str = gctf.to_string_lossy().into_owned();
+
+        let out_dir = dir.path().join("allure-results");
+        let reporter = AllureReporter::new(out_dir.clone());
+        let result = TestResult::pass(gctf_str.clone(), 5, Some(3));
+        reporter.on_test_end(&gctf_str, &result);
+
+        let entries: Vec<String> = std::fs::read_dir(&out_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+
+        // A finished result file exists and no temp file leaked.
+        let result_file = entries
+            .iter()
+            .find(|n| n.ends_with("-result.json"))
+            .unwrap_or_else(|| panic!("no result file: {entries:?}"));
+        assert!(
+            !entries.iter().any(|n| n.ends_with(".tmp")),
+            "temp file leaked: {entries:?}"
+        );
+
+        // The written file is complete, parseable JSON.
+        let content = std::fs::read_to_string(out_dir.join(result_file)).unwrap();
+        let _: serde_json::Value =
+            serde_json::from_str(&content).expect("allure result must be valid JSON");
     }
 }

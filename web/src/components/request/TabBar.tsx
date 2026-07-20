@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useStore } from '../../lib/store';
+import { encodeCollectionLink } from '../../lib/deeplink';
 import { Plus, X, XCircle, FileSymlink, Pencil, Trash2, Share2, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useModal } from '../ui/ModalContext';
 import { useToast } from '../ui/ToastContext';
@@ -113,7 +114,7 @@ export function TabBar() {
 
     // Collection tab → share as /c/path
     if (tab.collectionPath) {
-      const url = `${window.location.origin}/c/${tab.collectionPath}`;
+      const url = `${window.location.origin}${encodeCollectionLink(tab.collectionPath)}`;
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(url);
       } else {

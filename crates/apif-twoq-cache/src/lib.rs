@@ -1,4 +1,3 @@
-use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 
@@ -46,24 +45,29 @@ impl<K: Hash + Eq + Clone, V> TwoQCache<K, V> {
     }
 
     pub fn insert(&mut self, key: K, value: V) {
-        match self.hot.entry(key) {
-            Entry::Occupied(mut e) => {
-                e.insert(value);
-            }
-            Entry::Vacant(e) => {
-                let key = e.into_key();
-                match self.cold.entry(key) {
-                    Entry::Occupied(mut e) => {
-                        e.insert(value);
-                    }
-                    Entry::Vacant(e) => {
-                        let key = e.into_key();
-                        self.cold.insert(key.clone(), value);
-                        self.cold_order.push_back(key);
-                        self.evict_cold();
-                    }
-                }
-            }
+        // Updating an existing key must refresh its recency, otherwise a
+        // frequently-rewritten hot key can be evicted as if it were stale.
+        if let Some(slot) = self.hot.get_mut(&key) {
+            *slot = value;
+            Self::touch(&mut self.hot_order, &key);
+            return;
+        }
+        if let Some(slot) = self.cold.get_mut(&key) {
+            *slot = value;
+            Self::touch(&mut self.cold_order, &key);
+            return;
+        }
+        self.cold.insert(key.clone(), value);
+        self.cold_order.push_back(key);
+        self.evict_cold();
+    }
+
+    /// Move `key` to the most-recently-used end of the given order queue.
+    fn touch(order: &mut VecDeque<K>, key: &K) {
+        if let Some(pos) = order.iter().position(|k| k == key)
+            && let Some(k) = order.remove(pos)
+        {
+            order.push_back(k);
         }
     }
 
@@ -229,6 +233,33 @@ mod tests {
         cache.insert("a", 1);
         cache.insert("a", 42);
         assert_eq!(cache.get(&"a"), Some(&42));
+    }
+
+    // Bug 8: updating an existing hot key must refresh its recency, otherwise a
+    // frequently-rewritten key is evicted as if it were the stale one.
+    #[test]
+    fn update_refreshes_hot_recency() {
+        let mut cache = TwoQCache::new(2, 1);
+        cache.insert("a", 1);
+        let _ = cache.get(&"a"); // promote a to hot
+        cache.insert("b", 2);
+        let _ = cache.get(&"b"); // promote b; hot order = [a (older), b]
+
+        // Updating "a" makes it the most-recently-used hot entry. (A `get` here
+        // would refresh recency by itself, so we must rely on `insert` alone.)
+        cache.insert("a", 10);
+
+        // Promote two fresh keys, forcing hot evictions. With recency refreshed,
+        // "b" is the stale entry pushed out (and dropped via the size-1 cold
+        // queue); without the fix "a" would have been the victim instead.
+        cache.insert("c", 3);
+        let _ = cache.get(&"c");
+        cache.insert("d", 4);
+        let _ = cache.get(&"d");
+
+        assert!(cache.contains(&"a"), "refreshed key must survive");
+        assert!(!cache.contains(&"b"), "stale key must be evicted");
+        assert_eq!(cache.get(&"a"), Some(&10), "value must be updated");
     }
 
     #[test]

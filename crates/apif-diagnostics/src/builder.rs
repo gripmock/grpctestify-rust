@@ -262,7 +262,7 @@ impl GctfDiagnostics {
             format!("Undefined variable: {}", var_name),
             Range::new(
                 Position::new(line, column),
-                Position::new(line, column + var_name.len()),
+                Position::new(line, column + var_name.chars().count()),
             ),
         )
         .with_suggestion("Define variable in EXTRACT section before use")
@@ -285,7 +285,7 @@ impl GctfDiagnostics {
             format!("Unknown function: {}", func_name),
             Range::new(
                 Position::new(line, column),
-                Position::new(line, column + func_name.len()),
+                Position::new(line, column + func_name.chars().count()),
             ),
         )
         .with_suggestion("Available functions: @uuid, @email, @ip, @phone, @url, @header, @trailer")
@@ -397,6 +397,25 @@ mod tests {
         )
         .build();
         assert_eq!(diag.severity, DiagnosticSeverity::Hint);
+    }
+
+    #[test]
+    fn test_undefined_variable_caret_uses_char_count() {
+        // Regression: end column must use char count, not byte length, so
+        // non-ASCII identifiers get a correctly sized caret range.
+        let name = "café"; // 4 chars, 5 bytes
+        let diag = GctfDiagnostics::undefined_variable(name, 1, 3);
+        assert_eq!(diag.range.start.column, 3);
+        assert_eq!(diag.range.end.column, 3 + name.chars().count());
+        assert_eq!(diag.range.end.column, 7);
+    }
+
+    #[test]
+    fn test_unknown_function_caret_uses_char_count() {
+        let name = "@naïve"; // 6 chars, 7 bytes
+        let diag = GctfDiagnostics::unknown_function(name, 1, 0);
+        assert_eq!(diag.range.end.column, name.chars().count());
+        assert_eq!(diag.range.end.column, 6);
     }
 
     #[test]

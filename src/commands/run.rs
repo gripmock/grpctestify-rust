@@ -93,23 +93,47 @@ fn file_matches_meta(path: &Path, tags_include: &[String], skip_tags: &[String])
     true
 }
 
+/// gRPC status codes that indicate a transient transport/availability failure
+/// worth retrying. Application-level failures and, crucially, assertion
+/// mismatches are never retryable.
+fn is_retryable_grpc_code(code: u32) -> bool {
+    matches!(
+        code,
+        4  // DEADLINE_EXCEEDED
+        | 14 // UNAVAILABLE
+    )
+}
+
+/// Extract a gRPC status code from a failure message, but only when it is part
+/// of the canonical transport-error token (`gRPC error[:] code=<N>`). This
+/// deliberately avoids substring matching of arbitrary text: an assertion
+/// failure whose expected/actual payload merely contains the word "timeout" or
+/// a JSON `"code": N` field carries no such token and is therefore never
+/// classified as retryable.
+fn extract_transport_grpc_code(message: &str) -> Option<u32> {
+    let marker = message.find("gRPC error")?;
+    let after = &message[marker..];
+    let code_pos = after.find("code=")?;
+    let digits: String = after[code_pos + "code=".len()..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse::<u32>().ok()
+}
+
+/// Decide whether a failed test should be retried.
+///
+/// Retry is driven by the actual gRPC transport status code, not by loose
+/// substring matching. Assertion/validation failures (which never carry a
+/// retryable transport status) are never retried.
 fn should_retry_message(message: &str) -> bool {
-    let msg = message.to_ascii_lowercase();
-    msg.contains("deadline")
-        || msg.contains("timeout")
-        || msg.contains("timed out")
-        || msg.contains("connection refused")
-        || msg.contains("connection reset")
-        || msg.contains("transport")
-        || msg.contains("unavailable")
-        || msg.contains("broken pipe")
-        || msg.contains("temporarily")
-        || msg.contains("network")
+    extract_transport_grpc_code(message).is_some_and(is_retryable_grpc_code)
 }
 
 pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
     // Get parallel job count
-    let parallel_jobs = cli.parallel_jobs();
+    // Defensive clamp: buffer_unordered(0) never polls and deadlocks the run.
+    let parallel_jobs = cli.parallel_jobs().max(1);
     info!("Parallel jobs: {}", parallel_jobs);
 
     // Handle dry-run mode
@@ -159,8 +183,14 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
     info!("Found {} test file(s)", test_files.len());
 
     if test_files.is_empty() {
+        // An empty (or fully filtered) test set is almost always a mistake
+        // (typo in path or --tags); exit non-zero so CI cannot silently pass.
         warn!("No test files found");
-        return Ok(());
+        eprintln!(
+            "⚠️  WARN [{}]: No test files found (paths or tag filters matched nothing)",
+            chrono::Local::now().format("%H:%M:%S")
+        );
+        std::process::exit(1);
     }
 
     // Sort files
@@ -467,6 +497,42 @@ async fn run_single_test(
 mod tests {
     use super::*;
     use crate::parser::ast::{GctfAttribute, GctfDocument, Section, SectionContent, SectionType};
+
+    #[test]
+    fn retry_only_on_retryable_transport_status() {
+        // Genuine transport failures carry the canonical gRPC error token.
+        assert!(should_retry_message(
+            "Validation failed:\n  - Failed to start gRPC stream: gRPC error code=14 message=connection refused"
+        ));
+        assert!(should_retry_message(
+            "gRPC error: code=4 message=deadline exceeded"
+        ));
+    }
+
+    #[test]
+    fn no_retry_on_non_retryable_transport_status() {
+        // NOT_FOUND / INVALID_ARGUMENT and friends are terminal.
+        assert!(!should_retry_message("gRPC error: code=5 message=not found"));
+        assert!(!should_retry_message(
+            "gRPC error: code=3 message=invalid argument"
+        ));
+    }
+
+    #[test]
+    fn assertion_failure_with_timeout_text_is_not_retried() {
+        // Regression: an assertion mismatch whose expected text merely contains
+        // the word "timeout" (or "network"/"unavailable") must never be retried.
+        assert!(!should_retry_message(
+            "Validation failed:\n  - Error mismatch at line 12:\n  - expected \"request timeout exceeded\", got \"ok\""
+        ));
+        assert!(!should_retry_message(
+            "Validation failed:\n  - expected error message to contain 'network unavailable'"
+        ));
+        // A JSON `\"code\": 14` field in an assertion payload is not a transport token.
+        assert!(!should_retry_message(
+            "Validation failed:\n  - expected {\"code\": 14} got {\"code\": 0}"
+        ));
+    }
 
     #[test]
     fn test_extract_test_meta_from_file_meta() {

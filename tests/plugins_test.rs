@@ -405,11 +405,11 @@ fn test_len_edge_cases() {
         AssertionResult::Pass
     );
 
-    // Unicode string (byte count, not char count: "привет" = 12 bytes in UTF-8)
+    // Unicode string (codepoint count, matching jq `length`: "привет" = 6 chars)
     let response = json!({"text": "привет"});
     assert_eq!(
         engine
-            .evaluate("@len(.text) == 12", &response, None, None)
+            .evaluate("@len(.text) == 6", &response, None, None)
             .unwrap(),
         AssertionResult::Pass
     );
