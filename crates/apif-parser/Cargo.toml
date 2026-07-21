@@ -11,6 +11,7 @@ description = "Parser for .apif/.gctf test file format"
 
 [dependencies]
 apif-ast = { path = "../apif-ast", version = "0.2.0" }
+apif-cfg-runtime = { path = "../apif-cfg-runtime", version = "0.1.0" }
 apif-diagnostics = { path = "../apif-diagnostics", version = "0.1.0" }
 anyhow = { workspace = true }
 serde = { workspace = true }
@@ -19,4 +20,3 @@ serde_yaml_ng = { workspace = true }
 json5 = "1.3"
 
 [dev-dependencies]
-apif-cfg-runtime = { path = "../apif-cfg-runtime", version = "0.1.0" }

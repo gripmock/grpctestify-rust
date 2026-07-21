@@ -137,6 +137,7 @@ dependencies = [
 name = "apif-ast"
 version = "0.2.0"
 dependencies = [
+ "apif-cfg-runtime",
  "serde",
  "serde_json",
 ]
@@ -311,6 +312,7 @@ name = "apif-state"
 version = "0.1.0"
 dependencies = [
  "apif-ast",
+ "apif-cfg-runtime",
  "serde",
  "serde_json",
 ]

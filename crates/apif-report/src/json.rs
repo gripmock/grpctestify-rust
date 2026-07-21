@@ -45,10 +45,7 @@ impl Reporter for JsonReporter {
             report_context: JsonReportContext {
                 tool: "apif".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
-                generated_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64,
+                generated_at: apif_cfg_runtime::now_timestamp(),
             },
         };
 

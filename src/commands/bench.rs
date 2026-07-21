@@ -2734,10 +2734,7 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!(
             "direct-{}.gctf",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
+            apif_cfg_runtime::now_unix_nanos()
         ));
         std::fs::write(&path, &content)?;
         Some(path)
@@ -3761,6 +3758,7 @@ mod tests {
     // Memory is bounded independent of sample count: recording far more than the
     // old 100k cap never grows the fixed bucket array, and every sample counts.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_histogram_memory_is_bounded() {
         let mut metrics = BenchMetrics::default();
         let n = MAX_LATENCY_SAMPLES + 10;

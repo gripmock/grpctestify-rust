@@ -59,14 +59,7 @@ impl Default for DocumentMetadata {
         Self {
             source: None,
             mtime: None,
-            parsed_at: if cfg!(miri) {
-                0
-            } else {
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0)
-            },
+            parsed_at: apif_cfg_runtime::now_timestamp(),
             variable_types: HashMap::new(),
         }
     }

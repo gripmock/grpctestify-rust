@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Project-wide settings stored in settings.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,10 +220,7 @@ pub fn delete_share(shares_dir: &Path, id: &str) -> Result<()> {
 }
 
 pub fn cleanup_expired_shares(shares_dir: &Path) -> Result<usize> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
+    let now = apif_cfg_runtime::now_unix_millis() as i64;
     let mut removed = 0;
     if !shares_dir.is_dir() {
         return Ok(0);

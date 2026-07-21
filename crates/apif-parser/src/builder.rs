@@ -100,10 +100,7 @@ impl GctfDocumentBuilder {
             metadata: DocumentMetadata {
                 source: None,
                 mtime: None,
-                parsed_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64,
+                parsed_at: apif_cfg_runtime::now_timestamp(),
                 ..Default::default()
             },
             next_document: None,

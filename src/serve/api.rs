@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use super::{PlayState, ShareState};
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Consistent JSON error response.
 #[derive(Serialize)]
@@ -1270,10 +1269,7 @@ pub async fn execute_call(
         if let Ok(root) = require_project(&state) {
             let entry = serde_json::json!({
                 "id": uuid::Uuid::new_v4().to_string(),
-                "timestamp": std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis(),
+                "timestamp": apif_cfg_runtime::now_unix_millis(),
                 "endpoint": req.endpoint,
                 "bodies": hist_body,
                 "headers": hist_headers,
@@ -1332,10 +1328,7 @@ pub async fn create_share(
     Json(req): Json<ShareRequest>,
 ) -> Result<Json<ShareResponse>, (StatusCode, String)> {
     let id = uuid::Uuid::new_v4().to_string();
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
+    let now = apif_cfg_runtime::now_unix_millis() as i64;
     let ttl_days = req.ttl_days.unwrap_or(7).min(30);
     let expires_at = now + (ttl_days as i64) * 24 * 60 * 60 * 1000;
 
@@ -1388,10 +1381,7 @@ pub async fn get_share(
         )
     })?;
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
+    let now = apif_cfg_runtime::now_unix_millis() as i64;
     if share.expires_at < now {
         let shares_dir = state.shares_dir.clone();
         let id2 = id.clone();
