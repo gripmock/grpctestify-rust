@@ -14,8 +14,10 @@ pub fn build_folding_ranges(content: &str) -> Vec<FoldingRange> {
         // Document-level folding
         for (doc_idx, d) in head.iter_chain().enumerate() {
             if let (Some(first), Some(last)) = (d.sections.first(), d.sections.last()) {
-                let start = ((first.start_line as i32) - 1).max(0) as u32;
-                let end = ((last.end_line as i32) - 1).max(0) as u32;
+                // start_line is the 0-based header line; end_line is a line
+                // count, so the last 0-based line is end_line - 1.
+                let start = first.start_line as u32;
+                let end = (last.end_line as u32).saturating_sub(1);
                 if end > start {
                     let label = if head.is_single_document() {
                         d.get_endpoint().unwrap_or_else(|| "document".to_string())
@@ -43,9 +45,9 @@ pub fn build_folding_ranges(content: &str) -> Vec<FoldingRange> {
             for section in &d.sections {
                 if section.end_line > section.start_line {
                     ranges.push(FoldingRange {
-                        start_line: ((section.start_line as i32) - 1).max(0) as u32,
+                        start_line: section.start_line as u32,
                         start_character: Some(0),
-                        end_line: ((section.end_line as i32) - 1).max(0) as u32,
+                        end_line: (section.end_line as u32).saturating_sub(1),
                         end_character: None,
                         kind: Some(FoldingRangeKind::Region),
                         collapsed_text: Some(format!("--- {} ---", section.section_type.as_str())),

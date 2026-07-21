@@ -60,7 +60,6 @@ export function TopBar() {
       display: 'flex', alignItems: 'center', padding: '0 10px', gap: 6,
       background: 'var(--bg-secondary)', flexShrink: 0,
     }}>
-      {}
       <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontWeight: 600, fontSize: 14, minWidth: 0 }}>
         <FlaskConical size={18} color={colors.accent} />
         <span>grpctestify</span>
@@ -85,7 +84,6 @@ export function TopBar() {
 
       <div style={{ flex: 1, minWidth: 8 }} />
 
-      {}
       <div ref={dropdownRef} style={{ position: 'relative' }}>
         <button onClick={() => setShowDropdown(v => !v)} style={{
           display: 'flex', alignItems: 'center', gap: 4,
@@ -177,7 +175,6 @@ export function TopBar() {
         <Settings size={13} />
       </button>
 
-      {}
       <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 4 }}>
         <div style={{ position: 'relative' }}>
           <input value={address} onChange={e => setAddress(e.target.value)}
@@ -220,7 +217,6 @@ export function TopBar() {
         )}
       </div>
 
-      {}
       <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
         <input type="number" min={0} value={requestTimeoutMs} onChange={e => setRequestTimeoutMs(Math.max(0, parseInt(e.target.value) || 0))}
           placeholder="0"
@@ -230,7 +226,6 @@ export function TopBar() {
         <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>ms</span>
       </div>
 
-      {}
       <select value={protocol} onChange={e => setProtocol(e.target.value as any)}
         style={{ padding: '5px 6px', fontSize: 12, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none', cursor: 'pointer' }}
       >
@@ -239,7 +234,6 @@ export function TopBar() {
         <option value="connectrpc">ConnectRPC</option>
       </select>
 
-      {}
       <button onClick={() => setTls(!tls)} title={tls ? 'TLS on' : 'TLS off'}
         style={{ ...btn('ghost', 'sm'), color: tls ? colors.accent : 'var(--text-muted)' }}
       >
@@ -253,7 +247,6 @@ export function TopBar() {
         </label>
       )}
 
-      {}
       <button onClick={reflect} disabled={reflectStatus === 'loading' || !address}
         title={reflectStatus === 'error' ? `Reflection failed: ${reflectError || 'unknown error'}` : "Discover services via reflection"}
         style={{ ...btn('ghost', 'sm'), opacity: reflectStatus === 'loading' || !address ? 0.5 : 1 }}
@@ -265,7 +258,6 @@ export function TopBar() {
         {reflectStatus === 'loading' ? '…' : 'Reflect'}
       </button>
 
-      {}
       <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
         title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
         style={btn('ghost', 'sm')}

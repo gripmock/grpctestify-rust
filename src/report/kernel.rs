@@ -80,12 +80,29 @@ fn call_phases(doc: &GctfDocument, call_status: &str) -> Vec<KernelPhase> {
     let plan = ExecutionPlan::from_document(doc);
     let mut phases = Vec::new();
 
+    // A validation phase reflects the call status: failed for the failing call,
+    // skipped for calls the chain never reached, otherwise passed.
+    let validation_status = || {
+        match call_status {
+            "failed" => "failed",
+            "skipped" => "skipped",
+            _ => "passed",
+        }
+        .to_string()
+    };
+    // The request phase only "passes" when the call actually ran.
+    let request_status = if call_status == "skipped" {
+        "skipped".to_string()
+    } else {
+        "passed".to_string()
+    };
+
     let request_count = plan.summary.total_requests;
     if request_count > 0 {
         phases.push(KernelPhase {
             kind: "request".to_string(),
             details: format!("messages={}", request_count),
-            status: "passed".to_string(),
+            status: request_status,
         });
     }
 
@@ -98,11 +115,7 @@ fn call_phases(doc: &GctfDocument, call_status: &str) -> Vec<KernelPhase> {
                 response_sections.len(),
                 plan.summary.total_responses
             ),
-            status: if call_status == "failed" {
-                "failed".to_string()
-            } else {
-                "passed".to_string()
-            },
+            status: validation_status(),
         });
     }
 
@@ -110,11 +123,7 @@ fn call_phases(doc: &GctfDocument, call_status: &str) -> Vec<KernelPhase> {
         phases.push(KernelPhase {
             kind: "error".to_string(),
             details: "expected error validation".to_string(),
-            status: if call_status == "failed" {
-                "failed".to_string()
-            } else {
-                "passed".to_string()
-            },
+            status: validation_status(),
         });
     }
 
@@ -123,11 +132,7 @@ fn call_phases(doc: &GctfDocument, call_status: &str) -> Vec<KernelPhase> {
         phases.push(KernelPhase {
             kind: "asserts".to_string(),
             details: format!("blocks={}", assert_blocks),
-            status: if call_status == "failed" {
-                "failed".to_string()
-            } else {
-                "passed".to_string()
-            },
+            status: validation_status(),
         });
     }
 
@@ -136,15 +141,81 @@ fn call_phases(doc: &GctfDocument, call_status: &str) -> Vec<KernelPhase> {
         phases.push(KernelPhase {
             kind: "extract".to_string(),
             details: format!("blocks={}", extract_blocks),
-            status: if call_status == "failed" {
-                "failed".to_string()
-            } else {
-                "passed".to_string()
-            },
+            status: validation_status(),
         });
     }
 
     phases
+}
+
+/// Extract the first line number referenced by an error message.
+///
+/// Failure messages embed the absolute file line of the offending section
+/// (e.g. `"ASSERTS section at line 42 ..."`). Chain documents preserve absolute
+/// line numbers, so this lets us map a failure back to the document it belongs
+/// to instead of blindly blaming the last document in the chain.
+fn extract_error_line(message: &str) -> Option<usize> {
+    let mut rest = message;
+    while let Some(pos) = rest.find("line ") {
+        let after = &rest[pos + "line ".len()..];
+        let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(n) = digits.parse::<usize>() {
+            return Some(n);
+        }
+        rest = after;
+    }
+    None
+}
+
+/// Absolute file line range `[start, end]` covered by a document's sections.
+fn doc_line_range(doc: &GctfDocument) -> Option<(usize, usize)> {
+    let mut start = usize::MAX;
+    let mut end = 0usize;
+    for s in &doc.sections {
+        start = start.min(s.start_line);
+        end = end.max(s.end_line.max(s.start_line));
+    }
+    if start == usize::MAX {
+        None
+    } else {
+        Some((start, end))
+    }
+}
+
+/// Determine which document in the chain actually failed.
+///
+/// Under fail-fast execution the failure belongs to a single document; the ones
+/// after it were never executed. We locate it via the line number embedded in
+/// the error message. When no line can be extracted (e.g. an opaque transport
+/// error) we fall back to the last document, preserving prior behaviour.
+fn resolve_failed_doc_index(chain: &[&GctfDocument], error_message: &Option<String>) -> usize {
+    let last = chain.len().saturating_sub(1);
+    let Some(msg) = error_message else {
+        return last;
+    };
+    let Some(line) = extract_error_line(msg) else {
+        return last;
+    };
+    for (idx, d) in chain.iter().enumerate() {
+        if let Some((start, end)) = doc_line_range(d)
+            && line >= start
+            && line <= end
+        {
+            return idx;
+        }
+    }
+    last
+}
+
+/// Per-document status within a chain, given the resolved failing index.
+/// Documents before the failure passed; the failing one failed; documents after
+/// it were never executed (fail-fast) and are reported as skipped, not passed.
+fn chain_call_status(idx: usize, failed_index: Option<usize>) -> &'static str {
+    match failed_index {
+        Some(f) if idx == f => "failed",
+        Some(f) if idx > f => "skipped",
+        _ => "passed",
+    }
 }
 
 pub fn build_kernel_calls(test_path: &str, result: &TestResult) -> Option<Vec<KernelCall>> {
@@ -155,7 +226,7 @@ pub fn build_kernel_calls(test_path: &str, result: &TestResult) -> Option<Vec<Ke
     }
 
     let failed_index = if result.status == TestStatus::Fail {
-        Some(chain.len().saturating_sub(1))
+        Some(resolve_failed_doc_index(&chain, &result.error_message))
     } else {
         None
     };
@@ -181,12 +252,7 @@ pub fn build_kernel_calls(test_path: &str, result: &TestResult) -> Option<Vec<Ke
         }
         .to_string();
 
-        let status = if failed_index == Some(idx) {
-            "failed"
-        } else {
-            "passed"
-        }
-        .to_string();
+        let status = chain_call_status(idx, failed_index).to_string();
 
         let (package, service, method) = match parsed {
             Some((pkg, svc, mtd)) => {
@@ -345,7 +411,7 @@ fn extract_failures(test_path: &str, result: &TestResult) -> Vec<KernelFailure> 
     };
 
     let chain: Vec<&GctfDocument> = doc.iter_chain().collect();
-    let failed_doc_idx = chain.len().saturating_sub(1);
+    let failed_doc_idx = resolve_failed_doc_index(&chain, &result.error_message);
 
     failures.push(KernelFailure {
         call_index: failed_doc_idx + 1,
@@ -390,4 +456,125 @@ fn extract_grpc_code(error_msg: &Option<String>) -> Option<i32> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CHAIN_FIXTURE: &str = "\
+--- ENDPOINT ---
+pkg.Service/MethodA
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+
+--- ENDPOINT ---
+pkg.Service/MethodB
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+
+--- ENDPOINT ---
+pkg.Service/MethodC
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+";
+
+    fn write_fixture() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chain.gctf");
+        std::fs::write(&path, CHAIN_FIXTURE).unwrap();
+        let path_str = path.to_string_lossy().into_owned();
+        (dir, path_str)
+    }
+
+    #[test]
+    fn test_extract_error_line() {
+        assert_eq!(
+            extract_error_line("ASSERTS section at line 42 has no context"),
+            Some(42)
+        );
+        assert_eq!(extract_error_line("no numbers here"), None);
+        assert_eq!(extract_error_line("gRPC code 5 (NOT_FOUND)"), None);
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn test_chain_has_three_documents() {
+        let (_dir, path) = write_fixture();
+        let doc = crate::parser::parse_gctf(std::path::Path::new(&path)).unwrap();
+        assert_eq!(doc.document_count(), 3);
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn test_failure_attributed_to_actual_document_not_last() {
+        let (_dir, path) = write_fixture();
+        // Determine an absolute line that falls inside the SECOND document,
+        // then craft an error message referencing it.
+        let doc = crate::parser::parse_gctf(std::path::Path::new(&path)).unwrap();
+        let chain: Vec<&GctfDocument> = doc.iter_chain().collect();
+        let (start, end) = doc_line_range(chain[1]).unwrap();
+        let mid = (start + end) / 2;
+
+        let result = TestResult::fail(
+            path.clone(),
+            format!("Assertion failed (attached to RESPONSE at line {mid})"),
+            10,
+            None,
+        );
+
+        let calls = build_kernel_calls(&path, &result).unwrap();
+        assert_eq!(calls.len(), 3);
+        // Document before the failure passed.
+        assert_eq!(calls[0].status, "passed");
+        // The failing document is the one that actually failed, not the last.
+        assert_eq!(calls[1].status, "failed");
+        // The never-executed document is skipped, not falsely passed.
+        assert_eq!(calls[2].status, "skipped");
+
+        // Its phases must not claim "passed" either.
+        assert!(
+            calls[2].phases.iter().all(|p| p.status == "skipped"),
+            "skipped call phases: {:?}",
+            calls[2].phases
+        );
+
+        // extract_failures must point at document #2, not the last document.
+        let failures = extract_failures(&path, &result);
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].call_index, 2);
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn test_failure_without_line_falls_back_to_last_document() {
+        let (_dir, path) = write_fixture();
+        let result = TestResult::fail(path.clone(), "connection refused".to_string(), 10, None);
+        let calls = build_kernel_calls(&path, &result).unwrap();
+        assert_eq!(calls[0].status, "passed");
+        assert_eq!(calls[1].status, "passed");
+        assert_eq!(calls[2].status, "failed");
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn test_passing_chain_marks_all_passed() {
+        let (_dir, path) = write_fixture();
+        let result = TestResult::pass(path.clone(), 10, None);
+        let calls = build_kernel_calls(&path, &result).unwrap();
+        assert!(calls.iter().all(|c| c.status == "passed"));
+        assert!(extract_failures(&path, &result).is_empty());
+    }
 }

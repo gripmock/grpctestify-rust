@@ -23,7 +23,7 @@ pub use driven::{
     FallbackReason, FallbackType, RuntimeFallbackPolicy, SourceDrivenConfig, SourceFallbackEvent,
 };
 pub use filter::{FilterCondition, matches_all as matches_filter_all};
-pub use index::{BloomFilter, IndexEntry, IndexEntryV4, SourceIndex, XorFilter};
+pub use index::{IndexEntry, IndexEntryV4, SourceIndex};
 pub use memory::InMemorySource;
 pub use ndjson::NdjsonReader;
 pub use tsv::TsvReader;
@@ -66,10 +66,10 @@ pub fn open_source_reader(
     match format {
         SourceFormat::Csv => {
             let delimiter = definition.delimiter.unwrap_or(b',');
-            Ok(Box::new(CsvReader::new(reader, delimiter)?))
+            Ok(Box::new(CsvReader::new_seekable(reader, delimiter)?))
         }
-        SourceFormat::Tsv => Ok(Box::new(TsvReader::new(reader)?)),
-        SourceFormat::Ndjson => Ok(Box::new(NdjsonReader::new(reader))),
+        SourceFormat::Tsv => Ok(Box::new(TsvReader::new_seekable(reader)?)),
+        SourceFormat::Ndjson => Ok(Box::new(NdjsonReader::new_seekable(reader))),
     }
 }
 
@@ -132,8 +132,6 @@ mod tests {
         assert!(vars.is_empty());
     }
 }
-
-// ── SourceRow ──────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct SourceRow {

@@ -4,15 +4,14 @@
 [graph]
 targets = [
   { triple = "x86_64-unknown-linux-gnu" },
+  { triple = "aarch64-unknown-linux-gnu" },
   { triple = "x86_64-apple-darwin" },
   { triple = "aarch64-apple-darwin" },
+  { triple = "x86_64-pc-windows-msvc" },
+  { triple = "aarch64-pc-windows-msvc" },
 ]
 
 [advisories]
-ignore = [
-  # transitive dep via notify — unmaintained but no alternative
-  "RUSTSEC-2024-0384",
-]
 unmaintained = "all"
 yanked = "deny"
 
@@ -28,6 +27,7 @@ allow = [
   "Unicode-3.0",
   "MPL-2.0",
   "CC0-1.0",
+  "BSL-1.0",
   "0BSD",
   "Unlicense",
   "OpenSSL",

@@ -139,6 +139,7 @@ impl AssertionHandler {
         section_context: &str,
         start_line: usize,
         timing: Option<&AssertionTiming>,
+        variables: &HashMap<String, Value>,
     ) -> AssertionResult {
         let mut failure_messages = Vec::new();
 
@@ -148,6 +149,7 @@ impl AssertionHandler {
             Some(headers),
             Some(trailers),
             timing,
+            variables,
         );
 
         for (idx, result) in results.iter().enumerate() {

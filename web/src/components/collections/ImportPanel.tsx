@@ -12,6 +12,7 @@ export function ImportPanel() {
   const setRequestBodies = useStore(s => s.setRequestBodies);
   const setRequestHeaders = useStore(s => s.setRequestHeaders);
   const setAddress = useStore(s => s.setAddress);
+  const setTls = useStore(s => s.setTls);
   const newWorkspace = useStore(s => s.newWorkspace);
 
   const handleImport = async () => {
@@ -27,18 +28,26 @@ export function ImportPanel() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ args }),
       });
-      const data = await res.json();
 
-      if (data.error) {
+      let data: any = null;
+      try { data = await res.json(); } catch {  }
+
+      if (!res.ok) {
+        setError(data?.error || `Import failed (${res.status})`);
+        return;
+      }
+      if (data?.error) {
         setError(data.error);
         return;
       }
 
-      
+
       newWorkspace();
       setEndpoint(data.endpoint);
       if (data.body) setRequestBodies([data.body]);
       if (data.address) setAddress(data.address);
+      // grpcurl without -plaintext means the call uses TLS.
+      setTls(!data.plaintext);
       if (data.headers && Object.keys(data.headers).length > 0) {
         setRequestHeaders(data.headers);
       }

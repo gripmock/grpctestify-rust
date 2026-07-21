@@ -1,5 +1,3 @@
-// Main entry point for grpctestify
-
 use anyhow::Result;
 use clap::Parser;
 use tracing::{info, warn};
@@ -55,7 +53,6 @@ async fn main() -> Result<()> {
         info!("Starting grpctestify v{}", env!("CARGO_PKG_VERSION"));
     }
 
-    // Handle completion flag
     if let Some(shell_type) = cli.completion {
         commands::handle_completion(&shell_type)?;
         return Ok(());
@@ -75,9 +72,11 @@ async fn main() -> Result<()> {
         Some(Commands::Gen(args)) => commands::handle_gen(args).await,
         Some(Commands::Lsp(args)) => commands::handle_lsp(args).await,
         Some(Commands::Bench(args)) => commands::handle_bench(args).await,
+        Some(Commands::BenchCompare(args)) => commands::bench_compare::run(args),
         Some(Commands::Query(args)) => commands::handle_query(args),
         Some(Commands::Health(args)) => commands::handle_health(args).await,
         Some(Commands::Play(args)) => commands::handle_play(args).await,
+        Some(Commands::Scaffold(args)) => commands::handle_scaffold(args).await,
         None => {
             // Implicit Run
             let args = cli.run_args.clone();

@@ -2,6 +2,7 @@ pub mod document_symbols;
 pub mod folding_ranges;
 pub mod handlers;
 pub mod inlay_hints;
+pub mod position;
 pub mod semantic_tokens;
 pub mod server;
 pub mod variable_definition;

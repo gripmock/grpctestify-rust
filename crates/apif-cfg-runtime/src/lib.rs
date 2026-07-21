@@ -2,6 +2,7 @@ pub trait Clock {
     fn timestamp() -> i64;
     fn rfc3339() -> String;
     fn unix_millis() -> u128;
+    fn unix_nanos() -> u128;
 }
 
 pub struct SystemClock;
@@ -32,6 +33,18 @@ impl Clock for SystemClock {
             },
         }
     }
+
+    fn unix_nanos() -> u128 {
+        std::cfg_select! {
+            miri => 0,
+            _ => {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            },
+        }
+    }
 }
 
 pub fn now_timestamp() -> i64 {
@@ -44,6 +57,10 @@ pub fn now_rfc3339() -> String {
 
 pub fn now_unix_millis() -> u128 {
     SystemClock::unix_millis()
+}
+
+pub fn now_unix_nanos() -> u128 {
+    SystemClock::unix_nanos()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

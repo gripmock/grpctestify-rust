@@ -8,11 +8,24 @@ use std::io::Write;
 use std::path::PathBuf;
 
 fn escape_xml(s: &str) -> String {
-    s.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace("\"", "&quot;")
-        .replace("'", "&apos;")
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            // Tab, LF and CR are the only control chars valid in XML 1.0.
+            '\t' | '\n' | '\r' => out.push(c),
+            // Strip other C0 control chars (0x00-0x08, 0x0B, 0x0C, 0x0E-0x1F):
+            // they are forbidden in XML 1.0 documents — even as numeric
+            // character references — and make the output unparsable by CI tools.
+            c if (c as u32) < 0x20 => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 struct TestCaseBuilder {
@@ -160,6 +173,36 @@ mod tests {
     }
 
     #[test]
+    fn test_escape_xml_strips_invalid_control_chars() {
+        // NUL, backspace, vertical tab, form feed, unit separator are invalid
+        // in XML 1.0 and must be removed so the output stays parseable.
+        let input = "a\u{0}b\u{8}c\u{b}d\u{c}e\u{1f}f";
+        assert_eq!(escape_xml(input), "abcdef");
+        // Tab, LF and CR are valid and must be preserved.
+        assert_eq!(escape_xml("a\tb\nc\rd"), "a\tb\nc\rd");
+    }
+
+    #[test]
+    fn test_junit_failure_with_control_chars_is_well_formed() {
+        // gRPC error text containing control chars must not leak into the XML.
+        let tc = TestCaseBuilder {
+            name: "ctrl".into(),
+            classname: "suite".into(),
+            duration_ms: 10,
+            status: TestStatus::Fail,
+            error_message: Some("boom\u{0}\u{1b}[31mred\u{7}".into()),
+            tags: vec![],
+            extra_properties: vec![],
+        };
+        let xml = tc.to_xml();
+        assert!(
+            !xml.chars()
+                .any(|c| (c as u32) < 0x20 && !matches!(c, '\t' | '\n' | '\r'))
+        );
+        assert!(xml.contains("boom"));
+    }
+
+    #[test]
     fn test_test_case_builder_to_xml_pass() {
         let tc = TestCaseBuilder {
             name: "test1".into(),
@@ -233,6 +276,7 @@ mod tests {
         assert!(xml.contains("env"));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
     fn test_junit_reporter_lifecycle() {
@@ -247,6 +291,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
     fn test_junit_reporter_with_failure() {

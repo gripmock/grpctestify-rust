@@ -100,7 +100,6 @@ impl ConsoleReporter {
         };
         println!("   • Average per test: {:.0}ms", avg);
 
-        // gRPC Stats
         if metrics.rpc_calls > 0 {
             let avg_rpc = metrics.total_rpc_ms as f64 / metrics.rpc_calls as f64;
             println!(
@@ -109,7 +108,6 @@ impl ConsoleReporter {
             );
         }
 
-        // Overhead
         let overhead = duration_ms.saturating_sub(metrics.total_rpc_ms);
         let avg_overhead = if total > 0 {
             overhead as f64 / total as f64
@@ -139,14 +137,12 @@ impl ConsoleReporter {
             println!("   • Success rate: N/A (no tests executed)");
         }
 
-        // Performance rating
         println!("   • Performance: {:.0}ms/test", avg);
 
         println!(
             "────────────────────────────────────────────────────────────────────────────────"
         );
 
-        // Failed Tests Section
         if !errors.is_empty() {
             println!("❌ Failed Tests:");
             for error in errors {
@@ -154,7 +150,6 @@ impl ConsoleReporter {
             }
         }
 
-        // Environment Section
         println!("🔧 Environment:");
         println!("   • gRPC Address: {}", self.env_info.address);
         println!("   • Sort Mode: {}", self.env_info.sort_mode);
@@ -202,7 +197,6 @@ impl super::Reporter for ConsoleReporter {
     }
 
     fn on_test_end(&self, _test_name: &str, result: &TestResult) {
-        // Store result for later use in summary
         if let Ok(mut results) = self.results.lock() {
             results.push(result.clone());
         }

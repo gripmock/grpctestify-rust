@@ -4,6 +4,11 @@ use anyhow::Result;
 use apif_source_error::SourceError;
 use std::io::{BufRead, BufReader, Read, Seek};
 
+/// Rewinds the underlying reader back to the start of the stream. Boxed so the
+/// rewind capability (which needs `R: Seek`) can be captured at construction
+/// time and invoked later through the non-`Seek` `SourceReader` trait object.
+type NdjsonRewind<R> = Box<dyn Fn(&mut BufReader<R>) -> Result<()> + Send>;
+
 pub struct NdjsonReader<R> {
     reader: BufReader<R>,
     headers: Vec<String>,
@@ -11,6 +16,7 @@ pub struct NdjsonReader<R> {
     pending_first: Option<SourceRow>,
     row_number: usize,
     finished: bool,
+    rewind: Option<NdjsonRewind<R>>,
 }
 
 fn json_value_to_string(v: Option<&serde_json::Value>) -> String {
@@ -32,6 +38,7 @@ impl<R: Read> NdjsonReader<R> {
             pending_first: None,
             row_number: 0,
             finished: false,
+            rewind: None,
         }
     }
 
@@ -134,22 +141,34 @@ impl<R: Read + Send> SourceReader for NdjsonReader<R> {
     }
 
     fn supports_reset(&self) -> bool {
-        true
+        self.rewind.is_some()
     }
 
     fn reset(&mut self) -> Result<()> {
-        Ok(())
-    }
-}
-
-impl<R: Read + Seek + Send> NdjsonReader<R> {
-    pub fn reset_seekable(&mut self) -> Result<()> {
-        self.reader.seek(std::io::SeekFrom::Start(0))?;
+        let Some(rewind) = self.rewind.as_ref() else {
+            return Ok(());
+        };
+        rewind(&mut self.reader)?;
         self.headers.clear();
         self.pending_first = None;
         self.row_number = 0;
         self.finished = false;
         Ok(())
+    }
+}
+
+impl<R: Read + Seek + Send> NdjsonReader<R> {
+    /// Like [`NdjsonReader::new`], but over a seekable reader so that [`reset`]
+    /// can rewind to the start of the stream and restart header discovery.
+    ///
+    /// [`reset`]: SourceReader::reset
+    pub fn new_seekable(reader: BufReader<R>) -> Self {
+        let mut this = Self::new(reader);
+        this.rewind = Some(Box::new(|rdr: &mut BufReader<R>| {
+            rdr.seek(std::io::SeekFrom::Start(0))?;
+            Ok(())
+        }));
+        this
     }
 }
 
@@ -230,5 +249,41 @@ mod tests {
         let row2 = reader.next_row().unwrap().unwrap();
         assert_eq!(row2.get("name"), Some(""));
         assert_eq!(row2.get("id"), Some("2"));
+    }
+
+    #[test]
+    fn ndjson_non_seekable_reader_does_not_claim_reset() {
+        let data = "{\"id\":1}\n";
+        let reader = NdjsonReader::new(cursor(data));
+        assert!(!reader.supports_reset());
+    }
+
+    /// Regression: in duration/soak bench mode the engine `reset()`s the
+    /// exhausted primary source to keep feeding rows. A no-op reset silently
+    /// yielded empty rows forever; after the fix, reset rewinds to the start so
+    /// the original rows repeat.
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn ndjson_reset_rewinds_to_first_data_row() {
+        let data = "{\"id\":1,\"name\":\"Alice\"}\n{\"id\":2,\"name\":\"Bob\"}\n";
+        let mut reader = NdjsonReader::new_seekable(cursor(data));
+        assert!(reader.supports_reset());
+
+        // Exhaust the stream.
+        let row1 = reader.next_row().unwrap().unwrap();
+        assert_eq!(row1.get("name"), Some("Alice"));
+        let _row2 = reader.next_row().unwrap().unwrap();
+        assert!(reader.next_row().unwrap().is_none());
+
+        reader.reset().unwrap();
+
+        // The next read after reset must return the FIRST data row, not empty.
+        let after = reader.next_row().unwrap().unwrap();
+        assert_eq!(after.get("id"), Some("1"));
+        assert_eq!(after.get("name"), Some("Alice"));
+
+        let row2 = reader.next_row().unwrap().unwrap();
+        assert_eq!(row2.get("name"), Some("Bob"));
+        assert!(reader.next_row().unwrap().is_none());
     }
 }

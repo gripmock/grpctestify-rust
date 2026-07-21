@@ -1,4 +1,4 @@
-import Editor from '@monaco-editor/react';
+import { MonacoEditor as Editor } from '../MonacoEditor';
 import get from 'lodash-es/get';
 import { useStore } from '../../lib/store';
 import { Tag, User, FileText, Shield, Wrench } from 'lucide-react';

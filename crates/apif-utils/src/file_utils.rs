@@ -1,5 +1,3 @@
-// Cross-platform file utilities
-
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
@@ -79,7 +77,14 @@ fn is_excluded(path: &Path, exclude_patterns: &[String]) -> bool {
     let path_str = path.to_string_lossy();
     exclude_patterns.iter().any(|pattern| {
         if let Ok(glob) = globset::Glob::new(pattern).map(|g| g.compile_matcher()) {
+            // A glob like `smoke*` is whole-path anchored, so it would only
+            // match a bare filename, never `dir/smoke1.gctf`. Match it against
+            // the full path AND every path component (including the basename)
+            // so patterns such as `smoke*` exclude matching files anywhere.
             glob.is_match(path_str.as_ref())
+                || path
+                    .components()
+                    .any(|c| glob.is_match(c.as_os_str().to_string_lossy().as_ref()))
         } else {
             path_str.contains(pattern.as_str())
         }
@@ -91,6 +96,7 @@ mod tests {
     use super::*;
     use std::fs;
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
     fn test_collect_test_files_empty_dir() {
@@ -102,6 +108,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
     fn test_collect_test_files_with_gctf() {
@@ -122,6 +129,7 @@ mod tests {
         assert_eq!(resolved, Path::new("/home/user/tests/data/file.csv"));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
     fn test_get_file_size() {
@@ -142,6 +150,31 @@ mod tests {
         // Glob pattern matching
         assert!(is_excluded(Path::new("test.gctf"), &["*.gctf".into()]));
         assert!(!is_excluded(Path::new("test.gctf"), &["*.txt".into()]));
+    }
+
+    // Bug 7: `smoke*` (not `**/smoke*`) must exclude matching files anywhere,
+    // matching against each path component / basename, not just the full path.
+    #[test]
+    fn test_is_excluded_matches_basename_glob() {
+        assert!(is_excluded(
+            Path::new("tests/smoke_login.gctf"),
+            &["smoke*".into()]
+        ));
+        assert!(is_excluded(
+            Path::new("a/b/c/smoke1.gctf"),
+            &["smoke*".into()]
+        ));
+        assert!(!is_excluded(
+            Path::new("tests/regular.gctf"),
+            &["smoke*".into()]
+        ));
+        // Full-path anchored globs still work.
+        assert!(is_excluded(Path::new("tests/x.gctf"), &["tests/*".into()]));
+        // Excluding by directory component.
+        assert!(is_excluded(
+            Path::new("fixtures/skip/x.gctf"),
+            &["skip".into()]
+        ));
     }
 
     #[test]

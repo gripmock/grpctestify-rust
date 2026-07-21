@@ -15,6 +15,20 @@ use crate::execution::runner_helpers;
 use crate::grpc::{GrpcClient, GrpcClientConfig, client::StreamItem, proxy::ProxyEnv};
 use crate::parser;
 
+/// Resolve the overall request-deadline (seconds) handed to the transport.
+///
+/// The deadline is the configured request timeout (`--max-time`). The
+/// connection phase must fit *within* that deadline, so the connect timeout can
+/// never raise the effective deadline above `max_time`. Previously this used
+/// `connect_timeout.max(max_time)`, which forced a floor of the connect timeout
+/// and silently ignored a smaller `--max-time` (e.g. `--max-time 1` ran for the
+/// full 30s default connect timeout).
+fn resolve_call_timeout_seconds(_connect_timeout: u64, max_time: u64) -> u64 {
+    // The overall deadline is `max_time`; the connect phase is bounded
+    // separately by the transport and must never inflate it.
+    max_time
+}
+
 struct CallOptions<'a> {
     include_headers: bool,
     verbose: bool,
@@ -332,7 +346,7 @@ async fn handle_call_document(
         vsend(opts.silent, "");
     }
 
-    let timeout_seconds = opts.connect_timeout.max(opts.max_time);
+    let timeout_seconds = resolve_call_timeout_seconds(opts.connect_timeout, opts.max_time);
 
     let config = GrpcClientConfig {
         address: address.clone(),
@@ -490,4 +504,25 @@ async fn handle_call_document(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_call_timeout_seconds;
+
+    #[test]
+    fn max_time_below_connect_timeout_is_honored() {
+        // Regression: `--max-time 1` must not be inflated to the 30s connect
+        // timeout default.
+        assert_eq!(resolve_call_timeout_seconds(30, 1), 1);
+        assert_eq!(resolve_call_timeout_seconds(30, 5), 5);
+    }
+
+    #[test]
+    fn overall_deadline_is_max_time() {
+        assert_eq!(resolve_call_timeout_seconds(30, 60), 60);
+        assert_eq!(resolve_call_timeout_seconds(10, 10), 10);
+        // Connect timeout never raises the deadline above max_time.
+        assert_eq!(resolve_call_timeout_seconds(120, 5), 5);
+    }
 }

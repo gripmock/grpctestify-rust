@@ -73,6 +73,23 @@ pub struct IndexedDimension {
     pub index: Arc<SourceIndex>,
     pub mmap: memmap2::Mmap,
     pub cache: Mutex<TwoQCache<String, SourceRow>>,
+    /// Column names of the source, so rows read from the mmap carry the same
+    /// field names an in-memory dimension would (`dim.name`, not `dim.col_0`).
+    pub headers: Vec<String>,
+}
+
+impl IndexedDimension {
+    fn row_from_line(&self, line: &str) -> SourceRow {
+        if self.headers.is_empty() {
+            SourceRow::from_csv_line(line)
+        } else {
+            let values: Vec<String> = line
+                .split(',')
+                .map(|p| p.trim_ascii().to_string())
+                .collect();
+            SourceRow::new(&self.headers, values)
+        }
+    }
 }
 
 impl DimensionSource {
@@ -87,7 +104,7 @@ impl DimensionSource {
                 let Some(line) = idx.index.lookup_row_from_mmap(idx.mmap.as_ref(), key)? else {
                     return Ok(None);
                 };
-                let row = SourceRow::from_csv_line(&line);
+                let row = idx.row_from_line(&line);
                 cache.insert(key.to_string(), row.clone());
                 Ok(Some(row))
             }
@@ -95,7 +112,6 @@ impl DimensionSource {
     }
 
     /// Look up ALL rows matching the given key.
-    /// Only supported for in-memory dimensions.
     fn lookup_all(&self, key: &str) -> Vec<SourceRow> {
         match self {
             DimensionSource::Memory(mem) => mem
@@ -103,7 +119,23 @@ impl DimensionSource {
                 .filter(|(k, _)| k.as_str() == key)
                 .map(|(_, row)| row.clone())
                 .collect(),
-            DimensionSource::Indexed(_) => Vec::new(),
+            DimensionSource::Indexed(idx) => {
+                let Some(entries) = idx.index.lookup_all(key) else {
+                    return Vec::new();
+                };
+                let data = idx.mmap.as_ref();
+                entries
+                    .iter()
+                    .filter_map(|entry| {
+                        let start = entry.offset as usize;
+                        let end = start.checked_add(entry.row_length as usize)?;
+                        let bytes = data.get(start..end)?;
+                        std::str::from_utf8(bytes)
+                            .ok()
+                            .map(|line| idx.row_from_line(line))
+                    })
+                    .collect()
+            }
         }
     }
 }
@@ -170,10 +202,12 @@ fn load_dimension_source(
     resolved_path: &Path,
     key_col: &str,
 ) -> Result<DimensionSource> {
+    let reader = open_source_reader(def, document_path)
+        .with_context(|| format!("failed to open dimension source '{}'", def.file))?;
+    let headers = reader.headers().to_vec();
+    drop(reader);
     let effective_key = if key_col.is_empty() {
-        let reader = open_source_reader(def, document_path)
-            .with_context(|| format!("failed to open dimension source '{}'", def.file))?;
-        reader.headers().first().cloned().unwrap_or_default()
+        headers.first().cloned().unwrap_or_default()
     } else {
         key_col.to_string()
     };
@@ -193,6 +227,7 @@ fn load_dimension_source(
         index: Arc::new(index),
         mmap,
         cache: Mutex::new(TwoQCache::new(DIMENSION_CACHE_HOT, DIMENSION_CACHE_COLD)),
+        headers,
     })))
 }
 
@@ -211,7 +246,6 @@ fn load_dimension_in_memory(
     };
     let mem = InMemorySource::load(&mut *reader, &effective_key)
         .with_context(|| format!("failed to load dimension '{}'", resolved_path.display()))?;
-    // Apply dimension filter if configured
     let mem = if let Some(ref filter) = def.filter {
         let filtered = mem.filter(filter);
         Arc::new(filtered)
@@ -533,33 +567,40 @@ impl SourceDrivenConfig {
             }
         }
 
-        let mut reader = self.primary.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        // Loop (rather than recurse) so a long run of INNER-join misses can't
+        // blow the stack.
         let row = loop {
-            match reader.next_row()? {
-                Some(r) => {
-                    if self.primary_filter.is_empty()
-                        || matches_filter_all(&r, &self.primary_filter)
-                    {
-                        break r;
+            let candidate = {
+                let mut reader = self.primary.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+                loop {
+                    match reader.next_row()? {
+                        Some(r) => {
+                            if self.primary_filter.is_empty()
+                                || matches_filter_all(&r, &self.primary_filter)
+                            {
+                                break r;
+                            }
+                        }
+                        None => return Ok(None),
                     }
                 }
-                None => return Ok(None),
+            };
+
+            // Check INNER join constraints — skip row if the FK column is
+            // absent or its value has no match in the dimension.
+            let inner_missing = self.dim_joins.iter().any(|j| {
+                j.join_type == super::definition::JoinType::Inner
+                    && candidate
+                        .get(&j.foreign_key)
+                        .is_none_or(|fk| self.dimension_lookup(&j.source_name, fk).is_none())
+            });
+            if inner_missing {
+                continue;
             }
+            break candidate;
         };
-        drop(reader);
 
         let mut vars = self.build_primary_vars(&row);
-
-        // Check INNER join constraints — skip row if FK not found, try next row
-        let inner_missing = self.dim_joins.iter().any(|j| {
-            j.join_type == super::definition::JoinType::Inner
-                && row
-                    .get(&j.foreign_key)
-                    .is_some_and(|fk| self.dimension_lookup(&j.source_name, fk).is_none())
-        });
-        if inner_missing {
-            return self.next_row_variables();
-        }
 
         // Process LEFT joins (standard: add dimension fields when FK matches)
         for join in &self.dim_joins {
@@ -793,7 +834,10 @@ fn load_or_build_index_with_key(
 
     let mut index = SourceIndex::new(key_col);
     let header_line = read_first_line(&source_path)?;
-    let mut byte_offset = header_line.len() as u64 + 1;
+    // `read_first_line` keeps the trailing newline, so its length already
+    // covers the header line plus its line terminator: the first data row
+    // begins at exactly `header_line.len()`.
+    let mut byte_offset = header_line.len() as u64;
     let mut row_count = 0u64;
 
     while let Some(row) = reader.next_row()? {
@@ -834,15 +878,16 @@ fn read_first_line(path: &Path) -> Result<String> {
     Ok(line)
 }
 
+/// Byte length of the CSV row as it appears in the source file: the field
+/// values joined by commas. This must match how the row was serialized on
+/// disk so that mmap offsets computed during indexing stay in sync — counting
+/// header/column names here would over-count and corrupt every offset.
 fn estimate_row_size(row: &SourceRow) -> u32 {
     let mut size = 0u32;
-    for col in row.columns() {
-        size += col.len() as u32 + 1;
-    }
     for val in row.values() {
         size += val.len() as u32;
     }
-    size + row.columns().len().saturating_sub(1) as u32
+    size + row.values().len().saturating_sub(1) as u32
 }
 
 #[cfg(test)]
@@ -859,12 +904,229 @@ mod tests {
         path
     }
 
+    /// Regression (BUG 1): index-backed dimensions must yield the same rows —
+    /// including real column names and values — that a full-scan in-memory
+    /// dimension does. Before the fix, `lookup_all` returned nothing for indexed
+    /// dimensions and the mmap offset/length math read out-of-bounds garbage for
+    /// `lookup_row`. (Unique keys only: the in-memory path is a map keyed by the
+    /// join key and cannot hold multiple rows per key, so the two paths are only
+    /// comparable when keys are unique.)
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    #[cfg(not(miri))]
+    fn indexed_dimension_matches_in_memory() {
+        let dir = std::env::temp_dir().join("gctf_driven_indexed_match_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        create_temp_csv(
+            &dir,
+            "regions.csv",
+            "region_id,region_name\nR01,Moscow\nR02,Saint Petersburg\n",
+        );
+        let def: SourceDefinition =
+            serde_yaml_ng::from_str("file: regions.csv\nname: regions\nindexed_by: [region_id]\n")
+                .unwrap();
+        let doc_path = dir.join("test.gctf");
+        std::fs::write(&doc_path, "").unwrap();
+        let resolved = FileUtils::resolve_relative_path(&doc_path, &def.file);
+
+        let indexed = load_dimension_source(&def, &doc_path, &resolved, "region_id").unwrap();
+        assert!(matches!(indexed, DimensionSource::Indexed(_)));
+        let memory = load_dimension_in_memory(&def, &doc_path, &resolved, "region_id").unwrap();
+        assert!(matches!(memory, DimensionSource::Memory(_)));
+
+        let fingerprint = |row: &SourceRow| {
+            row.columns()
+                .iter()
+                .map(|c| format!("{c}={}", row.get(c).unwrap_or("")))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+
+        for key in ["R01", "R02"] {
+            // Single-row lookup: identical column names AND values across paths.
+            let idx_row = indexed.lookup_row(key).unwrap().unwrap();
+            let mem_row = memory.lookup_row(key).unwrap().unwrap();
+            assert_eq!(idx_row.columns(), mem_row.columns());
+            assert_eq!(fingerprint(&idx_row), fingerprint(&mem_row));
+
+            // `lookup_all` on the indexed path must no longer come back empty.
+            let idx_all = indexed.lookup_all(key);
+            let mem_all = memory.lookup_all(key);
+            assert_eq!(idx_all.len(), 1);
+            assert_eq!(fingerprint(&idx_all[0]), fingerprint(&mem_all[0]));
+        }
+        assert_eq!(
+            indexed
+                .lookup_row("R01")
+                .unwrap()
+                .unwrap()
+                .get("region_name"),
+            Some("Moscow")
+        );
+
+        // Missing key: both paths yield an empty set.
+        assert!(indexed.lookup_all("NOPE").is_empty());
+        assert!(memory.lookup_all("NOPE").is_empty());
+        assert!(indexed.lookup_row("NOPE").unwrap().is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression (BUG 1): a CROSS join over an indexed dimension must expand
+    /// the primary row across all matching dimension rows, injecting real field
+    /// names. Previously `dimension_lookup_all` returned `None` for indexed
+    /// dimensions, so the cross product collapsed to the primary row alone.
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    #[cfg(not(miri))]
+    fn cross_join_indexed_dimension_expands_rows() {
+        let dir = std::env::temp_dir().join("gctf_driven_cross_indexed_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        create_temp_csv(&dir, "orders.csv", "order_id,region_id\nO1,R01\n");
+        create_temp_csv(
+            &dir,
+            "regions.csv",
+            "region_id,region_name\nR01,Moscow\nR01,Kazan\nR02,Perm\n",
+        );
+        let doc_path = dir.join("test.gctf");
+        std::fs::write(&doc_path, "").unwrap();
+
+        // Force the dimension onto the indexed (mmap) path regardless of the
+        // machine's memory budget.
+        let dim_def: SourceDefinition =
+            serde_yaml_ng::from_str("file: regions.csv\nname: regions\nindexed_by: [region_id]\n")
+                .unwrap();
+        let resolved = FileUtils::resolve_relative_path(&doc_path, &dim_def.file);
+        let indexed = load_dimension_source(&dim_def, &doc_path, &resolved, "region_id").unwrap();
+        assert!(matches!(indexed, DimensionSource::Indexed(_)));
+
+        let primary_def: SourceDefinition =
+            serde_yaml_ng::from_str("file: orders.csv\nname: orders\n").unwrap();
+        let primary_reader = open_source_reader(&primary_def, &doc_path).unwrap();
+
+        let mut dimensions = HashMap::new();
+        dimensions.insert("regions".to_string(), indexed);
+
+        let config = SourceDrivenConfig {
+            primary: Arc::new(Mutex::new(primary_reader)),
+            primary_name: "orders".to_string(),
+            dimensions,
+            resolved_paths: HashMap::new(),
+            dim_joins: vec![DimensionJoin {
+                source_name: "regions".to_string(),
+                foreign_key: "region_id".to_string(),
+                join_type: crate::definition::JoinType::Cross,
+            }],
+            primary_filter: Vec::new(),
+            load_stats: DimLoadStats::default(),
+            runtime_stats: SourceRuntimeStats::default(),
+            fallback_policy: RuntimeFallbackPolicy::default(),
+            cross_product_state: std::sync::Mutex::new(None),
+            loaded_at: std::time::Instant::now(),
+            current_row: std::sync::atomic::AtomicU64::new(0),
+        };
+
+        let mut region_names = Vec::new();
+        while let Some(vars) = config.next_row_variables().unwrap() {
+            assert_eq!(
+                vars.get("orders.order_id"),
+                Some(&Value::String("O1".into()))
+            );
+            if let Some(Value::String(name)) = vars.get("regions.region_name") {
+                region_names.push(name.clone());
+            }
+        }
+        region_names.sort();
+        assert_eq!(
+            region_names,
+            vec!["Kazan".to_string(), "Moscow".to_string()]
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression (BUG 1): an INNER join must skip a primary row whose FK
+    /// column is entirely absent, not just present-but-unmatched. The prior
+    /// `is_some_and` check treated an absent FK column as "no constraint" and
+    /// wrongly emitted the row; `is_none_or` skips it. The primary here is
+    /// NDJSON with no `region_id` field at all, so an INNER join on it must
+    /// yield zero rows.
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    #[cfg(not(miri))]
+    fn inner_join_skips_rows_missing_fk_column() {
+        let dir = std::env::temp_dir().join("gctf_driven_inner_missing_col_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        create_temp_csv(
+            &dir,
+            "orders.jsonl",
+            "{\"order_id\":\"O1\"}\n{\"order_id\":\"O2\"}\n",
+        );
+        create_temp_csv(&dir, "regions.csv", "region_id,region_name\nR01,Moscow\n");
+
+        let defs: Vec<SourceDefinition> = serde_yaml_ng::from_str(
+            "- file: orders.jsonl\n  name: orders\n- file: regions.csv\n  name: regions\n  indexed_by: [region_id]\n  join_type: inner\n",
+        )
+        .unwrap();
+        let doc_path = dir.join("test.gctf");
+        std::fs::write(&doc_path, "").unwrap();
+
+        let config = SourceDrivenConfig::prepare(&defs, &doc_path)
+            .unwrap()
+            .unwrap();
+
+        // No primary row carries the FK column, so the INNER join drops them all.
+        assert!(config.next_row_variables().unwrap().is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression (BUG 1): a run of INNER-join misses is drained iteratively
+    /// (not by recursion), and the first matching row after the misses is
+    /// still returned correctly.
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    #[cfg(not(miri))]
+    fn inner_join_drains_leading_misses_then_matches() {
+        let dir = std::env::temp_dir().join("gctf_driven_inner_drain_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        create_temp_csv(
+            &dir,
+            "orders.csv",
+            "order_id,region_id\nO1,NOPE\nO2,NOPE\nO3,R01\n",
+        );
+        create_temp_csv(&dir, "regions.csv", "region_id,region_name\nR01,Moscow\n");
+
+        let defs: Vec<SourceDefinition> = serde_yaml_ng::from_str(
+            "- file: orders.csv\n  name: orders\n- file: regions.csv\n  name: regions\n  indexed_by: [region_id]\n  join_type: inner\n",
+        )
+        .unwrap();
+        let doc_path = dir.join("test.gctf");
+        std::fs::write(&doc_path, "").unwrap();
+
+        let config = SourceDrivenConfig::prepare(&defs, &doc_path)
+            .unwrap()
+            .unwrap();
+
+        // O1 and O2 have unmatched FKs and are skipped; O3's FK matches, so it
+        // is the only row that survives the INNER join.
+        let vars = config.next_row_variables().unwrap().unwrap();
+        assert_eq!(
+            vars.get("orders.order_id"),
+            Some(&Value::String("O3".into()))
+        );
+        assert!(config.next_row_variables().unwrap().is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn no_definitions_returns_none() {
         let result = SourceDrivenConfig::prepare(&[], Path::new("test.gctf")).unwrap();
         assert!(result.is_none());
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
     fn primary_only_no_dimensions() {
@@ -898,6 +1160,63 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Regression: in duration/soak bench mode, once the primary source is
+    /// exhausted the engine calls `reset()` on the primary reader to keep
+    /// feeding parameterized rows. Before the fix `reset()` was a no-op while
+    /// `supports_reset()` claimed success, so every row after exhaustion came
+    /// back with empty variables — silently destroying the parameterization.
+    /// After the fix, resetting rewinds the reader so the same rows repeat.
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    #[cfg(not(miri))]
+    fn primary_reset_replays_rows_for_duration_mode() {
+        let dir = std::env::temp_dir().join("gctf_driven_reset_replay_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        create_temp_csv(&dir, "users.csv", "id,name\n1,Alice\n2,Bob\n");
+
+        let defs: Vec<SourceDefinition> =
+            serde_yaml_ng::from_str("- file: users.csv\n  name: users\n").unwrap();
+        let doc_path = dir.join("test.gctf");
+        std::fs::write(&doc_path, "").unwrap();
+
+        let config = SourceDrivenConfig::prepare(&defs, &doc_path)
+            .unwrap()
+            .unwrap();
+
+        let collect_pass = |config: &SourceDrivenConfig| {
+            let mut names = Vec::new();
+            while let Some(vars) = config.next_row_variables().unwrap() {
+                if let Some(Value::String(n)) = vars.get("users.name") {
+                    names.push(n.clone());
+                }
+            }
+            names
+        };
+
+        // First pass drains the source.
+        assert_eq!(collect_pass(&config), vec!["Alice", "Bob"]);
+
+        // The bench duration loop rewinds the exhausted primary source.
+        {
+            let mut reader = config.primary.lock().unwrap();
+            assert!(reader.supports_reset());
+            reader.reset().unwrap();
+        }
+
+        // The next read must yield the original first row, not empty vars.
+        let vars = config.next_row_variables().unwrap().unwrap();
+        assert_eq!(vars.get("users.id"), Some(&Value::String("1".into())));
+        assert_eq!(vars.get("users.name"), Some(&Value::String("Alice".into())));
+
+        // And the whole pass replays identically.
+        let vars2 = config.next_row_variables().unwrap().unwrap();
+        assert_eq!(vars2.get("users.name"), Some(&Value::String("Bob".into())));
+        assert!(config.next_row_variables().unwrap().is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
     fn primary_with_dimension_join() {
@@ -962,6 +1281,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
     fn dimension_missing_fk_still_injects_primary() {
@@ -990,6 +1310,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
     fn primary_filter_skips_non_matching_rows() {

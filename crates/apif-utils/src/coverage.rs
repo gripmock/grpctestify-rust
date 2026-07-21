@@ -114,8 +114,33 @@ impl CoverageCollector {
         }
     }
 
+    /// Count fields the way `extract_fields_from_json` records covered ones:
+    /// every field contributes its own dotted path, and message-typed fields
+    /// additionally contribute the nested paths of their sub-message. Without
+    /// this the denominator only counted top-level fields while the numerator
+    /// counted nested `parent.child` paths, understating the total.
     fn count_fields_recursive(msg: &MessageDescriptor) -> usize {
-        msg.fields().count()
+        fn count(msg: &MessageDescriptor, visited: &mut HashSet<String>) -> usize {
+            // Guard against recursive message types (e.g. a tree node whose
+            // field points back at its own type) to avoid unbounded recursion.
+            if !visited.insert(msg.full_name().to_string()) {
+                return 0;
+            }
+            let mut total = 0;
+            for field in msg.fields() {
+                total += 1;
+                // Recurse into nested messages, but not map entries: a map's
+                // keys are dynamic and can't be enumerated from the schema.
+                if !field.is_map()
+                    && let prost_reflect::Kind::Message(sub) = field.kind()
+                {
+                    total += count(&sub, visited);
+                }
+            }
+            visited.remove(msg.full_name());
+            total
+        }
+        count(msg, &mut HashSet::new())
     }
 
     pub fn generate_json_report(&self) -> CoverageReport {
@@ -144,7 +169,10 @@ impl CoverageCollector {
             }
 
             let methods: Vec<_> = service.methods().collect();
-            let called_methods = calls.get(service_name).cloned().unwrap_or_default();
+            // Calls are recorded under the fully-qualified service name
+            // ("package.Service", see runner.rs). Look up with the same
+            // FQN so services inside a proto `package` aren't reported 0%.
+            let called_methods = calls.get(service.full_name()).cloned().unwrap_or_default();
 
             let covered = methods
                 .iter()
@@ -247,7 +275,8 @@ impl CoverageCollector {
 
             report.push_str(&format!("Service: {}\n", service_name));
 
-            let called_methods = calls.get(service_name).cloned().unwrap_or_default();
+            // Match the fully-qualified name used when recording calls.
+            let called_methods = calls.get(service.full_name()).cloned().unwrap_or_default();
 
             let mut methods: Vec<_> = service.methods().collect();
             methods.sort_by(|a, b| a.name().cmp(b.name()));
@@ -322,5 +351,159 @@ impl CoverageCollector {
 impl Default for CoverageCollector {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prost_reflect::prost_types::{
+        DescriptorProto, FileDescriptorProto, MethodDescriptorProto, ServiceDescriptorProto,
+    };
+
+    /// Build a pool with a service inside a proto `package`, so its
+    /// fully-qualified name ("my.pkg.Greeter") differs from its short name.
+    fn pool_with_packaged_service() -> DescriptorPool {
+        let mut pool = DescriptorPool::new();
+        let file = FileDescriptorProto {
+            name: Some("test.proto".to_string()),
+            package: Some("my.pkg".to_string()),
+            message_type: vec![DescriptorProto {
+                name: Some("Empty".to_string()),
+                ..Default::default()
+            }],
+            service: vec![ServiceDescriptorProto {
+                name: Some("Greeter".to_string()),
+                method: vec![MethodDescriptorProto {
+                    name: Some("SayHello".to_string()),
+                    input_type: Some(".my.pkg.Empty".to_string()),
+                    output_type: Some(".my.pkg.Empty".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        pool.add_file_descriptor_proto(file).unwrap();
+        pool
+    }
+
+    // Bug 6: calls are recorded under the fully-qualified service name, so
+    // coverage lookup must use the same FQN or packaged services report 0%.
+    #[test]
+    fn coverage_matches_fully_qualified_service_name() {
+        let collector = CoverageCollector::new();
+        collector.register_pool(&pool_with_packaged_service());
+        // Recorded exactly as runner.rs does: "package.Service".
+        collector.record_call("my.pkg.Greeter", "SayHello");
+
+        let report = collector.generate_json_report();
+        assert_eq!(report.summary.total, 1, "one method total");
+        assert_eq!(
+            report.summary.covered, 1,
+            "packaged service call should be counted as covered"
+        );
+
+        let text = collector.generate_text_report();
+        assert!(text.contains("100.0%"), "text report: {text}");
+    }
+
+    /// Build a pool with a message that nests two levels of sub-messages:
+    /// `Outer { id, inner: Inner }`, `Inner { name, addr: Addr }`,
+    /// `Addr { city }`. Recursively that is 5 fields (id, inner, inner.name,
+    /// inner.addr, inner.addr.city).
+    fn pool_with_nested_message() -> DescriptorPool {
+        use prost_reflect::prost_types::FieldDescriptorProto;
+        use prost_reflect::prost_types::field_descriptor_proto::{Label, Type};
+
+        let field =
+            |name: &str, number: i32, ty: Type, type_name: Option<&str>| FieldDescriptorProto {
+                name: Some(name.to_string()),
+                number: Some(number),
+                label: Some(Label::Optional as i32),
+                r#type: Some(ty as i32),
+                type_name: type_name.map(|s| s.to_string()),
+                ..Default::default()
+            };
+
+        let mut pool = DescriptorPool::new();
+        let file = FileDescriptorProto {
+            name: Some("nested.proto".to_string()),
+            message_type: vec![
+                DescriptorProto {
+                    name: Some("Outer".to_string()),
+                    field: vec![
+                        field("id", 1, Type::String, None),
+                        field("inner", 2, Type::Message, Some(".Inner")),
+                    ],
+                    ..Default::default()
+                },
+                DescriptorProto {
+                    name: Some("Inner".to_string()),
+                    field: vec![
+                        field("name", 1, Type::String, None),
+                        field("addr", 2, Type::Message, Some(".Addr")),
+                    ],
+                    ..Default::default()
+                },
+                DescriptorProto {
+                    name: Some("Addr".to_string()),
+                    field: vec![field("city", 1, Type::String, None)],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        pool.add_file_descriptor_proto(file).unwrap();
+        pool
+    }
+
+    // Bug 2: the field-count denominator must recurse into nested messages so
+    // it matches the nested dotted paths counted as covered.
+    #[test]
+    fn nested_message_field_count_is_recursive() {
+        let pool = pool_with_nested_message();
+        let outer = pool.get_message_by_name("Outer").unwrap();
+        // Before the fix this returned 2 (only id, inner).
+        assert_eq!(CoverageCollector::count_fields_recursive(&outer), 5);
+    }
+
+    #[test]
+    fn nested_message_full_coverage_is_100_percent() {
+        let collector = CoverageCollector::new();
+        collector.register_pool(&pool_with_nested_message());
+        collector.record_fields_from_json(
+            "Outer",
+            &serde_json::json!({
+                "id": "x",
+                "inner": { "name": "y", "addr": { "city": "z" } }
+            }),
+        );
+
+        let report = collector.generate_json_report();
+        assert_eq!(report.field_summary.total, 5, "recursive field total");
+        assert_eq!(report.field_summary.covered, 5, "all nested fields covered");
+        let msg = report
+            .messages
+            .iter()
+            .find(|m| m.message_type == "Outer")
+            .unwrap();
+        assert_eq!(msg.total_fields, 5);
+        assert_eq!(msg.covered_fields.len(), 5);
+    }
+
+    #[test]
+    fn nested_message_partial_coverage_uses_recursive_total() {
+        let collector = CoverageCollector::new();
+        collector.register_pool(&pool_with_nested_message());
+        // Only 3 of the 5 recursive paths are exercised (id, inner, inner.name).
+        collector.record_fields_from_json(
+            "Outer",
+            &serde_json::json!({ "id": "x", "inner": { "name": "y" } }),
+        );
+
+        let report = collector.generate_json_report();
+        assert_eq!(report.field_summary.total, 5);
+        assert_eq!(report.field_summary.covered, 3);
     }
 }

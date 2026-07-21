@@ -59,14 +59,7 @@ impl Default for DocumentMetadata {
         Self {
             source: None,
             mtime: None,
-            parsed_at: if cfg!(miri) {
-                0
-            } else {
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0)
-            },
+            parsed_at: apif_cfg_runtime::now_timestamp(),
             variable_types: HashMap::new(),
         }
     }
@@ -1235,8 +1228,6 @@ mod tests {
         let debug_str = format!("{:?}", doc);
         assert!(debug_str.contains("test.gctf"));
     }
-
-    // ─── Document chain (linked-list) tests ───
 
     #[test]
     fn test_document_chain_single() {

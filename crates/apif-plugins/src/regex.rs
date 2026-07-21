@@ -74,14 +74,12 @@ impl Plugin for RegexPlugin {
     }
 
     fn execute(&self, args: &[Value], _context: &PluginContext) -> Result<PluginResult> {
-        // Check argument count
         if args.len() != 2 {
             return Ok(PluginResult::Assertion(AssertionResult::fail(
                 "@regex requires 2 arguments: field and pattern",
             )));
         }
 
-        // Get field value
         let field_value = match &args[0] {
             Value::String(s) => s,
             Value::Number(n) => {
@@ -97,7 +95,6 @@ impl Plugin for RegexPlugin {
             }
         };
 
-        // Get pattern
         let pattern = match &args[1] {
             Value::String(s) => s,
             _ => {
@@ -107,7 +104,6 @@ impl Plugin for RegexPlugin {
             }
         };
 
-        // Compile and match regex
         match cached_regex(pattern) {
             Ok(re) => {
                 if re.is_match(field_value) {

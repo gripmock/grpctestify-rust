@@ -15,7 +15,6 @@ pub fn handle_query(args: &QueryArgs) -> Result<()> {
 
     for file in &args.files {
         if file.to_string_lossy() == "-" {
-            // Read from stdin
             let mut stdin = std::io::stdin();
             let mut content = String::new();
             stdin
@@ -50,12 +49,76 @@ pub fn handle_query(args: &QueryArgs) -> Result<()> {
         }
     }
 
-    if args.files.is_empty() && args.query.is_none() {
-        run_shell(sources, args)?;
-    } else if let Some(query) = &args.query {
-        execute_query(query, &sources, args)?;
+    match decide_query_action(!args.files.is_empty(), args.query.is_some(), args.shell) {
+        QueryAction::Shell => run_shell(sources, args)?,
+        QueryAction::Execute => {
+            // `Execute` is only chosen when a query is present.
+            let query = args.query.as_deref().unwrap_or_default();
+            execute_query(query, &sources, args)?;
+        }
+        QueryAction::Preview => preview_sources(&sources)?,
     }
 
+    Ok(())
+}
+
+/// What `query` should do given the presence of file args, a `-q` query, and
+/// the `-s/--shell` flag.
+#[derive(Debug, PartialEq, Eq)]
+enum QueryAction {
+    /// Start the interactive shell.
+    Shell,
+    /// Execute the provided `-q` query.
+    Execute,
+    /// Files given but no query and no shell: preview the loaded sources.
+    Preview,
+}
+
+fn decide_query_action(has_files: bool, has_query: bool, shell: bool) -> QueryAction {
+    if shell {
+        // Explicit `-s/--shell` always starts the shell (sources preloaded).
+        QueryAction::Shell
+    } else if has_query {
+        QueryAction::Execute
+    } else if !has_files {
+        // No files, no query, no shell flag: default to the interactive shell.
+        QueryAction::Shell
+    } else {
+        // Files given but nothing to run: preview schema + sample rows so the
+        // command is never a silent no-op.
+        QueryAction::Preview
+    }
+}
+
+/// Print each loaded source's schema and a few sample rows. Used when files are
+/// given without a `-q` query or `-s/--shell` flag, so `query <file>` is
+/// informative rather than a silent success.
+fn preview_sources(sources: &SourceCollection) -> Result<()> {
+    let mut names = sources.list_sources();
+    names.sort();
+    if names.is_empty() {
+        bail!("no sources loaded (use -q to run a query or -s for the interactive shell)");
+    }
+
+    for name in names {
+        let Some(source) = sources.get(name) else {
+            continue;
+        };
+        let columns = source.columns();
+        println!(
+            "Source '{}' ({} columns): {}",
+            name,
+            columns.len(),
+            columns.join(", ")
+        );
+        let rows = source.scan(&[])?;
+        let preview = rows.len().min(5);
+        println!("Showing {} of {} rows:", preview, rows.len());
+        print_rows(&rows[..preview], &columns, "table", true);
+        println!();
+    }
+
+    println!("(no query provided — use -q <expr> to filter or -s for the interactive shell)");
     Ok(())
 }
 
@@ -1033,5 +1096,41 @@ fn print_table(rows: &[HashMap<String, String>], columns: &[String], show_header
     if show_header {
         println!("+{}+", sep());
         println!("({} rows)", rows.len());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_flag_forces_shell() {
+        // -s wins regardless of files/query.
+        assert_eq!(decide_query_action(false, false, true), QueryAction::Shell);
+        assert_eq!(decide_query_action(true, false, true), QueryAction::Shell);
+        assert_eq!(decide_query_action(true, true, true), QueryAction::Shell);
+    }
+
+    #[test]
+    fn no_args_defaults_to_shell() {
+        assert_eq!(decide_query_action(false, false, false), QueryAction::Shell);
+    }
+
+    #[test]
+    fn query_executes() {
+        assert_eq!(
+            decide_query_action(false, true, false),
+            QueryAction::Execute
+        );
+        assert_eq!(decide_query_action(true, true, false), QueryAction::Execute);
+    }
+
+    #[test]
+    fn file_without_query_previews() {
+        // `query <file>` with no -q and no -s must not be a silent no-op.
+        assert_eq!(
+            decide_query_action(true, false, false),
+            QueryAction::Preview
+        );
     }
 }

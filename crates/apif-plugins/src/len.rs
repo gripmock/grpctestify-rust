@@ -44,11 +44,16 @@ impl Plugin for LenPlugin {
         let arg = &args[0];
 
         match arg {
+            // Match jq `length`: count Unicode scalar values (codepoints), not bytes.
             Value::String(s) => Ok(PluginResult::Value(Value::Number(
-                serde_json::Number::from(s.len()),
+                serde_json::Number::from(s.chars().count()),
             ))),
             Value::Array(arr) => Ok(PluginResult::Value(Value::Number(
                 serde_json::Number::from(arr.len()),
+            ))),
+            // jq `length` on an object counts its entries.
+            Value::Object(map) => Ok(PluginResult::Value(Value::Number(
+                serde_json::Number::from(map.len()),
             ))),
             _ => Ok(PluginResult::Value(Value::Null)),
         }
@@ -123,6 +128,34 @@ mod tests {
             // Pass
         } else {
             panic!("Expected Null result");
+        }
+    }
+
+    #[test]
+    fn test_len_plugin_unicode_string_counts_codepoints() {
+        // Regression: "привет" is 12 bytes but 6 codepoints; jq `length` == 6.
+        let plugin = LenPlugin;
+        let context = create_context();
+        let result = plugin.execute(&[Value::String("привет".to_string())], &context);
+        assert!(result.is_ok());
+        if let PluginResult::Value(Value::Number(n)) = result.unwrap() {
+            assert_eq!(n.as_u64().unwrap(), 6);
+        } else {
+            panic!("Expected Value result with number");
+        }
+    }
+
+    #[test]
+    fn test_len_plugin_object_counts_entries() {
+        let plugin = LenPlugin;
+        let context = create_context();
+        let obj = serde_json::json!({"a": 1, "b": 2});
+        let result = plugin.execute(&[obj], &context);
+        assert!(result.is_ok());
+        if let PluginResult::Value(Value::Number(n)) = result.unwrap() {
+            assert_eq!(n.as_u64().unwrap(), 2);
+        } else {
+            panic!("Expected Value result with number");
         }
     }
 

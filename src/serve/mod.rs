@@ -3,17 +3,15 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{Path, State},
-    http::Method,
-    response::Response,
+    http::StatusCode,
+    response::{IntoResponse, Response},
     routing::{delete, get, post, put},
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
-use tokio::sync::oneshot;
-use tower_http::cors::{Any, CorsLayer};
+use std::time::Instant;
 use tower_http::trace::TraceLayer;
 
 use crate::serve::project::ProjectSettings;
@@ -68,8 +66,11 @@ async fn index_handler() -> Response {
 /// Serve root-level static files (favicon.ico, manifest.json, etc.)
 /// or fall back to index.html for SPA client-side routing.
 async fn spa_fallback(Path(path): Path<String>) -> Response {
+    // Unknown API routes must be a real 404, not index.html.
+    if path.starts_with("api/") {
+        return (StatusCode::NOT_FOUND, "Not found").into_response();
+    }
     if !path.is_empty()
-        && !path.starts_with("api/")
         && let Some(resp) = assets::try_get_asset(&path)
     {
         return resp;
@@ -119,9 +120,6 @@ pub async fn info_handler(State(state): State<Arc<PlayState>>) -> Json<InfoRespo
     })
 }
 
-// ANSI color codes for terminal output
-/* ── ANSI colors (respects NO_COLOR) ────────────── */
-
 fn use_color() -> bool {
     std::env::var_os("NO_COLOR").is_none()
 }
@@ -165,8 +163,6 @@ fn fmt_size(bytes: &str) -> String {
         bytes.to_string()
     }
 }
-
-/* ── Access log ──────────────────────────────────── */
 
 async fn access_log_middleware(
     req: axum::http::Request<Body>,
@@ -222,12 +218,12 @@ async fn access_log_middleware(
     response
 }
 
-/// Background file watcher with debouncing and clean shutdown.
+/// Background file watcher. Runs until the notify channel disconnects
+/// (i.e. the watcher is dropped / the process exits).
 fn start_file_watcher(
     mtime: Arc<AtomicU64>,
     dirs: &[PathBuf],
     project_root: Option<&std::path::Path>,
-    mut shutdown_rx: oneshot::Receiver<()>,
 ) {
     use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
     use std::sync::mpsc;
@@ -256,25 +252,15 @@ fn start_file_watcher(
         }
     }
 
-    let mut last_bump: Option<std::time::Instant> = None;
     let static_paths = watch_paths;
 
-    // Check shutdown before each recv (with 250ms timeout)
     loop {
-        if shutdown_rx.try_recv().is_ok() {
-            tracing::debug!("File watcher stopped.");
-            return;
-        }
-        match rx.recv_timeout(Duration::from_millis(250)) {
+        match rx.recv() {
             Ok(Ok(event)) => {
-                let now = std::time::Instant::now();
-                let should = last_bump
-                    .map(|t| now.duration_since(t).as_millis() >= 500)
-                    .unwrap_or(true);
-                if should {
-                    mtime.fetch_add(1, Ordering::Relaxed);
-                    last_bump = Some(now);
-                }
+                // Always bump: the frontend polls /api/info and tolerates
+                // spurious increments; a time-based debounce here dropped the
+                // trailing event of a burst, missing the final change.
+                mtime.fetch_add(1, Ordering::Relaxed);
                 if matches!(event.kind, notify::EventKind::Remove(_)) {
                     for w in &static_paths {
                         if w.is_dir() {
@@ -284,8 +270,7 @@ fn start_file_watcher(
                 }
             }
             Ok(Err(_)) => {}
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(mpsc::RecvError) => {
                 tracing::debug!("File watcher disconnected.");
                 return;
             }
@@ -293,14 +278,49 @@ fn start_file_watcher(
     }
 }
 
+/// Extract the hostname from a Host header value, stripping any port
+/// (`localhost:4755`, `[::1]:4755`, bare IPv6 literals).
+fn host_header_name(host: &str) -> &str {
+    if let Some(rest) = host.strip_prefix('[') {
+        // Bracketed IPv6: [::1] or [::1]:4755
+        rest.split(']').next().unwrap_or("")
+    } else if host.matches(':').count() > 1 {
+        // Bare IPv6 literal without port
+        host
+    } else {
+        host.rsplit_once(':').map_or(host, |(h, _)| h)
+    }
+}
+
+/// Is this Host header a loopback name?
+fn host_is_loopback(host: &str) -> bool {
+    let name = host_header_name(host);
+    name.eq_ignore_ascii_case("localhost") || name == "127.0.0.1" || name == "::1"
+}
+
+/// DNS-rebinding guard: even when bound to 127.0.0.1, a malicious site can
+/// reach us by pointing its own DNS name at 127.0.0.1 — the browser then
+/// sends `Host: attacker.example`. The playground itself is always opened via
+/// a loopback name, so rejecting any other Host closes the hole.
+async fn loopback_host_guard(
+    req: axum::http::Request<Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    let host_ok = req
+        .headers()
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(host_is_loopback)
+        .unwrap_or(false);
+    if !host_ok {
+        return (StatusCode::FORBIDDEN, "Invalid Host header").into_response();
+    }
+    next.run(req).await
+}
+
 /// Build the axum Router from a PlayState. Tests should use this instead of
 /// duplicating route registrations.
 pub fn build_app(state: Arc<PlayState>) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-        .allow_headers(Any);
-
     let base_routes = Router::new()
         .route("/", get(index_handler))
         .route("/assets/{*path}", get(static_handler))
@@ -352,16 +372,18 @@ pub fn build_app(state: Arc<PlayState>) -> Router {
         )
         .route("/api/project/history", get(api::project_history_get));
 
+    // Note: no CORS layer on purpose — the web UI is served same-origin and
+    // only fetches relative /api paths; permissive CORS would let any website
+    // in the user's browser drive this server.
     base_routes
         .merge(project_routes)
         .route("/{*path}", get(spa_fallback))
         .layer(axum::middleware::from_fn(access_log_middleware))
         .layer(TraceLayer::new_for_http())
-        .layer(cors)
         .with_state(state)
 }
 
-pub async fn start_play_server(port: u16, dir: PathBuf) -> Result<()> {
+pub async fn start_play_server(host: &str, port: u16, dir: PathBuf) -> Result<()> {
     let project_root = project::detect_project(&dir);
 
     let collections_dir = project_root
@@ -370,7 +392,6 @@ pub async fn start_play_server(port: u16, dir: PathBuf) -> Result<()> {
         .filter(|p| p.is_dir())
         .unwrap_or_else(|| dir.clone());
 
-    // Resolve extra collections dirs from project settings
     let collections_dirs = if let Some(ref root) = project_root {
         let mut dirs = vec![collections_dir.clone()];
         if let Ok(settings) = project::load_project_settings(root)
@@ -392,13 +413,12 @@ pub async fn start_play_server(port: u16, dir: PathBuf) -> Result<()> {
 
     let collections_mtime = Arc::new(AtomicU64::new(0));
 
-    // Start file watcher with shutdown signal
-    let (_shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    // Start file watcher (runs for the lifetime of the process)
     let w_mtime = collections_mtime.clone();
     let w_dirs: Vec<PathBuf> = collections_dirs.clone();
     let w_root = project_root.clone();
     tokio::task::spawn_blocking(move || {
-        start_file_watcher(w_mtime, &w_dirs, w_root.as_deref(), shutdown_rx);
+        start_file_watcher(w_mtime, &w_dirs, w_root.as_deref());
     });
 
     let shares_dir = project_root
@@ -418,14 +438,28 @@ pub async fn start_play_server(port: u16, dir: PathBuf) -> Result<()> {
         collections_mtime,
     });
 
-    // Cleanup expired shares on startup
     tokio::task::spawn_blocking(move || {
         let _ = project::cleanup_expired_shares(&shares_dir);
     });
 
     let app = build_app(state);
 
-    let addr = format!("0.0.0.0:{}", port);
+    // When bound to loopback (the default), reject requests whose Host header
+    // is not a loopback name — see loopback_host_guard for the rationale.
+    // Users who opt into network exposure via --host skip the guard.
+    let bound_loopback = host_is_loopback(host);
+    let app = if bound_loopback {
+        app.layer(axum::middleware::from_fn(loopback_host_guard))
+    } else {
+        app
+    };
+
+    // Bracket bare IPv6 literals for SocketAddr syntax
+    let addr = if host.contains(':') && !host.starts_with('[') {
+        format!("[{}]:{}", host, port)
+    } else {
+        format!("{}:{}", host, port)
+    };
     let version = env!("CARGO_PKG_VERSION");
     println!(
         "{bold}grpctestify play v{version}{reset} — http://localhost:{port}",
@@ -448,4 +482,35 @@ pub async fn start_play_server(port: u16, dir: PathBuf) -> Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_host_header_name() {
+        assert_eq!(host_header_name("localhost"), "localhost");
+        assert_eq!(host_header_name("localhost:4755"), "localhost");
+        assert_eq!(host_header_name("127.0.0.1:4755"), "127.0.0.1");
+        assert_eq!(host_header_name("[::1]:4755"), "::1");
+        assert_eq!(host_header_name("[::1]"), "::1");
+        assert_eq!(host_header_name("::1"), "::1");
+        assert_eq!(host_header_name("evil.example:4755"), "evil.example");
+    }
+
+    #[test]
+    fn test_host_is_loopback() {
+        assert!(host_is_loopback("localhost"));
+        assert!(host_is_loopback("LOCALHOST:4755"));
+        assert!(host_is_loopback("127.0.0.1:4755"));
+        assert!(host_is_loopback("[::1]:4755"));
+        assert!(host_is_loopback("::1"));
+        assert!(!host_is_loopback("evil.example"));
+        assert!(!host_is_loopback("evil.example:4755"));
+        assert!(!host_is_loopback("192.168.1.10:4755"));
+        // 127.0.0.1 lookalikes must not pass
+        assert!(!host_is_loopback("127.0.0.1.evil.example"));
+        assert!(!host_is_loopback(""));
+    }
 }

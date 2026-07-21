@@ -146,7 +146,6 @@ export function Sidebar() {
         <button onClick={refreshCollections} style={btn('ghost', 'sm')} title="Refresh"><RefreshCw size={12} /></button>
       </div>
 
-      {}
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6, border: '1px solid var(--border)', borderRadius: 5, padding: '3px 6px', background: 'var(--bg-primary)' }}>
         <Search size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Filter…"
@@ -154,7 +153,6 @@ export function Sidebar() {
         {search && <button onClick={() => setSearch('')} style={{ ...btn('ghost', 'sm'), fontSize: 10, padding: '0 3px' }}>✕</button>}
       </div>
 
-      {}
       {allTags.length > 0 && (
         <div style={{ marginBottom: 6 }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
@@ -208,7 +206,6 @@ export function Sidebar() {
         onDragStart={handleDragStart} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
         dragOverPath={dragOverPath} />
 
-      {}
       {ctxMenu && (
         <div ref={ctxRef} style={{
           position: 'fixed', left: ctxMenu.x, top: ctxMenu.y, zIndex: 1000,

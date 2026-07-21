@@ -2,21 +2,20 @@
 
 use anyhow::Result;
 use serde_json::Value;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::{LazyLock, Mutex};
 
-// Plugin imports
 use crate::registry::AssertionTiming;
 
-// Jaq imports
-use jaq_core::{Compiler, Ctx, Vars, data, load, unwrap_valr};
+use jaq_core::{
+    Bind, Compiler, Ctx, Cv, Error as JaqError, Vars, data, load, native::bome, unwrap_valr,
+};
 use jaq_json::{Map as JaqMap, Num as JaqNum, Rc as JaqRc, Val as JaqVal};
 
-// Operators module
 use super::operators;
 
-/// Assertion result
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssertionResult {
     Pass,
@@ -58,7 +57,6 @@ impl AssertionResult {
     }
 }
 
-/// Assertion engine
 pub struct AssertionEngine {
     plugin_registry: Arc<dyn crate::registry::PluginRegistry>,
 }
@@ -70,6 +68,263 @@ type JaqFilter = jaq_core::Filter<data::JustLut<JaqVal>>;
 /// tokio's work-stealing runtime where futures can migrate across threads.
 static JAQ_FILTER_CACHE: LazyLock<Mutex<HashMap<String, Arc<JaqFilter>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Plugins that depend on external context (headers, trailers, timing, env) and
+/// therefore cannot be a pure function of a single JSON value. They stay
+/// AST-engine-only and are rejected with a clear message if used inside a jq
+/// expression (the jaq-fallback path).
+const JAQ_CONTEXT_ONLY_PLUGINS: &[&str] = &[
+    "header",
+    "has_header",
+    "trailer",
+    "has_trailer",
+    "elapsed_ms",
+    "total_elapsed_ms",
+    "env",
+    "scope.message_count",
+    "scope.index",
+    "scope_message_count",
+    "scope_index",
+];
+
+thread_local! {
+    /// Registry made available to the `__plugin` native jaq function for the
+    /// duration of a single `run_jaq` call. jaq native filters are bare `fn`
+    /// pointers and cannot capture state, so we hand the registry over via a
+    /// thread-local that is set (and restored) by [`PluginRegistryGuard`].
+    static JAQ_PLUGIN_REGISTRY: RefCell<Option<Arc<dyn crate::registry::PluginRegistry>>> =
+        const { RefCell::new(None) };
+}
+
+/// RAII guard that installs the plugin registry into the thread-local for the
+/// current jaq run and restores the previous value on drop (reentrancy-safe).
+struct PluginRegistryGuard(Option<Arc<dyn crate::registry::PluginRegistry>>);
+
+impl PluginRegistryGuard {
+    fn set(registry: Arc<dyn crate::registry::PluginRegistry>) -> Self {
+        let prev = JAQ_PLUGIN_REGISTRY.with(|cell| cell.borrow_mut().replace(registry));
+        Self(prev)
+    }
+}
+
+impl Drop for PluginRegistryGuard {
+    fn drop(&mut self) {
+        let prev = self.0.take();
+        JAQ_PLUGIN_REGISTRY.with(|cell| *cell.borrow_mut() = prev);
+    }
+}
+
+/// Look the plugin up in the thread-local registry, execute it against `args`,
+/// and map its result into a jaq value: a `PluginResult::Value(v)` becomes `v`,
+/// and a passing/failing assertion becomes `true`/`false`, so plugins compose
+/// with jq operators (`map`, `select`, `all`, arithmetic).
+fn dispatch_jaq_plugin(name: &str, args: &[Value]) -> std::result::Result<JaqVal, String> {
+    let registry = JAQ_PLUGIN_REGISTRY.with(|cell| cell.borrow().clone());
+    let registry =
+        registry.ok_or_else(|| format!("plugin '@{}' is not available in this context", name))?;
+    let plugin = registry
+        .get_plugin(name)
+        .ok_or_else(|| format!("unknown plugin '@{}' in jq expression", name))?;
+
+    let null = Value::Null;
+    let ctx = crate::registry::PluginContext::new(&null);
+    match plugin
+        .execute(args, &ctx)
+        .map_err(|e| format!("plugin '@{}' error: {}", name, e))?
+    {
+        crate::registry::PluginResult::Value(v) => Ok(json_to_jaq(&v)),
+        crate::registry::PluginResult::Assertion(AssertionResult::Pass) => Ok(JaqVal::Bool(true)),
+        crate::registry::PluginResult::Assertion(AssertionResult::Fail { .. }) => {
+            Ok(JaqVal::Bool(false))
+        }
+        crate::registry::PluginResult::Assertion(AssertionResult::Error(e)) => {
+            Err(format!("plugin '@{}' error: {}", name, e))
+        }
+    }
+}
+
+/// The `__plugin` native function registered into every compiled jaq filter.
+///
+/// Invoked as `__plugin("name"; [arg, ...])` — the form produced by
+/// [`rewrite_plugin_calls`] from `@name(arg, ...)`. It evaluates the name and
+/// argument filters against the current input, then dispatches to the plugin.
+///
+/// Written as a closure (not a named fn) so it coerces cleanly to jaq's
+/// higher-ranked `RunPtr<D>`, mirroring how `jaq_json` defines native filters.
+fn jaq_plugin_fun<D>() -> jaq_core::native::Fun<D>
+where
+    D: for<'a> jaq_core::DataT<V<'a> = JaqVal>,
+{
+    jaq_core::native::run((
+        "__plugin",
+        Box::new([Bind::Fun(()), Bind::Fun(())]),
+        |mut cv: Cv<D>| {
+            let input = cv.1.clone();
+            // Arguments are popped last-to-first: `__plugin(name; args)`.
+            let (args_id, args_ctx) = cv.0.pop_fun();
+            let (name_id, name_ctx) = cv.0.pop_fun();
+
+            let name = match name_id
+                .run((name_ctx, input.clone()))
+                .map(unwrap_valr)
+                .next()
+            {
+                Some(Ok(v)) => v,
+                Some(Err(e)) => return bome(Err(e)),
+                None => return bome(Err(JaqError::str("plugin call produced no name"))),
+            };
+            let name = match jaq_to_json(&name) {
+                Value::String(s) => s,
+                other => {
+                    return bome(Err(JaqError::str(format!(
+                        "plugin name must be a string, got {}",
+                        other
+                    ))));
+                }
+            };
+
+            let args_val = match args_id.run((args_ctx, input)).map(unwrap_valr).next() {
+                Some(Ok(v)) => v,
+                Some(Err(e)) => return bome(Err(e)),
+                None => {
+                    return bome(Err(JaqError::str(format!(
+                        "plugin '@{}' produced no arguments",
+                        name
+                    ))));
+                }
+            };
+            let args_json = match jaq_to_json(&args_val) {
+                Value::Array(items) => items,
+                other => vec![other],
+            };
+
+            match dispatch_jaq_plugin(&name, &args_json) {
+                Ok(v) => bome(Ok(v)),
+                Err(e) => bome(Err(JaqError::str(e))),
+            }
+        },
+    ))
+}
+
+/// Rewrite `@name(args)` plugin calls into `__plugin("name"; [args])` so jaq can
+/// dispatch them to registered plugins. Nested plugin calls and string literals
+/// are handled; jq format strings like `@base64` (not followed by `(`) are left
+/// untouched. Context-dependent plugins are rejected with a clear message.
+fn rewrite_plugin_calls(expr: &str) -> Result<String> {
+    let bytes = expr.as_bytes();
+    let mut out = String::with_capacity(expr.len() + 16);
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            b'"' | b'\'' => {
+                // Copy the whole string literal verbatim.
+                let start = i;
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    let end = bytes[i] == b;
+                    i += 1;
+                    if end {
+                        break;
+                    }
+                }
+                out.push_str(&expr[start..i.min(bytes.len())]);
+            }
+            b'@' => {
+                let name_start = i + 1;
+                let mut j = name_start;
+                while j < bytes.len()
+                    && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_' || bytes[j] == b'.')
+                {
+                    j += 1;
+                }
+                if j > name_start && j < bytes.len() && bytes[j] == b'(' {
+                    let name = &expr[name_start..j];
+                    if JAQ_CONTEXT_ONLY_PLUGINS.contains(&name) {
+                        return Err(anyhow::anyhow!(
+                            "@{} is not available in jq expressions: it needs response \
+                             header/trailer/timing/env context; use it as a standalone assertion",
+                            name
+                        ));
+                    }
+                    let close = find_matching_paren(bytes, j).ok_or_else(|| {
+                        anyhow::anyhow!("unbalanced parentheses in plugin call @{}", name)
+                    })?;
+                    let inner = rewrite_plugin_calls(&expr[j + 1..close])?;
+                    out.push_str("__plugin(\"");
+                    out.push_str(name);
+                    out.push_str("\"; [");
+                    out.push_str(&inner);
+                    out.push_str("])");
+                    i = close + 1;
+                } else {
+                    out.push('@');
+                    i += 1;
+                }
+            }
+            _ => {
+                let len = utf8_char_len(b);
+                out.push_str(&expr[i..(i + len).min(bytes.len())]);
+                i += len;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Length in bytes of a UTF-8 sequence starting with the leading byte `b`.
+fn utf8_char_len(b: u8) -> usize {
+    if b < 0x80 {
+        1
+    } else if b >> 5 == 0b110 {
+        2
+    } else if b >> 4 == 0b1110 {
+        3
+    } else if b >> 3 == 0b11110 {
+        4
+    } else {
+        1
+    }
+}
+
+/// Given the index of an opening `(`, return the index of its matching `)`,
+/// tracking nested brackets and skipping string literals.
+fn find_matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut i = open;
+    let mut in_string: Option<u8> = None;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match in_string {
+            Some(q) => {
+                if b == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if b == q {
+                    in_string = None;
+                }
+            }
+            None => match b {
+                b'"' | b'\'' => in_string = Some(b),
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    None
+}
 
 impl AssertionEngine {
     /// Create a new assertion engine with default plugins
@@ -94,7 +349,14 @@ impl AssertionEngine {
         headers: Option<&HashMap<String, String>>,
         trailers: Option<&HashMap<String, String>>,
     ) -> Result<AssertionResult> {
-        self.evaluate_with_timing(assertion, response, headers, trailers, None)
+        self.evaluate_with_timing(
+            assertion,
+            response,
+            headers,
+            trailers,
+            None,
+            &HashMap::new(),
+        )
     }
 
     pub fn evaluate_with_timing(
@@ -104,10 +366,10 @@ impl AssertionEngine {
         headers: Option<&HashMap<String, String>>,
         trailers: Option<&HashMap<String, String>>,
         timing: Option<&AssertionTiming>,
+        variables: &HashMap<String, Value>,
     ) -> Result<AssertionResult> {
         let trimmed = assertion.trim();
 
-        // 1. Try AST-based operator engine
         match operators::evaluate_assertion(
             &*self.plugin_registry,
             trimmed,
@@ -115,10 +377,21 @@ impl AssertionEngine {
             headers,
             trailers,
             timing,
+            variables,
         ) {
             Ok(Some(result)) => Ok(result),
             Ok(None) => {
-                // AST could not parse it — fall through to JQ
+                // AST could not parse it — fall through to JQ.
+                // A lone `=` (not `==`/`!=`/`<=`/`>=`) reaching this point is almost
+                // always a typo for `==`; jq would silently treat it as assignment
+                // (truthy) and the assertion would false-pass. Reject it explicitly.
+                if let Some(pos) = find_lone_equals(trimmed) {
+                    return Ok(AssertionResult::fail(format!(
+                        "Assertion uses `=` at position {} — did you mean `==`? \
+                         (`=` is not a comparison operator): {}",
+                        pos, trimmed
+                    )));
+                }
                 self.evaluate_jaq(trimmed, response)
             }
             Err(e) => Err(e),
@@ -137,38 +410,39 @@ impl AssertionEngine {
             Err(e) => return Ok(AssertionResult::Error(format!("JQ Parse Error: {}", e))),
         };
 
-        let mut passed = false;
-        let mut seen_false = false;
-
-        for val in out {
-            if matches!(val, JaqVal::Bool(true)) {
-                passed = true;
-            } else {
-                seen_false = true;
+        // JQ truthiness: everything except `false` and `null` is truthy
+        // (so e.g. `.tags | length` returning 3 passes).
+        for val in &out {
+            if matches!(val, JaqVal::Bool(false) | JaqVal::Null) {
+                let rendered = serde_json::to_string(&jaq_to_json(val))
+                    .unwrap_or_else(|_| "<unprintable>".to_string());
+                return Ok(AssertionResult::fail(format!(
+                    "JQ assertion evaluated to falsy value {}: {}",
+                    rendered, expr
+                )));
             }
         }
 
-        if seen_false {
-            return Ok(AssertionResult::fail(format!(
-                "JQ assertion evaluated to false: {}",
-                expr
-            )));
-        }
-
-        if passed {
-            Ok(AssertionResult::Pass)
-        } else {
+        if out.is_empty() {
             Ok(AssertionResult::fail(format!(
                 "JQ assertion produced no output (falsey): {}",
                 expr
             )))
+        } else {
+            Ok(AssertionResult::Pass)
         }
     }
 
     fn run_jaq(&self, expr: &str, input: &Value) -> Result<Vec<JaqVal>> {
-        let filter = Self::get_or_compile_jaq_filter(expr)?;
+        // Rewrite `@plugin(...)` calls so jaq can dispatch them to registered
+        // plugins; the cache is keyed on the rewritten form for consistency.
+        let rewritten = rewrite_plugin_calls(expr)?;
+        let filter = Self::get_or_compile_jaq_filter(&rewritten)?;
 
         let input = json_to_jaq(input);
+
+        // Expose plugins to the `__plugin` native function for this run only.
+        let _registry_guard = PluginRegistryGuard::set(self.plugin_registry.clone());
 
         let ctx = Ctx::<data::JustLut<JaqVal>>::new(&filter.lut, Vars::new([]));
         let out = filter.id.run((ctx, input)).map(unwrap_valr);
@@ -199,7 +473,10 @@ impl AssertionEngine {
 
         let arena = load::Arena::default();
         let defs = core_defs().chain(jaq_std::defs()).chain(jaq_json::defs());
-        let funs = core_funs().chain(jaq_std::funs()).chain(jaq_json::funs());
+        let funs = core_funs()
+            .chain(jaq_std::funs())
+            .chain(jaq_json::funs())
+            .chain(std::iter::once(jaq_plugin_fun()));
         let loader = load::Loader::new(defs);
         let program = load::File {
             code: expr,
@@ -262,7 +539,14 @@ impl AssertionEngine {
         headers: Option<&HashMap<String, String>>,
         trailers: Option<&HashMap<String, String>>,
     ) -> Vec<AssertionResult> {
-        self.evaluate_all_with_timing(assertions, response, headers, trailers, None)
+        self.evaluate_all_with_timing(
+            assertions,
+            response,
+            headers,
+            trailers,
+            None,
+            &HashMap::new(),
+        )
     }
 
     pub fn evaluate_all_with_timing(
@@ -272,11 +556,12 @@ impl AssertionEngine {
         headers: Option<&HashMap<String, String>>,
         trailers: Option<&HashMap<String, String>>,
         timing: Option<&AssertionTiming>,
+        variables: &HashMap<String, Value>,
     ) -> Vec<AssertionResult> {
         assertions
             .iter()
             .map(|assertion| {
-                self.evaluate_with_timing(assertion, response, headers, trailers, timing)
+                self.evaluate_with_timing(assertion, response, headers, trailers, timing, variables)
                     .unwrap_or_else(|e| AssertionResult::Error(format!("Internal error: {}", e)))
             })
             .collect()
@@ -375,6 +660,45 @@ impl Default for AssertionEngine {
     }
 }
 
+/// Find a top-level lone `=` (not part of `==`, `!=`, `<=`, `>=`) outside of
+/// string literals. Returns the byte position of the offending `=`, if any.
+/// Used to catch `.x = 5` typos before they reach jq (where `=` is assignment).
+fn find_lone_equals(expr: &str) -> Option<usize> {
+    let bytes = expr.as_bytes();
+    let mut in_string: Option<u8> = None; // Some(quote_char) while inside a string
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match in_string {
+            Some(q) => {
+                if b == b'\\' {
+                    i += 2; // skip escaped char
+                    continue;
+                }
+                if b == q {
+                    in_string = None;
+                }
+            }
+            None => match b {
+                b'"' | b'\'' => in_string = Some(b),
+                b'=' => {
+                    let prev = if i > 0 { bytes[i - 1] } else { 0 };
+                    let next = if i + 1 < bytes.len() { bytes[i + 1] } else { 0 };
+                    // Skip `==`, and the second `=` of `!=`/`<=`/`>=`/`==`.
+                    let is_double = next == b'=' || prev == b'=';
+                    let is_compound = matches!(prev, b'!' | b'<' | b'>');
+                    if !is_double && !is_compound {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,6 +715,41 @@ mod tests {
                 "value": 42
             }
         })
+    }
+
+    #[test]
+    fn test_find_lone_equals_detects_typo() {
+        assert_eq!(find_lone_equals(".x = 5"), Some(3));
+        assert_eq!(find_lone_equals(".name = \"a\""), Some(6));
+    }
+
+    #[test]
+    fn test_find_lone_equals_ignores_comparisons() {
+        assert_eq!(find_lone_equals(".x == 5"), None);
+        assert_eq!(find_lone_equals(".x != 5"), None);
+        assert_eq!(find_lone_equals(".x <= 5"), None);
+        assert_eq!(find_lone_equals(".x >= 5"), None);
+    }
+
+    #[test]
+    fn test_find_lone_equals_ignores_string_contents() {
+        // `=` inside a string literal is not a typo'd operator
+        assert_eq!(find_lone_equals(".x == \"a=b\""), None);
+        assert_eq!(find_lone_equals(".x == \"a\\\"=b\""), None);
+    }
+
+    #[test]
+    fn test_lone_equals_assertion_fails_not_passes() {
+        let engine = AssertionEngine::new();
+        let response = create_test_response();
+        // `.id = 123` is a typo for `==`; must be a diagnosed failure, not a
+        // silent jq-assignment pass.
+        let result = engine.evaluate(".id = 123", &response, None, None).unwrap();
+        assert!(
+            matches!(result, AssertionResult::Fail { .. }),
+            "lone `=` must fail, got {:?}",
+            result
+        );
     }
 
     #[test]
@@ -804,6 +1163,55 @@ mod tests {
     }
 
     #[test]
+    fn test_jq_fallback_truthy_non_bool_output() {
+        // Regression: jq truthiness — any output except false/null passes,
+        // so `.tags | length` returning 3 must be a Pass.
+        let engine = AssertionEngine::new();
+        let response = create_test_response();
+
+        let result = engine
+            .evaluate(".tags | length", &response, None, None)
+            .unwrap();
+        assert!(
+            matches!(result, AssertionResult::Pass),
+            "Expected Pass, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_jq_fallback_false_output_shows_value() {
+        let engine = AssertionEngine::new();
+        let response = create_test_response();
+
+        // `.tags | length > 10` is 3 > 10 == false — must fail and show the value
+        let result = engine
+            .evaluate(".tags | length > 10", &response, None, None)
+            .unwrap();
+        if let AssertionResult::Fail { message, .. } = result {
+            assert!(message.contains("false"), "message: {}", message);
+        } else {
+            panic!("Expected Fail, got: {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_jq_fallback_null_output_fails() {
+        let engine = AssertionEngine::new();
+        let response = create_test_response();
+
+        // Missing key piped through identity yields null — falsy in jq
+        let result = engine
+            .evaluate(".missing_key | .", &response, None, None)
+            .unwrap();
+        assert!(
+            matches!(result, AssertionResult::Fail { .. }),
+            "Expected Fail, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
     fn test_query_jq_simple() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
@@ -1004,6 +1412,79 @@ mod tests {
         assert_eq!(
             s, "@url.scheme(\"https://example.com\") == \"https\"",
             "Roundtrip failed"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_plugin_calls_basic() {
+        assert_eq!(
+            rewrite_plugin_calls("@len(.items) == .n").unwrap(),
+            "__plugin(\"len\"; [.items]) == .n"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_plugin_calls_multiple_args() {
+        assert_eq!(
+            rewrite_plugin_calls("@regex(.name, \"^A\")").unwrap(),
+            "__plugin(\"regex\"; [.name, \"^A\"])"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_plugin_calls_nested() {
+        assert_eq!(
+            rewrite_plugin_calls(".x | map(@is_email(.)) | all").unwrap(),
+            ".x | map(__plugin(\"is_email\"; [.])) | all"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_plugin_calls_leaves_format_strings() {
+        // `@base64` is a jq format string (not followed by `(`) — must be untouched.
+        assert_eq!(
+            rewrite_plugin_calls(".x | @base64").unwrap(),
+            ".x | @base64"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_plugin_calls_ignores_at_in_string() {
+        // A `@name(` sequence inside a string literal is not a plugin call.
+        assert_eq!(
+            rewrite_plugin_calls(".x == \"@len(a)\"").unwrap(),
+            ".x == \"@len(a)\""
+        );
+    }
+
+    #[test]
+    fn test_rewrite_plugin_calls_rejects_context_plugin() {
+        let err = rewrite_plugin_calls("@header(\"x\") | length").unwrap_err();
+        assert!(
+            err.to_string().contains("not available in jq expressions"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_jaq_context_plugin_reports_clear_error() {
+        // A context-dependent plugin used inside a jq pipe (so the AST engine can't
+        // handle it and it falls to jaq) must yield a clear message, not a parse error.
+        let engine = AssertionEngine::new();
+        let response = json!({"x": 1});
+        let result = engine
+            .evaluate(".list | map(@header(\"y\")) | all", &response, None, None)
+            .unwrap();
+        let msg = match result {
+            AssertionResult::Error(m) => m,
+            AssertionResult::Fail { message, .. } => message,
+            other => panic!("expected error/fail, got {:?}", other),
+        };
+        assert!(
+            msg.contains("not available in jq expressions"),
+            "unexpected message: {}",
+            msg
         );
     }
 }

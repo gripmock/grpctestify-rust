@@ -5,7 +5,6 @@ use anyhow::{Result, bail};
 use apif_ast::*;
 use serde::Serialize;
 
-/// Validation error
 #[derive(Debug, Clone, Serialize)]
 pub struct ValidationError {
     pub message: String,
@@ -13,7 +12,6 @@ pub struct ValidationError {
     pub severity: ErrorSeverity,
 }
 
-/// Error severity
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ErrorSeverity {
@@ -167,16 +165,9 @@ fn bounded_edit_distance(a: &str, b: &str, max: usize) -> Option<usize> {
 pub fn validate_document_diagnostics(document: &GctfDocument) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
-    // Check for required sections
     validate_required_sections(document, &mut errors);
-
-    // Check for conflicts
     validate_conflicts(document, &mut errors);
-
-    // Validate content
     validate_content(document, &mut errors);
-
-    // Validate structure
     validate_structure(document, &mut errors);
 
     errors
@@ -200,9 +191,48 @@ pub fn validate_document(document: &GctfDocument) -> Result<Vec<ValidationError>
     Ok(errors)
 }
 
-/// Validate required sections
+/// Validate every document in a multi-document chain, returning aggregated
+/// diagnostics. Errors from documents past the head are prefixed with their
+/// 1-based document index and line so they stay attributable. The head document
+/// keeps identical messages, so single-document files are unchanged.
+pub fn validate_document_chain_diagnostics(document: &GctfDocument) -> Vec<ValidationError> {
+    let mut all = Vec::new();
+    for (idx, doc) in document.iter_chain().enumerate() {
+        let mut errors = validate_document_diagnostics(doc);
+        if idx > 0 {
+            for error in &mut errors {
+                error.message = format!(
+                    "document {} (line {}): {}",
+                    idx + 1,
+                    error.line.unwrap_or(0),
+                    error.message
+                );
+            }
+        }
+        all.extend(errors);
+    }
+    all
+}
+
+/// Validate an entire document chain, bailing if any document has errors.
+pub fn validate_document_chain(document: &GctfDocument) -> Result<Vec<ValidationError>> {
+    let errors = validate_document_chain_diagnostics(document);
+    let has_errors = errors.iter().any(|e| e.severity == ErrorSeverity::Error);
+
+    if has_errors {
+        let error_messages: Vec<String> = errors
+            .iter()
+            .filter(|e| e.severity == ErrorSeverity::Error)
+            .map(|e| format!("Line {}: {}", e.line.unwrap_or(0), e.message))
+            .collect();
+
+        bail!("Validation failed:\n{}", error_messages.join("\n"));
+    }
+
+    Ok(errors)
+}
+
 fn validate_required_sections(document: &GctfDocument, errors: &mut Vec<ValidationError>) {
-    // ENDPOINT is required
     if document.get_endpoint().is_none() {
         errors.push(ValidationError {
             message: "ENDPOINT section is required".to_string(),
@@ -245,7 +275,6 @@ fn validate_required_sections(document: &GctfDocument, errors: &mut Vec<Validati
     }
 }
 
-/// Validate conflicts
 fn validate_conflicts(document: &GctfDocument, errors: &mut Vec<ValidationError>) {
     // RESPONSE and ERROR cannot both be present
     if document.has_response_error_conflict() {
@@ -257,9 +286,7 @@ fn validate_conflicts(document: &GctfDocument, errors: &mut Vec<ValidationError>
     }
 }
 
-/// Validate content
 fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) {
-    // Validate endpoint format
     if let Some(endpoint) = document.get_endpoint()
         && !endpoint.contains('/')
     {
@@ -275,7 +302,6 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
         });
     }
 
-    // Validate address format
     if let Some(address) = document.get_address(None)
         && !address.contains(':')
     {
@@ -291,7 +317,6 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
         });
     }
 
-    // Validate JSON sections
     for section_type in [
         SectionType::Request,
         SectionType::Response,
@@ -300,7 +325,6 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
         for section in document.sections_by_type(section_type) {
             match &section.content {
                 SectionContent::Json(json) => {
-                    // Check if JSON is valid object or array
                     // For ERROR, we also allow strings
                     let is_valid = if section_type == SectionType::Error {
                         json.is_object() || json.is_array() || json.is_string()
@@ -384,7 +408,6 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
         }
     }
 
-    // Validate key-value sections
     for section_type in [
         SectionType::RequestHeaders,
         SectionType::Tls,
@@ -394,7 +417,6 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
     ] {
         for section in document.sections_by_type(section_type) {
             if let SectionContent::KeyValues(kv) = &section.content {
-                // Check for empty keys or values
                 for key in kv.keys() {
                     if key.is_empty() {
                         errors.push(ValidationError {
@@ -649,7 +671,6 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
         }
     }
 
-    // Validate assertions
     for section in document.sections_by_type(SectionType::Asserts) {
         if let SectionContent::Assertions(assertions) = &section.content {
             for assertion in assertions {
@@ -977,7 +998,6 @@ fn is_valid_threshold_expr(raw: &str) -> bool {
     rhs.trim().parse::<f64>().is_ok()
 }
 
-/// Validate structure
 fn validate_structure(document: &GctfDocument, errors: &mut Vec<ValidationError>) {
     // Check for duplicate non-multiple sections
     let mut seen_sections = std::collections::HashSet::new();
@@ -1069,7 +1089,6 @@ fn validate_structure(document: &GctfDocument, errors: &mut Vec<ValidationError>
     // Validate section order (optional, but good for readability)
     validate_section_order(document, errors);
 
-    // Validate BENCH data source files exist
     validate_bench_sources_exist(document, errors);
 
     // Validate inline options are only on supported sections
@@ -1231,7 +1250,6 @@ fn validate_bench_sources_exist(document: &GctfDocument, errors: &mut Vec<Valida
         };
         match serde_yaml_ng::from_str::<Vec<SourceConfig>>(sources_yaml) {
             Ok(ref defs) => {
-                // Check file existence
                 for def in defs {
                     let resolved = std::path::Path::new(&document.file_path)
                         .parent()
@@ -2381,5 +2399,47 @@ mod tests {
         let mut errors = Vec::new();
         validate_section_order(&doc, &mut errors);
         assert!(errors.iter().any(|e| e.message.contains("EXTRACT")));
+    }
+
+    fn valid_doc() -> GctfDocument {
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 5,
+            end_line: 6,
+            attributes: Vec::new(),
+        });
+        doc
+    }
+
+    #[test]
+    fn test_validate_chain_second_document_missing_endpoint() {
+        let mut head = valid_doc();
+        let mut second = valid_doc();
+        second
+            .sections
+            .retain(|s| s.section_type != SectionType::Endpoint);
+        head.next_document = Some(Box::new(second));
+
+        let diagnostics = validate_document_chain_diagnostics(&head);
+        assert!(diagnostics.iter().any(|e| {
+            e.message.contains("document 2")
+                && e.message.contains("ENDPOINT")
+                && e.severity == ErrorSeverity::Error
+        }));
+        assert!(validate_document_chain(&head).is_err());
+    }
+
+    #[test]
+    fn test_validate_chain_all_valid_passes() {
+        let mut head = valid_doc();
+        head.next_document = Some(Box::new(valid_doc()));
+        assert!(validate_document_chain(&head).is_ok());
+
+        // Single-document behavior stays identical.
+        assert!(validate_document_chain(&valid_doc()).is_ok());
     }
 }

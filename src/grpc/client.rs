@@ -233,62 +233,28 @@ impl GrpcClient {
     }
 
     /// Convert TransportResult fields into a Vec of StreamItems for unified stream output.
+    ///
+    /// The error arrives already structured (`Option<GrpcError>`), so it is
+    /// carried straight through — code/message/details verbatim. Response
+    /// trailers and headers are folded into the error metadata (headers do not
+    /// override trailer entries), preserving the prior StreamItem error shape.
     fn convert_result(
         messages: Vec<Value>,
         trailers: HashMap<String, String>,
-        error: Option<String>,
+        error: Option<GrpcError>,
         headers: HashMap<String, String>,
     ) -> Vec<Result<StreamItem, GrpcError>> {
-        use crate::grpc::GrpcError;
         let mut items: Vec<Result<StreamItem, GrpcError>> = Vec::new();
 
-        if let Some(err_msg) = error {
-            let code = err_msg
-                .split("code=")
-                .nth(1)
-                .and_then(|s| s.split(char::is_whitespace).next())
-                .and_then(|s| {
-                    s.parse::<u32>().ok().or(Some(match s {
-                        "cancelled" => 1,
-                        "unknown" => 2,
-                        "invalid_argument" => 3,
-                        "deadline_exceeded" => 4,
-                        "not_found" => 5,
-                        "already_exists" => 6,
-                        "permission_denied" => 7,
-                        "resource_exhausted" => 8,
-                        "failed_precondition" => 9,
-                        "aborted" => 10,
-                        "out_of_range" => 11,
-                        "unimplemented" => 12,
-                        "internal" => 13,
-                        "unavailable" => 14,
-                        "data_loss" => 15,
-                        "unauthenticated" => 16,
-                        _ => 2,
-                    }))
-                })
-                .unwrap_or(2);
-            let message = err_msg
-                .split("message=")
-                .nth(1)
-                .and_then(|s| s.split(" details=").next())
-                .unwrap_or(&err_msg)
-                .to_string();
-            let details_bytes = err_msg
-                .split("details=[")
-                .nth(1)
-                .and_then(|s| s.rsplit_once(']'))
-                .map(|(json, _)| json.as_bytes().to_vec())
-                .unwrap_or_default();
+        if let Some(err) = error {
             let mut err_trailers = trailers;
             for (k, v) in &headers {
                 err_trailers.entry(k.clone()).or_insert_with(|| v.clone());
             }
             items.push(Err(GrpcError::with_metadata(
-                code,
-                message,
-                details_bytes,
+                err.code,
+                err.message,
+                err.details,
                 err_trailers,
             )));
         } else {
@@ -301,6 +267,48 @@ impl GrpcClient {
         }
 
         items
+    }
+}
+
+#[cfg(test)]
+mod convert_result_tests {
+    use super::*;
+
+    #[test]
+    fn structured_error_passes_through_with_trailers_folded() {
+        let mut trailers = HashMap::new();
+        trailers.insert("x-trace".to_string(), "t-1".to_string());
+        let mut headers = HashMap::new();
+        headers.insert("x-h".to_string(), "hv".to_string());
+
+        // A message that itself contains the old formatting markers must survive
+        // verbatim — the exact bug the deleted string parser had.
+        let nasty = "bad: code=42 message=nested details=[inline]";
+        let err = GrpcError::with_details(3, nasty, b"[{\"k\":\"v\"}]".to_vec());
+
+        let items = GrpcClient::convert_result(vec![], trailers, Some(err), headers);
+        assert_eq!(items.len(), 1);
+        let e = items.into_iter().next().unwrap().unwrap_err();
+        assert_eq!(e.code, 3);
+        assert_eq!(e.message, nasty);
+        assert_eq!(e.details, b"[{\"k\":\"v\"}]".to_vec());
+        assert_eq!(e.metadata.get("x-trace").unwrap(), "t-1");
+        assert_eq!(e.metadata.get("x-h").unwrap(), "hv");
+    }
+
+    #[test]
+    fn no_error_emits_messages_then_trailers() {
+        let mut trailers = HashMap::new();
+        trailers.insert("grpc-status".to_string(), "0".to_string());
+        let items = GrpcClient::convert_result(
+            vec![Value::String("m".into())],
+            trailers,
+            None,
+            HashMap::new(),
+        );
+        assert_eq!(items.len(), 2);
+        assert!(matches!(items[0], Ok(StreamItem::Message(_))));
+        assert!(matches!(items[1], Ok(StreamItem::Trailers(_))));
     }
 }
 

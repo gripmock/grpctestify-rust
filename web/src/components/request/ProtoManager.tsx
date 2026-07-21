@@ -81,7 +81,6 @@ message HelloReply {
         {loading && <Loader2 size={12} className="animate-spin" />}
       </div>
 
-      {}
       <div style={{ border: '1px solid var(--border)', borderRadius: 6, padding: 8, marginBottom: 8 }}>
         <input value={uploadName} onChange={e => setUploadName(e.target.value)} placeholder="filename.proto"
           style={{ width: '100%', border: '1px solid var(--border)', borderRadius: 4, padding: '4px 8px', fontSize: 12, fontFamily: 'monospace', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none', boxSizing: 'border-box', marginBottom: 4 }} />
@@ -97,7 +96,6 @@ message HelloReply {
         {uploadSuccess && <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: colors.success, marginTop: 4 }}><Check size={11} /> Uploaded</div>}
       </div>
 
-      {}
       {files.length === 0 && (
         <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '8px 0', textAlign: 'center' }}>
           No .proto files uploaded yet.

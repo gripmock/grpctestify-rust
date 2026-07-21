@@ -10,7 +10,8 @@ pub use apif_parser::{
     parse_inline_options, parse_section_content, parse_with_recovery, process_extract_value,
     remove_redundant_parens, serialize_gctf, split_sections_by_boundary, ternary_to_jq,
     tokenize_assertion, tokenize_gctf, tokenize_inline_options, tokenize_kv_line,
-    validate_document, validate_document_diagnostics,
+    validate_document, validate_document_chain, validate_document_chain_diagnostics,
+    validate_document_diagnostics,
 };
 
 // Re-export sub-modules for paths like `crate::parser::ast::*`
@@ -22,10 +23,8 @@ pub mod query_ast {
 }
 pub use apif_query::{FilterExpr, parse_query};
 
-// Validator items
 pub use apif_parser::validator;
 
-// Other modules
 pub use apif_parser::{
     assertions, builder, content_parser, core, document_splitter, error_recovery, json_mod,
     json_stream_parser, ternary, ternary_ast,

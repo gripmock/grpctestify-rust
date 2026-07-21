@@ -36,10 +36,8 @@ where
             tracing::Level::ERROR => ("❌", "ERROR"),
         };
 
-        // Write the prefix
         write!(writer, "{} {} [{}]: ", emoji, level_str, timestamp)?;
 
-        // Write the message (and other fields)
         ctx.field_format().format_fields(writer.by_ref(), event)?;
 
         writeln!(writer)

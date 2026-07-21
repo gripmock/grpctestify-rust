@@ -12,7 +12,8 @@ function id() { return Math.random().toString(36).slice(2, 9); }
 const DEFAULT_BODY = '{}';
 const DEFAULT_BODIES = [DEFAULT_BODY];
 const historyCache = new LRUCache<string, HistoryEntry>(1000);
-let abortController: AbortController | null = null;
+// Per-tab AbortControllers so executing in one tab never cancels another.
+const abortControllers = new Map<string, AbortController>();
 let reflectController: AbortController | null = null;
 
 const EMPTY_REQUEST = { endpoint: '', headers: {}, bodies: DEFAULT_BODIES };
@@ -52,6 +53,7 @@ function defaultTab(): Tab {
     endpoint: '',
     headers: {},
     bodies: [...DEFAULT_BODIES],
+    environment: {},
     response: null,
     requestTab: 'body',
     gctfTab: 'request',
@@ -72,6 +74,7 @@ function snapshot(state: PlayStore, tabId: string, overrides?: Partial<Tab>): Ta
     endpoint: overrides?.endpoint ?? state.request.endpoint,
     headers: overrides?.headers ?? state.request.headers,
     bodies: overrides?.bodies ?? state.request.bodies,
+    environment: overrides?.environment ?? state.environment,
     response: overrides?.response ?? state.response,
     requestTab: overrides?.requestTab ?? state.requestTab,
     gctfTab: overrides?.gctfTab ?? state.gctfTab,
@@ -87,6 +90,7 @@ function snapshot(state: PlayStore, tabId: string, overrides?: Partial<Tab>): Ta
 function loadTab(tab: Tab) {
   return {
     request: { endpoint: tab.endpoint, headers: tab.headers, bodies: tab.bodies },
+    environment: tab.environment || {},
     response: tab.response,
     requestTab: tab.requestTab,
     gctfTab: tab.gctfTab,
@@ -101,7 +105,10 @@ function loadTab(tab: Tab) {
 
 
 function serializeTab(t: Tab): StoredTab {
-  return { i: t.id, l: t.label, e: t.endpoint, h: t.headers, b: t.bodies, c: t.collectionPath };
+  return {
+    i: t.id, l: t.label, e: t.endpoint, h: t.headers, b: t.bodies, c: t.collectionPath,
+    v: t.environment && Object.keys(t.environment).length > 0 ? t.environment : undefined,
+  };
 }
 
 function deserializeTab(s: StoredTab): Tab {
@@ -112,6 +119,7 @@ function deserializeTab(s: StoredTab): Tab {
     endpoint: s.e || '',
     headers: s.h || {},
     bodies: (s.b && s.b.length > 0) ? s.b : [...DEFAULT_BODIES],
+    environment: s.v || {},
     response: null,
     requestTab: 'body',
     gctfTab: 'request',
@@ -212,6 +220,18 @@ function saveSettings(s: ClientSettings) {
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch {  }
 }
 
+// Extract only the small ClientSettings fields — never serialize tabs/history/
+// responses/collections into the settings key.
+function clientSettings(s: PlayStore): ClientSettings {
+  return {
+    address: s.address,
+    protocol: s.protocol,
+    tls: s.tls,
+    tlsInsecure: s.tlsInsecure,
+    requestTimeoutMs: s.requestTimeoutMs,
+  };
+}
+
 function saveTotals(ok: number, error: number) {
   try { localStorage.setItem(TOTALS_KEY, JSON.stringify({ ok, error })); } catch {  }
 }
@@ -230,7 +250,7 @@ export const useStore = create<PlayStore>((set, get) => ({
   tls: initialSettings.tls,
   tlsInsecure: initialSettings.tlsInsecure,
   requestTimeoutMs: initialSettings.requestTimeoutMs,
-  environment: {},
+  environment: initTab?.environment || {},
   collections: [],
   projectRoot: null,
   projectEnvNames: [],
@@ -281,7 +301,7 @@ export const useStore = create<PlayStore>((set, get) => ({
 
   
 
-  setAddress: (v) => { set({ address: v }); saveSettings({ ...get(), address: v }); },
+  setAddress: (v) => { set({ address: v }); saveSettings(clientSettings(get())); },
   setProtocol: (v) => {
     const s = get();
     const updates: Partial<PlayStore> = { protocol: v };
@@ -289,11 +309,11 @@ export const useStore = create<PlayStore>((set, get) => ({
       updates.address = defaultAddressFor(v);
     }
     set(updates);
-    saveSettings({ ...s, ...updates });
+    saveSettings(clientSettings(get()));
   },
-  setTls: (v) => { set({ tls: v }); saveSettings({ ...get(), tls: v }); },
-  setTlsInsecure: (v) => { set({ tlsInsecure: v }); saveSettings({ ...get(), tlsInsecure: v }); },
-  setRequestTimeoutMs: (v) => { set({ requestTimeoutMs: v }); saveSettings({ ...get(), requestTimeoutMs: v }); },
+  setTls: (v) => { set({ tls: v }); saveSettings(clientSettings(get())); },
+  setTlsInsecure: (v) => { set({ tlsInsecure: v }); saveSettings(clientSettings(get())); },
+  setRequestTimeoutMs: (v) => { set({ requestTimeoutMs: v }); saveSettings(clientSettings(get())); },
 
   setEndpoint: (v) => set(s => {
     const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, endpoint: v } : t);
@@ -355,7 +375,11 @@ export const useStore = create<PlayStore>((set, get) => ({
     return { tabs, collectionParsed: v };
   }),
 
-  setEnvironment: (v: Record<string, string>) => set({ environment: v }),
+  setEnvironment: (v: Record<string, string>) => set(s => {
+    const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, environment: v } : t);
+    saveTabsToStorage(tabs, s.activeTabId);
+    return { tabs, environment: v };
+  }),
 
   setTheme: (v) => {
     document.documentElement.setAttribute('data-theme', v);
@@ -407,23 +431,18 @@ export const useStore = create<PlayStore>((set, get) => ({
     }
   },
 
-  isDirty: () => {
-    const { workspaceOriginal, request } = get();
-    if (!workspaceOriginal) return request.endpoint !== '' || request.bodies.some(b => b !== DEFAULT_BODY);
-    return (
-      request.endpoint !== workspaceOriginal.endpoint ||
-      JSON.stringify(request.headers) !== JSON.stringify(workspaceOriginal.headers) ||
-      JSON.stringify(request.bodies) !== JSON.stringify(workspaceOriginal.bodies)
-    );
-  },
-
   cancel: () => {
+    const st = get();
+    const tabId = st.activeTabId;
     let aborted = false;
-    if (abortController) { abortController.abort(); abortController = null; aborted = true; }
+    if (tabId) {
+      const c = abortControllers.get(tabId);
+      if (c) { c.abort(); abortControllers.delete(tabId); aborted = true; }
+    }
     if (reflectController) { reflectController.abort(); reflectController = null; aborted = true; }
     if (!aborted) return;
     set(s => {
-      const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, response: null } : t);
+      const tabs = s.tabs.map(t => t.id === tabId ? { ...t, response: null } : t);
       return { tabs, response: null };
     });
   },
@@ -598,15 +617,34 @@ export const useStore = create<PlayStore>((set, get) => ({
   },
 
   getGrpcurlCommand: async () => {
-    const { request } = get();
-    const parsed: unknown[] = request.bodies
-      .map(b => { try { return JSON.parse(b); } catch { return b; } })
-      .filter(b => b !== '');
-    const body = parsed.length === 1 ? parsed[0] : parsed;
+    const { request, address, tls, tlsInsecure, protocol } = get();
+    // Keep each body as its raw JSON literal so int64 precision survives (a
+    // JS JSON.parse round-trip would corrupt integers > 2^53). Non-JSON bodies
+    // fall back to a quoted string, preserving the old lenient behaviour.
+    const encoded = request.bodies
+      .map(b => b.trim())
+      .filter(b => b && b !== '')
+      .map(b => { try { JSON.parse(b); return b; } catch { return JSON.stringify(b); } });
+    const bodyLiteral = encoded.length === 0
+      ? '{}'
+      : encoded.length === 1 ? encoded[0] : `[${encoded.join(',')}]`;
+    const meta: Record<string, unknown> = {
+      endpoint: request.endpoint,
+      headers: Object.keys(request.headers).length > 0 ? request.headers : undefined,
+      address: address || undefined,
+      tls: tls || undefined,
+      tls_insecure: tls ? tlsInsecure : undefined,
+      protocol: protocol || undefined,
+    };
+    // Build the payload manually to splice in the raw body literal unmodified.
+    const metaJson = JSON.stringify(meta);
+    const payload = metaJson === '{}'
+      ? `{"body":${bodyLiteral}}`
+      : `${metaJson.slice(0, -1)},"body":${bodyLiteral}}`;
     const res = await fetch('/api/grpcurl', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ endpoint: request.endpoint, body, headers: Object.keys(request.headers).length > 0 ? request.headers : undefined }),
+      body: payload,
     });
     if (!res.ok) throw new Error('Failed to generate grpcurl command');
     const data = await res.json();
@@ -618,20 +656,30 @@ export const useStore = create<PlayStore>((set, get) => ({
     const st = get();
     const { workspacePath, tls, tlsInsecure, address, protocol } = st;
 
+    // Capture the tab that issued this request. All response writes below target
+    // THIS tab, not whichever tab happens to be active when the call completes.
+    const tabId = st.activeTabId;
+
+    // Write a response into the issuing tab; only mirror it into the global
+    // `response` field when the issuing tab is still the active one.
+    const writeResponse = (r: CallResult | null, extra?: Partial<PlayStore>) => set(s => {
+      const tabs = s.tabs.map(t => t.id === tabId ? { ...t, response: r } : t);
+      const patch: Partial<PlayStore> = { tabs, ...extra };
+      if (s.activeTabId === tabId) patch.response = r;
+      return patch;
+    });
+
     const activeEnv = st.activeEnvironment
       ? st.environments.find(e => e.name === st.activeEnvironment)
       : null;
 
     if (!st.request.endpoint) {
-      set(s => {
-        const errResult: CallResult = { status: 'error', statusCode: null, messages: [], headers: {}, trailers: {}, error: 'Enter a gRPC endpoint', durationMs: null };
-        const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, response: errResult } : t);
-        return { tabs, response: errResult };
-      });
+      const errResult: CallResult = { status: 'error', statusCode: null, messages: [], headers: {}, trailers: {}, error: 'Enter a gRPC endpoint', durationMs: null };
+      writeResponse(errResult);
       return;
     }
 
-    
+
     const effectiveEnv = activeEnv ? {
       ...activeEnv,
       variables: Object.fromEntries(
@@ -641,14 +689,19 @@ export const useStore = create<PlayStore>((set, get) => ({
     } : null;
 
     const substituted = applyEnvironment(st.request.endpoint, st.request.headers, st.request.bodies, effectiveEnv);
-    
+
     const effectiveAddress = activeEnv
       ? substituteEnv(address, effectiveEnv) || address
       : address;
 
-    if (abortController) abortController.abort();
+    // Per-tab AbortController: aborting one tab must not cancel another.
+    if (tabId) {
+      const prev = abortControllers.get(tabId);
+      if (prev) prev.abort();
+    }
     const controller = new AbortController();
-    abortController = controller;
+    if (tabId) abortControllers.set(tabId, controller);
+    const clearController = () => { if (tabId && abortControllers.get(tabId) === controller) abortControllers.delete(tabId); };
     const signal = controller.signal;
     let timeoutId: number | undefined;
     if (st.requestTimeoutMs > 0) {
@@ -656,10 +709,7 @@ export const useStore = create<PlayStore>((set, get) => ({
     }
 
     const pending: CallResult = { status: 'pending', statusCode: null, messages: [], headers: {}, trailers: {}, error: null, durationMs: null };
-    set(s => {
-      const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, response: pending } : t);
-      return { tabs, response: pending };
-    });
+    writeResponse(pending);
 
     const start = performance.now();
     try {
@@ -676,12 +726,13 @@ export const useStore = create<PlayStore>((set, get) => ({
           tls: tls || undefined, tls_insecure: tls ? tlsInsecure : undefined,
           address: effectiveAddress || undefined,
           protocol: protocol || undefined,
+          environment: Object.keys(st.environment).length > 0 ? st.environment : undefined,
           collection_path: workspacePath || undefined,
           session_id: st.sessionId || undefined,
         }),
         signal,
       });
-      if (abortController === controller) abortController = null;
+      clearController();
 
       let data: any;
       try { data = await res.json(); } catch {
@@ -689,12 +740,9 @@ export const useStore = create<PlayStore>((set, get) => ({
         const errEntry: HistoryEntry = { id: id(), timestamp: now(), endpoint: st.request.endpoint, bodies: st.request.bodies, headers: st.request.headers, response: errResult };
         historyCache.put(errEntry.id, errEntry);
         saveHistoryToStorage();
-        set(s => {
-          const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, response: errResult } : t);
-          const totalError = s.totalError + 1;
-          saveTotals(s.totalOk, totalError);
-          return { tabs, response: errResult, history: historyCache.values(), totalError };
-        });
+        const totalError = get().totalError + 1;
+        saveTotals(get().totalOk, totalError);
+        writeResponse(errResult, { history: historyCache.values(), totalError });
         return;
       }
 
@@ -711,37 +759,28 @@ export const useStore = create<PlayStore>((set, get) => ({
       const entry: HistoryEntry = { id: id(), timestamp: now(), endpoint: st.request.endpoint, bodies: st.request.bodies, headers: st.request.headers, response: result };
       historyCache.put(entry.id, entry);
       saveHistoryToStorage();
-      set(s => {
-        const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, response: result } : t);
-        if (data.success) {
-          const totalOk = s.totalOk + 1;
-          saveTotals(totalOk, s.totalError);
-          return { tabs, response: result, history: historyCache.values(), totalOk };
-        } else {
-          const totalError = s.totalError + 1;
-          saveTotals(s.totalOk, totalError);
-          return { tabs, response: result, history: historyCache.values(), totalError };
-        }
-      });
+      if (data.success) {
+        const totalOk = get().totalOk + 1;
+        saveTotals(totalOk, get().totalError);
+        writeResponse(result, { history: historyCache.values(), totalOk });
+      } else {
+        const totalError = get().totalError + 1;
+        saveTotals(get().totalOk, totalError);
+        writeResponse(result, { history: historyCache.values(), totalError });
+      }
     } catch (err: any) {
-      if (abortController === controller) abortController = null;
+      clearController();
       if (err?.name === 'AbortError') {
-        set(s => {
-          const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, response: null } : t);
-          return { tabs, response: null };
-        });
+        writeResponse(null);
         return;
       }
       const errResult: CallResult = { status: 'error', statusCode: null, messages: [], headers: {}, trailers: {}, error: err?.message || String(err), durationMs: Math.round(performance.now() - start) };
       const errEntry: HistoryEntry = { id: id(), timestamp: now(), endpoint: st.request.endpoint, bodies: st.request.bodies, headers: st.request.headers, response: errResult };
       historyCache.put(errEntry.id, errEntry);
       saveHistoryToStorage();
-      set(s => {
-        const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, response: errResult } : t);
-        const totalError = s.totalError + 1;
-        saveTotals(s.totalOk, totalError);
-        return { tabs, response: errResult, history: historyCache.values(), totalError };
-      });
+      const totalError = get().totalError + 1;
+      saveTotals(get().totalOk, totalError);
+      writeResponse(errResult, { history: historyCache.values(), totalError });
     } finally {
       if (timeoutId !== undefined) clearTimeout(timeoutId);
     }

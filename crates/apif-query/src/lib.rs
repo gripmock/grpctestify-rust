@@ -169,18 +169,9 @@ impl Lexer<'_> {
                 let s = self.read_string(ch);
                 TokenKind::StringLit(s)
             }
-            c if c.is_alphanumeric() || c == '_' => {
-                let mut ident = String::from(c);
-                while let Some(c) = self.peek() {
-                    if c.is_alphanumeric() || c == '_' {
-                        self.advance();
-                        ident.push(c);
-                    } else {
-                        break;
-                    }
-                }
-                TokenKind::Ident(ident)
-            }
+            // Lex numbers (incl. decimals and leading-digit values) before the
+            // identifier branch; digits are alphanumeric, so the ident branch
+            // would otherwise shadow this and drop the fractional part.
             c if c.is_ascii_digit() => {
                 let mut num = String::from(c);
                 while let Some(c) = self.peek() {
@@ -192,6 +183,18 @@ impl Lexer<'_> {
                     }
                 }
                 TokenKind::NumberLit(num)
+            }
+            c if c.is_alphanumeric() || c == '_' => {
+                let mut ident = String::from(c);
+                while let Some(c) = self.peek() {
+                    if c.is_alphanumeric() || c == '_' {
+                        self.advance();
+                        ident.push(c);
+                    } else {
+                        break;
+                    }
+                }
+                TokenKind::Ident(ident)
             }
             _ => TokenKind::Ident(String::from(ch)),
         };
@@ -206,13 +209,20 @@ impl Lexer<'_> {
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
     current: Option<Token>,
+    /// End position (char index) of the most recently consumed token. Used for
+    /// spans, since `lexer.pos` is already past the one-token lookahead.
+    last_end: usize,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(input: &'a str) -> Self {
         let mut lexer = Lexer::new(input);
         let current = lexer.next_token();
-        Self { lexer, current }
+        Self {
+            lexer,
+            current,
+            last_end: 0,
+        }
     }
 
     fn peek(&self) -> Option<&Token> {
@@ -221,6 +231,9 @@ impl<'a> Parser<'a> {
 
     fn advance(&mut self) -> Option<Token> {
         let token = self.current.take();
+        if let Some(t) = &token {
+            self.last_end = t.span.end;
+        }
         self.current = self.lexer.next_token();
         token
     }
@@ -241,11 +254,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_filter(&mut self) -> Result<FilterExpr> {
-        let span_start = self.lexer.pos;
-
         let column_token = self
             .advance()
             .ok_or_else(|| anyhow::anyhow!("unexpected EOF in filter"))?;
+        // Span starts at the column token (captured before lookahead advances).
+        let span_start = column_token.span.start;
         let column = match column_token.kind {
             TokenKind::Ident(s) => s,
             TokenKind::StringLit(s) => s,
@@ -263,14 +276,12 @@ impl<'a> Parser<'a> {
 
         let op = match op_token.kind {
             TokenKind::Eq => {
+                // Do not split on commas inside a single value token: quoted
+                // strings may legitimately contain commas (e.g. "Doe, John").
+                // Unquoted comma-separated lists become an In-list via the
+                // comma-token loop in `parse_query`.
                 let value = self.parse_value()?;
-                if value.contains(',') {
-                    let parts: Vec<String> =
-                        value.split(',').map(|s| s.trim().to_string()).collect();
-                    FilterOp::In(parts)
-                } else {
-                    FilterOp::Eq(value)
-                }
+                FilterOp::Eq(value)
             }
             TokenKind::Ne => {
                 let value = self.parse_value()?;
@@ -323,7 +334,7 @@ impl<'a> Parser<'a> {
         Ok(FilterExpr {
             column,
             op,
-            span: Span::new(span_start, self.lexer.pos),
+            span: Span::new(span_start, self.last_end),
         })
     }
 
@@ -342,18 +353,17 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_query(&mut self) -> Result<Query> {
-        let source_start = self.lexer.pos;
-
         let source_token = self
             .advance()
             .ok_or_else(|| anyhow::anyhow!("empty source name"))?;
+        // Char-based span of the source token (covers quotes for string
+        // literals); consistent with the char-indexed lexer.
+        let source_span = source_token.span;
         let source = match source_token.kind {
             TokenKind::Ident(s) => s,
             TokenKind::StringLit(s) => s,
             _ => return Err(anyhow::anyhow!("empty source name")),
         };
-
-        let source_span = Span::new(source_start, source_start + source.len());
 
         let mut filters = Vec::new();
 
@@ -370,7 +380,7 @@ impl<'a> Parser<'a> {
                             ..
                         })
                     ) {
-                        self.advance(); // consume comma
+                        self.advance();
                         if let Some(Token {
                             kind:
                                 TokenKind::Ident(s) | TokenKind::StringLit(s) | TokenKind::NumberLit(s),
@@ -480,11 +490,35 @@ fn like_match(pattern: &str, value: &str) -> bool {
     }
 
     // body has wildcards inside (e.g. "te*t") — needs regex
-    let re_pat = pattern.replace('*', ".*").replace('?', ".");
-    match cached_regex(&format!("^(?:{})$", re_pat)) {
+    match cached_regex(&glob_to_regex(pattern)) {
         Ok(re) => re.is_match(value),
         Err(_) => false,
     }
+}
+
+/// Translate a glob pattern to an anchored regex. Only `*` (→ `.*`) and `?`
+/// (→ `.`) are treated as wildcards; every other character is escaped so that
+/// regex metacharacters in the glob (`.`, `(`, `)`, `[`, ...) match literally.
+fn glob_to_regex(pattern: &str) -> String {
+    let mut re = String::from("^(?:");
+    let mut literal = String::new();
+    for ch in pattern.chars() {
+        match ch {
+            '*' | '?' => {
+                if !literal.is_empty() {
+                    re.push_str(&regex::escape(&literal));
+                    literal.clear();
+                }
+                re.push_str(if ch == '*' { ".*" } else { "." });
+            }
+            c => literal.push(c),
+        }
+    }
+    if !literal.is_empty() {
+        re.push_str(&regex::escape(&literal));
+    }
+    re.push_str(")$");
+    re
 }
 
 pub fn glob_match(pattern: &str, value: &str) -> bool {
@@ -838,5 +872,80 @@ mod tests {
     fn test_parse_query_string_literal_source() {
         let q = parse_query(r#""my source" status=active"#).unwrap();
         assert_eq!(q.source, "my source");
+    }
+
+    // Bug 1: decimal / leading-digit values must lex as a single NumberLit,
+    // not be truncated by the identifier branch.
+    #[test]
+    fn test_decimal_value_not_truncated() {
+        let q = parse_query("users age>=1.5").unwrap();
+        assert_eq!(q.filters.len(), 1);
+        match &q.filters[0].op {
+            FilterOp::Gte(v) => assert_eq!(v, "1.5", "decimal value preserved"),
+            other => panic!("expected Gte(\"1.5\"), got {:?}", other),
+        }
+        let row: HashMap<String, String> = HashMap::from([("age".into(), "2".into())]);
+        assert!(q.filters[0].matches(&row));
+        let row2: HashMap<String, String> = HashMap::from([("age".into(), "1".into())]);
+        assert!(!q.filters[0].matches(&row2));
+    }
+
+    #[test]
+    fn test_number_lexes_as_single_token() {
+        let mut lexer = Lexer::new("3.14");
+        let tok = lexer.next_token().unwrap();
+        assert_eq!(tok.kind, TokenKind::NumberLit("3.14".into()));
+        assert!(lexer.next_token().is_none());
+    }
+
+    // Bug 2: a comma inside a quoted value must not be split into an In-list.
+    #[test]
+    fn test_quoted_value_with_comma_not_split() {
+        let q = parse_query(r#"users name="Doe, John""#).unwrap();
+        assert_eq!(q.filters.len(), 1);
+        match &q.filters[0].op {
+            FilterOp::Eq(v) => assert_eq!(v, "Doe, John"),
+            other => panic!("expected Eq(\"Doe, John\"), got {:?}", other),
+        }
+        // Unquoted comma-separated lists still become In-lists.
+        let q2 = parse_query("users status=active,pending").unwrap();
+        assert!(matches!(q2.filters[0].op, FilterOp::In(_)));
+    }
+
+    // Bug 3: glob-to-regex fallback must escape regex metacharacters.
+    #[test]
+    fn test_glob_escapes_regex_metacharacters() {
+        // '.' is literal in a glob; must not match an arbitrary character.
+        assert!(like_match("a.c*e", "a.cZe"));
+        assert!(!like_match("a.c*e", "axcZe"));
+        // Parentheses must be treated literally, not as a regex group.
+        assert!(like_match("(x*y)", "(xABCy)"));
+        assert!(!like_match("(x*y)", "xABCy"));
+        // '?' still acts as a single-char wildcard.
+        assert!(like_match("a?c*", "abcde"));
+    }
+
+    #[test]
+    fn test_glob_to_regex_anchored_and_escaped() {
+        assert_eq!(glob_to_regex("a.c*e"), r"^(?:a\.c.*e)$");
+        assert_eq!(glob_to_regex("(x*y)"), r"^(?:\(x.*y\))$");
+    }
+
+    // Bug 4: spans use the token start (not the post-lookahead lexer position).
+    #[test]
+    fn test_filter_span_starts_at_column() {
+        let q = parse_query("users age>=1.5").unwrap();
+        // "users age>=1.5" — 'a' of age is at char index 6.
+        assert_eq!(q.filters[0].span.start, 6, "span starts at column token");
+        assert_eq!(q.filters[0].span.end, 14, "span ends after the value");
+        // source span covers "users" (chars 0..5).
+        assert_eq!(q.source_span, Span::new(0, 5));
+    }
+
+    #[test]
+    fn test_source_span_string_literal_covers_quotes() {
+        let q = parse_query(r#""my source" status=active"#).unwrap();
+        // Char-based span covering the quoted source token, quotes included.
+        assert_eq!(q.source_span, Span::new(0, 11));
     }
 }

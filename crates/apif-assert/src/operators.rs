@@ -16,6 +16,25 @@ fn normalize_plugin_name(name: &str) -> &str {
     trimmed.strip_prefix('@').unwrap_or(trimmed)
 }
 
+/// Result of evaluating an expression as a value.
+/// `Err` carries a plugin error message that must surface as
+/// `AssertionResult::Error` instead of participating in comparisons.
+type ValueResult = std::result::Result<Value, String>;
+
+/// Prefix a regex pattern with the inline flags supported by the `regex` crate
+/// (`i`, `m`, `s`, `x`, `u`, `U`), so `/foo/i` matches case-insensitively.
+fn regex_with_flags(pattern: &str, flags: &str) -> String {
+    let supported: String = flags
+        .chars()
+        .filter(|c| matches!(c, 'i' | 'm' | 's' | 'x' | 'u' | 'U'))
+        .collect();
+    if supported.is_empty() {
+        pattern.to_string()
+    } else {
+        format!("(?{}){}", supported, pattern)
+    }
+}
+
 thread_local! {
     static REGEX_CACHE: RefCell<HashMap<String, std::result::Result<Rc<Regex>, String>>> =
         RefCell::new(HashMap::new());
@@ -49,6 +68,7 @@ pub fn evaluate_assertion(
     headers: Option<&HashMap<String, String>>,
     trailers: Option<&HashMap<String, String>>,
     timing: Option<&AssertionTiming>,
+    variables: &HashMap<String, Value>,
 ) -> Result<Option<AssertionResult>> {
     let trimmed = assertion.trim();
     if trimmed.is_empty() {
@@ -58,7 +78,10 @@ pub fn evaluate_assertion(
     let ast = parse_assertion(trimmed);
     match &ast {
         AssertionExpr::Raw(_) => Ok(None),
-        _ => evaluate_ast(registry, &ast, response, headers, trailers, timing).map(Some),
+        _ => evaluate_ast(
+            registry, &ast, response, headers, trailers, timing, variables,
+        )
+        .map(Some),
     }
 }
 
@@ -69,24 +92,25 @@ fn evaluate_ast(
     headers: Option<&HashMap<String, String>>,
     trailers: Option<&HashMap<String, String>>,
     timing: Option<&AssertionTiming>,
+    variables: &HashMap<String, Value>,
 ) -> Result<AssertionResult> {
     match expr {
         AssertionExpr::Not(inner) => {
-            let r = evaluate_ast(pm, inner, response, headers, trailers, timing)?;
+            let r = evaluate_ast(pm, inner, response, headers, trailers, timing, variables)?;
             Ok(negate(r))
         }
         AssertionExpr::NotNot(inner) => {
-            evaluate_ast(pm, inner, response, headers, trailers, timing)
+            evaluate_ast(pm, inner, response, headers, trailers, timing, variables)
         }
         AssertionExpr::And { left, right } => {
-            let lr = evaluate_ast(pm, left, response, headers, trailers, timing)?;
+            let lr = evaluate_ast(pm, left, response, headers, trailers, timing, variables)?;
             if !is_pass(&lr) {
                 return Ok(AssertionResult::fail(format!(
                     "Left of 'and' failed: {}",
                     fmt_result_short(&lr)
                 )));
             }
-            let rr = evaluate_ast(pm, right, response, headers, trailers, timing)?;
+            let rr = evaluate_ast(pm, right, response, headers, trailers, timing, variables)?;
             if !is_pass(&rr) {
                 return Ok(AssertionResult::fail(format!(
                     "Right of 'and' failed: {}",
@@ -96,11 +120,11 @@ fn evaluate_ast(
             Ok(AssertionResult::Pass)
         }
         AssertionExpr::Or { left, right } => {
-            let lr = evaluate_ast(pm, left, response, headers, trailers, timing)?;
+            let lr = evaluate_ast(pm, left, response, headers, trailers, timing, variables)?;
             if is_pass(&lr) {
                 return Ok(AssertionResult::Pass);
             }
-            let rr = evaluate_ast(pm, right, response, headers, trailers, timing)?;
+            let rr = evaluate_ast(pm, right, response, headers, trailers, timing, variables)?;
             if is_pass(&rr) {
                 return Ok(AssertionResult::Pass);
             }
@@ -111,8 +135,8 @@ fn evaluate_ast(
             )))
         }
         AssertionExpr::Xor { left, right } => {
-            let lr = evaluate_ast(pm, left, response, headers, trailers, timing)?;
-            let rr = evaluate_ast(pm, right, response, headers, trailers, timing)?;
+            let lr = evaluate_ast(pm, left, response, headers, trailers, timing, variables)?;
+            let rr = evaluate_ast(pm, right, response, headers, trailers, timing, variables)?;
             let lp = is_pass(&lr);
             let rp = is_pass(&rr);
             if lp != rp {
@@ -125,28 +149,60 @@ fn evaluate_ast(
             }
         }
         AssertionExpr::Binary { op, left, right } => {
-            let lhs = eval_value(pm, left, response, headers, trailers, timing);
-            let rhs = eval_value(pm, right, response, headers, trailers, timing);
+            let lhs = match eval_value(pm, left, response, headers, trailers, timing, variables) {
+                Ok(v) => v,
+                Err(e) => return Ok(AssertionResult::Error(e)),
+            };
+            let rhs = match eval_value(pm, right, response, headers, trailers, timing, variables) {
+                Ok(v) => v,
+                Err(e) => return Ok(AssertionResult::Error(e)),
+            };
             compare(lhs, op, rhs, left, right)
         }
-        AssertionExpr::Paren(inner) => evaluate_ast(pm, inner, response, headers, trailers, timing),
+        AssertionExpr::Paren(inner) => {
+            evaluate_ast(pm, inner, response, headers, trailers, timing, variables)
+        }
         AssertionExpr::IfThenElse {
             condition,
             then_branch,
             else_branch,
         } => {
-            let cond = evaluate_ast(pm, condition, response, headers, trailers, timing)?;
+            let cond = evaluate_ast(
+                pm, condition, response, headers, trailers, timing, variables,
+            )?;
             if is_pass(&cond) {
-                evaluate_ast(pm, then_branch, response, headers, trailers, timing)
+                evaluate_ast(
+                    pm,
+                    then_branch,
+                    response,
+                    headers,
+                    trailers,
+                    timing,
+                    variables,
+                )
             } else {
-                evaluate_ast(pm, else_branch, response, headers, trailers, timing)
+                evaluate_ast(
+                    pm,
+                    else_branch,
+                    response,
+                    headers,
+                    trailers,
+                    timing,
+                    variables,
+                )
             }
         }
         AssertionExpr::Atom(_) => {
             if let AssertionExpr::Atom(Expr::PluginCall { name, args }) = expr {
-                eval_plugin_as_assertion(pm, name, args, response, headers, trailers, timing)
+                eval_plugin_as_assertion(
+                    pm, name, args, response, headers, trailers, timing, variables,
+                )
             } else {
-                let val = eval_value(pm, expr, response, headers, trailers, timing);
+                let val = match eval_value(pm, expr, response, headers, trailers, timing, variables)
+                {
+                    Ok(v) => v,
+                    Err(e) => return Ok(AssertionResult::Error(e)),
+                };
                 if is_truthy(&val) {
                     Ok(AssertionResult::Pass)
                 } else {
@@ -161,7 +217,6 @@ fn evaluate_ast(
     }
 }
 
-/// Evaluate an AST node as a JSON value (for use inside Binary, plugin args, etc.)
 /// Validate a value against a type annotation.
 /// Returns `Value::Null` if the value doesn't match the expected type,
 /// otherwise returns the value unchanged.
@@ -179,6 +234,7 @@ fn validate_type_cast(val: &Value, type_name: &str) -> Value {
     if valid { val.clone() } else { Value::Null }
 }
 
+#[expect(clippy::too_many_arguments)]
 fn eval_plugin_as_assertion(
     pm: &dyn PluginRegistry,
     name: &str,
@@ -187,6 +243,7 @@ fn eval_plugin_as_assertion(
     headers: Option<&HashMap<String, String>>,
     trailers: Option<&HashMap<String, String>>,
     timing: Option<&AssertionTiming>,
+    variables: &HashMap<String, Value>,
 ) -> Result<AssertionResult> {
     let func_name = format!("@{}", name);
     let resolved_name = normalize_plugin_name(&func_name);
@@ -195,10 +252,14 @@ fn eval_plugin_as_assertion(
             .with_headers(headers)
             .with_trailers(trailers)
             .with_timing(timing);
-        let arg_values: Vec<Value> = args
+        let arg_values: Vec<Value> = match args
             .iter()
-            .map(|a| eval_value(pm, a, response, headers, trailers, timing))
-            .collect();
+            .map(|a| eval_value(pm, a, response, headers, trailers, timing, variables))
+            .collect::<std::result::Result<_, _>>()
+        {
+            Ok(values) => values,
+            Err(e) => return Ok(AssertionResult::Error(e)),
+        };
         match plugin.execute(&arg_values, &ctx) {
             Ok(PluginResult::Assertion(res)) => Ok(res),
             Ok(PluginResult::Value(val)) => {
@@ -225,54 +286,79 @@ fn eval_value(
     headers: Option<&HashMap<String, String>>,
     trailers: Option<&HashMap<String, String>>,
     timing: Option<&AssertionTiming>,
-) -> Value {
+    variables: &HashMap<String, Value>,
+) -> ValueResult {
     match expr {
-        AssertionExpr::Atom(atom) => eval_atom(pm, atom, response, headers, trailers, timing),
-        AssertionExpr::Paren(inner) => eval_value(pm, inner, response, headers, trailers, timing),
-        AssertionExpr::Not(inner) => {
-            let v = eval_value(pm, inner, response, headers, trailers, timing);
-            Value::Bool(!is_truthy(&v))
+        AssertionExpr::Atom(atom) => {
+            eval_atom(pm, atom, response, headers, trailers, timing, variables)
         }
-        AssertionExpr::NotNot(inner) => eval_value(pm, inner, response, headers, trailers, timing),
+        AssertionExpr::Paren(inner) => {
+            eval_value(pm, inner, response, headers, trailers, timing, variables)
+        }
+        AssertionExpr::Not(inner) => {
+            let v = eval_value(pm, inner, response, headers, trailers, timing, variables)?;
+            Ok(Value::Bool(!is_truthy(&v)))
+        }
+        AssertionExpr::NotNot(inner) => {
+            eval_value(pm, inner, response, headers, trailers, timing, variables)
+        }
         AssertionExpr::And { left, right } => {
-            let lv = eval_value(pm, left, response, headers, trailers, timing);
+            let lv = eval_value(pm, left, response, headers, trailers, timing, variables)?;
             if !is_truthy(&lv) {
-                return Value::Bool(false);
+                return Ok(Value::Bool(false));
             }
-            let rv = eval_value(pm, right, response, headers, trailers, timing);
-            Value::Bool(is_truthy(&rv))
+            let rv = eval_value(pm, right, response, headers, trailers, timing, variables)?;
+            Ok(Value::Bool(is_truthy(&rv)))
         }
         AssertionExpr::Or { left, right } => {
-            let lv = eval_value(pm, left, response, headers, trailers, timing);
+            let lv = eval_value(pm, left, response, headers, trailers, timing, variables)?;
             if is_truthy(&lv) {
-                return Value::Bool(true);
+                return Ok(Value::Bool(true));
             }
-            let rv = eval_value(pm, right, response, headers, trailers, timing);
-            Value::Bool(is_truthy(&rv))
+            let rv = eval_value(pm, right, response, headers, trailers, timing, variables)?;
+            Ok(Value::Bool(is_truthy(&rv)))
         }
         AssertionExpr::Xor { left, right } => {
-            let lv = eval_value(pm, left, response, headers, trailers, timing);
-            let rv = eval_value(pm, right, response, headers, trailers, timing);
-            Value::Bool(is_truthy(&lv) != is_truthy(&rv))
+            let lv = eval_value(pm, left, response, headers, trailers, timing, variables)?;
+            let rv = eval_value(pm, right, response, headers, trailers, timing, variables)?;
+            Ok(Value::Bool(is_truthy(&lv) != is_truthy(&rv)))
         }
         AssertionExpr::Binary { op, left, right } => {
-            let lhs = eval_value(pm, left, response, headers, trailers, timing);
-            let rhs = eval_value(pm, right, response, headers, trailers, timing);
-            eval_binary_value(lhs, op, rhs)
+            let lhs = eval_value(pm, left, response, headers, trailers, timing, variables)?;
+            let rhs = eval_value(pm, right, response, headers, trailers, timing, variables)?;
+            Ok(eval_binary_value(lhs, op, rhs))
         }
         AssertionExpr::IfThenElse {
             condition,
             then_branch,
             else_branch,
         } => {
-            let cv = eval_value(pm, condition, response, headers, trailers, timing);
+            let cv = eval_value(
+                pm, condition, response, headers, trailers, timing, variables,
+            )?;
             if is_truthy(&cv) {
-                eval_value(pm, then_branch, response, headers, trailers, timing)
+                eval_value(
+                    pm,
+                    then_branch,
+                    response,
+                    headers,
+                    trailers,
+                    timing,
+                    variables,
+                )
             } else {
-                eval_value(pm, else_branch, response, headers, trailers, timing)
+                eval_value(
+                    pm,
+                    else_branch,
+                    response,
+                    headers,
+                    trailers,
+                    timing,
+                    variables,
+                )
             }
         }
-        AssertionExpr::Raw(s) => resolve_path(s, response),
+        AssertionExpr::Raw(s) => Ok(resolve_path(s, response)),
     }
 }
 
@@ -283,9 +369,10 @@ fn eval_atom(
     headers: Option<&HashMap<String, String>>,
     trailers: Option<&HashMap<String, String>>,
     timing: Option<&AssertionTiming>,
-) -> Value {
+    variables: &HashMap<String, Value>,
+) -> ValueResult {
     match atom {
-        Expr::JqPath(p) => resolve_path(p, response),
+        Expr::JqPath(p) => Ok(resolve_path(p, response)),
         Expr::PluginCall { name, args } => {
             let func_name = format!("@{}", name);
             let resolved_name = normalize_plugin_name(&func_name);
@@ -296,22 +383,26 @@ fn eval_atom(
                     .with_timing(timing);
                 let arg_values: Vec<Value> = args
                     .iter()
-                    .map(|a| eval_value(pm, a, response, headers, trailers, timing))
-                    .collect();
+                    .map(|a| eval_value(pm, a, response, headers, trailers, timing, variables))
+                    .collect::<std::result::Result<_, _>>()?;
                 match plugin.execute(&arg_values, &ctx) {
-                    Ok(PluginResult::Value(v)) => v,
-                    Ok(PluginResult::Assertion(AssertionResult::Pass)) => Value::Bool(true),
-                    Ok(PluginResult::Assertion(AssertionResult::Fail { .. })) => Value::Bool(false),
-                    Ok(PluginResult::Assertion(AssertionResult::Error(e))) => {
-                        Value::String(format!("error: {}", e))
+                    Ok(PluginResult::Value(v)) => Ok(v),
+                    Ok(PluginResult::Assertion(AssertionResult::Pass)) => Ok(Value::Bool(true)),
+                    Ok(PluginResult::Assertion(AssertionResult::Fail { .. })) => {
+                        Ok(Value::Bool(false))
                     }
-                    Err(_) => Value::Null,
+                    // Plugin errors must never become comparable values —
+                    // propagate so the assertion surfaces as Error.
+                    Ok(PluginResult::Assertion(AssertionResult::Error(e))) => {
+                        Err(format!("Plugin {} error: {}", resolved_name, e))
+                    }
+                    Err(e) => Err(format!("Plugin {} error: {}", resolved_name, e)),
                 }
             } else {
-                Value::Null
+                Ok(Value::Null)
             }
         }
-        Expr::Literal(lit) => match lit {
+        Expr::Literal(lit) => Ok(match lit {
             Literal::Bool(b) => Value::Bool(*b),
             Literal::Number(n) => n
                 .parse::<i64>()
@@ -325,43 +416,46 @@ fn eval_atom(
                 }),
             Literal::Str(s) => Value::String(s.clone()),
             Literal::Null => Value::Null,
+        }),
+        Expr::Variable(name) => match variables.get(name.as_str()) {
+            // `$name` resolves to the JSON value bound by a prior EXTRACT.
+            Some(v) => Ok(v.clone()),
+            None => Err(format!("Undefined variable: ${}", name)),
         },
-        Expr::Variable(name) => Value::String(format!("${}", name)),
-        Expr::RegExp { pattern, flags: _ } => Value::String(pattern.clone()),
-        Expr::Json(s) | Expr::Yaml(s) => serde_json::from_str(s).unwrap_or(Value::Null),
+        Expr::RegExp { pattern, flags } => Ok(Value::String(regex_with_flags(pattern, flags))),
+        Expr::Json(s) | Expr::Yaml(s) => Ok(serde_json::from_str(s).unwrap_or(Value::Null)),
         Expr::As(inner, type_name) => {
-            let val = eval_atom(pm, inner, response, headers, trailers, timing);
-            validate_type_cast(&val, type_name)
+            let val = eval_atom(pm, inner, response, headers, trailers, timing, variables)?;
+            Ok(validate_type_cast(&val, type_name))
         }
     }
 }
 
+/// Equality that compares integers exactly (no lossy `as_f64`), so large
+/// `i64`/`u64` values like `9223372036854775807` don't collapse onto a
+/// neighbouring float. Mixed int/float (`3 == 3.0`) still compares by value.
+fn values_numerically_equal(lhs: &Value, rhs: &Value) -> bool {
+    if let (Value::Number(l), Value::Number(r)) = (lhs, rhs) {
+        if let (Some(li), Some(ri)) = (l.as_i64(), r.as_i64()) {
+            return li == ri;
+        }
+        if let (Some(lu), Some(ru)) = (l.as_u64(), r.as_u64()) {
+            return lu == ru;
+        }
+        // A float is involved (or one u64 sits outside i64 range): fall back to
+        // f64 so `3 == 3.0` holds.
+        if let (Some(lf), Some(rf)) = (l.as_f64(), r.as_f64()) {
+            return lf == rf;
+        }
+        return l == r;
+    }
+    lhs == rhs
+}
+
 fn eval_binary_value(lhs: Value, op: &BinaryOp, rhs: Value) -> Value {
     let pass = match op {
-        BinaryOp::Eq => {
-            // Numerically equal (3 == 3.0) should match even if JSON representation differs.
-            if let (Value::Number(l), Value::Number(r)) = (&lhs, &rhs) {
-                if let (Some(lf), Some(rf)) = (l.as_f64(), r.as_f64()) {
-                    lf == rf
-                } else {
-                    lhs == rhs
-                }
-            } else {
-                lhs == rhs
-            }
-        }
-        BinaryOp::Ne => {
-            // Numerically equal (3 != 3.0 should be false even if JSON representation differs)
-            if let (Value::Number(l), Value::Number(r)) = (&lhs, &rhs) {
-                if let (Some(lf), Some(rf)) = (l.as_f64(), r.as_f64()) {
-                    lf != rf
-                } else {
-                    lhs != rhs
-                }
-            } else {
-                lhs != rhs
-            }
-        }
+        BinaryOp::Eq => values_numerically_equal(&lhs, &rhs),
+        BinaryOp::Ne => !values_numerically_equal(&lhs, &rhs),
         BinaryOp::Gt => compare_numeric(&lhs, &rhs, ">").unwrap_or(false),
         BinaryOp::Lt => compare_numeric(&lhs, &rhs, "<").unwrap_or(false),
         BinaryOp::Ge => compare_numeric(&lhs, &rhs, ">=").unwrap_or(false),
@@ -500,7 +594,18 @@ mod tests {
     }
 
     fn eval(pm: &dyn PluginRegistry, expr: &str, response: &Value) -> AssertionResult {
-        evaluate_assertion(pm, expr, response, None, None, None)
+        evaluate_assertion(pm, expr, response, None, None, None, &HashMap::new())
+            .unwrap()
+            .unwrap_or(AssertionResult::Error("AST returned None".into()))
+    }
+
+    fn eval_with_vars(
+        pm: &dyn PluginRegistry,
+        expr: &str,
+        response: &Value,
+        variables: &HashMap<String, Value>,
+    ) -> AssertionResult {
+        evaluate_assertion(pm, expr, response, None, None, None, variables)
             .unwrap()
             .unwrap_or(AssertionResult::Error("AST returned None".into()))
     }
@@ -573,6 +678,7 @@ mod tests {
             None,
             None,
             None,
+            &HashMap::new(),
         )
         .unwrap();
         assert!(
@@ -738,8 +844,88 @@ mod tests {
             None,
             None,
             None,
-        );
+            &HashMap::new(),
+        )
+        .unwrap();
         assert_eq!(result, json!(42));
+    }
+
+    #[test]
+    fn test_regex_with_flags() {
+        assert_eq!(regex_with_flags("^te.*t$", ""), "^te.*t$");
+        assert_eq!(regex_with_flags("^te.*t$", "i"), "(?i)^te.*t$");
+        assert_eq!(regex_with_flags("^te.*t$", "im"), "(?im)^te.*t$");
+        // Unsupported flags (e.g. JS "g") are dropped instead of breaking the pattern
+        assert_eq!(regex_with_flags("^te.*t$", "gi"), "(?i)^te.*t$");
+        assert_eq!(regex_with_flags("^te.*t$", "g"), "^te.*t$");
+    }
+
+    #[test]
+    fn test_matches_regex_honors_case_insensitive_flag() {
+        use apif_ast::assertion_ast::{BinaryOp, Expr};
+        let expr = AssertionExpr::Binary {
+            op: BinaryOp::Matches,
+            left: Box::new(AssertionExpr::Atom(Expr::JqPath(".name".into()))),
+            right: Box::new(AssertionExpr::Atom(Expr::RegExp {
+                pattern: "^TE.*T$".into(),
+                flags: "i".into(),
+            })),
+        };
+        let response = json!({"name": "test"});
+        let r = evaluate_ast(&pm(), &expr, &response, None, None, None, &HashMap::new()).unwrap();
+        assert!(matches!(r, AssertionResult::Pass), "got: {:?}", r);
+
+        // Without the flag the same pattern must fail
+        let expr = AssertionExpr::Binary {
+            op: BinaryOp::Matches,
+            left: Box::new(AssertionExpr::Atom(Expr::JqPath(".name".into()))),
+            right: Box::new(AssertionExpr::Atom(Expr::RegExp {
+                pattern: "^TE.*T$".into(),
+                flags: String::new(),
+            })),
+        };
+        let r = evaluate_ast(&pm(), &expr, &response, None, None, None, &HashMap::new()).unwrap();
+        assert!(matches!(r, AssertionResult::Fail { .. }), "got: {:?}", r);
+    }
+
+    struct ErrorPlugin;
+
+    impl crate::registry::PluginApi for ErrorPlugin {
+        fn execute(
+            &self,
+            _args: &[Value],
+            _context: &PluginContext,
+        ) -> anyhow::Result<crate::registry::PluginResult> {
+            Ok(crate::registry::PluginResult::Assertion(
+                AssertionResult::Error("boom".into()),
+            ))
+        }
+    }
+
+    struct ErrorPluginRegistry;
+
+    impl PluginRegistry for ErrorPluginRegistry {
+        fn get_plugin(&self, name: &str) -> Option<std::sync::Arc<dyn crate::registry::PluginApi>> {
+            (name == "err").then(|| {
+                std::sync::Arc::new(ErrorPlugin) as std::sync::Arc<dyn crate::registry::PluginApi>
+            })
+        }
+    }
+
+    #[test]
+    fn test_plugin_error_in_value_position_propagates() {
+        // Regression: a plugin Error used as a value became the truthy string
+        // "error: ..." and could flip a comparison to PASS.
+        let r = eval(
+            &ErrorPluginRegistry,
+            "@err(.x) == \"error: boom\"",
+            &json!({"x": 1}),
+        );
+        assert!(matches!(r, AssertionResult::Error(_)), "got: {:?}", r);
+
+        // A plugin error must not be silently comparable to anything either
+        let r = eval(&ErrorPluginRegistry, "@err(.x) != 1", &json!({"x": 1}));
+        assert!(matches!(r, AssertionResult::Error(_)), "got: {:?}", r);
     }
 
     #[test]
@@ -753,5 +939,73 @@ mod tests {
             eval_binary_value(json!(3), &BinaryOp::Gt, json!(5)),
             json!(false)
         );
+    }
+
+    #[test]
+    fn test_eq_is_exact_on_large_integers() {
+        // Regression: `as_f64` collapsed neighbouring i64 values onto the same
+        // float, so `...807 == ...806` false-passed.
+        let r = eval(
+            &pm(),
+            ".id == 9223372036854775807",
+            &json!({"id": 9223372036854775806i64}),
+        );
+        assert!(matches!(r, AssertionResult::Fail { .. }), "got: {:?}", r);
+
+        // Exact match still passes.
+        let r = eval(
+            &pm(),
+            ".id == 9223372036854775807",
+            &json!({"id": 9223372036854775807i64}),
+        );
+        assert!(matches!(r, AssertionResult::Pass), "got: {:?}", r);
+
+        // `!=` mirrors the exact comparison.
+        let r = eval(
+            &pm(),
+            ".id != 9223372036854775807",
+            &json!({"id": 9223372036854775806i64}),
+        );
+        assert!(matches!(r, AssertionResult::Pass), "got: {:?}", r);
+    }
+
+    #[test]
+    fn test_extract_variable_resolves_in_assertion() {
+        // Regression: `$price >= 0` must resolve `$price` to the EXTRACT-bound
+        // value, not compare the literal string "$price" to 0.
+        let mut vars = HashMap::new();
+        vars.insert("price".to_string(), json!(42));
+        let r = eval_with_vars(&pm(), "$price >= 0", &json!({}), &vars);
+        assert!(matches!(r, AssertionResult::Pass), "got: {:?}", r);
+
+        vars.insert("price".to_string(), json!(-5));
+        let r = eval_with_vars(&pm(), "$price >= 0", &json!({}), &vars);
+        assert!(matches!(r, AssertionResult::Fail { .. }), "got: {:?}", r);
+    }
+
+    #[test]
+    fn test_extract_variable_string_contains() {
+        let mut vars = HashMap::new();
+        vars.insert("name".to_string(), json!("hello world"));
+        let r = eval_with_vars(&pm(), "$name contains \"hello\"", &json!({}), &vars);
+        assert!(matches!(r, AssertionResult::Pass), "got: {:?}", r);
+    }
+
+    #[test]
+    fn test_unbound_variable_errors() {
+        let vars = HashMap::new();
+        let r = eval_with_vars(&pm(), "$missing >= 0", &json!({}), &vars);
+        match r {
+            AssertionResult::Error(msg) => assert!(msg.contains("missing"), "msg: {}", msg),
+            other => panic!("expected Error for unbound variable, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_eq_int_vs_float_still_equal_by_value() {
+        let r = eval(&pm(), ".x == 3.0", &json!({"x": 3}));
+        assert!(matches!(r, AssertionResult::Pass), "got: {:?}", r);
+        let r = eval(&pm(), ".x == 3", &json!({"x": 3.0}));
+        assert!(matches!(r, AssertionResult::Pass), "got: {:?}", r);
     }
 }

@@ -415,18 +415,30 @@ pub fn get_variable_completions(
     items
 }
 
+/// Return the index of the section containing 0-based `line`, if any.
+///
+/// A section spans the half-open 0-based line range `[start_line, end_line)`
+/// (`start_line` is the header line; `end_line` is the next header's line, or
+/// the total line count for the last section). Comparing directly in 0-based
+/// coordinates avoids the off-by-one that a `line + 1` vs 0-based `start_line`
+/// mix produced at the line just above a section header.
+pub fn section_index_at_line(sections: &[parser::ast::Section], line: usize) -> Option<usize> {
+    sections
+        .iter()
+        .position(|s| s.start_line <= line && line < s.end_line)
+}
+
 /// Find which document (0-based index) contains the given line.
 fn find_document_index_at_line(doc: &crate::parser::GctfDocument, line_0based: usize) -> usize {
-    let line_1based = line_0based + 1;
     for (idx, d) in doc.iter_chain().enumerate() {
         if let (Some(first), Some(last)) = (d.sections.first(), d.sections.last())
-            && line_1based >= first.start_line
-            && line_1based <= last.end_line
+            && line_0based >= first.start_line
+            && line_0based < last.end_line
         {
             return idx;
         }
     }
-    // If line is before first section, it's in the first document
+    // If line is before the first section, treat it as the first document.
     0
 }
 
@@ -441,7 +453,9 @@ pub fn get_var_hover(
 
     let line_str = doc.metadata.source.as_deref()?.lines().nth(line_0based)?;
 
-    let char_pos = character as usize;
+    // LSP `character` is a UTF-16 code-unit offset; convert to a byte index
+    // before slicing so non-ASCII lines don't panic.
+    let char_pos = crate::lsp::position::utf16_col_to_byte(line_str, character as usize);
     if char_pos >= line_str.len() {
         return None;
     }
@@ -511,8 +525,16 @@ pub fn get_plugin_hover(
         return None;
     }
 
-    let col = character as usize;
-    let at_pos = line_str[..=col.min(line_str.len().saturating_sub(1))].rfind('@')?;
+    // LSP `character` is a UTF-16 code-unit offset; convert to a byte index.
+    let col = crate::lsp::position::utf16_col_to_byte(line_str, character as usize);
+    // Search up to and including the character under the cursor (byte boundary
+    // safe: `end` always lands on a char boundary).
+    let end = line_str[col..]
+        .chars()
+        .next()
+        .map(|c| col + c.len_utf8())
+        .unwrap_or(col);
+    let at_pos = line_str[..end].rfind('@')?;
 
     let rest = &line_str[at_pos..];
     let name_end = rest[1..]
@@ -589,8 +611,11 @@ pub fn validation_error_to_diagnostic(
         crate::parser::validator::ErrorSeverity::Info => DiagnosticSeverity::INFORMATION,
     };
 
-    // AST line is 1-based, LSP is 0-based
-    let line_num = (error.line.unwrap_or(1) - 1) as u32;
+    // ValidationError.line is the section's 0-based start line (see
+    // `Section::start_line`), which matches LSP's 0-based line numbering. Use it
+    // directly — subtracting 1 here shifted every diagnostic one line up and
+    // underflowed for line-0 sections.
+    let line_num = error.line.unwrap_or(0) as u32;
     let line_len = content
         .lines()
         .nth(line_num as usize)
@@ -752,14 +777,12 @@ fn collect_optimizer_rewrites_with_ranges(
     rewrites
 }
 
-// ─── Unused Variable Detection (AST-based) ───
-
 /// Result of unused variable detection
 #[derive(Debug, Clone)]
 pub struct UnusedVariable {
     /// Variable name
     pub name: String,
-    /// 1-based line number where the variable is defined (EXTRACT section)
+    /// 0-based line number where the variable is defined (EXTRACT section)
     pub line: usize,
     /// 0-based character where the variable name starts on that line
     pub character: usize,
@@ -772,10 +795,8 @@ pub struct UnusedVariable {
 /// A variable is "unused" if it was defined in an EXTRACT section but never
 /// referenced via `{{ var_name }}` in any subsequent document.
 pub fn collect_unused_variables(doc: &crate::parser::GctfDocument) -> Vec<UnusedVariable> {
-    // Step 1: Extract all variables from EXTRACT sections via AST
     let defined_vars = extract_all_vars(doc);
 
-    // Step 2: For each variable, check if it's used in any subsequent document
     defined_vars
         .into_iter()
         .filter(|(def_doc_idx, var_name, _, _)| {
@@ -792,7 +813,7 @@ pub fn collect_unused_variables(doc: &crate::parser::GctfDocument) -> Vec<Unused
 
 /// Extract all EXTRACT variables from the document chain with their AST source locations.
 fn extract_all_vars(doc: &crate::parser::GctfDocument) -> Vec<(usize, String, usize, usize)> {
-    // (doc_index, var_name, 1-based line, 0-based char)
+    // (doc_index, var_name, 0-based line, 0-based char)
     let mut vars = Vec::new();
 
     for (doc_idx, curr_doc) in doc.iter_chain().enumerate() {
@@ -807,7 +828,9 @@ fn extract_all_vars(doc: &crate::parser::GctfDocument) -> Vec<(usize, String, us
                         continue;
                     }
                     if let Some(extract_var) = parser::ExtractVar::parse(trimmed) {
-                        let global_line = section.start_line + local_line;
+                        // start_line is the 0-based header line; the first
+                        // content line sits at start_line + 1.
+                        let global_line = section.start_line + local_line + 1;
                         let char_pos = raw_line.find(&extract_var.name).unwrap_or(0);
                         vars.push((doc_idx, extract_var.name, global_line, char_pos));
                     }
@@ -822,7 +845,7 @@ fn extract_all_vars(doc: &crate::parser::GctfDocument) -> Vec<(usize, String, us
                         // Find in raw_content to get line info
                         for (local_line, raw_line) in section.raw_content.lines().enumerate() {
                             if raw_line.trim().starts_with(var_name) {
-                                let global_line = section.start_line + local_line;
+                                let global_line = section.start_line + local_line + 1;
                                 let char_pos = raw_line.find(var_name).unwrap_or(0);
                                 vars.push((doc_idx, var_name.clone(), global_line, char_pos));
                                 break;
@@ -943,7 +966,8 @@ fn doc_contains_var_reference_excluding_extract(
 
 /// Convert unused variables to LSP diagnostics
 pub fn unused_variable_to_diagnostic(var: &UnusedVariable) -> Diagnostic {
-    let lsp_line = var.line.saturating_sub(1) as u32;
+    // var.line is already 0-based (matches LSP line numbering).
+    let lsp_line = var.line as u32;
     let char_start = var.character as u32;
     let char_end = (var.character + var.name.len()) as u32;
 
@@ -1151,10 +1175,6 @@ pub fn create_apply_all_optimizer_rewrite_action(
     }
 }
 
-// ============================================================================
-// TESTS
-// ============================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1259,8 +1279,24 @@ test.Service/Method
         let diagnostic = validation_error_to_diagnostic(&error, content);
 
         assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
-        assert_eq!(diagnostic.range.start.line, 4); // 0-based
+        // ValidationError.line is already 0-based, so it maps through unchanged.
+        assert_eq!(diagnostic.range.start.line, 5);
         assert_eq!(diagnostic.message, "Test error");
+    }
+
+    #[test]
+    fn test_validation_error_to_diagnostic_line_zero() {
+        // A section starting at 0-based line 0 must not underflow and must land
+        // on line 0 (regression for the `line - 1` underflow bug).
+        let error = crate::parser::validator::ValidationError {
+            message: "Line zero error".to_string(),
+            line: Some(0),
+            severity: crate::parser::validator::ErrorSeverity::Error,
+        };
+        let content = "--- ENDPOINT ---\ntest.Service/Method\n";
+        let diagnostic = validation_error_to_diagnostic(&error, content);
+        assert_eq!(diagnostic.range.start.line, 0);
+        assert_eq!(diagnostic.range.end.line, 0);
     }
 
     #[test]
@@ -1686,6 +1722,59 @@ test.Service/Method
     fn test_get_section_header_option_completions_others() {
         assert!(get_section_header_option_completions(&SectionType::Address).is_empty());
         assert!(get_section_header_option_completions(&SectionType::Request).is_empty());
+    }
+
+    #[test]
+    fn test_get_var_hover_multibyte_line_no_panic() {
+        // A REQUEST line with non-ASCII text before `{{ name }}`. Slicing with
+        // the UTF-16 cursor offset as a byte offset used to panic here.
+        let content = "--- ENDPOINT ---\nsvc.M\n\n--- EXTRACT ---\nname = .n\n\n--- REQUEST ---\n{\"msg\": \"Привет {{ name }}\"}\n";
+        let doc = parser::parse_gctf_from_str(content, "t.gctf").unwrap();
+        // `{{` begins at UTF-16 column 16; column 20 is inside `name`.
+        let hover = get_var_hover(&doc, 7, 20);
+        assert!(hover.is_some());
+    }
+
+    #[test]
+    fn test_section_index_at_line_half_open() {
+        // Leading comment + blank push the first header off line 0.
+        let content = "# note\n\n--- ENDPOINT ---\nsvc.M\n\n--- ASSERTS ---\n.id == 1\n";
+        let doc = parser::parse_gctf_from_str(content, "t.gctf").unwrap();
+        let sections = &doc.sections;
+        let ep = sections
+            .iter()
+            .position(|s| s.section_type == SectionType::Endpoint)
+            .unwrap();
+        let ep_start = sections[ep].start_line;
+        assert!(
+            ep_start >= 1,
+            "leading lines should push ENDPOINT past line 0"
+        );
+        // The line directly above the header is in no section. The old
+        // `line + 1` comparison wrongly attributed it to this section.
+        assert_eq!(section_index_at_line(sections, ep_start - 1), None);
+        // The header line and the following body line belong to ENDPOINT.
+        assert_eq!(section_index_at_line(sections, ep_start), Some(ep));
+        assert_eq!(section_index_at_line(sections, ep_start + 1), Some(ep));
+        // The exclusive end (next header) does not belong to ENDPOINT.
+        assert_ne!(
+            section_index_at_line(sections, sections[ep].end_line),
+            Some(ep)
+        );
+    }
+
+    #[test]
+    fn test_find_document_index_at_line_multidoc_boundaries() {
+        let content = "--- ENDPOINT ---\nsvc.A\n\n--- ASSERTS ---\n.a == 1\n\n\
+--- ENDPOINT ---\nsvc.B\n\n--- ASSERTS ---\n.b == 2\n";
+        let doc = parser::parse_gctf_from_str(content, "t.gctf").unwrap();
+        assert!(!doc.is_single_document(), "expected two chained documents");
+        // First document owns the first header and its trailing blank line.
+        assert_eq!(find_document_index_at_line(&doc, 0), 0);
+        assert_eq!(find_document_index_at_line(&doc, 5), 0);
+        // Second document starts at its own ENDPOINT header (line 6).
+        assert_eq!(find_document_index_at_line(&doc, 6), 1);
+        assert_eq!(find_document_index_at_line(&doc, 10), 1);
     }
 
     #[test]

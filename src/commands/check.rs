@@ -141,7 +141,11 @@ fn check_bench_key_order(doc: &parser::GctfDocument) -> Vec<(usize, String, Stri
         if section.section_type == SectionType::Bench
             && let parser::ast::SectionContent::KeyValues(kv) = &section.content
         {
-            let keys: Vec<_> = kv.keys().collect();
+            // `kv` is a HashMap, whose iteration order is nondeterministic and
+            // would otherwise make these key-order warnings vary run-to-run.
+            // Sort the keys so the reported diagnostics are stable.
+            let mut keys: Vec<_> = kv.keys().collect();
+            keys.sort();
             for i in 1..keys.len() {
                 let prev_rank = bench_key_rank(keys[i - 1]);
                 let curr_rank = bench_key_rank(keys[i]);
@@ -241,7 +245,7 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
                     );
                 }
 
-                let validation_diagnostics = parser::validate_document_diagnostics(&doc);
+                let validation_diagnostics = parser::validate_document_chain_diagnostics(&doc);
                 for d in validation_diagnostics {
                     let line = d.line.unwrap_or(1);
                     let mut mapped = match d.severity {
@@ -477,5 +481,28 @@ mod tests {
         ]);
         let issues = check_bench_key_order(&doc);
         assert!(issues.is_empty());
+    }
+
+    // Bug 5: the BENCH section is stored as a HashMap, so iterating it directly
+    // yields nondeterministic key order and produces flaky warnings. The check
+    // must sort keys so its output is stable across runs.
+    #[test]
+    fn test_check_bench_key_order_deterministic() {
+        let doc = doc_with_sections(vec![kv_section(
+            SectionType::Bench,
+            &[
+                ("requests", "100"),
+                ("concurrency", "10"),
+                ("mode", "fixed"),
+                ("duration", "30s"),
+                ("profile", "load"),
+            ],
+        )]);
+        let first = check_bench_key_order(&doc);
+        // Re-run many times; HashMap seed varies per process but the sorted
+        // iteration inside the check must yield identical results every call.
+        for _ in 0..50 {
+            assert_eq!(check_bench_key_order(&doc), first);
+        }
     }
 }

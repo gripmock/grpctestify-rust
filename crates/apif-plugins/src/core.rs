@@ -345,14 +345,12 @@ mod tests {
         let manager = PluginManager::new();
         // PluginManager registers defaults on creation
         let plugins = manager.plugins.read().unwrap();
-        // Should have default plugins registered
         assert!(!plugins.is_empty());
     }
 
     #[test]
     fn test_plugin_manager_register() {
         let mut manager = PluginManager::new();
-        // Test registration
         let plugin = Arc::new(crate::uuid::UuidPlugin);
         manager.register(plugin);
         let plugins = manager.plugins.read().unwrap();
@@ -362,7 +360,6 @@ mod tests {
     #[test]
     fn test_plugin_manager_get() {
         let manager = PluginManager::new();
-        // Test retrieval of registered plugin
         let plugin = manager.get("uuid");
         assert!(plugin.is_some());
         assert_eq!(plugin.unwrap().name(), "uuid");
@@ -380,18 +377,15 @@ mod tests {
     fn test_plugin_manager_list() {
         let manager = PluginManager::new();
         let plugins = manager.list();
-        // Should have at least the default plugins
         assert!(plugins.len() >= 8); // uuid, email, ip, url, timestamp, header, trailer, len
     }
 
     #[test]
     fn test_plugin_manager_execute_plugin() {
         let manager = PluginManager::new();
-        // Test execution with real plugin (uuid)
         let plugin = manager.get("uuid").unwrap();
         let context = PluginContext::new(&Value::Null);
         let result = plugin.execute(&[Value::String("test".to_string())], &context);
-        // UUID plugin should return a value
         assert!(result.is_ok());
     }
 

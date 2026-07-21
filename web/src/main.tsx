@@ -1,12 +1,11 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { loader } from '@monaco-editor/react'
-import * as monaco from 'monaco-editor'
 import './index.css'
 import App from './App.tsx'
 
-
-loader.config({ monaco })
+// Note: monaco-editor is registered lazily (self-hosted, no CDN) the first
+// time an editor mounts — see src/components/MonacoEditor.tsx — so the ~4MB
+// monaco chunk is kept off the initial page-load path.
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

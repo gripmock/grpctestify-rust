@@ -43,10 +43,7 @@ impl Reporter for YamlReporter {
             report_context: YamlReportContext {
                 tool: "apif".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
-                generated_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64,
+                generated_at: apif_cfg_runtime::now_timestamp(),
             },
         };
 
@@ -67,6 +64,7 @@ mod tests {
         assert_eq!(reporter.output_path.to_str(), Some("test.yaml"));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn test_yaml_reporter_lifecycle() {
         use crate::Reporter;

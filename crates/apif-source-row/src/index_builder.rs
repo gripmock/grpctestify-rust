@@ -116,7 +116,10 @@ where
 
     let mut index = SourceIndex::with_key_type(key_column, key_type);
     let header_line = read_first_line(&source_path)?;
-    let mut byte_offset = header_line.len() as u64 + 1;
+    // `read_first_line` keeps the trailing newline, so its length already
+    // covers the header line plus its line terminator: the first data row
+    // begins at exactly `header_line.len()`.
+    let mut byte_offset = header_line.len() as u64;
 
     let mut row_count = 0u64;
     on_progress(BuildPhase::Scan, byte_offset.min(source_size), source_size);
@@ -144,7 +147,6 @@ where
         .with_context(|| format!("failed to write index to {}", idx_path.display()))?;
     on_progress(BuildPhase::Write, 1, 1);
 
-    // Warn if index file exceeds memory limit
     if let Ok(meta) = std::fs::metadata(&idx_path) {
         let size = meta.len();
         if size > DEFAULT_MEMORY_LIMIT {
@@ -293,15 +295,16 @@ fn read_first_line(path: &Path) -> Result<String> {
     Ok(line)
 }
 
+/// Byte length of the CSV row as it appears in the source file: the field
+/// values joined by commas. This must match how the row was serialized on
+/// disk so that mmap offsets computed during indexing stay in sync — counting
+/// header/column names here would over-count and corrupt every offset.
 fn estimate_row_size(row: &SourceRow) -> u32 {
     let mut size = 0u32;
-    for col in row.columns() {
-        size += col.len() as u32 + 1;
-    }
     for val in row.values() {
         size += val.len() as u32;
     }
-    size + row.columns().len().saturating_sub(1) as u32
+    size + row.values().len().saturating_sub(1) as u32
 }
 
 #[cfg(test)]
@@ -326,6 +329,7 @@ mod tests {
     }
 
     #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn build_and_load_index() {
         let dir = std::env::temp_dir().join("gctf_idx_build_test");
@@ -352,7 +356,58 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Regression (BUG 1): an index built on disk must store offsets/lengths
+    /// that slice the exact source-row bytes back out via the mmap read path.
+    /// The old math seeded the offset with `header.len() + 1` (double-counting
+    /// the newline the reader already retains) and sized rows by summing
+    /// column-NAME lengths, so every stored offset/length was wrong and this
+    /// round-trip read out-of-bounds garbage (or bailed) instead of the row.
     #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn index_roundtrip_reads_exact_source_rows() {
+        let dir = std::env::temp_dir().join("gctf_idx_roundtrip_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = create_temp_csv(
+            &dir,
+            "regions.csv",
+            "region_id,region_name\nR01,Moscow\nR02,Saint Petersburg\n",
+        );
+
+        let defs: Vec<SourceDefinition> = serde_yaml_ng::from_str(
+            "- file: regions.csv\n  name: regions\n  indexed_by: [region_id]\n",
+        )
+        .unwrap();
+        let doc_path = dir.join("test.gctf");
+        std::fs::write(&doc_path, "").unwrap();
+
+        let idx_path = build_index_for_source(&defs[0], &doc_path).unwrap();
+        let index = SourceIndex::read_from_file(&idx_path).unwrap();
+
+        let file = std::fs::File::open(&src).unwrap();
+        let mmap = unsafe { memmap2::Mmap::map(&file) }.unwrap();
+
+        assert_eq!(
+            index.lookup_row_from_mmap(mmap.as_ref(), "R01").unwrap(),
+            Some("R01,Moscow".to_string())
+        );
+        assert_eq!(
+            index.lookup_row_from_mmap(mmap.as_ref(), "R02").unwrap(),
+            Some("R02,Saint Petersburg".to_string())
+        );
+
+        let entries = index.lookup_all("R02").unwrap();
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        let bytes = &mmap.as_ref()[e.offset as usize..e.offset as usize + e.row_length as usize];
+        assert_eq!(std::str::from_utf8(bytes).unwrap(), "R02,Saint Petersburg");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn load_or_build_creates_on_first_call() {
         let dir = std::env::temp_dir().join("gctf_idx_auto_test");
@@ -382,6 +437,7 @@ mod tests {
     }
 
     #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn load_or_build_reuses_existing() {
         let dir = std::env::temp_dir().join("gctf_idx_reuse_test");
@@ -401,6 +457,7 @@ mod tests {
     }
 
     #[cfg(not(miri))]
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn build_index_no_key_column_errors() {
         let dir = std::env::temp_dir().join("gctf_idx_nokey_test");

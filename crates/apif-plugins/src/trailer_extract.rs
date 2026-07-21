@@ -40,7 +40,6 @@ impl Plugin for TrailerExtractPlugin {
     }
 
     fn execute(&self, args: &[Value], context: &PluginContext) -> Result<PluginResult> {
-        // Check argument count
         if args.is_empty() {
             return Ok(PluginResult::Assertion(AssertionResult::fail(
                 "@trailer requires 1 argument: the trailer name",
@@ -53,7 +52,6 @@ impl Plugin for TrailerExtractPlugin {
             )));
         }
 
-        // Get trailer name
         let trailer_name = match &args[0] {
             Value::String(name) => name.to_lowercase(),
             _ => {
@@ -63,7 +61,6 @@ impl Plugin for TrailerExtractPlugin {
             }
         };
 
-        // Get trailers from context
         let trailers = match context.trailers {
             Some(t) => t,
             None => {

@@ -5,7 +5,10 @@ use apif_source_error::SourceError;
 use std::collections::HashMap;
 
 pub struct InMemorySource {
-    data: HashMap<String, SourceRow>,
+    /// Rows are stored per key so duplicate join keys are all retained; a
+    /// plain `HashMap<String, SourceRow>` would collapse them (last wins) and
+    /// make `lookup_all`/CROSS joins silently drop matches.
+    data: HashMap<String, Vec<SourceRow>>,
     key_column: String,
     headers: Vec<String>,
     row_count: usize,
@@ -14,7 +17,7 @@ pub struct InMemorySource {
 impl InMemorySource {
     pub fn load(reader: &mut dyn SourceReader, key_column: &str) -> Result<Self> {
         let headers = reader.headers().to_vec();
-        let mut data = HashMap::new();
+        let mut data: HashMap<String, Vec<SourceRow>> = HashMap::new();
         let mut row_count = 0;
 
         while let Some(row) = reader.next_row()? {
@@ -25,7 +28,7 @@ impl InMemorySource {
                     SourceError::ColumnNotFound(key_column.to_string(), "<memory>".into())
                 })?
                 .to_string();
-            data.insert(key, row);
+            data.entry(key).or_default().push(row);
         }
 
         Ok(Self {
@@ -36,8 +39,14 @@ impl InMemorySource {
         })
     }
 
+    /// Returns the first row stored under `key` (insertion order).
     pub fn lookup(&self, key: &str) -> Option<&SourceRow> {
-        self.data.get(key)
+        self.data.get(key).and_then(|rows| rows.first())
+    }
+
+    /// Returns every row stored under `key`, in insertion order.
+    pub fn lookup_all(&self, key: &str) -> &[SourceRow] {
+        self.data.get(key).map(Vec::as_slice).unwrap_or(&[])
     }
 
     #[must_use]
@@ -67,19 +76,27 @@ impl InMemorySource {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&String, &SourceRow)> {
-        self.data.iter()
+        self.data
+            .iter()
+            .flat_map(|(key, rows)| rows.iter().map(move |row| (key, row)))
     }
 
     /// Filter the in-memory source, keeping only rows that match ALL filter conditions.
     pub fn filter(&self, conditions: &[super::filter::FilterCondition]) -> Self {
         use crate::filter::matches_all;
-        let mut filtered_data = HashMap::new();
-        for (key, row) in &self.data {
-            if matches_all(row, conditions) {
-                filtered_data.insert(key.clone(), row.clone());
+        let mut filtered_data: HashMap<String, Vec<SourceRow>> = HashMap::new();
+        let mut row_count = 0;
+        for (key, rows) in &self.data {
+            for row in rows {
+                if matches_all(row, conditions) {
+                    filtered_data
+                        .entry(key.clone())
+                        .or_default()
+                        .push(row.clone());
+                    row_count += 1;
+                }
             }
         }
-        let row_count = filtered_data.len();
         Self {
             data: filtered_data,
             key_column: self.key_column.clone(),
@@ -143,14 +160,27 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Regression (BUG 2): rows sharing a join key must all be retained.
+    /// The old `HashMap<String, SourceRow>` collapsed them (last wins), so
+    /// `lookup_all` and CROSS joins silently dropped every row but the last.
     #[test]
-    fn duplicate_keys_last_wins() {
+    fn duplicate_keys_retained_via_lookup_all() {
         let data = "id,val\n1,first\n1,second\n";
         let mut reader = CsvFixtures::make_reader(data);
         let mem = InMemorySource::load(&mut reader, "id").unwrap();
-        assert_eq!(mem.len(), 1);
+
+        // Both rows survive rather than collapsing to the last one.
+        let all = mem.lookup_all("1");
+        let vals: Vec<Option<&str>> = all.iter().map(|r| r.get("val")).collect();
+        assert_eq!(vals, vec![Some("first"), Some("second")]);
         assert_eq!(mem.row_count(), 2);
-        assert_eq!(mem.lookup("1").unwrap().get("val"), Some("second"));
+
+        // Single-row lookup returns the first match.
+        assert_eq!(mem.lookup("1").unwrap().get("val"), Some("first"));
+
+        // iter() exposes every row, not just one per key.
+        let iter_count = mem.iter().filter(|(k, _)| k.as_str() == "1").count();
+        assert_eq!(iter_count, 2);
     }
 
     #[test]

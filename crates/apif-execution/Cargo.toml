@@ -1,6 +1,6 @@
 [package]
 name = "apif-execution"
-version = "0.2.0"
+version = "0.2.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -10,15 +10,15 @@ rust-version.workspace = true
 description = "Test execution engine"
 
 [dependencies]
-apif-ast = { path = "../apif-ast", version = "0.1.0" }
-apif-assert = { path = "../apif-assert", version = "0.1.0" }
+apif-ast = { path = "../apif-ast", version = "0.2.0" }
+apif-assert = { path = "../apif-assert", version = "0.2.0" }
 apif-cfg-runtime = { path = "../apif-cfg-runtime", version = "0.1.0" }
-apif-grpc-transport = { path = "../apif-grpc-transport", version = "0.2.0", features = [
+apif-grpc-transport = { path = "../apif-grpc-transport", version = "0.3.0", features = [
   "tonic-transport",
 ] }
 apif-optimizer = { path = "../apif-optimizer", version = "0.1.0" }
-apif-parser = { path = "../apif-parser", version = "0.1.0" }
-apif-plugins = { path = "../apif-plugins", version = "0.1.0" }
+apif-parser = { path = "../apif-parser", version = "0.2.0" }
+apif-plugins = { path = "../apif-plugins", version = "0.2.0" }
 apif-semantics = { path = "../apif-semantics", version = "0.1.0" }
 apif-state = { path = "../apif-state", version = "0.1.0" }
 apif-utils = { path = "../apif-utils", version = "0.2.0" }

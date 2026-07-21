@@ -85,7 +85,7 @@ export interface CollectionParsed {
 }
 
 export type RequestTab = 'body' | 'headers' | 'env';
-export type GctfTab = 'request' | 'asserts' | 'extracts' | 'meta' | 'source' | 'proto';
+export type GctfTab = 'request' | 'asserts' | 'extracts' | 'meta' | 'proto';
 export type ResponseTab = 'response' | 'headers';
 
 export interface Environment {
@@ -153,6 +153,7 @@ export interface Tab {
   endpoint: string;
   headers: Record<string, string>;
   bodies: string[];
+  environment: Record<string, string>;
   response: CallResult | null;
   requestTab: RequestTab;
   gctfTab: GctfTab;
@@ -164,12 +165,13 @@ export interface Tab {
 
 
 export interface StoredTab {
-  i: string;             
-  l: string;             
-  e: string;             
-  h: Record<string, string>; 
-  b: string[];           
-  c: string | null;      
+  i: string;
+  l: string;
+  e: string;
+  h: Record<string, string>;
+  b: string[];
+  c: string | null;
+  v?: Record<string, string>;
 }
 
 export interface TabsStorage {
@@ -242,7 +244,6 @@ export interface PlayStore {
   newWorkspace: () => void;
   saveWorkspace: () => Promise<void>;
   saveWorkspaceAs: (name: string) => Promise<void>;
-  isDirty: () => boolean;
   execute: () => Promise<void>;
   loadStartupInfo: () => Promise<void>;
   setReflectionMethods: (v: { name: string; fullName: string; service: string }[]) => void;

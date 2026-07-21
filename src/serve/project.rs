@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Project-wide settings stored in settings.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,8 +39,6 @@ fn default_tls_insecure() -> bool {
     true
 }
 
-/* ── private file helpers ───────────────────────────── */
-
 fn env_path(root: &Path, name: &str) -> PathBuf {
     root.join(format!(".env.{}", name))
 }
@@ -70,8 +67,6 @@ fn delete_text_file(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-
-/* ── public API ─────────────────────────────────────── */
 
 /// Detect whether a `.grpctestify` project directory exists.
 pub fn detect_project(dir: &Path) -> Option<PathBuf> {
@@ -197,8 +192,6 @@ pub fn append_history_entry(root: &Path, session: &str, entry: &str) -> Result<(
     Ok(())
 }
 
-/* ── share helpers ─────────────────────────────────── */
-
 pub fn ensure_shares_dir(shares_dir: &Path) -> Result<PathBuf> {
     fs::create_dir_all(shares_dir)?;
     Ok(shares_dir.to_path_buf())
@@ -227,10 +220,7 @@ pub fn delete_share(shares_dir: &Path, id: &str) -> Result<()> {
 }
 
 pub fn cleanup_expired_shares(shares_dir: &Path) -> Result<usize> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
+    let now = apif_cfg_runtime::now_unix_millis() as i64;
     let mut removed = 0;
     if !shares_dir.is_dir() {
         return Ok(0);

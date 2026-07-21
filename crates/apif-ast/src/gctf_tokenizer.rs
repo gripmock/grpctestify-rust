@@ -105,7 +105,22 @@ fn scan_attribute_block(line_idx: usize, line: &str, bytes: &[u8], len: usize) -
 
     let content_start = pos;
 
-    while pos < len && bytes[pos] != b']' {
+    // A `]` inside a quoted value does not terminate the attribute block.
+    // Track quote state (and backslash escapes within quotes) so values like
+    // `#[tag("a]b")]` are captured whole instead of truncated at the first `]`.
+    let mut in_quotes = false;
+    let mut escaped = false;
+    while pos < len {
+        let b = bytes[pos];
+        if escaped {
+            escaped = false;
+        } else if in_quotes && b == b'\\' {
+            escaped = true;
+        } else if b == b'"' {
+            in_quotes = !in_quotes;
+        } else if b == b']' && !in_quotes {
+            break;
+        }
         pos += 1;
     }
 
@@ -324,6 +339,9 @@ pub fn tokenize_inline_options(raw: &str) -> Vec<(String, String)> {
         let tok_start = pos;
         let mut in_quotes = false;
         let mut escaped = false;
+        // Track bracket nesting so array values like `redact=["a", "b"]` stay a
+        // single token even when they contain spaces after commas.
+        let mut bracket_depth: usize = 0;
 
         while pos < len {
             if escaped {
@@ -340,7 +358,15 @@ pub fn tokenize_inline_options(raw: &str) -> Vec<(String, String)> {
                     in_quotes = !in_quotes;
                     pos += 1;
                 }
-                b' ' | b'\t' if !in_quotes => break,
+                b'[' if !in_quotes => {
+                    bracket_depth += 1;
+                    pos += 1;
+                }
+                b']' if !in_quotes => {
+                    bracket_depth = bracket_depth.saturating_sub(1);
+                    pos += 1;
+                }
+                b' ' | b'\t' if !in_quotes && bracket_depth == 0 => break,
                 _ => pos += 1,
             }
         }
@@ -606,8 +632,6 @@ test.Service/Method
         assert_eq!(tokens[2].line, 2);
     }
 
-    // === scan_section_header edge cases ===
-
     #[test]
     fn test_section_header_meta() {
         let tokens = tokenize_gctf("--- META ---\nname: Test");
@@ -706,8 +730,6 @@ test.Service/Method
         assert!(matches!(tokens[0].kind, GctfTokenKind::Blank));
     }
 
-    // === tokenize_kv_line edge cases ===
-
     #[test]
     fn test_kv_line_empty_value() {
         let (key, value) = tokenize_kv_line("key:").unwrap();
@@ -745,8 +767,6 @@ test.Service/Method
         assert_eq!(value, "value");
     }
 
-    // === tokenize_extract_line edge cases ===
-
     #[test]
     fn test_extract_line_with_spaces() {
         let (name, value) = tokenize_extract_line("  total  =  .response.total  ").unwrap();
@@ -777,8 +797,6 @@ test.Service/Method
         assert_eq!(name, "name");
         assert_eq!(value, "");
     }
-
-    // === tokenize_inline_options edge cases ===
 
     #[test]
     fn test_tokenize_options_empty() {
@@ -815,6 +833,15 @@ test.Service/Method
     }
 
     #[test]
+    fn test_tokenize_options_array_value_with_spaces() {
+        let opts = tokenize_inline_options(r#"redact=["field1", "field2"]"#);
+        assert_eq!(opts.len(), 1);
+        assert_eq!(opts[0].0, "redact");
+        assert!(opts[0].1.contains("field1"));
+        assert!(opts[0].1.contains("field2"));
+    }
+
+    #[test]
     fn test_tokenize_options_multiple_spaces() {
         let opts = tokenize_inline_options("  a=1   b=2  ");
         assert_eq!(opts.len(), 2);
@@ -841,8 +868,6 @@ test.Service/Method
         assert_eq!(opts.len(), 1);
         assert_eq!(opts[0], ("key".into(), "".into()));
     }
-
-    // === slice_str edge case (via other functions) ===
 
     #[test]
     fn test_span_tracking() {
@@ -924,6 +949,34 @@ test.Service/Method
                 assert_eq!(content, r#"tag("smoke, slow")"#);
             }
             _ => panic!("expected AttributeBlock"),
+        }
+    }
+
+    #[test]
+    fn test_tokenize_attribute_block_bracket_inside_quotes() {
+        // Regression: a `]` inside a quoted value used to truncate the block at
+        // the first `]`, yielding `tag("a` instead of the full value.
+        let tokens = tokenize_gctf(r#"#[tag("a]b")]"#);
+        assert_eq!(tokens.len(), 1);
+        match &tokens[0].kind {
+            GctfTokenKind::AttributeBlock(content) => {
+                assert_eq!(content, r#"tag("a]b")"#);
+            }
+            other => panic!("expected AttributeBlock, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_tokenize_attribute_block_escaped_quote_inside_quotes() {
+        // An escaped quote must not flip quote state, so a following `]` inside
+        // the string is still treated as literal content.
+        let tokens = tokenize_gctf(r#"#[tag("a\"]b")]"#);
+        assert_eq!(tokens.len(), 1);
+        match &tokens[0].kind {
+            GctfTokenKind::AttributeBlock(content) => {
+                assert_eq!(content, r#"tag("a\"]b")"#);
+            }
+            other => panic!("expected AttributeBlock, got {:?}", other),
         }
     }
 

@@ -2,8 +2,22 @@
 // Converts: condition ? true_expr : false_expr
 // To JQ:    if condition then true_expr else false_expr end
 
+/// Maximum recursion depth for ternary conversion. Recursion depth grows with
+/// both nested ternaries and paren nesting, so a very deeply nested expression
+/// (e.g. tens of thousands of parens) could otherwise overflow the stack.
+const MAX_TERNARY_DEPTH: usize = 128;
+
 /// Convert ternary expression to JQ syntax (recursively handles nested ternaries)
 pub fn ternary_to_jq(expr: &str) -> String {
+    ternary_to_jq_depth(expr, 0)
+}
+
+fn ternary_to_jq_depth(expr: &str, depth: usize) -> String {
+    // Guard against stack overflow on pathologically nested input: past the
+    // depth limit we leave the expression unconverted rather than recursing.
+    if depth >= MAX_TERNARY_DEPTH {
+        return expr.to_string();
+    }
     // First, check if the entire expression is a ternary
     if let Some(pos) = find_top_level_question_mark(expr) {
         let (condition, rest) = expr.split_at(pos);
@@ -16,9 +30,9 @@ pub fn ternary_to_jq(expr: &str) -> String {
             // Recursively process nested ternaries in all parts
             return format!(
                 "if {} then {} else {} end",
-                ternary_to_jq(condition.trim()),
-                ternary_to_jq(true_expr),
-                ternary_to_jq(false_expr)
+                ternary_to_jq_depth(condition.trim(), depth + 1),
+                ternary_to_jq_depth(true_expr, depth + 1),
+                ternary_to_jq_depth(false_expr, depth + 1)
             );
         }
     }
@@ -55,7 +69,7 @@ pub fn ternary_to_jq(expr: &str) -> String {
                 {
                     // Process content inside parentheses
                     let content = &expr[start + 1..i];
-                    let processed = ternary_to_jq(content);
+                    let processed = ternary_to_jq_depth(content, depth + 1);
                     result.push('(');
                     result.push_str(&processed);
                     result.push(')');
@@ -78,29 +92,37 @@ pub fn ternary_to_jq(expr: &str) -> String {
     }
 }
 
-/// Find '?' that's not inside quotes or parentheses
+/// Find '?' that's not inside quotes or parentheses.
+/// Brackets are only counted outside string literals, and `\"` escapes inside
+/// strings are respected so quoted parens/quotes don't corrupt depth tracking.
 fn find_top_level_question_mark(expr: &str) -> Option<usize> {
     let mut in_quotes = false;
-    let mut quote_char = None;
+    let mut quote_char = '\0';
+    let mut escaped = false;
     let mut paren_depth = 0;
     let mut bracket_depth = 0;
 
     for (i, c) in expr.char_indices() {
+        if in_quotes {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == quote_char {
+                in_quotes = false;
+            }
+            continue;
+        }
         match c {
             '\'' | '"' => {
-                if !in_quotes {
-                    in_quotes = true;
-                    quote_char = Some(c);
-                } else if Some(c) == quote_char {
-                    in_quotes = false;
-                    quote_char = None;
-                }
+                in_quotes = true;
+                quote_char = c;
             }
-            '(' => paren_depth += 1,
-            ')' => paren_depth -= 1,
+            '(' | '{' => paren_depth += 1,
+            ')' | '}' => paren_depth -= 1,
             '[' => bracket_depth += 1,
             ']' => bracket_depth -= 1,
-            '?' if !in_quotes && paren_depth == 0 && bracket_depth == 0 => {
+            '?' if paren_depth == 0 && bracket_depth == 0 => {
                 return Some(i);
             }
             _ => {}
@@ -114,30 +136,36 @@ fn find_top_level_question_mark(expr: &str) -> Option<usize> {
 /// For "a ? b ? c : d : e", finds the second ':' (position after d)
 fn find_matching_colon(expr: &str) -> Option<usize> {
     let mut in_quotes = false;
-    let mut quote_char = None;
+    let mut quote_char = '\0';
+    let mut escaped = false;
     let mut paren_depth = 0;
     let mut bracket_depth = 0;
     let mut ternary_depth = 0; // Count nested ? without matching :
 
     for (i, c) in expr.char_indices() {
+        if in_quotes {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == quote_char {
+                in_quotes = false;
+            }
+            continue;
+        }
         match c {
             '\'' | '"' => {
-                if !in_quotes {
-                    in_quotes = true;
-                    quote_char = Some(c);
-                } else if Some(c) == quote_char {
-                    in_quotes = false;
-                    quote_char = None;
-                }
+                in_quotes = true;
+                quote_char = c;
             }
-            '(' => paren_depth += 1,
-            ')' => paren_depth -= 1,
+            '(' | '{' => paren_depth += 1,
+            ')' | '}' => paren_depth -= 1,
             '[' => bracket_depth += 1,
             ']' => bracket_depth -= 1,
-            '?' if !in_quotes && paren_depth == 0 && bracket_depth == 0 => {
+            '?' if paren_depth == 0 && bracket_depth == 0 => {
                 ternary_depth += 1;
             }
-            ':' if !in_quotes && paren_depth == 0 && bracket_depth == 0 => {
+            ':' if paren_depth == 0 && bracket_depth == 0 => {
                 if ternary_depth == 0 {
                     return Some(i);
                 }
@@ -256,6 +284,44 @@ mod tests {
         assert_eq!(result.matches(" else ").count(), 2);
         assert_eq!(result.matches(" end").count(), 2);
         println!("Nested jq: {}", result);
+    }
+
+    #[test]
+    fn test_ternary_paren_inside_string_literal() {
+        // Regression: a '(' inside a string literal must not corrupt paren
+        // depth and hide the real top-level '?'.
+        let input = ".name == \"a(b\" ? \"y\" : \"z\"";
+        let expected = "if .name == \"a(b\" then \"y\" else \"z\" end";
+        assert_eq!(ternary_to_jq(input), expected);
+    }
+
+    #[test]
+    fn test_ternary_escaped_quote_in_string() {
+        // Regression: `\"` inside a string literal must be treated as escaped,
+        // so a '?' after it is still inside the string, not top-level.
+        let input = ".name == \"a\\\"?b\" ? \"y\" : \"z\"";
+        let expected = "if .name == \"a\\\"?b\" then \"y\" else \"z\" end";
+        assert_eq!(ternary_to_jq(input), expected);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_ternary_deep_nesting_no_stack_overflow() {
+        // Regression: pathologically deep paren nesting must not overflow the
+        // stack; past the depth limit the input is left unconverted.
+        let input = format!("{}.x{}", "(".repeat(100_000), ")".repeat(100_000));
+        let result = ternary_to_jq(&input);
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_ternary_with_object_literal_branches() {
+        // Regression: a ':' inside a jq object literal `{...}` in a ternary
+        // branch must not be mistaken for the ternary's ':' separator. Braces
+        // must be tracked as nesting like parens/brackets.
+        let input = ".x == 0 ? {a: 1} : {b: 2}";
+        let expected = "if .x == 0 then {a: 1} else {b: 2} end";
+        assert_eq!(ternary_to_jq(input), expected);
     }
 
     #[test]

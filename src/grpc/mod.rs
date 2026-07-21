@@ -51,7 +51,10 @@ impl TransportRef {
                         messages: vec![],
                         headers: HashMap::new(),
                         trailers: HashMap::new(),
-                        error: Some(e.to_string()),
+                        // Transport-level failure with no gRPC status of its own
+                        // (connect refused, non-JSON HTTP error, …) → UNKNOWN(2),
+                        // matching the code the old string parser produced.
+                        error: Some(GrpcError::new(2, e.to_string())),
                     },
                 }
             }
@@ -69,22 +72,20 @@ async fn execute_tonic(
     let stream = Box::pin(futures::stream::iter(vec![body]));
     let (headers, mut response_stream) = match client.call_stream(service, method, stream).await {
         Ok(r) => r,
+        // Carry the structured status straight through — code/message/details
+        // and metadata are preserved instead of being flattened to a string.
         Err(e) => {
             return TransportResult {
                 messages: vec![],
                 headers: HashMap::new(),
                 trailers: HashMap::new(),
-                error: Some(format!(
-                    "gRPC error: code={} message={}",
-                    e.code(),
-                    e.message()
-                )),
+                error: Some(e),
             };
         }
     };
     let mut messages = Vec::new();
     let mut trailers = HashMap::new();
-    let mut error = None;
+    let mut error: Option<GrpcError> = None;
     use futures::StreamExt;
     while let Some(item) = response_stream.next().await {
         match item {
@@ -95,16 +96,10 @@ async fn execute_tonic(
                     && status != "0"
                 {
                     let msg = t.get("grpc-message").cloned().unwrap_or_default();
-                    error = Some(format!("gRPC error: code={} message={}", status, msg));
+                    error = Some(GrpcError::new(status.parse::<u32>().unwrap_or(2), msg));
                 }
             }
-            Err(s) => {
-                error = Some(format!(
-                    "gRPC error: code={} message={}",
-                    s.code(),
-                    s.message()
-                ))
-            }
+            Err(s) => error = Some(s),
         }
     }
     TransportResult {

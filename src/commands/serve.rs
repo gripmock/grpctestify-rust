@@ -30,5 +30,5 @@ pub async fn handle_play(args: &PlayArgs) -> Result<()> {
         return Ok(());
     }
 
-    crate::serve::start_play_server(args.port, args.dir.clone()).await
+    crate::serve::start_play_server(&args.host, args.port, args.dir.clone()).await
 }

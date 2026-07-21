@@ -1,4 +1,4 @@
-import Editor from '@monaco-editor/react';
+import { MonacoEditor as Editor } from '../MonacoEditor';
 import { useStore } from '../../lib/store';
 import { btn, colors } from '../../lib/theme';
 import { Plus, X, Layers, Send } from 'lucide-react';

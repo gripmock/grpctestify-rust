@@ -33,7 +33,11 @@ impl ParsedGrpcurl {
                     options.insert("compression".to_string(), "gzip".to_string());
                 }
                 "-insecure" => {
-                    tls.insert("insecure-skip-verify".to_string(), "true".to_string());
+                    // Key names must match exactly what `apif_execution::helpers::build_tls_config`
+                    // parses back out of the generated TLS section, otherwise the round-trip
+                    // silently drops TLS (see build_tls_config: ca_cert/client_cert/client_key/
+                    // server_name/insecure).
+                    tls.insert("insecure".to_string(), "true".to_string());
                 }
                 "-H" | "-rpc-header" | "-reflect-header" => {
                     let value = next_value(args, i, token)?;
@@ -53,22 +57,22 @@ impl ParsedGrpcurl {
                 }
                 "-cacert" => {
                     let value = next_value(args, i, token)?;
-                    tls.insert("ca-cert".to_string(), value.to_string());
+                    tls.insert("ca_cert".to_string(), value.to_string());
                     i += 1;
                 }
                 "-cert" => {
                     let value = next_value(args, i, token)?;
-                    tls.insert("client-cert".to_string(), value.to_string());
+                    tls.insert("client_cert".to_string(), value.to_string());
                     i += 1;
                 }
                 "-key" => {
                     let value = next_value(args, i, token)?;
-                    tls.insert("client-key".to_string(), value.to_string());
+                    tls.insert("client_key".to_string(), value.to_string());
                     i += 1;
                 }
                 "-servername" => {
                     let value = next_value(args, i, token)?;
-                    tls.insert("server-name".to_string(), value.to_string());
+                    tls.insert("server_name".to_string(), value.to_string());
                     i += 1;
                 }
                 "-import-path" => {
@@ -401,8 +405,6 @@ mod tests {
         assert_eq!(parsed, vec![json!({"ok": true, "count": 2})]);
     }
 
-    // ── Parameterized format tests ─────────────────────────
-
     fn p(args: &[&str]) -> ParsedGrpcurl {
         ParsedGrpcurl::parse(&args.iter().map(|s| (*s).to_string()).collect::<Vec<_>>()).unwrap()
     }
@@ -608,7 +610,7 @@ mod tests {
             t!(
                 &["-cacert", "ca.pem", "api.example.com:443", "foo.Bar/Baz"],
                 |r| {
-                    assert_eq!(r.tls.get("ca-cert").map(String::as_str), Some("ca.pem"));
+                    assert_eq!(r.tls.get("ca_cert").map(String::as_str), Some("ca.pem"));
                     assert_eq!(r.address, "api.example.com:443");
                 }
             ),
@@ -623,11 +625,11 @@ mod tests {
                 ],
                 |r| {
                     assert_eq!(
-                        r.tls.get("client-cert").map(String::as_str),
+                        r.tls.get("client_cert").map(String::as_str),
                         Some("client.pem")
                     );
                     assert_eq!(
-                        r.tls.get("client-key").map(String::as_str),
+                        r.tls.get("client_key").map(String::as_str),
                         Some("client.key")
                     );
                 }
@@ -656,7 +658,7 @@ mod tests {
                 ],
                 |r| {
                     assert_eq!(
-                        r.tls.get("server-name").map(String::as_str),
+                        r.tls.get("server_name").map(String::as_str),
                         Some("example.com")
                     );
                 }

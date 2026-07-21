@@ -10,7 +10,8 @@ rust-version.workspace = true
 description = "Test state and result types for .apif/.gctf test files"
 
 [dependencies]
-apif-ast = { path = "../apif-ast", version = "0.1.0" }
+apif-ast = { path = "../apif-ast", version = "0.2.0" }
+apif-cfg-runtime = { path = "../apif-cfg-runtime", version = "0.1.0" }
 serde = { workspace = true }
 
 [dev-dependencies]

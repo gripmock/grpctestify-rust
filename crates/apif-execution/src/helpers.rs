@@ -88,6 +88,42 @@ pub fn parse_compression_option(options: &HashMap<String, String>) -> Option<Com
         })
 }
 
+/// Resolve the effective compression mode honoring the canonical precedence
+/// `section attribute > OPTIONS > env default`. An explicit-but-unknown value
+/// at either level is a configuration error (never a silent fall-back).
+pub fn resolve_compression(
+    document: &GctfDocument,
+    options: &HashMap<String, String>,
+    env_default: CompressionMode,
+) -> Result<CompressionMode, String> {
+    // `get_compression` only yields validated "gzip"/"none" (an invalid attribute
+    // value is filtered to None and falls through to OPTIONS/env, matching
+    // `resolve_effective_runtime_options`).
+    if let Some(attr) = document
+        .sections
+        .iter()
+        .filter_map(|s| s.get_compression())
+        .next()
+    {
+        return Ok(if attr == "gzip" {
+            CompressionMode::Gzip
+        } else {
+            CompressionMode::None
+        });
+    }
+
+    if let Some(raw) = options.get("compression") {
+        return parse_compression_option(options).ok_or_else(|| {
+            format!(
+                "OPTIONS.compression must be 'gzip' or 'none', got '{}'",
+                raw
+            )
+        });
+    }
+
+    Ok(env_default)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeOptionSource {
@@ -261,6 +297,10 @@ pub fn resolve_effective_runtime_options(
         }
     };
 
+    // Canonical compression precedence: section attribute > OPTIONS > env/CLI default.
+    // `execution::runner` resolves the effective mode via `resolve_compression`
+    // (same precedence), so this reporting path and the runner agree; both error
+    // on an explicit-but-invalid value rather than silently falling back.
     let compression_from_attr = document
         .sections
         .iter()
@@ -271,9 +311,17 @@ pub fn resolve_effective_runtime_options(
             value: v,
             source: RuntimeOptionSource::SectionAttribute,
         }
-    } else if options.contains_key("compression") {
+    } else if let Some(raw) = options.get("compression") {
+        // An explicit-but-unknown OPTIONS.compression is a configuration error,
+        // not a silent fall-back to `none`.
+        let mode = parse_compression_option(&options).ok_or_else(|| {
+            format!(
+                "OPTIONS.compression must be 'gzip' or 'none', got '{}'",
+                raw
+            )
+        })?;
         RuntimeOptionWithSource {
-            value: match parse_compression_option(&options).unwrap_or(CompressionMode::None) {
+            value: match mode {
                 CompressionMode::Gzip => "gzip".to_string(),
                 CompressionMode::None => "none".to_string(),
             },
@@ -476,7 +524,6 @@ pub fn interpolate_variables(template: &str, variables: &HashMap<String, Value>)
 pub fn substitute_variables(value: &mut Value, variables: &HashMap<String, Value>) {
     match value {
         Value::String(s) => {
-            let original = s.clone();
             if s.starts_with("{{") && s.ends_with("}}") {
                 let inner = s[2..s.len() - 2].trim();
                 if !inner.contains("{{")
@@ -488,10 +535,6 @@ pub fn substitute_variables(value: &mut Value, variables: &HashMap<String, Value
             }
             if let Some(replaced) = interpolate_variables(s, variables) {
                 *s = replaced;
-            }
-            // If nothing changed, restore original (type-preserving)
-            if *s == original {
-                // No change
             }
         }
         Value::Array(items) => {
@@ -506,6 +549,76 @@ pub fn substitute_variables(value: &mut Value, variables: &HashMap<String, Value
         }
         _ => {}
     }
+}
+
+/// True when `body` is a single well-formed variable identifier, i.e. the kind
+/// of placeholder `interpolate_variables`/`substitute_variables` treat as a
+/// variable reference. This deliberately rejects anything with spaces or
+/// punctuation so ordinary strings that merely contain `{{` (JSON fragments,
+/// free text) are never mistaken for an unresolved placeholder.
+fn is_variable_placeholder(body: &str) -> bool {
+    let mut chars = body.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+}
+
+/// Append the names of unresolved `{{ identifier }}` placeholders found in
+/// `text` to `out`. A placeholder is unresolved when its body is a well-formed
+/// variable identifier that is absent from `variables` (i.e. the substitutor
+/// would have left it verbatim). Names are de-duplicated, order preserved.
+pub fn find_unresolved_placeholders(
+    text: &str,
+    variables: &HashMap<String, Value>,
+    out: &mut Vec<String>,
+) {
+    let mut cursor = 0usize;
+    while let Some(open_rel) = text[cursor..].find("{{") {
+        let after_open = cursor + open_rel + 2;
+        let Some(close_rel) = text[after_open..].find("}}") else {
+            break;
+        };
+        let close = after_open + close_rel;
+        let name = text[after_open..close].trim();
+        if is_variable_placeholder(name)
+            && !variables.contains_key(name)
+            && !out.iter().any(|n| n == name)
+        {
+            out.push(name.to_string());
+        }
+        cursor = close + 2;
+    }
+}
+
+/// Recursively collect unresolved `{{ identifier }}` placeholders from all
+/// string values in a JSON `value` (used to guard outgoing request bodies).
+pub fn collect_unresolved_placeholders(
+    value: &Value,
+    variables: &HashMap<String, Value>,
+    out: &mut Vec<String>,
+) {
+    match value {
+        Value::String(s) => find_unresolved_placeholders(s, variables, out),
+        Value::Array(items) => {
+            for item in items {
+                collect_unresolved_placeholders(item, variables, out);
+            }
+        }
+        Value::Object(map) => {
+            for val in map.values() {
+                collect_unresolved_placeholders(val, variables, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Format unresolved variable names back as `{{a}}, {{b}}` for error messages.
+pub fn format_unresolved_placeholders(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|n| format!("{{{{{n}}}}}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Convert tonic metadata map to HashMap.
@@ -1006,6 +1119,22 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_compression_invalid_options_value_errors() {
+        // An explicit-but-unknown OPTIONS.compression must be a hard error, not
+        // a silent fall-back to `none`.
+        let doc = make_doc(vec![
+            make_section(SectionType::Options, kv(&[("compression", "brotli")])),
+            make_section(
+                SectionType::Endpoint,
+                SectionContent::Single("svc/Method".into()),
+            ),
+        ]);
+        let result = resolve_effective_runtime_options(&doc, cli_defaults());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("compression"));
+    }
+
+    #[test]
     fn test_resolve_compression_invalid_attribute_value_falls_back() {
         let doc = make_doc(vec![
             make_section(SectionType::Options, kv(&[("compression", "gzip")])),
@@ -1019,5 +1148,127 @@ mod tests {
 
         assert_eq!(result.compression.value, "gzip");
         assert_eq!(result.compression.source, RuntimeOptionSource::FileOptions);
+    }
+
+    fn opts(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn test_resolve_compression_attribute_beats_options() {
+        let doc = make_doc(vec![
+            make_section(SectionType::Options, kv(&[("compression", "none")])),
+            make_section_with_attrs(
+                SectionType::Request,
+                SectionContent::Empty,
+                vec![GctfAttribute::new("compression", "gzip")],
+            ),
+        ]);
+        assert_eq!(
+            resolve_compression(
+                &doc,
+                &opts(&[("compression", "none")]),
+                CompressionMode::None
+            ),
+            Ok(CompressionMode::Gzip)
+        );
+    }
+
+    #[test]
+    fn test_resolve_compression_options_used_when_no_attribute() {
+        let doc = make_doc(vec![make_section(
+            SectionType::Endpoint,
+            SectionContent::Single("svc/M".into()),
+        )]);
+        assert_eq!(
+            resolve_compression(
+                &doc,
+                &opts(&[("compression", "gzip")]),
+                CompressionMode::None
+            ),
+            Ok(CompressionMode::Gzip)
+        );
+    }
+
+    #[test]
+    fn test_resolve_compression_invalid_options_is_error_not_fallback() {
+        let doc = make_doc(vec![make_section(
+            SectionType::Endpoint,
+            SectionContent::Single("svc/M".into()),
+        )]);
+        let result = resolve_compression(
+            &doc,
+            &opts(&[("compression", "brotli")]),
+            CompressionMode::Gzip,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("compression"));
+    }
+
+    #[test]
+    fn test_resolve_compression_env_default_when_unset() {
+        let doc = make_doc(vec![make_section(
+            SectionType::Endpoint,
+            SectionContent::Single("svc/M".into()),
+        )]);
+        assert_eq!(
+            resolve_compression(&doc, &HashMap::new(), CompressionMode::Gzip),
+            Ok(CompressionMode::Gzip)
+        );
+    }
+
+    // (1) An undefined variable in a request body must be reported, not sent.
+    #[test]
+    fn test_collect_unresolved_placeholder_undefined_in_body() {
+        let vars = HashMap::new();
+        let mut body = serde_json::json!({ "user": "{{missing}}" });
+        substitute_variables(&mut body, &vars);
+        let mut unresolved = Vec::new();
+        collect_unresolved_placeholders(&body, &vars, &mut unresolved);
+        assert_eq!(unresolved, vec!["missing".to_string()]);
+        assert_eq!(format_unresolved_placeholders(&unresolved), "{{missing}}");
+    }
+
+    // (2) A defined variable still substitutes and is not flagged.
+    #[test]
+    fn test_collect_unresolved_placeholder_bound_variable_ok() {
+        let mut vars = HashMap::new();
+        vars.insert("user_id".to_string(), Value::from(42));
+        let mut body = serde_json::json!({ "id": "{{user_id}}", "note": "u={{user_id}}" });
+        substitute_variables(&mut body, &vars);
+        assert_eq!(body["id"], Value::from(42));
+        assert_eq!(body["note"], Value::from("u=42"));
+        let mut unresolved = Vec::new();
+        collect_unresolved_placeholders(&body, &vars, &mut unresolved);
+        assert!(unresolved.is_empty());
+    }
+
+    // (3) An unresolved placeholder in a header value is detected.
+    #[test]
+    fn test_find_unresolved_placeholder_in_header_value() {
+        let vars = HashMap::new();
+        let header_value =
+            interpolate_variables("Bearer {{token}}", &vars).unwrap_or("Bearer {{token}}".into());
+        let mut unresolved = Vec::new();
+        find_unresolved_placeholders(&header_value, &vars, &mut unresolved);
+        assert_eq!(unresolved, vec!["token".to_string()]);
+    }
+
+    // (4) A legitimate literal that merely contains braces is not false-flagged.
+    #[test]
+    fn test_collect_unresolved_placeholder_ignores_non_placeholder_literals() {
+        let vars = HashMap::new();
+        let body = serde_json::json!({
+            "json_like": "{ \"a\": 1 }",
+            "shell": "${HOME}",
+            "free_text": "{{ not a var }}",
+            "empty": "{{}}"
+        });
+        let mut unresolved = Vec::new();
+        collect_unresolved_placeholders(&body, &vars, &mut unresolved);
+        assert!(unresolved.is_empty(), "unexpected: {:?}", unresolved);
     }
 }
