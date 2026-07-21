@@ -21,7 +21,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.9.0"
+version = "1.9.1"
 edition = "2024"
 authors = ["bavix"]
 license = "MIT"
@@ -215,11 +215,11 @@ crc32fast = { workspace = true }
 apif-twoq-cache = { path = "crates/apif-twoq-cache", version = "0.1.0" }
 apif-source-row = { path = "crates/apif-source-row", version = "0.2.0" }
 apif-source-error = { path = "crates/apif-source-error", version = "0.1.0" }
-apif-cfg-runtime = { path = "crates/apif-cfg-runtime", version = "0.1.0" }
+apif-cfg-runtime = { path = "crates/apif-cfg-runtime", version = "0.1.1" }
 apif-diagnostics = { path = "crates/apif-diagnostics", version = "0.1.0" }
 apif-parser = { path = "crates/apif-parser", version = "0.2.0" }
 apif-assert = { path = "crates/apif-assert", version = "0.2.0" }
-apif-state = { path = "crates/apif-state", version = "0.1.0" }
+apif-state = { path = "crates/apif-state", version = "0.1.1" }
 apif-plugins = { path = "crates/apif-plugins", version = "0.2.0" }
 apif-execution = { path = "crates/apif-execution", version = "0.2.0" }
 apif-utils = { path = "crates/apif-utils", version = "0.2.0" }
