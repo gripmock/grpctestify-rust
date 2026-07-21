@@ -305,6 +305,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_ternary_deep_nesting_no_stack_overflow() {
         // Regression: pathologically deep paren nesting must not overflow the
         // stack; past the depth limit the input is left unconverted.

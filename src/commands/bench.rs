@@ -3693,6 +3693,7 @@ mod tests {
 
     // Percentiles are accurate over a wide, dense distribution (1..=100_000).
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_histogram_percentile_accuracy() {
         let mut h = LatencyHistogram::default();
         for v in 1..=100_000u64 {
@@ -3713,6 +3714,7 @@ mod tests {
     // the aggregate toward the last-appended (large) samples; the bounded
     // histogram weights every sample equally, so p50 stays in the low mode.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_histogram_not_biased_toward_late_samples() {
         let mut h = LatencyHistogram::default();
         // 90k low samples recorded first, then 10k high samples.
@@ -3733,6 +3735,7 @@ mod tests {
     // Mergeability: two per-worker histograms merged bucket-wise equal one
     // histogram fed all the samples (exactly — no loss on merge).
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_histogram_merge_is_lossless() {
         let mut whole = LatencyHistogram::default();
         let mut a = LatencyHistogram::default();

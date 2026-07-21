@@ -236,6 +236,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_deeply_nested_rejected_without_overflow() {
         // Regression: deeply nested input previously reached the recursive json5
         // parser and overflowed the stack (uncatchable process abort). It must

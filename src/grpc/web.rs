@@ -1909,6 +1909,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_build_http_client_unreadable_ca_fails() {
         let config = tls_test_config(crate::grpc::client::TlsConfig {
             ca_cert_path: Some("/nonexistent/ca.pem".to_string()),
@@ -1950,6 +1951,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_build_http_client_cert_without_key_fails() {
         let config = tls_test_config(crate::grpc::client::TlsConfig {
             client_cert_path: Some("/tmp/whatever.pem".to_string()),
@@ -1965,6 +1967,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_build_http_client_insecure_ok() {
         let config = tls_test_config(crate::grpc::client::TlsConfig {
             insecure_skip_verify: true,
@@ -2005,6 +2008,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn cached_http_client_reuses_same_config() {
         // A unique timeout keeps this key from colliding with other tests that
         // may populate the shared cache.

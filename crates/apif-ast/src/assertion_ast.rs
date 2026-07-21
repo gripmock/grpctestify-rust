@@ -1616,6 +1616,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_deeply_nested_parens_does_not_overflow() {
         // Regression: unbounded recursion on deeply nested `(` aborted the
         // process with a stack overflow. It must now terminate and fall back
@@ -1626,6 +1627,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_deeply_nested_bang_does_not_overflow() {
         let src = "!".repeat(100_000);
         let expr = parse_assertion(&src);
