@@ -1,6 +1,6 @@
 [package]
 name = "apif-twoq-cache"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -8,3 +8,6 @@ repository.workspace = true
 readme.workspace = true
 rust-version.workspace = true
 description = "TwoQ adaptive cache — scan-resistant hot/cold cache"
+
+[lints]
+workspace = true

@@ -356,9 +356,11 @@ impl AssertionEngine {
             trailers,
             None,
             &HashMap::new(),
+            None,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn evaluate_with_timing(
         &self,
         assertion: &str,
@@ -367,18 +369,17 @@ impl AssertionEngine {
         trailers: Option<&HashMap<String, String>>,
         timing: Option<&AssertionTiming>,
         variables: &HashMap<String, Value>,
+        protocol: Option<&str>,
     ) -> Result<AssertionResult> {
         let trimmed = assertion.trim();
 
-        match operators::evaluate_assertion(
-            &*self.plugin_registry,
-            trimmed,
-            response,
-            headers,
-            trailers,
-            timing,
-            variables,
-        ) {
+        let ctx = operators::EvalCtx::new(response, variables)
+            .with_headers(headers)
+            .with_trailers(trailers)
+            .with_timing(timing)
+            .with_protocol(protocol);
+
+        match operators::evaluate_assertion(&*self.plugin_registry, trimmed, &ctx) {
             Ok(Some(result)) => Ok(result),
             Ok(None) => {
                 // AST could not parse it — fall through to JQ.
@@ -471,6 +472,8 @@ impl AssertionEngine {
             return Ok(cached);
         }
 
+        let cleaned = strip_numeric_underscores(expr);
+
         let arena = load::Arena::default();
         let defs = core_defs().chain(jaq_std::defs()).chain(jaq_json::defs());
         let funs = core_funs()
@@ -479,7 +482,7 @@ impl AssertionEngine {
             .chain(std::iter::once(jaq_plugin_fun()));
         let loader = load::Loader::new(defs);
         let program = load::File {
-            code: expr,
+            code: cleaned.as_str(),
             path: (),
         };
 
@@ -515,7 +518,6 @@ impl AssertionEngine {
         }
     }
 
-    // Check if any assertion failed (re-exported wrapper)
     #[must_use]
     pub fn has_failures(&self, results: &[AssertionResult]) -> bool {
         results
@@ -523,7 +525,6 @@ impl AssertionEngine {
             .any(|r| matches!(r, AssertionResult::Fail { .. } | AssertionResult::Error(_)))
     }
 
-    // Get failed assertions (re-exported wrapper)
     pub fn get_failures<'a>(&self, results: &'a [AssertionResult]) -> Vec<&'a AssertionResult> {
         results
             .iter()
@@ -531,7 +532,6 @@ impl AssertionEngine {
             .collect()
     }
 
-    // Evaluate multiple assertions (re-exported wrapper)
     pub fn evaluate_all(
         &self,
         assertions: &[String],
@@ -546,9 +546,11 @@ impl AssertionEngine {
             trailers,
             None,
             &HashMap::new(),
+            None,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn evaluate_all_with_timing(
         &self,
         assertions: &[String],
@@ -557,15 +559,75 @@ impl AssertionEngine {
         trailers: Option<&HashMap<String, String>>,
         timing: Option<&AssertionTiming>,
         variables: &HashMap<String, Value>,
+        protocol: Option<&str>,
     ) -> Vec<AssertionResult> {
+        self.evaluate_all_with_records(
+            assertions, response, headers, trailers, timing, variables, protocol,
+        )
+        .into_iter()
+        .map(|(result, _elapsed_ms)| result)
+        .collect()
+    }
+
+    /// Same as [`Self::evaluate_all_with_timing`], but also returns the wall-clock
+    /// time each individual assertion took to evaluate — used to surface
+    /// per-assertion timing in reports/`explain` without re-running the batch.
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_all_with_records(
+        &self,
+        assertions: &[String],
+        response: &serde_json::Value,
+        headers: Option<&HashMap<String, String>>,
+        trailers: Option<&HashMap<String, String>>,
+        timing: Option<&AssertionTiming>,
+        variables: &HashMap<String, Value>,
+        protocol: Option<&str>,
+    ) -> Vec<(AssertionResult, u64)> {
         assertions
             .iter()
             .map(|assertion| {
-                self.evaluate_with_timing(assertion, response, headers, trailers, timing, variables)
-                    .unwrap_or_else(|e| AssertionResult::Error(format!("Internal error: {}", e)))
+                let start = std::time::Instant::now();
+                let result = self
+                    .evaluate_with_timing(
+                        assertion, response, headers, trailers, timing, variables, protocol,
+                    )
+                    .unwrap_or_else(|e| AssertionResult::Error(format!("Internal error: {}", e)));
+                (result, start.elapsed().as_millis() as u64)
             })
             .collect()
     }
+}
+
+/// Merge digit-separators (`1_000_000`) outside string literals — jaq's own
+/// number lexer doesn't support them.
+fn strip_numeric_underscores(expr: &str) -> String {
+    let mut out = String::with_capacity(expr.len());
+    let mut chars = expr.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '"' {
+            out.push(c);
+            while let Some(next) = chars.next() {
+                out.push(next);
+                if next == '\\' {
+                    if let Some(escaped) = chars.next() {
+                        out.push(escaped);
+                    }
+                } else if next == '"' {
+                    break;
+                }
+            }
+        } else {
+            let is_digit_separator = c == '_'
+                && out.chars().next_back().is_some_and(|p| p.is_ascii_digit())
+                && chars.peek().is_some_and(|n| n.is_ascii_digit());
+            if !is_digit_separator {
+                out.push(c);
+            }
+        }
+    }
+
+    out
 }
 
 fn json_to_jaq(value: &Value) -> JaqVal {
@@ -715,6 +777,36 @@ mod tests {
                 "value": 42
             }
         })
+    }
+
+    #[test]
+    fn strip_numeric_underscores_merges_digit_separators_outside_strings() {
+        assert_eq!(
+            strip_numeric_underscores(".amount == 1_000_000"),
+            ".amount == 1000000"
+        );
+        assert_eq!(
+            strip_numeric_underscores(".price == 1_234.567_89"),
+            ".price == 1234.56789"
+        );
+        // Underscores in field names/identifiers are untouched (no digit on
+        // both sides).
+        assert_eq!(strip_numeric_underscores(".foo_bar == 1"), ".foo_bar == 1");
+        // Underscores inside string literals are untouched even between digits.
+        assert_eq!(
+            strip_numeric_underscores(r#".id == "a_1_2_3""#),
+            r#".id == "a_1_2_3""#
+        );
+    }
+
+    #[test]
+    fn assertion_with_numeric_digit_separators_matches_the_plain_number() {
+        let engine = AssertionEngine::new();
+        let response = json!({"amount": 1_000_000});
+        let result = engine
+            .evaluate(".amount == 1_000_000", &response, None, None)
+            .unwrap();
+        assert_eq!(result, AssertionResult::Pass);
     }
 
     #[test]

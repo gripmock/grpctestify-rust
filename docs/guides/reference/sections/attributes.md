@@ -39,7 +39,14 @@ Multiple attributes can be applied to one section:
 | `#[skip]` | flag (or `#[skip(true)]`) | Skip this section during execution |
 | `#[timeout(N)]` | seconds | Per-section timeout for gRPC request |
 | `#[retry(N)]` | count | Retry section on failure with 100ms × attempt delay |
+| `#[retry_delay(N)]` | seconds (non-negative) | Delay between retry attempts (overrides the default 100ms × attempt backoff) |
+| `#[no_retry]` | flag (or `#[no_retry(true)]`) | Disable retries for this section, even if `#[retry(N)]`/`OPTIONS.retry` would otherwise apply |
+| `#[repeat(N)]` | positive integer | Re-execute this section N times in a row (e.g. re-send a REQUEST, or re-check a RESPONSE/ASSERTS, repeatedly within the same test) |
+| `#[compression(none\|gzip)]` | `none` or `gzip` | Per-section compression override, same values as `OPTIONS.compression` |
 | `#[name(...)]` | string | Display name for this section in reports |
+| `#[tag(...)]` | comma-separated string | Test tags for `--tags`/`--skip-tags` filtering — used only when the file has no `META.tags` |
+| `#[owner(...)]` | string | Test owner — used only when the file has no `META.owner` |
+| `#[summary(...)]` | string | Human-readable test summary — used only when the file has no `META.summary` |
 
 ## Inheritance
 

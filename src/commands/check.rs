@@ -1,4 +1,4 @@
-// Check command - validate GCTF files
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
 
 use crate::cli::Cli;
 use crate::cli::args::HasFormat;
@@ -6,13 +6,11 @@ use anyhow::Result;
 use std::path::PathBuf;
 use tracing::info;
 
-use crate::bench::schema::bench_key_rank;
 use crate::cli::args::CheckArgs;
 use crate::optimizer::OptimizeLevel;
 use crate::parser;
 use crate::parser::ErrorSeverity;
-use crate::parser::ast::SectionType;
-use crate::report::{CheckReport, CheckSummary, Diagnostic, DiagnosticSeverity};
+use crate::report::{CheckReport, CheckSummary, Diagnostic, DiagnosticSeverity, DocumentStructure};
 use crate::semantics;
 use crate::utils::FileUtils;
 
@@ -61,12 +59,19 @@ fn build_summary(
 
 fn print_text_diagnostics(diagnostics: &[Diagnostic]) {
     for d in diagnostics {
+        let icon = match d.severity {
+            DiagnosticSeverity::Error => crate::report::style::fail_icon().to_string(),
+            DiagnosticSeverity::Warning => crate::report::style::warn_icon().to_string(),
+            DiagnosticSeverity::Info | DiagnosticSeverity::Hint => {
+                crate::report::style::PASS_ICON.to_string()
+            }
+        };
         println!(
-            "{}:{}: [{}] {}",
+            "{icon} {}:{}: [{}] {}",
             d.file, d.range.start.line, d.code, d.message
         );
         if let Some(hint) = &d.hint {
-            println!("  hint: {}", hint);
+            println!("    hint: {}", hint);
         }
     }
 }
@@ -102,6 +107,37 @@ fn validation_hint(message: &str) -> Option<&'static str> {
     None
 }
 
+/// The real exported plugin names from every configured source — the
+/// user-global and project-local convention directories, same precedence
+/// as `run` (`apif_plugins::rhai_plugin::load_all_configured_plugins`).
+/// One `.rhai` file can define several plugins (multi-function-per-file
+/// contract), so this is no longer just filenames; it actually compiles
+/// each script the same way `run` would.
+pub fn rhai_plugin_names() -> std::collections::HashSet<String> {
+    crate::plugins::rhai_plugin::load_all_configured_plugins()
+        .iter()
+        .map(|p| p.name().to_string())
+        .collect()
+}
+
+/// The subset of configured `.rhai` plugins eligible for the optimizer's
+/// boolean rewrite (`@plugin(x) == true` -> `@plugin(x)`) — same filter
+/// `apif-optimizer`'s own `BOOLEAN_PLUGINS` applies to built-ins, applied
+/// here to convention-directory scripts (`@pure` + `@returns bool` doc-tags).
+pub fn rhai_boolean_plugin_names() -> std::collections::HashSet<String> {
+    crate::plugins::rhai_plugin::load_all_configured_plugins()
+        .iter()
+        .filter(|p| {
+            let sig = p.signature();
+            sig.return_type == crate::plugins::TypeInfo::Bool
+                && sig.safe_for_rewrite
+                && sig.deterministic
+                && sig.idempotent
+        })
+        .map(|p| p.name().to_string())
+        .collect()
+}
+
 fn check_preamble_section_order(doc: &parser::GctfDocument) -> Vec<(usize, String, String)> {
     let mut out = Vec::new();
     let first_body_idx = doc
@@ -122,46 +158,18 @@ fn check_preamble_section_order(doc: &parser::GctfDocument) -> Vec<(usize, Strin
             out.push((
                 curr_line,
                 format!(
-                    "Section order: {} should come before {} (canonical: META→BENCH→ADDRESS→ENDPOINT→TLS→PROTO→OPTIONS)",
-                    prev_name, curr_name
+                    // Bug fix: this used to read `{prev_name} should come
+                    // before {curr_name}` — but `prev_name` is already
+                    // positioned before `curr_name` in the file (that's
+                    // what makes it "prev"), so that phrasing restated the
+                    // existing (wrong) order instead of recommending the
+                    // fix. `curr_name` has the earlier canonical rank, so
+                    // it's the one that belongs first.
+                    "Section order: {} should come before {} (canonical: META→BENCH→DATASET→ADDRESS→ENDPOINT→TLS→PROTO→OPTIONS)",
+                    curr_name, prev_name
                 ),
-                    format!(
-                        "reorder sections so {} comes before {} (or run `grpctestify fmt --write` to auto-fix)",
-                        prev_name, curr_name
-                    ),
+                    "run `fmt --write` to reorder preamble sections into canonical order".to_string(),
             ));
-        }
-    }
-    out
-}
-
-fn check_bench_key_order(doc: &parser::GctfDocument) -> Vec<(usize, String, String)> {
-    let mut out = Vec::new();
-    for section in &doc.sections {
-        if section.section_type == SectionType::Bench
-            && let parser::ast::SectionContent::KeyValues(kv) = &section.content
-        {
-            // `kv` is a HashMap, whose iteration order is nondeterministic and
-            // would otherwise make these key-order warnings vary run-to-run.
-            // Sort the keys so the reported diagnostics are stable.
-            let mut keys: Vec<_> = kv.keys().collect();
-            keys.sort();
-            for i in 1..keys.len() {
-                let prev_rank = bench_key_rank(keys[i - 1]);
-                let curr_rank = bench_key_rank(keys[i]);
-                if curr_rank < prev_rank {
-                    let line = section.start_line + 1;
-                    out.push((
-                            line,
-                            format!(
-                                "BENCH key order: '{}' should come before '{}' (canonical order via bench_key_rank)",
-                                keys[i - 1], keys[i]
-                            ),
-                        "reorder BENCH keys or run `grpctestify fmt --write` to auto-fix"
-                            .to_string(),
-                        ));
-                }
-            }
         }
     }
     out
@@ -170,7 +178,21 @@ fn check_bench_key_order(doc: &parser::GctfDocument) -> Vec<(usize, String, Stri
 pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
     let mut files = Vec::new();
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    let mut structure: Vec<DocumentStructure> = Vec::new();
     let mut files_with_errors = 0;
+    let mut total_docs_in_suite = 0usize;
+    let mut docs_with_error_section = 0usize;
+    let mut docs_with_asserts_section = 0usize;
+    // `PLUGIN_SIGNATURES` (what `collect_unknown_plugin_calls` checks against)
+    // is a process-wide, built-ins-only snapshot with no way to inject a
+    // `.rhai` script's name into it — so a valid plugin (from the
+    // user/project convention directories) would otherwise be reported as
+    // unknown.
+    let rhai_plugin_names = rhai_plugin_names();
+    apif_optimizer::register_extra_boolean_plugins(rhai_boolean_plugin_names());
+    crate::parser::register_extra_inline_option_keys(
+        crate::plugins::rhai_plugin::load_all_inline_option_keys(),
+    );
 
     for path in &args.files {
         if path.is_dir() {
@@ -197,6 +219,7 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
             let report = CheckReport {
                 diagnostics,
                 summary,
+                structure: Vec::new(),
             };
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
@@ -216,31 +239,34 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
         let mut file_has_error = false;
         match parser::parse_gctf(file) {
             Ok(doc) => {
-                // Check for deprecated HEADERS using AST section types
-                for section in &doc.sections {
-                    if doc.section_uses_deprecated_headers_alias(section) {
-                        diagnostics.push(
-                            Diagnostic::warning(
-                                &file_str,
+                // Deprecated spellings (HEADERS alias, kebab OPTIONS keys,
+                // kebab attributes) all come from the one shared token-level
+                // `detect_deprecations` (§7.1) — the same source the lenient
+                // commands use — instead of check's own scans + the validator's
+                // per-form warning blocks (removed). `metadata.source` carries
+                // the raw file content the parser already read.
+                if let Some(source) = doc.metadata.source.as_deref() {
+                    for dep in parser::detect_deprecations(&parser::tokenize_gctf(source)) {
+                        let line = dep.range.start.line + 1;
+                        let (code, hint) = if dep.message.contains("HEADERS") {
+                            (
                                 "DEPRECATED_SECTION",
-                                "HEADERS section is deprecated, use REQUEST_HEADERS instead",
-                                section.start_line + 1,
+                                Some("Replace --- HEADERS --- with --- REQUEST_HEADERS ---"),
                             )
-                            .with_hint("Replace --- HEADERS --- with --- REQUEST_HEADERS ---"),
-                        );
+                        } else {
+                            ("DEPRECATED_KEY_SPELLING", None)
+                        };
+                        let mut d = Diagnostic::warning(&file_str, code, &dep.message, line);
+                        if let Some(h) = hint {
+                            d = d.with_hint(h);
+                        }
+                        diagnostics.push(d);
                     }
                 }
 
                 for (line, msg, hint) in check_preamble_section_order(&doc) {
                     diagnostics.push(
                         Diagnostic::warning(&file_str, "SECTION_ORDER", &msg, line)
-                            .with_hint(&hint),
-                    );
-                }
-
-                for (line, msg, hint) in check_bench_key_order(&doc) {
-                    diagnostics.push(
-                        Diagnostic::warning(&file_str, "BENCH_KEY_ORDER", &msg, line)
                             .with_hint(&hint),
                     );
                 }
@@ -284,7 +310,8 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
                     file_has_error = true;
                 }
 
-                let unknown_plugins = semantics::collect_unknown_plugin_calls(&doc);
+                let unknown_plugins =
+                    semantics::collect_unknown_plugin_calls_with_extra(&doc, &rhai_plugin_names);
                 for unknown in unknown_plugins {
                     diagnostics.push(
                         Diagnostic::error(
@@ -296,6 +323,140 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
                         .with_hint(&format!("Assertion: {}", unknown.expression)),
                     );
                     file_has_error = true;
+                }
+
+                let deprecated_plugins = semantics::collect_deprecated_plugin_calls(&doc);
+                for dep in deprecated_plugins {
+                    diagnostics.push(
+                        Diagnostic::warning(&file_str, &dep.rule_id, &dep.message, dep.line)
+                            .with_hint(&format!(
+                                "`fmt --write` auto-fixes this to `{}`",
+                                dep.replacement
+                            )),
+                    );
+                }
+
+                for constant in semantics::collect_constant_assertions(&doc) {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            &file_str,
+                            &constant.rule_id,
+                            &constant.message,
+                            constant.line,
+                        )
+                        .with_hint(&format!(
+                            "Replace with a real check against the response, e.g. `.field {} \"{}\"`",
+                            if constant.always { "==" } else { "!=" },
+                            "expected_value"
+                        )),
+                    );
+                }
+
+                for dup in semantics::collect_duplicate_assertions(&doc) {
+                    diagnostics.push(
+                        Diagnostic::warning(&file_str, &dup.rule_id, &dup.message, dup.line)
+                            .with_hint("Remove the duplicate or change it to check something else"),
+                    );
+                }
+
+                for redundant in semantics::collect_redundant_response_assertions(&doc) {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            &file_str,
+                            &redundant.rule_id,
+                            &redundant.message,
+                            redundant.line,
+                        )
+                        .with_hint("Remove this ASSERTS line, or move the field out of RESPONSE if you want ASSERTS to be its only check"),
+                    );
+                }
+
+                // Same detection the LSP already surfaces
+                // (`crate::lsp::handlers::collect_unused_variables`) — `check`
+                // never called it, so a dead EXTRACT variable was only ever
+                // visible in the editor, not in CI/terminal `check` output.
+                for unused in crate::lsp::handlers::collect_unused_variables(&doc) {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            &file_str,
+                            "UNUSED_VARIABLE",
+                            &format!(
+                                "Variable '{}' is extracted but never used in subsequent documents",
+                                unused.name
+                            ),
+                            unused.line + 1,
+                        )
+                        .with_hint(
+                            "Remove the unused EXTRACT entry, or reference it via {{var_name}}",
+                        ),
+                    );
+                }
+
+                for (chain_idx, chain_doc) in doc.iter_chain().enumerate() {
+                    structure.push(DocumentStructure {
+                        file: file_str.clone(),
+                        document_index: chain_idx + 1,
+                        sections: chain_doc
+                            .sections
+                            .iter()
+                            .map(|s| s.section_type.as_str().to_string())
+                            .collect(),
+                    });
+
+                    for section in &chain_doc.sections {
+                        if section.section_type == parser::ast::SectionType::Asserts
+                            && let parser::ast::SectionContent::Assertions(assertions) =
+                                &section.content
+                            && assertions.is_empty()
+                        {
+                            diagnostics.push(
+                                Diagnostic::warning(
+                                    &file_str,
+                                    "EMPTY_ASSERTS",
+                                    "ASSERTS section has no assertions",
+                                    section.start_line + 1,
+                                )
+                                .with_hint(
+                                    "Add assertion expressions or remove the empty ASSERTS section",
+                                ),
+                            );
+                        }
+                    }
+
+                    if let Some(section) =
+                        chain_doc.first_section(parser::ast::SectionType::Dataset)
+                        && let parser::ast::SectionContent::Rows(rows) = &section.content
+                        && rows.len() > 50
+                    {
+                        diagnostics.push(
+                            Diagnostic::info(
+                                &file_str,
+                                "LARGE_DATASET",
+                                &format!(
+                                    "DATASET has {} rows — inline data works best for a handful of rows",
+                                    rows.len()
+                                ),
+                                section.start_line + 1,
+                            )
+                            .with_hint(
+                                "Move large datasets to an external CSV/TSV/NDJSON file and use `run --data <file>` instead",
+                            ),
+                        );
+                    }
+
+                    total_docs_in_suite += 1;
+                    if chain_doc
+                        .first_section(parser::ast::SectionType::Error)
+                        .is_some()
+                    {
+                        docs_with_error_section += 1;
+                    }
+                    if chain_doc
+                        .first_section(parser::ast::SectionType::Asserts)
+                        .is_some()
+                    {
+                        docs_with_asserts_section += 1;
+                    }
                 }
 
                 // Use same optimizer pipeline as fmt — shared logic
@@ -313,7 +474,6 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
                     );
                 }
 
-                // Validate BENCH section config if --bench flag is set
                 if args.bench
                     && !file_has_error
                     && let Err(e) = crate::commands::bench::validate_bench_config(&doc)
@@ -328,7 +488,11 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
                 }
 
                 if !args.is_json() && !file_has_error {
-                    println!("{} ... OK", file.display());
+                    println!(
+                        "{} {} ... OK",
+                        crate::report::style::pass_icon(),
+                        file.display()
+                    );
                 }
             }
             Err(e) => {
@@ -347,9 +511,32 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
         }
     }
 
+    if total_docs_in_suite > 0 && docs_with_error_section == 0 {
+        diagnostics.push(Diagnostic::info(
+            "<suite>",
+            "NO_ERROR_CASE_COVERAGE",
+            &format!(
+                "No test in this suite exercises an ERROR case (0/{total_docs_in_suite} documents have an ERROR section)"
+            ),
+            1,
+        ).with_hint("Consider adding at least one test asserting a gRPC error status for the covered services"));
+    }
+
+    if total_docs_in_suite > 0 && docs_with_asserts_section == 0 {
+        diagnostics.push(Diagnostic::info(
+            "<suite>",
+            "NO_ASSERTS_COVERAGE",
+            &format!(
+                "No test in this suite has an ASSERTS section (0/{total_docs_in_suite} documents) — every test relies on exact RESPONSE/ERROR body matching"
+            ),
+            1,
+        ).with_hint("Exact-match RESPONSE/ERROR is a real check, but ASSERTS lets you check specific fields without pinning the whole payload"));
+    }
+
     if !args.is_json() {
         sort_diagnostics(&mut diagnostics);
         print_text_diagnostics(&diagnostics);
+        print_check_summary(&diagnostics, files.len(), files_with_errors);
     }
 
     if args.is_json() {
@@ -358,6 +545,7 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
         let report = CheckReport {
             diagnostics,
             summary,
+            structure,
         };
         println!("{}", serde_json::to_string_pretty(&report)?);
     }
@@ -368,11 +556,56 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+fn print_check_summary(diagnostics: &[Diagnostic], total_files: usize, files_with_errors: usize) {
+    use crate::report::style::{
+        dim_style, fail_icon, fail_style, pass_icon, pass_style, warn_style,
+    };
+    let errors = diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, DiagnosticSeverity::Error))
+        .count();
+    let warnings = diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, DiagnosticSeverity::Warning))
+        .count();
+
+    println!();
+    if files_with_errors == 0 {
+        println!(
+            "{} {} {}",
+            pass_icon(),
+            pass_style().apply_to("PASSED"),
+            dim_style().apply_to(format!("· {total_files} files checked"))
+        );
+    } else {
+        let mut parts = vec![
+            fail_style()
+                .apply_to(format!("{errors} errors"))
+                .to_string(),
+        ];
+        if warnings > 0 {
+            parts.push(
+                warn_style()
+                    .apply_to(format!("{warnings} warnings"))
+                    .to_string(),
+            );
+        }
+        println!(
+            "{} {} {}",
+            fail_icon(),
+            fail_style().apply_to("FAILED"),
+            dim_style().apply_to(format!(
+                "· {} · {files_with_errors}/{total_files} files",
+                parts.join(", ")
+            ))
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::ast::{GctfDocument, Section, SectionContent, SectionType};
-    use std::collections::HashMap;
+    use crate::parser::ast::{GctfDocument, Section, SectionContent, SectionSpan, SectionType};
 
     fn doc_with_sections(sections: Vec<Section>) -> GctfDocument {
         GctfDocument {
@@ -384,7 +617,7 @@ mod tests {
     }
 
     fn section(ty: SectionType, kv: &[(&str, &str)]) -> Section {
-        let mut content = HashMap::new();
+        let mut content = crate::parser::OrderedStringMap::new();
         for (k, v) in kv {
             content.insert(k.to_string(), v.to_string());
         }
@@ -396,6 +629,7 @@ mod tests {
             start_line: 0,
             end_line: 0,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         }
     }
 
@@ -428,7 +662,8 @@ mod tests {
         ]);
         let issues = check_preamble_section_order(&doc);
         assert_eq!(issues.len(), 1);
-        assert!(issues[0].1.contains("OPTIONS should come before BENCH"));
+        // BENCH has the earlier canonical rank — it's what should move, not OPTIONS.
+        assert!(issues[0].1.contains("BENCH should come before OPTIONS"));
     }
 
     #[test]
@@ -439,7 +674,7 @@ mod tests {
         ]);
         let issues = check_preamble_section_order(&doc);
         assert_eq!(issues.len(), 1);
-        assert!(issues[0].1.contains("ADDRESS should come before BENCH"));
+        assert!(issues[0].1.contains("BENCH should come before ADDRESS"));
     }
 
     #[test]
@@ -473,36 +708,19 @@ mod tests {
         assert!(issues.is_empty());
     }
 
+    // `fmt --write` really does reorder the preamble (format_gctf_chain sorts
+    // blocks by preamble_rank), so this hint must keep promising it.
     #[test]
-    fn test_check_bench_key_order_non_bench_section_ignored() {
+    fn test_section_order_hint_promises_fmt_autofix() {
         let doc = doc_with_sections(vec![
-            kv_section(SectionType::Options, &[("timeout", "10")]),
-            kv_section(SectionType::Bench, &[("mode", "fixed")]),
+            kv_section(SectionType::Address, &[]),
+            kv_section(SectionType::Bench, &[]),
         ]);
-        let issues = check_bench_key_order(&doc);
-        assert!(issues.is_empty());
-    }
-
-    // Bug 5: the BENCH section is stored as a HashMap, so iterating it directly
-    // yields nondeterministic key order and produces flaky warnings. The check
-    // must sort keys so its output is stable across runs.
-    #[test]
-    fn test_check_bench_key_order_deterministic() {
-        let doc = doc_with_sections(vec![kv_section(
-            SectionType::Bench,
-            &[
-                ("requests", "100"),
-                ("concurrency", "10"),
-                ("mode", "fixed"),
-                ("duration", "30s"),
-                ("profile", "load"),
-            ],
-        )]);
-        let first = check_bench_key_order(&doc);
-        // Re-run many times; HashMap seed varies per process but the sorted
-        // iteration inside the check must yield identical results every call.
-        for _ in 0..50 {
-            assert_eq!(check_bench_key_order(&doc), first);
-        }
+        let issues = check_preamble_section_order(&doc);
+        let hint = &issues[0].2;
+        assert!(
+            hint.contains("fmt --write"),
+            "fmt now reorders preamble sections for real: {hint}"
+        );
     }
 }

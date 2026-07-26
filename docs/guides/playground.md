@@ -27,6 +27,8 @@ Creates `.grpctestify/` in your project:
 └── history/               # call log (NDJSON)
 ```
 
+You add your own per-environment files next to these — `.env.staging`, `.env.prod`, etc. — and select the active one in `settings.json`.
+
 ## What it solves
 
 - **grpcurl one-liners you lose** → Saved `.gctf` files in git

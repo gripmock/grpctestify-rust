@@ -38,15 +38,10 @@ grpctestify inspect test.gctf --format json
 grpctestify explain test.gctf
 ```
 
-Runtime precedence quick map:
+If behavior differs between `run` and `bench`, check the precedence model — they resolve settings in opposite directions:
 
 - `run`: section attributes > `OPTIONS` > CLI runtime baseline/defaults
 - `bench`: CLI bench flags > `BENCH` section > bench defaults
-
-If behavior differs between `run` and `bench`, verify you are reading the correct precedence model:
-
-- `run`: `section attributes > OPTIONS > CLI runtime baseline/defaults`
-- `bench`: `CLI bench flags > BENCH section > bench defaults`
 
 ## Test file problems
 

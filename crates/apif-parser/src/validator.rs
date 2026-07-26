@@ -241,15 +241,11 @@ fn validate_required_sections(document: &GctfDocument, errors: &mut Vec<Validati
         });
     }
 
-    // ADDRESS or environment variable is required
-    // The address might also be provided via CLI args or Config file, which the validator
-    // doesn't have access to here. We should probably relax this check or make it a warning.
-    // Ideally validation happens with full context, but for now let's check env var.
-    // If neither section nor env var is present, we warn instead of error,
-    // because it might be supplied at runtime.
+    // Warning, not error: the validator only sees the ADDRESS section and
+    // $GRPCTESTIFY_ADDRESS — a missing address here may still be supplied via
+    // --address/config at runtime, which the validator has no access to.
     let env_addr = std::env::var("GRPCTESTIFY_ADDRESS").ok();
     if document.get_address(env_addr.as_deref()).is_none() {
-        // Downgrade to warning because address can come from CLI/Config
         errors.push(ValidationError {
             message: format!(
                 "ADDRESS section missing (ensure {} is set or passed via --address)",
@@ -284,6 +280,21 @@ fn validate_conflicts(document: &GctfDocument, errors: &mut Vec<ValidationError>
             severity: ErrorSeverity::Error,
         });
     }
+}
+
+/// Line of the `key`'s entry in `section.raw_content`, re-tokenized with the
+/// same `tokenize_kv_line` the real KV parser uses (not a hand-rolled string
+/// match) so this agrees with how the key was actually recognized — a
+/// quoted value containing the key text as a substring, for example, won't
+/// false-match. `KeyValues`/`Extract` are a `HashMap` today (no per-entry
+/// span), so this is a best-effort re-derivation, not a stored position.
+/// `start_line` is the `--- SECTION ---` header line; `raw_content` begins
+/// one line after it.
+fn key_line(raw_content: &str, start_line: usize, key: &str) -> usize {
+    raw_content
+        .lines()
+        .position(|line| gctf_tokenizer::tokenize_kv_line(line).is_some_and(|(k, _)| k == key))
+        .map_or(start_line, |offset| start_line + 1 + offset)
 }
 
 fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) {
@@ -386,7 +397,8 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                     }
                 }
                 SectionContent::JsonLines(values) => {
-                    if section_type != SectionType::Response {
+                    if section_type != SectionType::Response && section_type != SectionType::Request
+                    {
                         errors.push(ValidationError {
                             message: format!(
                                 "{:?} section does not support newline-delimited JSON messages",
@@ -397,7 +409,10 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                         });
                     } else if values.is_empty() {
                         errors.push(ValidationError {
-                            message: "RESPONSE section contains no JSON messages".to_string(),
+                            message: format!(
+                                "{:?} section contains no JSON messages",
+                                section_type
+                            ),
                             line: Some(section.start_line),
                             severity: ErrorSeverity::Error,
                         });
@@ -465,16 +480,8 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                                         "true" | "1" | "yes" | "on"
                                     ));
                                 }
-
-                                if key == "no-retry" {
-                                    errors.push(ValidationError {
-                                        message:
-                                            "OPTIONS.no-retry is deprecated; prefer OPTIONS.no_retry"
-                                                .to_string(),
-                                        line: Some(section.start_line),
-                                        severity: ErrorSeverity::Warning,
-                                    });
-                                }
+                                // Kebab alias accepted here; the deprecation
+                                // warning comes from `detect_deprecations` (§7.1).
                             }
                             "retry" => {
                                 if value.trim().parse::<u32>().is_err() {
@@ -501,16 +508,8 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                                         severity: ErrorSeverity::Error,
                                     });
                                 }
-
-                                if key == "retry-delay" {
-                                    errors.push(ValidationError {
-                                        message:
-                                            "OPTIONS.retry-delay is deprecated; prefer OPTIONS.retry_delay"
-                                                .to_string(),
-                                        line: Some(section.start_line),
-                                        severity: ErrorSeverity::Warning,
-                                    });
-                                }
+                                // Kebab alias accepted here; the deprecation
+                                // warning comes from `detect_deprecations` (§7.1).
                             }
                             "compression" => {
                                 let normalized = value.trim().to_ascii_lowercase();
@@ -531,7 +530,10 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                                         "Unknown OPTIONS key '{}'. Supported keys: timeout, retry, retry_delay, no_retry, compression",
                                         key
                                     ),
-                                    line: Some(section.start_line),
+                                    // Point at the actual key line, not the
+                                    // section header — consistent with the
+                                    // BENCH unknown-key error's `key_line`.
+                                    line: Some(key_line(&section.raw_content, section.start_line, key)),
                                     severity: ErrorSeverity::Warning,
                                 });
                             }
@@ -548,7 +550,7 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                         });
                     }
                 } else if section_type == SectionType::Bench {
-                    validate_bench_key_values(kv, section.start_line, errors);
+                    validate_bench_key_values(kv, section.start_line, &section.raw_content, errors);
                 }
             }
         }
@@ -593,6 +595,9 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                         });
                     }
                 }
+                // Kebab aliases still accepted + value-validated here; the
+                // deprecation *warning* is emitted once, uniformly, by the
+                // shared `deprecations::detect_deprecations` pass (§7.1).
                 "retry_delay" | "retry-delay" => {
                     if attr.parse_f64().is_none_or(|v| v < 0.0) {
                         errors.push(ValidationError {
@@ -602,16 +607,6 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                             ),
                             line: Some(section.start_line),
                             severity: ErrorSeverity::Error,
-                        });
-                    }
-
-                    if attr.name == "retry-delay" {
-                        errors.push(ValidationError {
-                            message:
-                                "Attribute #[retry-delay] is deprecated; prefer #[retry_delay]"
-                                    .to_string(),
-                            line: Some(section.start_line),
-                            severity: ErrorSeverity::Warning,
                         });
                     }
                 }
@@ -626,13 +621,29 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                             severity: ErrorSeverity::Error,
                         });
                     }
-
-                    if attr.name == "no-retry" {
+                }
+                "repeat" => {
+                    if attr.parse_u32().is_none_or(|v| v == 0) {
                         errors.push(ValidationError {
-                            message: "Attribute #[no-retry] is deprecated; prefer #[no_retry]"
-                                .to_string(),
+                            message: format!(
+                                "Attribute #[repeat] must be a positive integer, got '{}'",
+                                attr.value
+                            ),
                             line: Some(section.start_line),
-                            severity: ErrorSeverity::Warning,
+                            severity: ErrorSeverity::Error,
+                        });
+                    }
+                }
+                "compression" => {
+                    let normalized = attr.value.trim().to_ascii_lowercase();
+                    if !matches!(normalized.as_str(), "none" | "gzip") {
+                        errors.push(ValidationError {
+                            message: format!(
+                                "Attribute #[compression] must be one of: none, gzip (got '{}')",
+                                attr.value
+                            ),
+                            line: Some(section.start_line),
+                            severity: ErrorSeverity::Error,
                         });
                     }
                 }
@@ -640,7 +651,7 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                 _ => {
                     errors.push(ValidationError {
                         message: format!(
-                            "Unknown attribute '#[{}]'. Supported attributes: skip, timeout, retry, retry_delay, no_retry, name, tag, owner, summary",
+                            "Unknown attribute '#[{}]'. Supported attributes: skip, timeout, retry, retry_delay, no_retry, repeat, compression, name, tag, owner, summary",
                             attr.name
                         ),
                         line: Some(section.start_line),
@@ -687,8 +698,9 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
 }
 
 fn validate_bench_key_values(
-    kv: &std::collections::HashMap<String, String>,
+    kv: &crate::ast::OrderedStringMap,
     start_line: usize,
+    raw_content: &str,
     errors: &mut Vec<ValidationError>,
 ) {
     let supported_keys_message = bench_supported_keys_message();
@@ -722,7 +734,10 @@ fn validate_bench_key_values(
                 }
             }
             k if BENCH_NUMERIC_KEYS.contains(&k) => {
-                if value.trim().parse::<u64>().is_err() {
+                // Digit separators (`1_000`) are accepted, matching the runtime
+                // parse (`parse_bench_num` in `bench.rs`) and the separator
+                // support JSON/YAML/ASSERTS numbers already have (§4.3).
+                if value.trim().replace('_', "").parse::<u64>().is_err() {
                     errors.push(ValidationError {
                         message: format!(
                             "BENCH.{} must be a non-negative integer, got '{}'",
@@ -835,7 +850,7 @@ fn validate_bench_key_values(
                             "Unknown BENCH key '{}'. Supported keys: {}{}",
                             key, supported_keys_message, hint
                         ),
-                        line: Some(start_line),
+                        line: Some(key_line(raw_content, start_line, key)),
                         severity: ErrorSeverity::Warning,
                     });
                 }
@@ -1314,6 +1329,27 @@ fn validate_bench_sources_exist(document: &GctfDocument, errors: &mut Vec<Valida
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_key_line_finds_the_actual_kv_line_not_the_section_header() {
+        let raw = "timeout: 30\nretry-delay: 0.3\n";
+        assert_eq!(key_line(raw, 5, "retry-delay"), 5 + 1 + 1);
+    }
+
+    #[test]
+    fn test_key_line_falls_back_to_start_line_when_key_absent() {
+        let raw = "timeout: 30\n";
+        assert_eq!(key_line(raw, 5, "retry-delay"), 5);
+    }
+
+    #[test]
+    fn test_key_line_does_not_false_match_key_text_inside_a_value() {
+        // The literal substring "retry-delay" appears only in a quoted
+        // value here, never as an actual key — tokenize_kv_line must not
+        // treat that as a match the way a bare string search would.
+        let raw = "name: \"retry-delay tuning\"\n";
+        assert_eq!(key_line(raw, 5, "retry-delay"), 5);
+    }
+
     fn create_test_document() -> GctfDocument {
         let mut doc = GctfDocument::new("test.gctf".to_string());
 
@@ -1326,6 +1362,7 @@ mod tests {
                 start_line: 1,
                 end_line: 1,
                 attributes: Vec::new(),
+                span: SectionSpan::default(),
             },
             Section {
                 section_type: SectionType::Endpoint,
@@ -1335,6 +1372,7 @@ mod tests {
                 start_line: 3,
                 end_line: 3,
                 attributes: Vec::new(),
+                span: SectionSpan::default(),
             },
         ];
 
@@ -1422,6 +1460,7 @@ mod tests {
             start_line: 5,
             end_line: 6,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let result = validate_document(&doc);
@@ -1440,10 +1479,46 @@ mod tests {
             start_line: 5,
             end_line: 6,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let result = validate_document(&doc);
         // Should pass with ADDRESS, ENDPOINT, and ERROR
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_document_with_request_jsonlines() {
+        // Symmetric with RESPONSE: a REQUEST section carrying several
+        // self-delimiting JSON values (client/bidi streaming) must validate,
+        // not hit the "does not support newline-delimited JSON messages"
+        // rejection that applies to every other section type.
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Request,
+            content: SectionContent::JsonLines(vec![
+                serde_json::json!({"a": 1}),
+                serde_json::json!({"a": 2}),
+            ]),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"a\": 1}\n{\"a\": 2}".to_string(),
+            start_line: 5,
+            end_line: 6,
+            attributes: Vec::new(),
+            span: SectionSpan::default(),
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 7,
+            end_line: 8,
+            attributes: Vec::new(),
+            span: SectionSpan::default(),
+        });
+
+        let result = validate_document(&doc);
         assert!(result.is_ok());
     }
 
@@ -1461,6 +1536,7 @@ mod tests {
             start_line: 5,
             end_line: 6,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -1484,6 +1560,7 @@ mod tests {
             start_line: 5,
             end_line: 6,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -1507,6 +1584,7 @@ mod tests {
             start_line: 5,
             end_line: 5,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Asserts,
@@ -1516,6 +1594,7 @@ mod tests {
             start_line: 6,
             end_line: 6,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -1540,6 +1619,7 @@ mod tests {
             start_line: 5,
             end_line: 6,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Asserts,
@@ -1549,6 +1629,7 @@ mod tests {
             start_line: 7,
             end_line: 7,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -1569,6 +1650,7 @@ mod tests {
             start_line: 5,
             end_line: 5,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Asserts,
@@ -1578,6 +1660,7 @@ mod tests {
             start_line: 6,
             end_line: 6,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -1601,6 +1684,7 @@ mod tests {
             start_line: 5,
             end_line: 5,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -1610,6 +1694,7 @@ mod tests {
             start_line: 6,
             end_line: 7,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Asserts,
@@ -1619,6 +1704,7 @@ mod tests {
             start_line: 8,
             end_line: 8,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -1639,6 +1725,7 @@ mod tests {
             start_line: 5,
             end_line: 5,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let result = validate_document(&doc);
@@ -1667,6 +1754,7 @@ mod tests {
             start_line: 5,
             end_line: 6,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Error,
@@ -1676,6 +1764,7 @@ mod tests {
             start_line: 7,
             end_line: 8,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -1696,6 +1785,7 @@ mod tests {
             start_line: 5,
             end_line: 5,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -1705,6 +1795,7 @@ mod tests {
             start_line: 6,
             end_line: 7,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let result = validate_document(&doc);
@@ -1723,6 +1814,7 @@ mod tests {
             start_line: 5,
             end_line: 6,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -1732,6 +1824,7 @@ mod tests {
             start_line: 7,
             end_line: 8,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let result = validate_document(&doc);
@@ -1750,6 +1843,7 @@ mod tests {
             start_line: 5,
             end_line: 6,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -1759,6 +1853,7 @@ mod tests {
             start_line: 7,
             end_line: 8,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -1781,6 +1876,7 @@ mod tests {
             start_line: 5,
             end_line: 8,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -1805,6 +1901,7 @@ mod tests {
             start_line: 5,
             end_line: 8,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let errors = validate_document_diagnostics(&doc);
@@ -1831,6 +1928,7 @@ mod tests {
             start_line: 1,
             end_line: 1,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -1840,6 +1938,7 @@ mod tests {
             start_line: 2,
             end_line: 3,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let result = validate_document(&doc);
@@ -1855,7 +1954,7 @@ mod tests {
     #[test]
     fn test_validate_options_unknown_key_warning() {
         let mut doc = create_test_document();
-        let mut options = std::collections::HashMap::new();
+        let mut options = crate::ast::OrderedStringMap::new();
         options.insert("unknown".to_string(), "value".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Options,
@@ -1865,6 +1964,7 @@ mod tests {
             start_line: 5,
             end_line: 6,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -1874,6 +1974,7 @@ mod tests {
             start_line: 7,
             end_line: 8,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let diagnostics = validate_document_diagnostics(&doc);
@@ -1883,9 +1984,51 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_options_unknown_key_points_at_the_key_line_not_the_header() {
+        // The unknown-OPTIONS-key warning must land on the offending key's own
+        // line (via `key_line`), consistent with the BENCH unknown-key error —
+        // not on the section header line.
+        let mut doc = create_test_document();
+        let mut options = crate::ast::OrderedStringMap::new();
+        options.insert("timeout".to_string(), "30".to_string());
+        options.insert("dry_run".to_string(), "true".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Options,
+            content: SectionContent::KeyValues(options),
+            inline_options: InlineOptions::default(),
+            // Header at line 5 → content lines 6 (timeout) and 7 (dry_run).
+            raw_content: "timeout: 30\ndry_run: true".to_string(),
+            start_line: 5,
+            end_line: 8,
+            attributes: Vec::new(),
+            span: SectionSpan::default(),
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 9,
+            end_line: 10,
+            attributes: Vec::new(),
+            span: SectionSpan::default(),
+        });
+
+        let diag = validate_document_diagnostics(&doc)
+            .into_iter()
+            .find(|d| d.message.contains("Unknown OPTIONS key 'dry_run'"))
+            .expect("unknown-key warning");
+        assert_eq!(
+            diag.line,
+            Some(7),
+            "must point at the dry_run line, not the header (5)"
+        );
+    }
+
+    #[test]
     fn test_validate_options_dry_run_is_unknown_key_warning() {
         let mut doc = create_test_document();
-        let mut options = std::collections::HashMap::new();
+        let mut options = crate::ast::OrderedStringMap::new();
         options.insert("dry_run".to_string(), "true".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Options,
@@ -1895,6 +2038,7 @@ mod tests {
             start_line: 5,
             end_line: 6,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -1904,6 +2048,7 @@ mod tests {
             start_line: 7,
             end_line: 8,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let diagnostics = validate_document_diagnostics(&doc);
@@ -1917,7 +2062,7 @@ mod tests {
     #[test]
     fn test_validate_options_timeout_invalid_error() {
         let mut doc = create_test_document();
-        let mut options = std::collections::HashMap::new();
+        let mut options = crate::ast::OrderedStringMap::new();
         options.insert("timeout".to_string(), "0".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Options,
@@ -1927,6 +2072,7 @@ mod tests {
             start_line: 5,
             end_line: 6,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -1936,6 +2082,7 @@ mod tests {
             start_line: 7,
             end_line: 8,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let diagnostics = validate_document_diagnostics(&doc);
@@ -1949,7 +2096,7 @@ mod tests {
     #[test]
     fn test_validate_options_snake_case_keys_are_supported() {
         let mut doc = create_test_document();
-        let mut options = std::collections::HashMap::new();
+        let mut options = crate::ast::OrderedStringMap::new();
         options.insert("timeout".to_string(), "5".to_string());
         options.insert("retry".to_string(), "2".to_string());
         options.insert("retry_delay".to_string(), "0.5".to_string());
@@ -1963,6 +2110,7 @@ mod tests {
             start_line: 5,
             end_line: 8,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -1972,6 +2120,7 @@ mod tests {
             start_line: 9,
             end_line: 10,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let diagnostics = validate_document_diagnostics(&doc);
@@ -1990,7 +2139,7 @@ mod tests {
     #[test]
     fn test_validate_options_compression_invalid_error() {
         let mut doc = create_test_document();
-        let mut options = std::collections::HashMap::new();
+        let mut options = crate::ast::OrderedStringMap::new();
         options.insert("compression".to_string(), "brotli".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Options,
@@ -2000,6 +2149,7 @@ mod tests {
             start_line: 5,
             end_line: 6,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -2009,6 +2159,7 @@ mod tests {
             start_line: 7,
             end_line: 8,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let diagnostics = validate_document_diagnostics(&doc);
@@ -2020,9 +2171,13 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_options_kebab_case_keys_deprecated_warning() {
+    fn test_validate_options_kebab_case_keys_accepted_without_error() {
+        // The validator still ACCEPTS + value-validates the kebab aliases (no
+        // error); the *deprecation warning* moved to the shared
+        // `deprecations::detect_deprecations` (§7.1), so the validator itself
+        // no longer emits it (covered by `deprecations.rs` tests).
         let mut doc = create_test_document();
-        let mut options = std::collections::HashMap::new();
+        let mut options = crate::ast::OrderedStringMap::new();
         options.insert("retry-delay".to_string(), "0.3".to_string());
         options.insert("no-retry".to_string(), "false".to_string());
         doc.sections.push(Section {
@@ -2033,6 +2188,7 @@ mod tests {
             start_line: 5,
             end_line: 7,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -2042,23 +2198,29 @@ mod tests {
             start_line: 8,
             end_line: 9,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let diagnostics = validate_document_diagnostics(&doc);
-        assert!(diagnostics.iter().any(|d| {
-            d.severity == ErrorSeverity::Warning
-                && d.message.contains("OPTIONS.retry-delay is deprecated")
-        }));
-        assert!(diagnostics.iter().any(|d| {
-            d.severity == ErrorSeverity::Warning
-                && d.message.contains("OPTIONS.no-retry is deprecated")
-        }));
+        // Valid kebab values → no error, and no deprecation warning from the
+        // validator (that's the detector's job now).
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.severity == ErrorSeverity::Error)
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("is deprecated")),
+            "validator must no longer emit deprecation warnings: {diagnostics:?}"
+        );
     }
 
     #[test]
     fn test_validate_options_no_retry_retry_conflict_warning() {
         let mut doc = create_test_document();
-        let mut options = std::collections::HashMap::new();
+        let mut options = crate::ast::OrderedStringMap::new();
         options.insert("retry".to_string(), "3".to_string());
         options.insert("no_retry".to_string(), "true".to_string());
         doc.sections.push(Section {
@@ -2069,6 +2231,7 @@ mod tests {
             start_line: 5,
             end_line: 7,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -2078,6 +2241,7 @@ mod tests {
             start_line: 8,
             end_line: 9,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let diagnostics = validate_document_diagnostics(&doc);
@@ -2089,7 +2253,11 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_attribute_retry_delay_kebab_case_deprecated_warning() {
+    fn test_validate_kebab_case_attributes_accepted_without_error() {
+        // The validator still accepts + value-validates `#[retry-delay]` /
+        // `#[no-retry]` (no error); the deprecation *warning* moved to the
+        // shared `deprecations::detect_deprecations` (§7.1), covered by
+        // `deprecations.rs` tests — the validator no longer emits it.
         let mut doc = create_test_document();
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -2098,7 +2266,11 @@ mod tests {
             raw_content: "{\"id\":1}".to_string(),
             start_line: 5,
             end_line: 6,
-            attributes: vec![GctfAttribute::new("retry-delay", "0.2")],
+            attributes: vec![
+                GctfAttribute::new("retry-delay", "0.2"),
+                GctfAttribute::flag("no-retry"),
+            ],
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -2108,19 +2280,132 @@ mod tests {
             start_line: 7,
             end_line: 8,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
+        });
+
+        let diagnostics = validate_document_diagnostics(&doc);
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.severity == ErrorSeverity::Error)
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("is deprecated")),
+            "validator must no longer emit deprecation warnings: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_attribute_repeat_and_compression_are_recognized() {
+        // Real, tested runtime attributes (crates/apif-execution/src/helpers.rs,
+        // src/execution/runner.rs::get_repeat) that the validator previously
+        // didn't know about, so they were falsely flagged "Unknown attribute"
+        // despite actually working.
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Json(serde_json::json!({"id": 1})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"id\":1}".to_string(),
+            start_line: 5,
+            end_line: 6,
+            attributes: vec![
+                GctfAttribute::new("repeat", "3"),
+                GctfAttribute::new("compression", "gzip"),
+            ],
+            span: SectionSpan::default(),
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 7,
+            end_line: 8,
+            attributes: Vec::new(),
+            span: SectionSpan::default(),
+        });
+
+        let diagnostics = validate_document_diagnostics(&doc);
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("Unknown attribute")),
+            "{:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn test_validate_attribute_repeat_rejects_zero() {
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Json(serde_json::json!({"id": 1})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"id\":1}".to_string(),
+            start_line: 5,
+            end_line: 6,
+            attributes: vec![GctfAttribute::new("repeat", "0")],
+            span: SectionSpan::default(),
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 7,
+            end_line: 8,
+            attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let diagnostics = validate_document_diagnostics(&doc);
         assert!(diagnostics.iter().any(|d| {
-            d.severity == ErrorSeverity::Warning
-                && d.message.contains("Attribute #[retry-delay] is deprecated")
+            d.severity == ErrorSeverity::Error
+                && d.message
+                    .contains("Attribute #[repeat] must be a positive integer")
+        }));
+    }
+
+    #[test]
+    fn test_validate_attribute_compression_rejects_unknown_codec() {
+        let mut doc = create_test_document();
+        doc.sections.push(Section {
+            section_type: SectionType::Request,
+            content: SectionContent::Json(serde_json::json!({"id": 1})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"id\":1}".to_string(),
+            start_line: 5,
+            end_line: 6,
+            attributes: vec![GctfAttribute::new("compression", "brotli")],
+            span: SectionSpan::default(),
+        });
+        doc.sections.push(Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(serde_json::json!({"result": "ok"})),
+            inline_options: InlineOptions::default(),
+            raw_content: "{\"result\": \"ok\"}".to_string(),
+            start_line: 7,
+            end_line: 8,
+            attributes: Vec::new(),
+            span: SectionSpan::default(),
+        });
+
+        let diagnostics = validate_document_diagnostics(&doc);
+        assert!(diagnostics.iter().any(|d| {
+            d.severity == ErrorSeverity::Error
+                && d.message
+                    .contains("Attribute #[compression] must be one of: none, gzip")
         }));
     }
 
     #[test]
     fn test_validate_bench_dynamic_percentile_key_ok() {
         let mut doc = create_test_document();
-        let mut bench = std::collections::HashMap::new();
+        let mut bench = crate::ast::OrderedStringMap::new();
         bench.insert(
             "thresholds.latency_ms.p(99.9)".to_string(),
             "<300".to_string(),
@@ -2136,6 +2421,7 @@ mod tests {
                 start_line: 0,
                 end_line: 2,
                 attributes: Vec::new(),
+                span: SectionSpan::default(),
             },
         );
 
@@ -2148,7 +2434,7 @@ mod tests {
     #[test]
     fn test_validate_bench_dynamic_percentile_key_invalid_range() {
         let mut doc = create_test_document();
-        let mut bench = std::collections::HashMap::new();
+        let mut bench = crate::ast::OrderedStringMap::new();
         bench.insert("thresholds.p(120)".to_string(), "<300".to_string());
         doc.sections.insert(
             0,
@@ -2160,6 +2446,7 @@ mod tests {
                 start_line: 0,
                 end_line: 2,
                 attributes: Vec::new(),
+                span: SectionSpan::default(),
             },
         );
 
@@ -2174,7 +2461,7 @@ mod tests {
     #[test]
     fn test_validate_bench_threshold_expression_invalid() {
         let mut doc = create_test_document();
-        let mut bench = std::collections::HashMap::new();
+        let mut bench = crate::ast::OrderedStringMap::new();
         bench.insert("thresholds.p(95)".to_string(), "~120".to_string());
         doc.sections.insert(
             0,
@@ -2186,6 +2473,7 @@ mod tests {
                 start_line: 0,
                 end_line: 2,
                 attributes: Vec::new(),
+                span: SectionSpan::default(),
             },
         );
 
@@ -2198,9 +2486,40 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_bench_numeric_keys_accept_digit_separators() {
+        // §4.3: BENCH numeric keys accept `1_000`-style separators, matching
+        // the runtime parse and JSON/YAML/ASSERTS numbers.
+        let mut doc = create_test_document();
+        let mut bench = crate::ast::OrderedStringMap::new();
+        bench.insert("concurrency".to_string(), "1_000".to_string());
+        bench.insert("requests".to_string(), "1_000_000".to_string());
+        doc.sections.insert(
+            0,
+            Section {
+                section_type: SectionType::Bench,
+                content: SectionContent::KeyValues(bench),
+                inline_options: InlineOptions::default(),
+                raw_content: String::new(),
+                start_line: 0,
+                end_line: 2,
+                attributes: Vec::new(),
+                span: SectionSpan::default(),
+            },
+        );
+
+        let diagnostics = validate_document_diagnostics(&doc);
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("must be a non-negative integer")),
+            "digit-separated BENCH numeric keys must validate: {diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn test_validate_bench_load_schedule_and_progress_keys() {
         let mut doc = create_test_document();
-        let mut bench = std::collections::HashMap::new();
+        let mut bench = crate::ast::OrderedStringMap::new();
         bench.insert("load_schedule".to_string(), "step".to_string());
         bench.insert("load_start".to_string(), "10".to_string());
         bench.insert("load_step".to_string(), "5".to_string());
@@ -2218,6 +2537,7 @@ mod tests {
                 start_line: 0,
                 end_line: 2,
                 attributes: Vec::new(),
+                span: SectionSpan::default(),
             },
         );
 
@@ -2231,7 +2551,7 @@ mod tests {
     #[test]
     fn test_validate_bench_hyphenated_keys_are_unknown() {
         let mut doc = create_test_document();
-        let mut bench = std::collections::HashMap::new();
+        let mut bench = crate::ast::OrderedStringMap::new();
         bench.insert("load-schedule".to_string(), "line".to_string());
         bench.insert("load-step-duration".to_string(), "2s".to_string());
         bench.insert("progress-interval".to_string(), "1s".to_string());
@@ -2247,6 +2567,7 @@ mod tests {
                 start_line: 0,
                 end_line: 2,
                 attributes: Vec::new(),
+                span: SectionSpan::default(),
             },
         );
 
@@ -2260,7 +2581,7 @@ mod tests {
     #[test]
     fn test_validate_bench_snake_case_keys_no_deprecation_warning() {
         let mut doc = create_test_document();
-        let mut bench = std::collections::HashMap::new();
+        let mut bench = crate::ast::OrderedStringMap::new();
         bench.insert("load_schedule".to_string(), "line".to_string());
         bench.insert("progress_interval".to_string(), "1s".to_string());
         doc.sections.insert(
@@ -2273,6 +2594,7 @@ mod tests {
                 start_line: 0,
                 end_line: 2,
                 attributes: Vec::new(),
+                span: SectionSpan::default(),
             },
         );
 
@@ -2287,7 +2609,7 @@ mod tests {
     #[test]
     fn test_validate_bench_unknown_key_typo_suggestion() {
         let mut doc = create_test_document();
-        let mut bench = std::collections::HashMap::new();
+        let mut bench = crate::ast::OrderedStringMap::new();
         bench.insert("load_shedule".to_string(), "step".to_string());
         doc.sections.insert(
             0,
@@ -2299,6 +2621,7 @@ mod tests {
                 start_line: 0,
                 end_line: 2,
                 attributes: Vec::new(),
+                span: SectionSpan::default(),
             },
         );
 
@@ -2343,6 +2666,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         let mut errors = Vec::new();
         validate_section_order(&doc, &mut errors);
@@ -2360,6 +2684,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -2369,6 +2694,7 @@ mod tests {
             start_line: 3,
             end_line: 4,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         let mut errors = Vec::new();
         validate_section_order(&doc, &mut errors);
@@ -2386,6 +2712,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Extract,
@@ -2395,6 +2722,7 @@ mod tests {
             start_line: 3,
             end_line: 4,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         let mut errors = Vec::new();
         validate_section_order(&doc, &mut errors);
@@ -2411,6 +2739,7 @@ mod tests {
             start_line: 5,
             end_line: 6,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc
     }

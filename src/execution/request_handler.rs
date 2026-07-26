@@ -1,5 +1,3 @@
-// Request Handler - handles request building and sending
-
 #[cfg(test)]
 use crate::grpc::GrpcClientConfig;
 #[cfg(test)]
@@ -22,7 +20,6 @@ pub struct RequestSendResult {
     pub error_message: Option<String>,
 }
 
-/// Request Handler - builds and sends requests
 pub struct RequestHandler {
     coverage_collector: Option<Arc<CoverageCollector>>,
 }
@@ -235,7 +232,9 @@ impl RequestHandler {
             timeout_seconds: 30,
             tls_config,
             proto_config,
-            metadata: document.get_request_headers(),
+            metadata: document
+                .get_request_headers()
+                .map(|m| m.into_iter().collect()),
             compression: crate::config::compression_from_env(),
             connection_id: 0,
             protocol: document
@@ -262,6 +261,7 @@ impl RequestHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::ast::SectionSpan;
     use serde_json::json;
 
     #[test]
@@ -281,6 +281,7 @@ mod tests {
             start_line: 0,
             end_line: 0,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         };
         let variables = std::collections::HashMap::new();
 
@@ -314,6 +315,7 @@ mod tests {
                 start_line: 0,
                 end_line: 0,
                 attributes: Vec::new(),
+                span: SectionSpan::default(),
             },
             Section {
                 section_type: SectionType::Response,
@@ -323,6 +325,7 @@ mod tests {
                 start_line: 0,
                 end_line: 0,
                 attributes: Vec::new(),
+                span: SectionSpan::default(),
             },
         ];
 
@@ -341,6 +344,7 @@ mod tests {
             start_line: 0,
             end_line: 0,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         };
         let mut variables = std::collections::HashMap::new();
         variables.insert("user_id".to_string(), json!("456"));

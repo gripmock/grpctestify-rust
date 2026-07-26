@@ -12,7 +12,7 @@ use tower_lsp::lsp_types::{
     InlayHint, InlayHintKind, InlayHintLabel, InlayHintTooltip, Position, Range,
 };
 
-fn infer_type_label(expr: &str) -> &'static str {
+fn infer_type_label(expr: &str, manager: &PluginManager) -> &'static str {
     if matches!(expr.trim(), "true" | "false") {
         return "bool";
     }
@@ -26,7 +26,7 @@ fn infer_type_label(expr: &str) -> &'static str {
         };
     }
     if let Some(name) = extract_plugin_call_name(expr.trim())
-        && let Some(plugin) = PluginManager::new().get(&name)
+        && let Some(plugin) = manager.get(&name)
     {
         return plugin.signature().return_type.display_name();
     }
@@ -38,6 +38,10 @@ pub fn build_inlay_hints(content: &str, range: Range) -> Vec<InlayHint> {
     let Ok(head) = parser::parse_gctf_from_str(content, "temp.gctf") else {
         return hints;
     };
+    // Built once per call (not per EXTRACT variable) — it scans the
+    // convention plugin directories and compiles every `.rhai` script found,
+    // too expensive to repeat per hint.
+    let plugin_manager = crate::execution::plugin_dir::build_plugin_manager();
     let total_docs = head.document_count();
     for (doc_idx, d) in head.iter_chain().enumerate() {
         for section in &d.sections {
@@ -107,7 +111,10 @@ pub fn build_inlay_hints(content: &str, range: Range) -> Vec<InlayHint> {
                                 line: line_num,
                                 character: hint_char,
                             },
-                            label: InlayHintLabel::String(format!(": {}", infer_type_label(expr))),
+                            label: InlayHintLabel::String(format!(
+                                ": {}",
+                                infer_type_label(expr, &plugin_manager)
+                            )),
                             kind: Some(InlayHintKind::TYPE),
                             text_edits: None,
                             tooltip: Some(InlayHintTooltip::String(format!(
@@ -122,7 +129,10 @@ pub fn build_inlay_hints(content: &str, range: Range) -> Vec<InlayHint> {
                 }
             }
         }
-        for opt in optimizer::collect_assertion_optimizations(d, optimizer::OptimizeLevel::Advisory)
+        // detached: collect_assertion_optimizations is chain-aware internally too
+        let single = d.detached();
+        for opt in
+            optimizer::collect_assertion_optimizations(&single, optimizer::OptimizeLevel::Advisory)
         {
             let line_num = opt.line.saturating_sub(1) as u32;
             if line_num < range.start.line || line_num > range.end.line {

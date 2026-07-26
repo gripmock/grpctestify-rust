@@ -1,0 +1,34 @@
+=== STDOUT ===
+Running 2 tests
+E.
+
+grpctestify ════════════════════════════════════════════════════════════════════
+   ✗ FAILED  1 failed · 1 passed · <MS>ms
+────────────────────────────────────────────────────────────────────────────────
+📊 Execution Statistics:
+   • Total tests: 2
+   • Passed: 1
+   • Failed: 1
+   • Skipped: 0
+   • Duration: <MS>ms
+   • Average per test: <MS>ms
+   • gRPC: total <MS>ms, avg <MS>ms per call
+   • Overhead: <MS>ms total, avg <MS>ms per test
+   • Mode: Sequential
+   • Success rate: 50% (1/2 executed)
+────────────────────────────────────────────────────────────────────────────────
+❌ Failed Tests:
+   • <TMPDIR>/b_fail.gctf (<MS>ms)
+      Error: Validation failed:
+  - Assertion failed at line 9 (assertion at line 11): Assertion failed: .status == "NOT_SERVING" (Values: String("SERVING") vs String("NOT_SERVING"))
+  -     Expected: == String("NOT_SERVING")
+    Actual:   String("SERVING")
+────────────────────────────────────────────────────────────────────────────────
+🔧 Environment:
+   • gRPC Address: localhost:4770
+   • Sort Mode: path
+   • Dry Run: Disabled (real gRPC calls)
+✨ No warnings detected
+════════════════════════════════════════════════════════════════════════════════
+
+=== STDERR ===

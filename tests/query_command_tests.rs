@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // Query command integration tests
 
 use grpctestify::cli::args::QueryArgs;

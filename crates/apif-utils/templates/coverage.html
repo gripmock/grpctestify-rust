@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Coverage Report</title>
+<style>
+:root{--bg:#f7f8fa;--card:#ffffff;--text:#111827;--muted:#6b7280;--border:#e5e7eb;--accent:#4f46e5;--radius:10px;}
+*{box-sizing:border-box;}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+#theme-toggle{display:none;}
+.page{background:var(--bg);color:var(--text);min-height:100vh;padding:44px 20px;}
+#theme-toggle:checked ~ .page{--bg:#0d1117;--card:#161b22;--text:#e6edf3;--muted:#8b949e;--border:#2a3038;}
+.theme-switch{position:fixed;top:18px;right:20px;cursor:pointer;width:38px;height:21px;background:var(--border);border-radius:999px;display:flex;align-items:center;padding:2px;}
+.theme-switch::after{content:"";width:17px;height:17px;border-radius:50%;background:var(--card);box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .15s;}
+#theme-toggle:checked ~ .page .theme-switch::after{transform:translateX(17px);}
+.container{max-width:860px;margin:0 auto;}
+h1{font-size:19px;font-weight:700;margin:0 0 2px;}
+.subtitle{color:var(--muted);font-size:13px;margin-bottom:24px;}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:18px 22px;margin-bottom:16px;}
+h2{font-size:13px;font-weight:600;margin:0 0 14px;}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:18px;}
+.stat-label{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:3px;}
+.stat-value{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums;}
+.stat-unit{font-size:12px;font-weight:400;color:var(--muted);}
+.stat-sub{font-size:11.5px;color:var(--muted);margin-top:2px;}
+table{border-collapse:collapse;width:100%;font-size:13px;}
+td,th{padding:8px 9px;text-align:left;border-bottom:1px solid var(--border);}
+th{color:var(--muted);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;}
+tr:last-child td{border-bottom:none;}
+.bar-row{margin:8px 0;}
+.bar-row summary,.bar-row-plain{list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;}
+.bar-row summary::-webkit-details-marker{display:none;}
+.bar-row summary::before{content:"›";width:10px;color:var(--muted);transition:transform .15s;flex-shrink:0;}
+.bar-row[open] summary::before{transform:rotate(90deg);}
+.bar-row-plain{padding-left:10px;}
+.bar-label{width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;}
+.bar-track{flex:1;background:var(--border);border-radius:4px;overflow:hidden;height:8px;}
+.bar-fill{height:100%;background:var(--accent);border-radius:4px;}
+.bar-value{width:120px;text-align:right;font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;}
+.method-list{margin:6px 0 4px 20px;font-size:12px;}
+.method-row{display:flex;align-items:center;gap:8px;padding:3px 0;}
+.method-mark{width:14px;text-align:center;}
+.m-covered .method-mark{color:#16a34a;}
+.m-missing .method-mark{color:#dc2626;}
+.method-name{flex:1;}
+.method-calls{color:var(--muted);font-variant-numeric:tabular-nums;}
+.missing-fields{margin:6px 0 4px 20px;font-size:12px;color:var(--muted);}
+.missing-fields code{background:var(--bg);border-radius:4px;padding:1px 5px;margin:2px 4px 2px 0;display:inline-block;font-size:11.5px;}
+.empty-note{color:var(--muted);font-size:12px;}
+.msg-mark{width:14px;text-align:center;display:inline-block;}
+.status-full .msg-mark{color:#16a34a;}
+.status-partial .msg-mark{color:#d97706;}
+.status-empty .msg-mark{color:#dc2626;}
+footer{color:var(--muted);font-size:11.5px;text-align:center;margin-top:6px;}
+</style>
+</head>
+<body>
+<input type="checkbox" id="theme-toggle">
+<div class="page">
+<label for="theme-toggle" class="theme-switch" title="Toggle dark mode"></label>
+<div class="container">
+<h1>Coverage Report</h1>
+<div class="subtitle">grpctestify</div>
+
+<div class="card">
+<div class="stats">
+<div class="stat"><div class="stat-label">Methods</div><div class="stat-value">{{ method_pct }}<span class="stat-unit">%</span></div><div class="stat-sub">{{ method_covered }}/{{ method_total }}</div></div>
+<div class="stat"><div class="stat-label">Fields</div><div class="stat-value">{{ field_pct }}<span class="stat-unit">%</span></div><div class="stat-sub">{{ field_covered }}/{{ field_total }}</div></div>
+</div>
+</div>
+
+<div class="card">
+<h2>Coverage by Service</h2>
+{% for s in services %}<details class="bar-row"{% if s.covered < s.total %} open{% endif %}>
+<summary><div class="bar-label">{{ s.name }}</div><div class="bar-track"><div class="bar-fill" style="width:{{ s.pct }}%"></div></div><div class="bar-value">{{ s.covered }}/{{ s.total }} · {{ s.pct }}%</div></summary>
+<div class="method-list">{% for m in s.methods %}<div class="method-row {% if m.covered %}m-covered{% else %}m-missing{% endif %}"><span class="method-mark">{% if m.covered %}✓{% else %}✗{% endif %}</span><span class="method-name">{{ m.name }}</span><span class="method-calls">{{ m.calls }} call{% if m.calls != 1 %}s{% endif %}</span></div>
+{% endfor %}</div>
+</details>
+{% endfor %}</div>
+
+<div class="card">
+<h2>Message Field Coverage</h2>
+<table><tr><th></th><th>Message</th><th>Covered</th><th>%</th></tr>
+{% for m in messages %}<tr class="status-{{ m.status }}"><td><span class="msg-mark">{% if m.status == "full" %}✓{% elif m.status == "partial" %}~{% else %}✗{% endif %}</span></td><td>{{ m.name }}</td><td>{{ m.covered }}/{{ m.total }}</td><td>{{ m.pct }}%</td></tr>
+<tr><td></td><td colspan="3">{% if m.missing_fields %}<details><summary>{{ m.missing_fields | length }} missing field{% if m.missing_fields | length != 1 %}s{% endif %}</summary><div class="missing-fields">{% for f in m.missing_fields %}<code>{{ f }}</code>{% endfor %}</div></details>{% else %}<span class="empty-note">all fields covered</span>{% endif %}</td></tr>
+{% endfor %}</table>
+</div>
+
+<footer>Generated by grpctestify</footer>
+</div>
+</div>
+</body>
+</html>

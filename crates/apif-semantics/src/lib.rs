@@ -1,10 +1,35 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 use apif_parser as parser;
 use apif_parser::tokenizer::{TokenKind, tokenize_assertion};
 use apif_plugins::{PluginSignature, TypeInfo};
 use apif_utils::section_content_line;
+use serde_json::Value as JsonValue;
+
+/// Extra plugin names — `.rhai` scripts' real (loaded) names from the
+/// convention plugin directories — that `collect_unknown_plugin_calls`
+/// should treat as known, on top of `apif_plugins::PLUGIN_SIGNATURES`'s
+/// built-ins-only snapshot. Set once via [`register_extra_plugin_names`],
+/// `OnceLock`-set-once-early — lets deep, widely-shared call chains
+/// (`Workflow::from_document_with_analysis`, used by
+/// `explain`/`inspect`/`lsp`/report `kernel`) pick this up automatically
+/// without threading an extra parameter through a dozen call sites.
+static EXTRA_PLUGIN_NAMES: OnceLock<HashSet<String>> = OnceLock::new();
+
+/// Register the real names of loaded `.rhai` scripts so
+/// `collect_unknown_plugin_calls` (the no-extra-argument form) stops
+/// flagging them as unknown. Must be called before the first semantic
+/// analysis of the run — later calls are no-ops (`OnceLock` only accepts
+/// its first value).
+pub fn register_extra_plugin_names(names: HashSet<String>) {
+    let _ = EXTRA_PLUGIN_NAMES.set(names);
+}
+
+fn extra_plugin_names() -> &'static HashSet<String> {
+    EXTRA_PLUGIN_NAMES.get_or_init(HashSet::new)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssertionTypeMismatch {
@@ -374,7 +399,7 @@ pub struct DeprecatedPluginCall {
 
 pub fn collect_deprecated_plugin_calls(doc: &parser::GctfDocument) -> Vec<DeprecatedPluginCall> {
     let mut deprecated = Vec::new();
-    for section in &doc.sections {
+    for section in doc.iter_chain().flat_map(|d| d.sections.iter()) {
         if section.section_type != parser::ast::SectionType::Asserts {
             continue;
         }
@@ -405,12 +430,288 @@ pub fn collect_deprecated_plugin_calls(doc: &parser::GctfDocument) -> Vec<Deprec
     deprecated
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConstantAssertion {
+    pub rule_id: String,
+    pub line: usize,
+    pub expression: String,
+    pub always: bool,
+    pub message: String,
+}
+
+/// Flags `literal == literal` / `literal != literal` assertions — always the
+/// same result regardless of the response, usually a typo for `.field == ...`.
+pub fn collect_constant_assertions(doc: &parser::GctfDocument) -> Vec<ConstantAssertion> {
+    let mut constants = Vec::new();
+    for section in doc.iter_chain().flat_map(|d| d.sections.iter()) {
+        if section.section_type != parser::ast::SectionType::Asserts {
+            continue;
+        }
+        for (idx, line) in section.raw_content.lines().enumerate() {
+            let trimmed = match parser::assertions::strip_assertion_comments(line) {
+                Some(t) => t,
+                None => continue,
+            };
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Some(always) = constant_eq_result(&trimmed) else {
+                continue;
+            };
+            constants.push(ConstantAssertion {
+                rule_id: "SEM_C001".to_string(),
+                line: section_content_line(section.start_line, idx),
+                expression: trimmed.to_string(),
+                always,
+                message: format!(
+                    "Assertion compares two literals and always evaluates to {always} — it never actually checks the response"
+                ),
+            });
+        }
+    }
+    constants
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DuplicateAssertion {
+    pub rule_id: String,
+    pub line: usize,
+    pub first_line: usize,
+    pub expression: String,
+    pub message: String,
+}
+
+/// Flags an ASSERTS line that's an exact repeat of an earlier line in the
+/// same section (comments stripped first, so a trailing `// note` doesn't
+/// hide a duplicate).
+pub fn collect_duplicate_assertions(doc: &parser::GctfDocument) -> Vec<DuplicateAssertion> {
+    let mut duplicates = Vec::new();
+    for section in doc.iter_chain().flat_map(|d| d.sections.iter()) {
+        if section.section_type != parser::ast::SectionType::Asserts {
+            continue;
+        }
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        for (idx, line) in section.raw_content.lines().enumerate() {
+            let trimmed = match parser::assertions::strip_assertion_comments(line) {
+                Some(t) => t,
+                None => continue,
+            };
+            if trimmed.is_empty() {
+                continue;
+            }
+            let this_line = section_content_line(section.start_line, idx);
+            if let Some(&first_line) = seen.get(&trimmed) {
+                duplicates.push(DuplicateAssertion {
+                    rule_id: "SEM_C002".to_string(),
+                    line: this_line,
+                    first_line,
+                    expression: trimmed,
+                    message: format!(
+                        "Duplicate assertion — identical to the one at line {first_line}"
+                    ),
+                });
+            } else {
+                seen.insert(trimmed, this_line);
+            }
+        }
+    }
+    duplicates
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RedundantResponseAssertion {
+    pub rule_id: String,
+    pub line: usize,
+    pub expression: String,
+    pub message: String,
+}
+
+/// Flags a `.path == literal` ASSERTS line whose exact value is already
+/// pinned by the `RESPONSE with_asserts` body it's attached to — the
+/// ASSERTS check can never catch anything RESPONSE's own JSON match
+/// wouldn't already have failed on first.
+///
+/// Deliberately conservative: only `RESPONSE with_asserts` immediately
+/// followed by `ASSERTS` (the one shape the runner itself treats as
+/// attached, see `Runner::has_required_followup_asserts`) is considered;
+/// `tolerance`/`redact`/`unordered_arrays` on that `RESPONSE` disable the
+/// check entirely (they weaken what "pinned" means in ways not worth
+/// modeling here), and only scalar leaf values at simple dotted paths
+/// (`.a.b`, no brackets/indices) are matched.
+pub fn collect_redundant_response_assertions(
+    doc: &parser::GctfDocument,
+) -> Vec<RedundantResponseAssertion> {
+    let mut redundant = Vec::new();
+    for d in doc.iter_chain() {
+        for (i, section) in d.sections.iter().enumerate() {
+            if section.section_type != parser::ast::SectionType::Response
+                || !section.inline_options.with_asserts
+                || section.inline_options.tolerance.is_some()
+                || !section.inline_options.redact.is_empty()
+                || section.inline_options.unordered_arrays
+            {
+                continue;
+            }
+            let Some(asserts_section) = d.sections.get(i + 1) else {
+                continue;
+            };
+            if asserts_section.section_type != parser::ast::SectionType::Asserts {
+                continue;
+            }
+            let parser::ast::SectionContent::Json(body) = &section.content else {
+                continue;
+            };
+            let mut pinned = HashMap::new();
+            flatten_scalar_paths(body, String::new(), &mut pinned);
+            if pinned.is_empty() {
+                continue;
+            }
+
+            for (idx, line) in asserts_section.raw_content.lines().enumerate() {
+                let trimmed = match parser::assertions::strip_assertion_comments(line) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let Some(path) = redundant_equality_path(&trimmed, &pinned) else {
+                    continue;
+                };
+                redundant.push(RedundantResponseAssertion {
+                    rule_id: "SEM_C003".to_string(),
+                    line: section_content_line(asserts_section.start_line, idx),
+                    expression: trimmed,
+                    message: format!(
+                        "`.{path}` is already pinned to this exact value by RESPONSE — this assertion can never catch anything RESPONSE matching wouldn't already fail on"
+                    ),
+                });
+            }
+        }
+    }
+    redundant
+}
+
+fn flatten_scalar_paths(value: &JsonValue, prefix: String, out: &mut HashMap<String, JsonValue>) {
+    match value {
+        JsonValue::Object(map) => {
+            for (k, v) in map {
+                let path = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{prefix}.{k}")
+                };
+                flatten_scalar_paths(v, path, out);
+            }
+        }
+        // "*" is RESPONSE's own wildcard — it doesn't pin a value at all.
+        JsonValue::String(s) if s == "*" => {}
+        // Conservative: arrays aren't modeled (index-path matching, wildcard
+        // elements, unordered comparison already excluded above).
+        JsonValue::Array(_) => {}
+        _ => {
+            if !prefix.is_empty() {
+                out.insert(prefix, value.clone());
+            }
+        }
+    }
+}
+
+fn redundant_equality_path(expr: &str, pinned: &HashMap<String, JsonValue>) -> Option<String> {
+    let ast = parser::parse_assertion(expr);
+    let parser::AssertionExpr::Binary { op, left, right } = ast else {
+        return None;
+    };
+    if op != parser::BinaryOp::Eq {
+        return None;
+    }
+    let (path, lit) = match (*left, *right) {
+        (
+            parser::AssertionExpr::Atom(parser::Expr::JqPath(p)),
+            parser::AssertionExpr::Atom(parser::Expr::Literal(l)),
+        ) => (p, l),
+        (
+            parser::AssertionExpr::Atom(parser::Expr::Literal(l)),
+            parser::AssertionExpr::Atom(parser::Expr::JqPath(p)),
+        ) => (p, l),
+        _ => return None,
+    };
+    let path = path.strip_prefix('.')?;
+    // Simple dotted identifiers only — bracket/index/pipe paths bail out.
+    if path.is_empty()
+        || !path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+    {
+        return None;
+    }
+    let pinned_value = pinned.get(path)?;
+    if literal_matches_json(&lit, pinned_value) {
+        Some(path.to_string())
+    } else {
+        None
+    }
+}
+
+fn literal_matches_json(lit: &parser::Literal, value: &JsonValue) -> bool {
+    use parser::Literal;
+    match (lit, value) {
+        (Literal::Bool(b), JsonValue::Bool(v)) => b == v,
+        (Literal::Str(s), JsonValue::String(v)) => s == v,
+        (Literal::Null, JsonValue::Null) => true,
+        (Literal::Number(n), JsonValue::Number(v)) => n
+            .parse::<f64>()
+            .is_ok_and(|nf| v.as_f64().is_some_and(|vf| nf == vf)),
+        _ => false,
+    }
+}
+
+fn constant_eq_result(expr: &str) -> Option<bool> {
+    let ast = parser::parse_assertion(expr);
+    let parser::AssertionExpr::Binary { op, left, right } = ast else {
+        return None;
+    };
+    if !matches!(op, parser::BinaryOp::Eq | parser::BinaryOp::Ne) {
+        return None;
+    }
+    let parser::AssertionExpr::Atom(parser::Expr::Literal(lhs)) = *left else {
+        return None;
+    };
+    let parser::AssertionExpr::Atom(parser::Expr::Literal(rhs)) = *right else {
+        return None;
+    };
+    let equal = literals_equal(&lhs, &rhs)?;
+    Some(if op == parser::BinaryOp::Eq {
+        equal
+    } else {
+        !equal
+    })
+}
+
+fn literals_equal(a: &parser::Literal, b: &parser::Literal) -> Option<bool> {
+    use parser::Literal;
+    match (a, b) {
+        (Literal::Bool(x), Literal::Bool(y)) => Some(x == y),
+        (Literal::Str(x), Literal::Str(y)) => Some(x == y),
+        (Literal::Null, Literal::Null) => Some(true),
+        (Literal::Number(x), Literal::Number(y)) => match (x.parse::<f64>(), y.parse::<f64>()) {
+            (Ok(x), Ok(y)) => Some(x == y),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 pub fn collect_assertion_type_mismatches(doc: &parser::GctfDocument) -> Vec<AssertionTypeMismatch> {
     let signatures = plugin_signatures();
     let var_types = extract_variable_types(doc);
     let mut mismatches = Vec::new();
 
-    for section in &doc.sections {
+    // A chain's 2nd+ document is not the head — scan every document, not
+    // just `doc.sections` (the earlier `extract_variable_types` already does
+    // this for EXTRACT; ASSERTS type-checking must match or vars EXTRACTed
+    // in one document silently go unchecked wherever they're actually used).
+    for section in doc.iter_chain().flat_map(|d| d.sections.iter()) {
         if section.section_type != parser::ast::SectionType::Asserts {
             continue;
         }
@@ -432,13 +733,29 @@ pub fn collect_assertion_type_mismatches(doc: &parser::GctfDocument) -> Vec<Asse
 }
 
 pub fn collect_unknown_plugin_calls(doc: &parser::GctfDocument) -> Vec<UnknownPluginCall> {
+    collect_unknown_plugin_calls_with_extra(doc, extra_plugin_names())
+}
+
+/// Same as [`collect_unknown_plugin_calls`], but a call whose name is in
+/// `extra_known` is also treated as known — the shared way to make `.rhai`
+/// scripts' real (loaded, not guessed-from-filename) names visible to
+/// `check`/`fmt`/`explain`/`inspect`, which otherwise only see
+/// `apif_plugins::PLUGIN_SIGNATURES`'s built-ins-only, process-wide snapshot.
+pub fn collect_unknown_plugin_calls_with_extra(
+    doc: &parser::GctfDocument,
+    extra_known: &std::collections::HashSet<String>,
+) -> Vec<UnknownPluginCall> {
     let signatures = plugin_signatures();
-    let mut known_plugins: Vec<String> = signatures.keys().cloned().collect();
+    let mut known_plugins: Vec<String> = signatures
+        .keys()
+        .cloned()
+        .chain(extra_known.iter().cloned())
+        .collect();
     known_plugins.sort();
 
     let mut unknown = Vec::new();
 
-    for section in &doc.sections {
+    for section in doc.iter_chain().flat_map(|d| d.sections.iter()) {
         if section.section_type != parser::ast::SectionType::Asserts {
             continue;
         }
@@ -450,7 +767,9 @@ pub fn collect_unknown_plugin_calls(doc: &parser::GctfDocument) -> Vec<UnknownPl
             };
 
             for plugin_name in extract_plugin_calls(&trimmed) {
-                if signatures.contains_key(plugin_name.as_str()) {
+                if signatures.contains_key(plugin_name.as_str())
+                    || extra_known.contains(&plugin_name)
+                {
                     continue;
                 }
 
@@ -976,6 +1295,105 @@ test.Service/Method
     }
 
     #[test]
+    fn test_collect_constant_assertions_always_true() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+"SERVING" == "SERVING"
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let constants = collect_constant_assertions(&doc);
+        assert_eq!(constants.len(), 1);
+        assert_eq!(constants[0].rule_id, "SEM_C001");
+        assert!(constants[0].always);
+    }
+
+    #[test]
+    fn test_collect_constant_assertions_always_false() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+1 == 2
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let constants = collect_constant_assertions(&doc);
+        assert_eq!(constants.len(), 1);
+        assert!(!constants[0].always);
+    }
+
+    #[test]
+    fn test_collect_constant_assertions_numeric_equivalence() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+1 == 1.0
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let constants = collect_constant_assertions(&doc);
+        assert_eq!(constants.len(), 1);
+        assert!(constants[0].always);
+    }
+
+    #[test]
+    fn test_collect_constant_assertions_ignores_field_comparisons() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.status == "SERVING"
+$name == "SERVING"
+@len(.items) == 3
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let constants = collect_constant_assertions(&doc);
+        assert!(
+            constants.is_empty(),
+            "field/variable/plugin comparisons must never be flagged as constant: {constants:?}"
+        );
+    }
+
+    #[test]
+    fn test_collect_duplicate_assertions_flags_exact_repeat() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.status == "SERVING"
+.count > 0
+.status == "SERVING"
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let dups = collect_duplicate_assertions(&doc);
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].rule_id, "SEM_C002");
+        assert_eq!(dups[0].expression, ".status == \"SERVING\"");
+    }
+
+    #[test]
+    fn test_collect_duplicate_assertions_ignores_distinct_lines() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.status == "SERVING"
+.count > 0
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        assert!(collect_duplicate_assertions(&doc).is_empty());
+    }
+
+    #[test]
+    fn test_collect_duplicate_assertions_ignores_trailing_comment_difference() {
+        let content = "--- ENDPOINT ---\ntest.Service/Method\n\n--- ASSERTS ---\n.status == \"SERVING\"\n.status == \"SERVING\" // same check\n";
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let dups = collect_duplicate_assertions(&doc);
+        assert_eq!(dups.len(), 1);
+    }
+
+    #[test]
     fn test_collect_deprecated_plugin_uuid() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
@@ -1020,6 +1438,71 @@ test.Service/Method
     }
 
     #[test]
+    fn test_collect_deprecated_plugin_finds_second_document_in_chain() {
+        // A chain's 2nd+ document is not `doc.sections` (the head) — this
+        // must scan every document via `doc.iter_chain()`, not just the head.
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.ok == true
+
+--- ENDPOINT ---
+test.Service/Method2
+
+--- ASSERTS ---
+@uuid(.id) == true
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        assert!(!doc.is_single_document(), "fixture must actually chain");
+        let deprecated = collect_deprecated_plugin_calls(&doc);
+        assert_eq!(deprecated.len(), 1);
+        assert_eq!(deprecated[0].plugin_name, "uuid");
+    }
+
+    #[test]
+    fn test_collect_unknown_plugin_calls_finds_second_document_in_chain() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.ok == true
+
+--- ENDPOINT ---
+test.Service/Method2
+
+--- ASSERTS ---
+@totally_made_up(.id)
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        assert!(!doc.is_single_document(), "fixture must actually chain");
+        let unknown = collect_unknown_plugin_calls(&doc);
+        assert_eq!(unknown.len(), 1);
+        assert_eq!(unknown[0].plugin_name, "totally_made_up");
+    }
+
+    #[test]
+    fn test_collect_assertion_type_mismatches_finds_second_document_in_chain() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.ok == true
+
+--- ENDPOINT ---
+test.Service/Method2
+
+--- ASSERTS ---
+@len(.names) startsWith "a"
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        assert!(!doc.is_single_document(), "fixture must actually chain");
+        let mismatches = collect_assertion_type_mismatches(&doc);
+        assert_eq!(mismatches.len(), 1, "{mismatches:?}");
+        assert_eq!(mismatches[0].rule_id, "SEM_T005");
+    }
+
+    #[test]
     fn test_collect_deprecated_plugin_skips_canonical() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
@@ -1035,6 +1518,117 @@ test.Service/Method
             deprecated.is_empty(),
             "Canonical names should not be flagged, got: {:?}",
             deprecated
+        );
+    }
+
+    #[test]
+    fn test_collect_redundant_response_assertions_flags_exact_pinned_field() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- RESPONSE with_asserts ---
+{
+  "status": "ok",
+  "count": 5
+}
+
+--- ASSERTS ---
+.status == "ok"
+.count > 0
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        let redundant = collect_redundant_response_assertions(&doc);
+        assert_eq!(redundant.len(), 1, "got: {:?}", redundant);
+        assert_eq!(redundant[0].rule_id, "SEM_C003");
+        assert_eq!(redundant[0].expression, r#".status == "ok""#);
+    }
+
+    #[test]
+    fn test_collect_redundant_response_assertions_ignores_different_value() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- RESPONSE with_asserts ---
+{
+  "status": "ok"
+}
+
+--- ASSERTS ---
+.status == "different"
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        assert!(collect_redundant_response_assertions(&doc).is_empty());
+    }
+
+    #[test]
+    fn test_collect_redundant_response_assertions_ignores_field_comparison() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- RESPONSE with_asserts ---
+{
+  "status": "ok",
+  "echo": "ok"
+}
+
+--- ASSERTS ---
+.status == .echo
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        assert!(collect_redundant_response_assertions(&doc).is_empty());
+    }
+
+    #[test]
+    fn test_collect_redundant_response_assertions_ignores_wildcard_field() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- RESPONSE with_asserts ---
+{
+  "id": "*"
+}
+
+--- ASSERTS ---
+.id == "*"
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        assert!(collect_redundant_response_assertions(&doc).is_empty());
+    }
+
+    #[test]
+    fn test_collect_redundant_response_assertions_ignores_without_with_asserts() {
+        // RESPONSE (no with_asserts) followed by an unrelated top-level
+        // ASSERTS block isn't "attached" the way the runner treats it —
+        // must not be treated as redundant.
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- RESPONSE ---
+{
+  "status": "ok"
+}
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        assert!(collect_redundant_response_assertions(&doc).is_empty());
+    }
+
+    #[test]
+    fn test_collect_redundant_response_assertions_ignores_tolerance() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- RESPONSE with_asserts tolerance=0.01 ---
+{
+  "score": 1.5
+}
+
+--- ASSERTS ---
+.score == 1.5
+"#;
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        assert!(
+            collect_redundant_response_assertions(&doc).is_empty(),
+            "tolerance weakens what RESPONSE pins — must not flag"
         );
     }
 }

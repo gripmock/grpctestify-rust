@@ -5,7 +5,6 @@
 [![Coverage Status](https://coveralls.io/repos/github/gripmock/grpctestify-rust/badge.svg?branch=master)](https://coveralls.io/github/gripmock/grpctestify-rust?branch=master)
 [![Release](https://img.shields.io/github/v/release/gripmock/grpctestify-rust?logo=github)](https://github.com/gripmock/grpctestify-rust/releases/latest)
 [![Documentation](https://img.shields.io/badge/Docs-VitePress-646CFF?logo=vitepress)](https://gripmock.github.io/grpctestify-rust/)
-[![VS Code Extension](https://img.shields.io/badge/VS_Code-Marketplace-blue?logo=visualstudiocode)](https://marketplace.visualstudio.com/items?itemName=gripmock.grpctestify)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Native CLI for gRPC testing with `.gctf` files.
@@ -20,8 +19,10 @@ Native CLI for gRPC testing with `.gctf` files.
 - Unary, client streaming, server streaming, and bidirectional streaming tests
 - Assertions with built-in operators and plugin functions (`@header`, `@trailer`, `@uuid`, `@email`, etc.)
 - Parallel execution, timeouts, coverage, snapshot mode (`--write`)
-- Output formats: `console`, `json`, `junit`, `allure`
-- Extra tools for developer workflows: `check`, `fmt`, `inspect`, `explain`, `reflect`, `lsp`
+- Output formats: `console`, `json`, `yaml`, `junit`, `allure`, `html`
+- Load/benchmark testing (`bench`) with regression gating (`bench-compare`)
+- Web UI playground (`play`) with proto reflection, saved requests, history, and environments
+- Extra tools for developer workflows: `check`, `fmt`, `inspect`, `explain`, `reflect`, `lsp`, `call`, `gen`, `grpcurl`, `list`, `index`, `query`, `health`, `scaffold`
 
 ## Requirements
 
@@ -74,7 +75,7 @@ hello.HelloService/SayHello
 .message == "Hello, World!"
 ```
 
-1. Run test:
+2. Run test:
 
 ```bash
 grpctestify hello.gctf
@@ -95,11 +96,22 @@ grpctestify tests/ --log-format json --log-output results.json
 # JUnit report
 grpctestify tests/ --log-format junit --log-output junit.xml
 
-# Validate syntax
-grpctestify check tests/**/*.gctf
+# Validate syntax (recurses into directories — no shell glob needed)
+grpctestify check tests/
 
 # Format files
-grpctestify fmt -w tests/**/*.gctf
+grpctestify fmt -w tests/
+
+# Scaffold a .gctf test from server reflection
+grpctestify scaffold --endpoint pkg.Service/Method --reflect --address localhost:4770
+
+# Load test with regression gate
+grpctestify bench tests/ --duration 30s --concurrency 10 --log-format json --log-output baseline.json
+grpctestify bench tests/ --duration 30s --concurrency 10 --log-format json --log-output current.json
+grpctestify bench-compare baseline.json current.json
+
+# Launch the web UI playground
+grpctestify play
 ```
 
 ## Contributing

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -137,7 +138,15 @@ async fn test_list_collections() {
     assert_eq!(status, 200);
     let items = body.as_array().unwrap();
     assert!(!items.is_empty());
-    assert!(items[0]["path"].as_str().unwrap_or("").ends_with(".gctf"));
+    // Directories sort before files (`examples/scripts/` holds `.rhai`
+    // plugin examples, no `.gctf` — it's a legitimate "empty" dir from the
+    // playground's point of view, so item 0 isn't guaranteed to be a file).
+    assert!(
+        items
+            .iter()
+            .any(|i| i["path"].as_str().unwrap_or("").ends_with(".gctf")),
+        "at least one .gctf collection must be listed: {items:?}"
+    );
 }
 
 #[tokio::test]
@@ -584,4 +593,215 @@ async fn test_project_create_directory_and_move() {
     // Verify deletion
     let (status, _) = get_json(&url, "/api/collections/moved.gctf").await;
     assert_eq!(status, 404, "deleted file should 404");
+}
+
+// ─── /api/run — full ASSERTS evaluation via the shared runner ─────────
+
+async fn spawn_health_server_for_run() -> String {
+    let (reporter, health_service) = tonic_health::server::health_reporter();
+    reporter
+        .set_service_status("", tonic_health::ServingStatus::Serving)
+        .await;
+    let reflection_service = tonic_reflection::server::Builder::configure()
+        .register_encoded_file_descriptor_set(tonic_health::pb::FILE_DESCRIPTOR_SET)
+        .build_v1()
+        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+    tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(health_service)
+            .add_service(reflection_service)
+            .serve_with_incoming(incoming)
+            .await
+            .unwrap();
+    });
+    addr.to_string()
+}
+
+#[tokio::test]
+async fn test_run_passing_gctf_reports_success_and_assertion_detail() {
+    let address = spawn_health_server_for_run().await;
+    let dir = std::env::temp_dir().join("grpctestify-srv-run-pass");
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(
+        dir.join("pass.gctf"),
+        format!(
+            "--- ADDRESS ---\n{address}\n\n--- ENDPOINT ---\ngrpc.health.v1.Health/Check\n\n--- REQUEST ---\n{{}}\n\n--- ASSERTS ---\n.status == \"SERVING\"\n"
+        ),
+    )
+    .unwrap();
+
+    let url = start_server(test_app(dir.clone())).await;
+    let req = serde_json::json!({"collection_path": "pass.gctf"});
+    let (status, body) = post_json(&url, "/api/run", &req).await;
+
+    assert_eq!(status, 200);
+    assert!(body["success"].as_bool().unwrap_or(false), "{body:#}");
+    assert_eq!(body["assertions"][0]["passed"], true);
+    assert_eq!(
+        body["assertions"][0]["expression"],
+        ".status == \"SERVING\""
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn test_run_failing_gctf_reports_expected_and_actual() {
+    let address = spawn_health_server_for_run().await;
+    let dir = std::env::temp_dir().join("grpctestify-srv-run-fail");
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(
+        dir.join("fail.gctf"),
+        format!(
+            "--- ADDRESS ---\n{address}\n\n--- ENDPOINT ---\ngrpc.health.v1.Health/Check\n\n--- REQUEST ---\n{{}}\n\n--- ASSERTS ---\n.status == \"NOT_SERVING\"\n"
+        ),
+    )
+    .unwrap();
+
+    let url = start_server(test_app(dir.clone())).await;
+    let req = serde_json::json!({"collection_path": "fail.gctf"});
+    let (status, body) = post_json(&url, "/api/run", &req).await;
+
+    assert_eq!(status, 200);
+    assert!(!body["success"].as_bool().unwrap_or(true), "{body:#}");
+    assert_eq!(body["assertions"][0]["passed"], false);
+    assert!(
+        body["assertions"][0]["actual"]
+            .as_str()
+            .unwrap_or("")
+            .contains("SERVING")
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn test_run_with_session_id_appends_project_history() {
+    let address = spawn_health_server_for_run().await;
+    let dir = setup_project_dir("run-history");
+    let collections_dir = dir.join(".grpctestify").join("collections");
+    std::fs::write(
+        collections_dir.join("pass.gctf"),
+        format!(
+            "--- ADDRESS ---\n{address}\n\n--- ENDPOINT ---\ngrpc.health.v1.Health/Check\n\n--- REQUEST ---\n{{}}\n\n--- ASSERTS ---\n.status == \"SERVING\"\n"
+        ),
+    )
+    .unwrap();
+
+    let url = start_server(test_app_project(dir.clone())).await;
+    let req = serde_json::json!({"collection_path": "pass.gctf", "session_id": "test-session"});
+    let (status, body) = post_json(&url, "/api/run", &req).await;
+    assert_eq!(status, 200);
+    assert!(body["success"].as_bool().unwrap_or(false), "{body:#}");
+
+    let (hist_status, hist_body) = get_json(&url, "/api/project/history").await;
+    assert_eq!(hist_status, 200);
+    let entries = hist_body["test-session"]
+        .as_array()
+        .expect("test-session history should exist");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["kind"], "run");
+    assert_eq!(entries[0]["collection_path"], "pass.gctf");
+    assert_eq!(entries[0]["response"]["status"], "ok");
+    assert_eq!(entries[0]["response"]["assertions_passed"], 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ─── Diagnostics (unsaved editor content, no file I/O) ─────────
+
+#[tokio::test]
+async fn test_diagnostics_reports_optimizer_finding() {
+    let url = start_server(test_app(PathBuf::from("examples"))).await;
+    let req = serde_json::json!({
+        "content": "--- ENDPOINT ---\ntest.Service/Method\n\n--- ASSERTS ---\n!!@has_header(\"x\")\n"
+    });
+    let (status, body) = post_json(&url, "/api/diagnostics", &req).await;
+    assert_eq!(status, 200);
+    let diags = body.as_array().expect("diagnostics should be an array");
+    assert!(
+        diags
+            .iter()
+            .any(|d| d["code"].as_str().unwrap_or("").contains("B017")),
+        "{body:#}"
+    );
+}
+
+#[tokio::test]
+async fn test_diagnostics_clean_file_reports_nothing() {
+    let url = start_server(test_app(PathBuf::from("examples"))).await;
+    let req = serde_json::json!({
+        "content": "--- ADDRESS ---\nlocalhost:50051\n\n--- ENDPOINT ---\ntest.Service/Method\n\n--- REQUEST ---\n{}\n\n--- ASSERTS ---\n.status == \"ok\"\n"
+    });
+    let (status, body) = post_json(&url, "/api/diagnostics", &req).await;
+    assert_eq!(status, 200);
+    let diags = body.as_array().expect("diagnostics should be an array");
+    assert!(diags.is_empty(), "{body:#}");
+}
+
+#[tokio::test]
+async fn test_run_missing_file_404s() {
+    let url = start_server(test_app(PathBuf::from("examples"))).await;
+    let req = serde_json::json!({"collection_path": "does-not-exist.gctf"});
+    let (status, _) = post_json(&url, "/api/run", &req).await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn test_run_rejects_path_traversal() {
+    let url = start_server(test_app(PathBuf::from("examples"))).await;
+    let req = serde_json::json!({"collection_path": "../../../etc/passwd"});
+    let (status, _) = post_json(&url, "/api/run", &req).await;
+    assert_eq!(status, 404);
+}
+
+// ─── mTLS fields (--tls-cert/--tls-key equivalents) ────────────
+
+/// A nonexistent-but-set cert/key path pair must reach the real "Failed to
+/// read client certificate" error from the tonic layer — proving
+/// `tls_cert`/`tls_key` actually flow through to `TlsConfig`, not silently
+/// dropped the way they were before (`client_cert_path: None` was
+/// hardcoded at every playground call site).
+#[tokio::test]
+async fn test_execute_call_honors_client_cert_fields() {
+    let url = start_server(test_app(PathBuf::from("examples"))).await;
+    let req = serde_json::json!({
+        "endpoint": "x.Y/z",
+        "body": {},
+        "address": "127.0.0.1:1",
+        "tls": true,
+        "tls_insecure": true,
+        "tls_cert": "/nonexistent/cert.pem",
+        "tls_key": "/nonexistent/key.pem",
+    });
+    let (status, body) = post_json(&url, "/api/call", &req).await;
+    assert_eq!(status, 200);
+    assert!(!body["success"].as_bool().unwrap_or(true));
+    let error = body["error"].as_str().unwrap_or("");
+    assert!(
+        error.contains("client certificate"),
+        "expected the client-cert-path to have actually been read (and fail, since it doesn't exist): {error}"
+    );
+}
+
+#[tokio::test]
+async fn test_reflect_honors_client_cert_fields() {
+    let url = start_server(test_app(PathBuf::from("examples"))).await;
+    let req = serde_json::json!({
+        "address": "127.0.0.1:1",
+        "tls": true,
+        "tls_insecure": true,
+        "tls_cert": "/nonexistent/cert.pem",
+        "tls_key": "/nonexistent/key.pem",
+    });
+    let (status, body) = post_json(&url, "/api/reflect", &req).await;
+    assert_eq!(status, 200);
+    let error = body["error"].as_str().unwrap_or("");
+    assert!(
+        error.contains("client certificate"),
+        "expected the client-cert-path to have actually been read: {error}"
+    );
 }

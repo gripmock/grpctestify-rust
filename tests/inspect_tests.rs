@@ -1,7 +1,53 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // Inspect output tests - verify AST and document structure analysis
 
 use grpctestify::parser::{parse_gctf, parse_gctf_from_str, parse_gctf_with_diagnostics};
 use std::path::Path;
+
+#[path = "support/mod.rs"]
+mod support;
+
+/// Regression: `Workflow::from_document_with_analysis` walks the whole
+/// remaining chain internally (via `collect_assertion_type_mismatches`/
+/// `collect_unknown_plugin_calls`/`collect_assertion_optimizations`, which
+/// became chain-aware). `inspect`'s `print_json_report` already loops once
+/// per chain document itself — without detaching each document
+/// (`GctfDocument::detached`) before the call, a 2nd document's own
+/// diagnostics got reported twice (and an Nth document N-times) instead of
+/// once.
+#[test]
+fn test_inspect_json_does_not_duplicate_diagnostics_across_a_chain() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("chain.gctf");
+    std::fs::write(
+        &file,
+        "--- ENDPOINT ---\ntest.Service/Method\n\n--- ASSERTS ---\n@totally_made_up1(.id)\n\n--- ENDPOINT ---\ntest.Service/Method2\n\n--- ASSERTS ---\n@totally_made_up2(.id)\n",
+    )
+    .unwrap();
+
+    let output = support::cli_command()
+        .args(["inspect", &file.to_string_lossy(), "--format", "json"])
+        .output()
+        .expect("failed to run inspect");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("inspect --format json produced invalid JSON: {e}\n{stdout}"));
+
+    let diags = json["semantic_diagnostics"]
+        .as_array()
+        .expect("semantic_diagnostics should be an array");
+    assert_eq!(
+        diags.len(),
+        2,
+        "expected exactly one diagnostic per document, got: {diags:#?}"
+    );
+    let messages: Vec<&str> = diags
+        .iter()
+        .map(|d| d["message"].as_str().unwrap_or(""))
+        .collect();
+    assert!(messages.iter().any(|m| m.contains("totally_made_up1")));
+    assert!(messages.iter().any(|m| m.contains("totally_made_up2")));
+}
 
 /// Test inspect returns correct section count
 #[test]

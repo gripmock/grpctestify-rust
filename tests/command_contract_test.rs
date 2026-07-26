@@ -1,68 +1,9 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 #![cfg(not(miri))]
 
-use std::process::{Command, Output};
-
-fn get_binary() -> String {
-    env!("CARGO_BIN_EXE_grpctestify").to_string()
-}
-
-fn fixture_path(rel: &str) -> String {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(rel)
-        .to_string_lossy()
-        .into_owned()
-}
-
-fn run_cli(args: &[&str]) -> Output {
-    let binary = get_binary();
-    let runner = std::env::var("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER")
-        .ok()
-        .or_else(|| std::env::var("CROSS_RUNNER").ok());
-
-    let mut cmd = if let Some(runner) = runner {
-        let mut parts = runner.split_whitespace();
-        let program = parts.next().expect("Runner must not be empty");
-        let mut command = Command::new(program);
-        command.args(parts);
-        command.arg(&binary);
-        command
-    } else {
-        Command::new(&binary)
-    };
-
-    cmd.current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(args)
-        .output()
-        .expect("Failed to execute CLI command")
-}
-
-fn parse_json_stdout(output: &Output) -> serde_json::Value {
-    assert!(
-        output.status.success(),
-        "CLI failed with status {:?}\nstderr:\n{}\nstdout:\n{}",
-        output.status.code(),
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-
-    serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
-        panic!(
-            "Invalid JSON output: {e}\nstderr:\n{}\nstdout:\n{}",
-            String::from_utf8_lossy(&output.stderr),
-            String::from_utf8_lossy(&output.stdout)
-        )
-    })
-}
-
-fn parse_json_stdout_any_status(output: &Output) -> serde_json::Value {
-    serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
-        panic!(
-            "Invalid JSON output: {e}\nstderr:\n{}\nstdout:\n{}",
-            String::from_utf8_lossy(&output.stderr),
-            String::from_utf8_lossy(&output.stdout)
-        )
-    })
-}
+#[path = "support/mod.rs"]
+mod support;
+use support::{fixture_path, parse_json_stdout, parse_json_stdout_any_status, run_cli};
 
 fn inspect_contract_view(json: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
@@ -764,8 +705,8 @@ retry: 2
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("OPTIONS Overrides:"));
-    assert!(stdout.contains("- retry: 2"));
-    assert!(stdout.contains("- timeout: 5"));
+    assert!(stdout.contains("• retry: 2"));
+    assert!(stdout.contains("• timeout: 5"));
 }
 
 #[test]
@@ -788,6 +729,29 @@ fn test_check_missing_file_json_output() {
 
     assert!(!json["diagnostics"].as_array().unwrap().is_empty());
     assert_eq!(json["diagnostics"][0]["code"], "FILE_NOT_FOUND");
+}
+
+// Regression: the PASSED/FAILED summary banner used to hardcode raw ✅/❌
+// emoji instead of the shared `pass_icon()`/`fail_icon()` glyphs (✓/✗)
+// already used by every diagnostic line in the same file.
+#[test]
+fn test_check_text_summary_uses_shared_icons_not_raw_emoji() {
+    let file = fixture_path("tests/data/gctf/valid_simple.gctf");
+    let output = run_cli(&["check", &file]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("PASSED"), "stdout: {stdout}");
+    assert!(!stdout.contains('✅'), "stdout: {stdout}");
+}
+
+// Same regression, for `fmt`'s summary banner.
+#[test]
+fn test_fmt_text_summary_uses_shared_icons_not_raw_emoji() {
+    let file = fixture_path("tests/data/gctf/valid_simple.gctf");
+    let output = run_cli(&["fmt", &file]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains('✅'), "stdout: {stdout}");
+    assert!(!stdout.contains('❌'), "stdout: {stdout}");
 }
 
 #[test]
@@ -1289,6 +1253,55 @@ test.Service/Method
 }
 
 #[test]
+fn test_fmt_writes_normalizes_kebab_attribute_to_snake_case() {
+    // Real gap found while scoping gctf-parser-hardening §7: `check` already
+    // warned on `#[retry-delay(...)]`/`#[no-retry]`, but `fmt` only
+    // canonicalized the OPTIONS-key form, not the `#[...]` attribute form —
+    // `GctfAttribute::format_directive()` re-emitted the attribute's name
+    // verbatim, so the deprecated spelling round-tripped through `fmt -w`
+    // unchanged.
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("kebab-attr.gctf");
+    let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+#[retry-delay(0.5)]
+#[no-retry]
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let write_output = run_cli(&["fmt", "-w", &path]);
+    assert!(
+        write_output.status.success(),
+        "fmt -w command failed\nstderr:\n{}",
+        String::from_utf8_lossy(&write_output.stderr)
+    );
+
+    let normalized = std::fs::read_to_string(&file).expect("failed to read normalized file");
+    assert!(
+        normalized.contains("#[retry_delay(0.5)]"),
+        "fmt should normalize #[retry-delay(...)] -> #[retry_delay(...)]\ngot:\n{}",
+        normalized
+    );
+    assert!(
+        normalized.contains("#[no_retry]"),
+        "fmt should normalize #[no-retry] -> #[no_retry]\ngot:\n{}",
+        normalized
+    );
+    assert!(
+        !normalized.contains("retry-delay") && !normalized.contains("no-retry"),
+        "fmt should remove every kebab-case attribute spelling\ngot:\n{}",
+        normalized
+    );
+}
+
+#[test]
 fn test_check_warns_on_kebab_options_keys() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("kebab-warn.gctf");
@@ -1358,6 +1371,159 @@ test.Service/Method
     assert!(
         has_deprecation_warning,
         "check should warn about deprecated kebab attributes\ngot: {}",
+        serde_json::to_string_pretty(&diagnostics).unwrap()
+    );
+}
+
+#[test]
+fn test_check_warns_on_deprecated_plugin_call() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("deprecated-plugin.gctf");
+    let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+
+--- ASSERTS ---
+.id == @uuid()
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["check", &path, "--format", "json"]);
+    let json = parse_json_stdout_any_status(&output);
+
+    let diagnostics = json
+        .get("diagnostics")
+        .expect("diagnostics field must exist");
+    let sem_d001 = diagnostics
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["code"].as_str() == Some("SEM_D001"));
+
+    assert!(
+        sem_d001.is_some(),
+        "check should surface SEM_D001 for a deprecated @uuid() call\ngot: {}",
+        serde_json::to_string_pretty(&diagnostics).unwrap()
+    );
+    assert!(
+        sem_d001.unwrap()["hint"]
+            .as_str()
+            .unwrap()
+            .contains("fmt --write"),
+        "SEM_D001 hint should point at the fmt auto-fix"
+    );
+}
+
+#[test]
+fn test_check_warns_on_empty_asserts_section() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("empty-asserts.gctf");
+    let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+
+--- ASSERTS ---
+# TODO: add assertions
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = file.to_string_lossy().into_owned();
+    let output = run_cli(&["check", &path, "--format", "json"]);
+    let json = parse_json_stdout_any_status(&output);
+
+    let diagnostics = json
+        .get("diagnostics")
+        .expect("diagnostics field must exist");
+    let has_empty_asserts = diagnostics
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["code"].as_str() == Some("EMPTY_ASSERTS"));
+
+    assert!(
+        has_empty_asserts,
+        "check should warn about an empty ASSERTS section\ngot: {}",
+        serde_json::to_string_pretty(&diagnostics).unwrap()
+    );
+}
+
+#[test]
+fn test_check_reports_no_error_case_coverage_for_suite() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("happy-path-only.gctf");
+    let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = dir.path().to_string_lossy().into_owned();
+    let output = run_cli(&["check", &path, "--format", "json"]);
+    let json = parse_json_stdout_any_status(&output);
+
+    let diagnostics = json
+        .get("diagnostics")
+        .expect("diagnostics field must exist");
+    let has_no_error_coverage = diagnostics
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["code"].as_str() == Some("NO_ERROR_CASE_COVERAGE"));
+
+    assert!(
+        has_no_error_coverage,
+        "check should flag a suite with zero ERROR-case tests\ngot: {}",
+        serde_json::to_string_pretty(&diagnostics).unwrap()
+    );
+}
+
+#[test]
+fn test_check_no_error_case_coverage_absent_when_error_test_exists() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("has-error-case.gctf");
+    let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- ERROR ---
+code: NOT_FOUND
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let path = dir.path().to_string_lossy().into_owned();
+    let output = run_cli(&["check", &path, "--format", "json"]);
+    let json = parse_json_stdout_any_status(&output);
+
+    let diagnostics = json
+        .get("diagnostics")
+        .expect("diagnostics field must exist");
+    let has_no_error_coverage = diagnostics
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["code"].as_str() == Some("NO_ERROR_CASE_COVERAGE"));
+
+    assert!(
+        !has_no_error_coverage,
+        "check should not flag a suite that already has an ERROR-case test\ngot: {}",
         serde_json::to_string_pretty(&diagnostics).unwrap()
     );
 }

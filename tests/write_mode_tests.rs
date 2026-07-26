@@ -1,32 +1,12 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 #![cfg(not(miri))]
 
 //! Regression tests for snapshot (`--write`) mode data-loss protection and
 //! run-command exit codes.
 
-use std::process::{Command, Output};
-
-fn run_cli(args: &[&str]) -> Output {
-    let binary = env!("CARGO_BIN_EXE_grpctestify");
-    let runner = std::env::var("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER")
-        .ok()
-        .or_else(|| std::env::var("CROSS_RUNNER").ok());
-
-    let mut cmd = if let Some(runner) = runner {
-        let mut parts = runner.split_whitespace();
-        let program = parts.next().expect("Runner must not be empty");
-        let mut command = Command::new(program);
-        command.args(parts);
-        command.arg(binary);
-        command
-    } else {
-        Command::new(binary)
-    };
-
-    cmd.current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(args)
-        .output()
-        .expect("Failed to execute CLI command")
-}
+#[path = "support/mod.rs"]
+mod support;
+use support::run_cli;
 
 /// `run --write` against a down server must fail and must NOT rewrite the
 /// test file (previously it emptied the RESPONSE section and exited 0).
@@ -82,6 +62,14 @@ fn empty_test_set_exits_non_zero() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // Regression: this used to print via both `warn!()` (stdout) and a
+    // hand-written `eprintln!` (stderr) with near-identical text — two
+    // near-duplicate warnings on a merged terminal.
+    assert_eq!(
+        stderr.matches("No test files found").count(),
+        1,
+        "warning must appear exactly once, got:\n{stderr}"
+    );
     assert!(
         stderr.contains("No test files found"),
         "stderr should explain the empty test set, got:\n{stderr}"

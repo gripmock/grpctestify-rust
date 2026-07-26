@@ -1,5 +1,3 @@
-// Reflect command - list gRPC services and methods
-
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 
@@ -8,6 +6,210 @@ use crate::config;
 use crate::grpc::client::{GrpcClient, GrpcClientConfig};
 use crate::grpc::{TlsConfig, WireProtocol};
 
+/// Resolve `--plaintext`/`--insecure` into a `TlsConfig` (or `None` for
+/// plaintext) — pulled out of [`handle_reflect`] so it's testable without a
+/// live server. Previously there was no way to force skip-verify for an
+/// explicit `https://` address (only the bare-address auto-fallback could
+/// produce it); `--insecure` now does that explicitly.
+fn resolve_tls_config(
+    plaintext: bool,
+    insecure: bool,
+    tls_ca: Option<String>,
+    tls_cert: Option<String>,
+    tls_key: Option<String>,
+    address: &str,
+) -> Result<Option<TlsConfig>> {
+    if plaintext && address.starts_with("https://") {
+        anyhow::bail!("--plaintext cannot be used with an https:// address");
+    }
+
+    Ok(if plaintext {
+        None
+    } else {
+        Some(TlsConfig {
+            ca_cert_path: tls_ca,
+            client_cert_path: tls_cert,
+            client_key_path: tls_key,
+            server_name: None,
+            insecure_skip_verify: insecure || !address.starts_with("https://"),
+        })
+    })
+}
+
+const MAX_DESCRIBE_DEPTH: usize = 8;
+
+/// A field's type as a short label — scalar name, `MessageName`, `EnumName`,
+/// or `map<K, V>`.
+fn field_type_label(field: &prost_reflect::FieldDescriptor) -> String {
+    use prost_reflect::Kind;
+    if field.is_map() {
+        let Kind::Message(entry) = field.kind() else {
+            return "map".to_string();
+        };
+        let key = entry.map_entry_key_field();
+        let value = entry.map_entry_value_field();
+        return format!(
+            "map<{}, {}>",
+            field_type_label(&key),
+            field_type_label(&value)
+        );
+    }
+    match field.kind() {
+        Kind::Double => "double".to_string(),
+        Kind::Float => "float".to_string(),
+        Kind::Int32 | Kind::Sint32 | Kind::Sfixed32 => "int32".to_string(),
+        Kind::Int64 | Kind::Sint64 | Kind::Sfixed64 => "int64".to_string(),
+        Kind::Uint32 | Kind::Fixed32 => "uint32".to_string(),
+        Kind::Uint64 | Kind::Fixed64 => "uint64".to_string(),
+        Kind::Bool => "bool".to_string(),
+        Kind::String => "string".to_string(),
+        Kind::Bytes => "bytes".to_string(),
+        Kind::Message(m) => m.name().to_string(),
+        Kind::Enum(e) => e.name().to_string(),
+    }
+}
+
+/// Indented text tree of a message's fields, recursing into nested message
+/// fields up to [`MAX_DESCRIBE_DEPTH`] and stopping early on a cycle
+/// (self-referential/recursive message types are legal in protobuf).
+fn describe_message_tree(
+    desc: &prost_reflect::MessageDescriptor,
+    indent: usize,
+    visiting: &mut Vec<String>,
+    out: &mut String,
+) {
+    use crate::report::style::dim_style;
+    use prost_reflect::Kind;
+
+    let pad = "  ".repeat(indent);
+    for field in desc.fields() {
+        let label = field_type_label(&field);
+        let suffix = if field.is_map() {
+            String::new()
+        } else if field.is_list() {
+            "[]".to_string()
+        } else {
+            String::new()
+        };
+        out.push_str(&format!(
+            "{pad}{} {}{suffix}\n",
+            field.json_name(),
+            dim_style().apply_to(&label)
+        ));
+
+        match field.kind() {
+            Kind::Enum(e) => {
+                let values: Vec<String> = e.values().map(|v| v.name().to_string()).collect();
+                out.push_str(&format!(
+                    "{pad}  {} {}\n",
+                    dim_style().apply_to("values:"),
+                    values.join(", ")
+                ));
+            }
+            Kind::Message(m) if !field.is_map() => {
+                let full_name = m.full_name().to_string();
+                if indent >= MAX_DESCRIBE_DEPTH || visiting.contains(&full_name) {
+                    out.push_str(&format!(
+                        "{pad}  {}\n",
+                        dim_style().apply_to("... (max depth or recursive type)")
+                    ));
+                } else {
+                    visiting.push(full_name);
+                    describe_message_tree(&m, indent + 1, visiting, out);
+                    visiting.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// JSON Schema (draft-07-ish: `type`/`properties`/`items`/`enum`) for a
+/// message, with the same depth cap and cycle guard as
+/// [`describe_message_tree`].
+fn describe_message_schema(
+    desc: &prost_reflect::MessageDescriptor,
+    depth: usize,
+    visiting: &mut Vec<String>,
+) -> serde_json::Value {
+    let mut props = serde_json::Map::new();
+    for field in desc.fields() {
+        props.insert(
+            field.json_name().to_string(),
+            field_schema(&field, depth, visiting),
+        );
+    }
+    serde_json::json!({ "type": "object", "properties": props })
+}
+
+fn field_schema(
+    field: &prost_reflect::FieldDescriptor,
+    depth: usize,
+    visiting: &mut Vec<String>,
+) -> serde_json::Value {
+    use prost_reflect::Kind;
+
+    if field.is_map() {
+        let Kind::Message(entry) = field.kind() else {
+            return serde_json::json!({ "type": "object" });
+        };
+        let value_field = entry.map_entry_value_field();
+        return serde_json::json!({
+            "type": "object",
+            "additionalProperties": field_schema(&value_field, depth, visiting),
+        });
+    }
+
+    let base = match field.kind() {
+        Kind::Double | Kind::Float => serde_json::json!({ "type": "number" }),
+        Kind::Int32
+        | Kind::Sint32
+        | Kind::Sfixed32
+        | Kind::Uint32
+        | Kind::Fixed32
+        | Kind::Int64
+        | Kind::Sint64
+        | Kind::Sfixed64
+        | Kind::Uint64
+        | Kind::Fixed64 => serde_json::json!({ "type": "integer" }),
+        Kind::Bool => serde_json::json!({ "type": "boolean" }),
+        Kind::String => serde_json::json!({ "type": "string" }),
+        Kind::Bytes => serde_json::json!({ "type": "string", "format": "base64" }),
+        Kind::Enum(e) => {
+            let values: Vec<String> = e.values().map(|v| v.name().to_string()).collect();
+            serde_json::json!({ "type": "string", "enum": values })
+        }
+        Kind::Message(m) => {
+            let full_name = m.full_name().to_string();
+            if depth == 0 || visiting.contains(&full_name) {
+                serde_json::json!({ "type": "object", "description": format!("{full_name} (max depth or recursive type)") })
+            } else {
+                visiting.push(full_name);
+                let schema = describe_message_schema(&m, depth - 1, visiting);
+                visiting.pop();
+                schema
+            }
+        }
+    };
+
+    if field.is_list() {
+        serde_json::json!({ "type": "array", "items": base })
+    } else {
+        base
+    }
+}
+
+/// Case-insensitive substring filter for `--filter`, shared by the default
+/// service listing and `--list-methods`. Empty/absent filter matches
+/// everything.
+fn matches_filter(filter: Option<&str>, service_name: &str, method_name: &str) -> bool {
+    let Some(f) = filter.filter(|f| !f.is_empty()) else {
+        return true;
+    };
+    let f = f.to_lowercase();
+    service_name.to_lowercase().contains(&f) || method_name.to_lowercase().contains(&f)
+}
+
 pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
     let address = if let Some(addr) = &args.address {
         addr.clone()
@@ -15,21 +217,14 @@ pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
         std::env::var(config::ENV_GRPCTESTIFY_ADDRESS).unwrap_or_else(|_| config::default_address())
     };
 
-    if args.plaintext && address.starts_with("https://") {
-        anyhow::bail!("--plaintext cannot be used with an https:// address");
-    }
-
-    let tls_config = if args.plaintext {
-        None
-    } else {
-        Some(TlsConfig {
-            ca_cert_path: args.tls_ca.clone(),
-            client_cert_path: args.tls_cert.clone(),
-            client_key_path: args.tls_key.clone(),
-            server_name: None,
-            insecure_skip_verify: !args.plaintext && !address.starts_with("https://"),
-        })
-    };
+    let tls_config = resolve_tls_config(
+        args.plaintext,
+        args.insecure,
+        args.tls_ca.clone(),
+        args.tls_cert.clone(),
+        args.tls_key.clone(),
+        &address,
+    )?;
 
     let config = GrpcClientConfig {
         address,
@@ -47,7 +242,8 @@ pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
         version: env!("CARGO_PKG_VERSION").to_string(),
     };
 
-    eprintln!("Connecting to {}...", config.address);
+    let display_address = config.address.clone();
+    eprintln!("Connecting to {}...", display_address);
 
     let client = GrpcClient::new(config)
         .await
@@ -79,19 +275,44 @@ pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
         };
 
         if args.format == "json" {
+            let mut input_visiting = vec![method.input().full_name().to_string()];
+            let mut output_visiting = vec![method.output().full_name().to_string()];
             let output = serde_json::json!({
                 "service": parts[0],
                 "method": parts[1],
                 "rpc_mode": mode,
                 "input_type": method.input().full_name(),
                 "output_type": method.output().full_name(),
+                "input_schema": describe_message_schema(&method.input(), MAX_DESCRIBE_DEPTH, &mut input_visiting),
+                "output_schema": describe_message_schema(&method.output(), MAX_DESCRIBE_DEPTH, &mut output_visiting),
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
-            println!("\nMethod: {}/{}", parts[0], parts[1]);
-            println!("  Mode:        {}", mode);
-            println!("  Input:       {}", method.input().full_name());
-            println!("  Output:      {}", method.output().full_name());
+            use crate::report::style::{bold_style, dim_style};
+            println!();
+            println!(
+                "🔎 {}",
+                bold_style().apply_to(format!("{}/{}", parts[0], parts[1]))
+            );
+            println!("   {}  {}", dim_style().apply_to("Mode  "), mode);
+            println!(
+                "   {}  {}",
+                dim_style().apply_to("Input "),
+                method.input().full_name()
+            );
+            let mut input_tree = String::new();
+            let mut input_visiting = vec![method.input().full_name().to_string()];
+            describe_message_tree(&method.input(), 2, &mut input_visiting, &mut input_tree);
+            print!("{input_tree}");
+            println!(
+                "   {}  {}",
+                dim_style().apply_to("Output"),
+                method.output().full_name()
+            );
+            let mut output_tree = String::new();
+            let mut output_visiting = vec![method.output().full_name().to_string()];
+            describe_message_tree(&method.output(), 2, &mut output_visiting, &mut output_tree);
+            print!("{output_tree}");
         }
         return Ok(());
     }
@@ -101,6 +322,9 @@ pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
         let mut all = BTreeMap::new();
         for service in pool.services() {
             for method in service.methods() {
+                if !matches_filter(args.filter.as_deref(), service.full_name(), method.name()) {
+                    continue;
+                }
                 let is_cs = method.is_client_streaming();
                 let is_ss = method.is_server_streaming();
                 let mode = match (is_cs, is_ss) {
@@ -125,11 +349,32 @@ pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
             let output: Vec<_> = all.values().collect();
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
+            use crate::report::style::{bold_style, dim_style};
+            if all.is_empty() {
+                let msg = if args.filter.is_some() {
+                    "No methods match the given filter"
+                } else {
+                    "No methods found"
+                };
+                println!("  {}", dim_style().apply_to(msg));
+            }
             for (key, entry) in &all {
-                println!("{}", key);
-                println!("  mode:   {}", entry["rpc_mode"].as_str().unwrap_or(""));
-                println!("  input:  {}", entry["input"].as_str().unwrap_or(""));
-                println!("  output: {}", entry["output"].as_str().unwrap_or(""));
+                println!("  {}", bold_style().apply_to(key));
+                println!(
+                    "     {} {}",
+                    dim_style().apply_to("• mode  "),
+                    entry["rpc_mode"].as_str().unwrap_or("")
+                );
+                println!(
+                    "     {} {}",
+                    dim_style().apply_to("• input "),
+                    entry["input"].as_str().unwrap_or("")
+                );
+                println!(
+                    "     {} {}",
+                    dim_style().apply_to("• output"),
+                    entry["output"].as_str().unwrap_or("")
+                );
                 println!();
             }
         }
@@ -143,26 +388,280 @@ pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
         return Ok(());
     }
 
-    // Default: list services
+    // Default: list services. A method matching `--filter` keeps its whole
+    // service in view (so filtering by a method name still shows which
+    // service it belongs to); a service whose own name matches shows every
+    // method, not just the ones that happen to match too.
+    let filter = args.filter.as_deref();
     if args.format == "json" {
-        let services: Vec<_> = pool.services().map(|s| s.full_name().to_string()).collect();
+        let services: Vec<_> = pool
+            .services()
+            .filter(|s| {
+                matches_filter(filter, s.full_name(), "")
+                    || s.methods()
+                        .any(|m| matches_filter(filter, s.full_name(), m.name()))
+            })
+            .map(|s| s.full_name().to_string())
+            .collect();
         println!("{}", serde_json::to_string_pretty(&services)?);
     } else {
-        println!("\nAvailable services:");
+        use crate::report::style::{bold_style, dim_style};
+        println!();
+        println!(
+            "📦 {} {}",
+            bold_style().apply_to("Services"),
+            dim_style().apply_to(format!("· {}", display_address))
+        );
+        println!();
         let mut count = 0;
         for service in pool.services() {
-            println!("  {}", service.full_name());
-            for method in service.methods() {
-                println!("    - {}", method.name());
+            let service_matches = matches_filter(filter, service.full_name(), "");
+            let methods: Vec<_> = service
+                .methods()
+                .filter(|m| {
+                    service_matches || matches_filter(filter, service.full_name(), m.name())
+                })
+                .collect();
+            if !service_matches && methods.is_empty() {
+                continue;
+            }
+            println!("  {}", bold_style().apply_to(service.full_name()));
+            for method in &methods {
+                println!("    {} {}", dim_style().apply_to("•"), method.name());
                 count += 1;
             }
         }
         if count == 0 {
-            println!("  No services found");
+            let msg = if filter.is_some() {
+                "No services/methods match the given filter"
+            } else {
+                "No services found"
+            };
+            println!("  {}", dim_style().apply_to(msg));
         } else {
-            println!("\nTotal: {} methods", count);
+            println!();
+            println!("📊 Total: {} methods", count);
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bare_address_defaults_to_skip_verify() {
+        let cfg = resolve_tls_config(false, false, None, None, None, "localhost:4770")
+            .unwrap()
+            .unwrap();
+        assert!(cfg.insecure_skip_verify);
+    }
+
+    #[test]
+    fn https_address_defaults_to_verified() {
+        let cfg = resolve_tls_config(false, false, None, None, None, "https://localhost:4770")
+            .unwrap()
+            .unwrap();
+        assert!(!cfg.insecure_skip_verify);
+    }
+
+    #[test]
+    fn insecure_forces_skip_verify_even_for_https_address() {
+        let cfg = resolve_tls_config(false, true, None, None, None, "https://localhost:4770")
+            .unwrap()
+            .unwrap();
+        assert!(
+            cfg.insecure_skip_verify,
+            "--insecure must override the https:// default"
+        );
+    }
+
+    #[test]
+    fn plaintext_yields_no_tls_config() {
+        assert!(
+            resolve_tls_config(true, false, None, None, None, "localhost:4770")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn plaintext_with_https_address_is_rejected() {
+        let err = resolve_tls_config(true, false, None, None, None, "https://localhost:4770")
+            .unwrap_err();
+        assert!(err.to_string().contains("--plaintext"));
+    }
+
+    fn health_response_message() -> prost_reflect::MessageDescriptor {
+        let pool =
+            prost_reflect::DescriptorPool::decode(tonic_health::pb::FILE_DESCRIPTOR_SET).unwrap();
+        pool.get_message_by_name("grpc.health.v1.HealthCheckResponse")
+            .unwrap()
+    }
+
+    #[test]
+    fn describe_message_schema_marks_enum_field_with_its_values() {
+        let msg = health_response_message();
+        let mut visiting = vec![msg.full_name().to_string()];
+        let schema = describe_message_schema(&msg, MAX_DESCRIBE_DEPTH, &mut visiting);
+        let status_enum = schema["properties"]["status"]["enum"]
+            .as_array()
+            .expect("status must be an enum schema");
+        let values: Vec<&str> = status_enum.iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(
+            values,
+            ["UNKNOWN", "SERVING", "NOT_SERVING", "SERVICE_UNKNOWN"]
+        );
+    }
+
+    #[test]
+    fn describe_message_tree_lists_enum_values_in_text_form() {
+        let msg = health_response_message();
+        let mut visiting = vec![msg.full_name().to_string()];
+        let mut out = String::new();
+        describe_message_tree(&msg, 0, &mut visiting, &mut out);
+        assert!(out.contains("status"));
+        assert!(out.contains("ServingStatus"));
+        assert!(out.contains("SERVING"));
+    }
+
+    /// A hand-built descriptor for `test.Node { string name = 1; repeated
+    /// Node children = 2; }` — genuinely self-referential, unlike anything
+    /// in the health-check proto, so the cycle/depth guards actually get
+    /// exercised instead of trivially no-op-ing.
+    fn self_referential_node_message() -> prost_reflect::MessageDescriptor {
+        use prost_types::field_descriptor_proto::{Label, Type};
+        use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
+
+        let file = FileDescriptorProto {
+            name: Some("test_node.proto".to_string()),
+            package: Some("test".to_string()),
+            syntax: Some("proto3".to_string()),
+            message_type: vec![DescriptorProto {
+                name: Some("Node".to_string()),
+                field: vec![
+                    FieldDescriptorProto {
+                        name: Some("name".to_string()),
+                        json_name: Some("name".to_string()),
+                        number: Some(1),
+                        label: Some(Label::Optional as i32),
+                        r#type: Some(Type::String as i32),
+                        ..Default::default()
+                    },
+                    FieldDescriptorProto {
+                        name: Some("children".to_string()),
+                        json_name: Some("children".to_string()),
+                        number: Some(2),
+                        label: Some(Label::Repeated as i32),
+                        r#type: Some(Type::Message as i32),
+                        type_name: Some(".test.Node".to_string()),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let pool = prost_reflect::DescriptorPool::from_file_descriptor_set(
+            prost_types::FileDescriptorSet { file: vec![file] },
+        )
+        .unwrap();
+        pool.get_message_by_name("test.Node").unwrap()
+    }
+
+    #[test]
+    fn describe_message_schema_stops_at_a_cycle_instead_of_recursing_forever() {
+        let msg = self_referential_node_message();
+        let mut visiting = vec![msg.full_name().to_string()];
+        // Must return promptly (not hang/overflow) — that's the real assertion.
+        let schema = describe_message_schema(&msg, MAX_DESCRIBE_DEPTH, &mut visiting);
+        assert_eq!(schema["type"], "object");
+        // `children` must NOT have expanded into another `properties.name`/
+        // `properties.children` level — the cycle guard should have replaced
+        // it with a plain marker instead of recursing back into Node.
+        let children_items = &schema["properties"]["children"]["items"];
+        assert!(
+            children_items.get("properties").is_none(),
+            "cycle guard failed to stop recursion: {children_items}"
+        );
+    }
+
+    /// A non-cyclic 3-level chain (`Chain3.next -> Chain2.next -> Chain1`, no
+    /// repeated type names) — isolates the depth cap from the cycle guard,
+    /// which a self-referential fixture can't do (any self-reference trips
+    /// the cycle check on its very first expansion too).
+    fn depth_chain_message() -> prost_reflect::MessageDescriptor {
+        use prost_types::field_descriptor_proto::{Label, Type};
+        use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
+
+        let message = |name: &str, next_type: Option<&str>| DescriptorProto {
+            name: Some(name.to_string()),
+            field: next_type
+                .map(|t| {
+                    vec![FieldDescriptorProto {
+                        name: Some("next".to_string()),
+                        json_name: Some("next".to_string()),
+                        number: Some(1),
+                        label: Some(Label::Optional as i32),
+                        r#type: Some(Type::Message as i32),
+                        type_name: Some(t.to_string()),
+                        ..Default::default()
+                    }]
+                })
+                .unwrap_or_default(),
+            ..Default::default()
+        };
+
+        let file = FileDescriptorProto {
+            name: Some("test_chain.proto".to_string()),
+            package: Some("test".to_string()),
+            syntax: Some("proto3".to_string()),
+            message_type: vec![
+                message("Chain1", None),
+                message("Chain2", Some(".test.Chain1")),
+                message("Chain3", Some(".test.Chain2")),
+            ],
+            ..Default::default()
+        };
+
+        let pool = prost_reflect::DescriptorPool::from_file_descriptor_set(
+            prost_types::FileDescriptorSet { file: vec![file] },
+        )
+        .unwrap();
+        pool.get_message_by_name("test.Chain3").unwrap()
+    }
+
+    #[test]
+    fn describe_message_schema_stops_at_max_depth() {
+        let msg = depth_chain_message();
+        // depth=1: Chain3.next (Chain2) expands one level, but Chain2.next
+        // (Chain1) must not — no name ever repeats here, so only the depth
+        // counter, not the cycle guard, can be responsible for stopping it.
+        let mut visiting = Vec::new();
+        let schema = describe_message_schema(&msg, 1, &mut visiting);
+        let chain2 = &schema["properties"]["next"];
+        assert!(
+            chain2["properties"].is_object(),
+            "Chain2 (depth 1) should have expanded: {chain2}"
+        );
+        let chain1 = &chain2["properties"]["next"];
+        assert!(
+            chain1.get("properties").is_none(),
+            "depth cap failed to stop expansion into Chain1: {chain1}"
+        );
+    }
+
+    #[test]
+    fn describe_message_tree_stops_at_a_cycle_instead_of_recursing_forever() {
+        let msg = self_referential_node_message();
+        let mut visiting = vec![msg.full_name().to_string()];
+        let mut out = String::new();
+        // Must return promptly (not hang/overflow) — that's the real assertion.
+        describe_message_tree(&msg, 0, &mut visiting, &mut out);
+        assert!(out.contains("children"));
+        assert!(out.contains("max depth or recursive type"));
+    }
 }

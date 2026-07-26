@@ -34,7 +34,21 @@ links:
 - `owner`
 - `links`
 
+## Attribute-form fallback
+
+Without a `META` section, `tags`/`owner`/`summary` can be set via `#[tag(...)]`/`#[owner(...)]`/`#[summary(...)]` attributes on any section — used only for whichever of the three `META` doesn't already provide:
+
+```gctf
+#[tag(smoke,user)]
+#[owner(backend-qa)]
+--- REQUEST ---
+{}
+```
+
+See [Attributes](./attributes) for the full attribute list.
+
 ## Related
 
 - [Command Line](../api/command-line)
 - [Test File Format](../api/test-files)
+- [Attributes](./attributes)

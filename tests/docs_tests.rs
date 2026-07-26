@@ -1,0 +1,185 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
+#![cfg(not(miri))]
+
+#[path = "support/mod.rs"]
+mod support;
+use support::run_cli;
+
+#[test]
+fn test_docs_generates_index_and_service_page() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("get-user.gctf");
+    let content = r#"--- META ---
+name: Get a user
+summary: Fetches a user by id.
+tags: [smoke]
+owner: team-users
+
+--- ENDPOINT ---
+users.UserService/GetUser
+
+--- REQUEST ---
+{"id": 1}
+
+--- RESPONSE ---
+{"id": 1, "name": "Ada"}
+
+--- ASSERTS ---
+.name == "Ada"
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let out_dir = dir.path().join("docs-out");
+    let output = run_cli(&[
+        "docs",
+        &dir.path().to_string_lossy(),
+        "--output",
+        &out_dir.to_string_lossy(),
+    ]);
+    assert!(
+        output.status.success(),
+        "docs command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let index = std::fs::read_to_string(out_dir.join("index.md")).expect("index.md written");
+    assert!(index.contains("[users.UserService](users.UserService.md)"));
+
+    let page = std::fs::read_to_string(out_dir.join("users.UserService.md"))
+        .expect("service page written");
+    assert!(page.contains("## Get a user"));
+    assert!(page.contains("Fetches a user by id."));
+    assert!(page.contains("`smoke`"));
+    assert!(page.contains("team-users"));
+    assert!(page.contains("**Endpoint:** `users.UserService/GetUser`"));
+    assert!(page.contains(r#""id": 1"#));
+    assert!(page.contains(r#""name": "Ada""#));
+    assert!(page.contains(r#"`.name == "Ada"`"#));
+    // A single-document test has nothing to sequence — no mermaid diagram noise.
+    assert!(!page.contains("```mermaid"));
+}
+
+#[test]
+fn test_docs_renders_mermaid_diagram_for_multi_document_chain() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("chain.gctf");
+    let content = r#"--- ENDPOINT ---
+shop.CartService/AddItem
+
+--- REQUEST ---
+{"item_id": "x"}
+
+--- RESPONSE ---
+{"ok": true}
+
+--- ENDPOINT ---
+shop.CartService/Checkout
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{"order_id": "o-1"}
+"#;
+    std::fs::write(&file, content).expect("failed to write temp gctf file");
+
+    let out_dir = dir.path().join("docs-out");
+    let output = run_cli(&[
+        "docs",
+        &dir.path().to_string_lossy(),
+        "--output",
+        &out_dir.to_string_lossy(),
+    ]);
+    assert!(
+        output.status.success(),
+        "docs command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let page =
+        std::fs::read_to_string(out_dir.join("shop.CartService.md")).expect("service page written");
+    assert!(page.contains("```mermaid"));
+    assert!(page.contains("Client->>Server: AddItem"));
+    assert!(page.contains("Client->>Server: Checkout"));
+    assert!(page.contains("### Step 1"));
+    assert!(page.contains("### Step 2"));
+}
+
+#[test]
+fn test_docs_embeds_coverage_badge_when_report_given() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("get-user.gctf");
+    std::fs::write(
+        &file,
+        r#"--- ENDPOINT ---
+users.UserService/GetUser
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#,
+    )
+    .unwrap();
+
+    let coverage_path = dir.path().join("coverage.json");
+    std::fs::write(
+        &coverage_path,
+        r#"{
+  "files": [{"uri": "grpc://UserService", "statements": {"covered": 1, "total": 4}, "methods": []}],
+  "messages": [],
+  "summary": {"covered": 1, "total": 4},
+  "field_summary": {"covered": 0, "total": 0}
+}"#,
+    )
+    .unwrap();
+
+    let out_dir = dir.path().join("docs-out");
+    let output = run_cli(&[
+        "docs",
+        &dir.path().to_string_lossy(),
+        "--output",
+        &out_dir.to_string_lossy(),
+        "--coverage",
+        &coverage_path.to_string_lossy(),
+    ]);
+    assert!(
+        output.status.success(),
+        "docs command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let index = std::fs::read_to_string(out_dir.join("index.md")).unwrap();
+    assert!(index.contains("**Overall coverage:** 1/4 methods called (25.0%)"));
+
+    let page = std::fs::read_to_string(out_dir.join("users.UserService.md")).unwrap();
+    assert!(
+        page.contains("**Coverage:** 1/4 methods called (25.0%)"),
+        "packaged service must match coverage by its bare service name: {page}"
+    );
+}
+
+#[test]
+fn test_docs_on_directory_with_no_endpoint_tests_reports_nothing_to_document() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let file = dir.path().join("no-endpoint.gctf");
+    // No ENDPOINT section — e.g. a helper/teardown file — must not crash or
+    // produce an empty/garbage service page.
+    std::fs::write(&file, "--- META ---\nname: helper\n").unwrap();
+
+    let out_dir = dir.path().join("docs-out");
+    let output = run_cli(&[
+        "docs",
+        &dir.path().to_string_lossy(),
+        "--output",
+        &out_dir.to_string_lossy(),
+    ]);
+    assert!(output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("nothing to document"),
+        "stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(!out_dir.exists(), "no output directory should be created");
+}

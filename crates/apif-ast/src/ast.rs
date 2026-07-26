@@ -1,8 +1,15 @@
 // AST (Abstract Syntax Tree) for .gctf files
 // Represents the parsed structure of a .gctf test file
 
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+/// Insertion-ordered string map backing KV/EXTRACT section content. Ordered
+/// (not `HashMap`) so serialized output and every consumer iteration follow the
+/// author's source order deterministically; keeps map ergonomics (`get`/dedup)
+/// since duplicate keys are already rejected at parse time.
+pub type OrderedStringMap = IndexMap<String, String>;
 
 /// Complete .gctf document
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -46,12 +53,6 @@ pub struct DocumentMetadata {
 
     /// Parsed at timestamp
     pub parsed_at: i64,
-
-    /// Variable type annotations from EXTRACT sections: `name:Type = .path`
-    /// Maps variable name → type name (e.g., "number", "string").
-    /// Used for {{var}} type inference in assertions.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub variable_types: HashMap<String, String>,
 }
 
 impl Default for DocumentMetadata {
@@ -60,14 +61,13 @@ impl Default for DocumentMetadata {
             source: None,
             mtime: None,
             parsed_at: apif_cfg_runtime::now_timestamp(),
-            variable_types: HashMap::new(),
         }
     }
 }
 
 /// File-level metadata (META section)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct FileMeta {
     /// Test name
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -145,12 +145,31 @@ impl GctfAttribute {
     }
 
     pub fn format_directive(&self) -> String {
+        let name = canonical_key_spelling(&self.name);
         if self.value == "true" {
-            format!("#[{}]", self.name)
+            format!("#[{}]", name)
         } else {
-            format!("#[{}({})]", self.name, self.value)
+            format!("#[{}({})]", name, self.value)
         }
     }
+}
+
+/// Deprecated kebab-case OPTIONS-key / `#[...]` attribute spellings that mean
+/// the same thing as their canonical snake_case counterpart — kept working
+/// indefinitely (never rejected), just normalized on the way back out and
+/// flagged when seen. Single source of truth so a future rename only needs
+/// one new entry here, instead of touching the validator's match arms and
+/// every place that re-emits canonical output separately.
+pub const DEPRECATED_KEBAB_CASE_KEYS: &[(&str, &str)] =
+    &[("retry-delay", "retry_delay"), ("no-retry", "no_retry")];
+
+/// Canonical spelling for `key`, or `key` itself if it's not a known
+/// deprecated form.
+pub fn canonical_key_spelling(key: &str) -> &str {
+    DEPRECATED_KEBAB_CASE_KEYS
+        .iter()
+        .find(|(deprecated, _)| *deprecated == key)
+        .map_or(key, |(_, canonical)| canonical)
 }
 
 impl Section {
@@ -193,6 +212,71 @@ impl Section {
     }
 }
 
+/// Document-absolute source position of a `Section`, in both byte offsets
+/// (for tooling that needs precise slicing/patching, e.g. LSP text edits)
+/// and 0-based line/column (matching `start_line`/`end_line`'s own
+/// convention). Columns are always 0 today — this format is line-based
+/// (section headers/content always start at column 0), so there's nothing
+/// finer to report yet; the fields exist so a future per-token span (e.g. a
+/// specific JSON key within a REQUEST body) has somewhere consistent to
+/// plug in without another struct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SectionSpan {
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub start_line: usize,
+    pub start_col: usize,
+    pub end_line: usize,
+    pub end_col: usize,
+}
+
+impl SectionSpan {
+    /// Build a `SectionSpan` for the half-open 0-based line range `[start_line,
+    /// end_line)`, using `line_offsets` (see `line_start_byte_offsets`) to
+    /// resolve byte positions. `source_len` is the fallback for a line index
+    /// past the last tracked offset (e.g. `end_line` at EOF with no trailing
+    /// newline).
+    pub fn from_line_range(
+        line_offsets: &[usize],
+        start_line: usize,
+        end_line: usize,
+        source_len: usize,
+    ) -> Self {
+        let start_byte = line_offsets.get(start_line).copied().unwrap_or(source_len);
+        let end_byte = line_offsets
+            .get(end_line)
+            .copied()
+            .unwrap_or(source_len)
+            .max(start_byte);
+        Self {
+            start_byte,
+            end_byte,
+            start_line,
+            start_col: 0,
+            end_line,
+            end_col: 0,
+        }
+    }
+}
+
+/// Byte offset where each 0-based line starts, for `source` — index `k`
+/// gives the byte position right after the `k`-th `\n` (index 0 is always
+/// 0). Only `\n` bytes count as separators, so `\r\n`-terminated lines work
+/// identically to `\n`-terminated ones (a `\r` immediately before a `\n`
+/// stays part of the preceding line's byte range, matching how
+/// `str::lines()` treats it).
+pub fn line_start_byte_offsets(source: &str) -> Vec<usize> {
+    let mut offsets = vec![0];
+    offsets.extend(
+        source
+            .bytes()
+            .enumerate()
+            .filter(|&(_, b)| b == b'\n')
+            .map(|(i, _)| i + 1),
+    );
+    offsets
+}
+
 /// A section in the .gctf file
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Section {
@@ -217,6 +301,14 @@ pub struct Section {
     /// Attributes declared on this section
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attributes: Vec<GctfAttribute>,
+
+    /// Document-absolute byte/line/col span, duplicating `start_line`/
+    /// `end_line` in a richer shape — see `SectionSpan`. Defaults to
+    /// all-zero (`SectionSpan::default()`) when a caller doesn't know or
+    /// care about it (most tests, and any document built by hand rather than
+    /// parsed from real source); real parses always populate it.
+    #[serde(default)]
+    pub span: SectionSpan,
 }
 
 impl Default for Section {
@@ -229,6 +321,7 @@ impl Default for Section {
             start_line: 0,
             end_line: 0,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         }
     }
 }
@@ -246,16 +339,20 @@ pub enum SectionContent {
     JsonLines(Vec<serde_json::Value>),
 
     /// Key-value pairs (REQUEST_HEADERS, TLS, OPTIONS, PROTO)
-    KeyValues(HashMap<String, String>),
+    KeyValues(OrderedStringMap),
 
     /// Extract variables from response (EXTRACT)
-    Extract(HashMap<String, String>),
+    Extract(OrderedStringMap),
 
     /// Assertion expressions (ASSERTS)
     Assertions(Vec<String>),
 
     /// File-level metadata (META)
     Meta(FileMeta),
+
+    /// Inline data-driven rows (DATASET) — a YAML list of row objects, each
+    /// becoming one `dataset.<field>` template expansion.
+    Rows(Vec<serde_json::Value>),
 
     /// Empty section
     Empty,
@@ -302,6 +399,9 @@ pub enum SectionType {
 
     /// File-level benchmark profile/options
     Bench,
+
+    /// Inline data-driven test rows (YAML list of objects)
+    Dataset,
 }
 
 impl SectionType {
@@ -330,6 +430,7 @@ impl SectionType {
             SectionType::Extract => "EXTRACT",
             SectionType::Meta => "META",
             SectionType::Bench => "BENCH",
+            SectionType::Dataset => "DATASET",
         }
     }
 
@@ -349,6 +450,7 @@ impl SectionType {
             "EXTRACT" => Some(SectionType::Extract),
             "META" => Some(SectionType::Meta),
             "BENCH" => Some(SectionType::Bench),
+            "DATASET" => Some(SectionType::Dataset),
             _ => None,
         }
     }
@@ -379,11 +481,16 @@ impl SectionType {
         match self {
             SectionType::Meta => Some(0),
             SectionType::Bench => Some(1),
-            SectionType::Address => Some(2),
-            SectionType::Endpoint => Some(3),
-            SectionType::Tls => Some(4),
-            SectionType::Proto => Some(5),
-            SectionType::Options => Some(6),
+            // DATASET is file-level test configuration like BENCH, not a
+            // connection detail — and its `dataset.*` fields are referenced
+            // via `{{dataset.field}}` inside REQUEST, so it must read before
+            // REQUEST rather than sitting wherever it happened to be typed.
+            SectionType::Dataset => Some(2),
+            SectionType::Address => Some(3),
+            SectionType::Endpoint => Some(4),
+            SectionType::Tls => Some(5),
+            SectionType::Proto => Some(6),
+            SectionType::Options => Some(7),
             _ => None,
         }
     }
@@ -406,6 +513,13 @@ pub struct InlineOptions {
 
     /// Sort arrays for order-independent comparison
     pub unordered_arrays: bool,
+
+    /// Plugin-declared inline-option keys (`@inline_option` doc tag) and
+    /// their raw string values — the parser accepts any key a loaded plugin
+    /// has registered instead of hard-rejecting it as unknown. Ordered for
+    /// deterministic `fmt` round-tripping.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub extra: std::collections::BTreeMap<String, String>,
 }
 
 impl InlineOptions {
@@ -439,6 +553,10 @@ impl InlineOptions {
             parts.push("with_asserts".to_string());
         }
 
+        for (key, value) in &self.extra {
+            parts.push(format!("{key}={value}"));
+        }
+
         parts
     }
 
@@ -449,6 +567,7 @@ impl InlineOptions {
             && self.tolerance.is_none()
             && self.redact.is_empty()
             && !self.unordered_arrays
+            && self.extra.is_empty()
     }
 }
 
@@ -515,6 +634,16 @@ impl GctfDocument {
             current = &doc.next_document;
         }
         count
+    }
+
+    /// Clone with `next_document` cleared — for passing one chain member to
+    /// a chain-aware function without it also walking the rest of the chain.
+    #[must_use]
+    pub fn detached(&self) -> GctfDocument {
+        GctfDocument {
+            next_document: None,
+            ..self.clone()
+        }
     }
 
     #[must_use]
@@ -608,7 +737,7 @@ impl GctfDocument {
     }
 
     /// Get request headers
-    pub fn get_request_headers(&self) -> Option<HashMap<String, String>> {
+    pub fn get_request_headers(&self) -> Option<OrderedStringMap> {
         if let Some(section) = self.first_section(SectionType::RequestHeaders)
             && let SectionContent::KeyValues(headers) = &section.content
         {
@@ -618,7 +747,7 @@ impl GctfDocument {
     }
 
     /// Get TLS configuration
-    pub fn get_tls_config(&self) -> Option<HashMap<String, String>> {
+    pub fn get_tls_config(&self) -> Option<OrderedStringMap> {
         if let Some(section) = self.first_section(SectionType::Tls)
             && let SectionContent::KeyValues(config) = &section.content
         {
@@ -628,7 +757,7 @@ impl GctfDocument {
     }
 
     /// Get OPTIONS configuration
-    pub fn get_options(&self) -> Option<HashMap<String, String>> {
+    pub fn get_options(&self) -> Option<OrderedStringMap> {
         if let Some(section) = self.first_section(SectionType::Options)
             && let SectionContent::KeyValues(config) = &section.content
         {
@@ -640,8 +769,8 @@ impl GctfDocument {
     /// Get TLS configuration merged with defaults (section values override defaults)
     pub fn get_tls_config_with_defaults(
         &self,
-        defaults: &HashMap<String, String>,
-    ) -> Option<HashMap<String, String>> {
+        defaults: &OrderedStringMap,
+    ) -> Option<OrderedStringMap> {
         let mut merged = defaults.clone();
 
         if let Some(section) = self.first_section(SectionType::Tls)
@@ -660,7 +789,7 @@ impl GctfDocument {
     }
 
     /// Get PROTO configuration
-    pub fn get_proto_config(&self) -> Option<HashMap<String, String>> {
+    pub fn get_proto_config(&self) -> Option<OrderedStringMap> {
         if let Some(section) = self.first_section(SectionType::Proto)
             && let SectionContent::KeyValues(config) = &section.content
         {
@@ -693,6 +822,48 @@ impl GctfDocument {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn test_line_start_byte_offsets_lf() {
+        let source = "abc\nde\nfghi";
+        // line 0: "abc" (0..3), line 1: "de" (4..6), line 2: "fghi" (7..11)
+        assert_eq!(line_start_byte_offsets(source), vec![0, 4, 7]);
+    }
+
+    #[test]
+    fn test_line_start_byte_offsets_crlf() {
+        // `\r` stays part of the preceding line's byte range — only `\n`
+        // advances to the next line's start.
+        let source = "ab\r\ncd";
+        assert_eq!(line_start_byte_offsets(source), vec![0, 4]);
+    }
+
+    #[test]
+    fn test_line_start_byte_offsets_empty() {
+        assert_eq!(line_start_byte_offsets(""), vec![0]);
+    }
+
+    #[test]
+    fn test_section_span_from_line_range() {
+        let source = "abc\ndefg\nh\n";
+        let offsets = line_start_byte_offsets(source);
+        // Section spanning lines [1, 2) — just "defg".
+        let span = SectionSpan::from_line_range(&offsets, 1, 2, source.len());
+        assert_eq!(span.start_byte, 4);
+        assert_eq!(span.end_byte, 9);
+        assert_eq!(&source[span.start_byte..span.end_byte], "defg\n");
+        assert_eq!(span.start_line, 1);
+        assert_eq!(span.end_line, 2);
+    }
+
+    #[test]
+    fn test_section_span_from_line_range_past_eof_falls_back_to_source_len() {
+        let source = "only one line, no trailing newline";
+        let offsets = line_start_byte_offsets(source);
+        let span = SectionSpan::from_line_range(&offsets, 0, 1, source.len());
+        assert_eq!(span.start_byte, 0);
+        assert_eq!(span.end_byte, source.len());
+    }
 
     #[test]
     fn test_section_type_from_str() {
@@ -739,6 +910,23 @@ mod tests {
         assert_eq!(SectionType::Extract.as_str(), "EXTRACT");
         assert_eq!(SectionType::Meta.as_str(), "META");
         assert_eq!(SectionType::Bench.as_str(), "BENCH");
+        assert_eq!(SectionType::Dataset.as_str(), "DATASET");
+    }
+
+    #[test]
+    fn test_dataset_round_trips_through_keyword_and_preamble_rank() {
+        assert_eq!(
+            SectionType::from_keyword("DATASET"),
+            Some(SectionType::Dataset)
+        );
+        assert_eq!(SectionType::Dataset.as_str(), "DATASET");
+        // File-level configuration like BENCH, not a connection detail —
+        // must sort before ADDRESS/ENDPOINT/TLS/PROTO/OPTIONS since its
+        // fields are referenced via `{{dataset.field}}` inside REQUEST.
+        assert!(SectionType::Dataset.preamble_rank() > SectionType::Bench.preamble_rank());
+        assert!(SectionType::Dataset.preamble_rank() < SectionType::Address.preamble_rank());
+        assert!(!SectionType::Dataset.is_multiple_allowed());
+        assert!(!SectionType::Dataset.is_terminal());
     }
 
     #[test]
@@ -795,6 +983,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -804,6 +993,7 @@ mod tests {
             start_line: 3,
             end_line: 4,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -813,6 +1003,7 @@ mod tests {
             start_line: 5,
             end_line: 6,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let requests = doc.sections_by_type(SectionType::Request);
@@ -836,6 +1027,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let first_request = doc.first_section(SectionType::Request);
@@ -856,6 +1048,7 @@ mod tests {
             start_line: 1,
             end_line: 1,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         assert_eq!(doc.get_address(None), Some("localhost:4770".to_string()));
@@ -883,6 +1076,7 @@ mod tests {
             start_line: 1,
             end_line: 1,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         assert_eq!(doc.get_endpoint(), Some("my.Service/Method".to_string()));
@@ -902,6 +1096,7 @@ mod tests {
             start_line: 1,
             end_line: 1,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let (package, service, method) = doc.parse_endpoint().unwrap();
@@ -921,6 +1116,7 @@ mod tests {
             start_line: 1,
             end_line: 1,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let (package, service, method) = doc.parse_endpoint().unwrap();
@@ -940,6 +1136,7 @@ mod tests {
             start_line: 1,
             end_line: 1,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         assert!(doc.parse_endpoint().is_none());
@@ -956,6 +1153,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -965,6 +1163,7 @@ mod tests {
             start_line: 3,
             end_line: 4,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let requests = doc.get_requests();
@@ -984,6 +1183,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Asserts,
@@ -993,6 +1193,7 @@ mod tests {
             start_line: 3,
             end_line: 4,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let assertions = doc.get_assertions();
@@ -1004,7 +1205,7 @@ mod tests {
     #[test]
     fn test_gctf_document_get_request_headers() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
-        let mut headers = HashMap::new();
+        let mut headers = OrderedStringMap::new();
         headers.insert("Authorization".to_string(), "Bearer token".to_string());
         doc.sections.push(Section {
             section_type: SectionType::RequestHeaders,
@@ -1014,6 +1215,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let result = doc.get_request_headers().unwrap();
@@ -1026,7 +1228,7 @@ mod tests {
     #[test]
     fn test_gctf_document_get_tls_config() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
-        let mut config = HashMap::new();
+        let mut config = OrderedStringMap::new();
         config.insert("ca_cert".to_string(), "/path/to/ca.pem".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Tls,
@@ -1036,6 +1238,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let result = doc.get_tls_config().unwrap();
@@ -1045,7 +1248,7 @@ mod tests {
     #[test]
     fn test_gctf_document_get_options() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
-        let mut options = HashMap::new();
+        let mut options = OrderedStringMap::new();
         options.insert("dry_run".to_string(), "true".to_string());
         options.insert("timeout".to_string(), "10".to_string());
         doc.sections.push(Section {
@@ -1056,6 +1259,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let result = doc.get_options().unwrap();
@@ -1066,7 +1270,7 @@ mod tests {
     #[test]
     fn test_gctf_document_get_tls_config_with_defaults_env_only() {
         let doc = GctfDocument::new("test.gctf".to_string());
-        let mut defaults = HashMap::new();
+        let mut defaults = OrderedStringMap::new();
         defaults.insert("server_name".to_string(), "example.com".to_string());
 
         let result = doc.get_tls_config_with_defaults(&defaults).unwrap();
@@ -1076,7 +1280,7 @@ mod tests {
     #[test]
     fn test_gctf_document_get_tls_config_with_defaults_section_overrides() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
-        let mut config = HashMap::new();
+        let mut config = OrderedStringMap::new();
         config.insert("insecure".to_string(), "true".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Tls,
@@ -1086,9 +1290,10 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
-        let mut defaults = HashMap::new();
+        let mut defaults = OrderedStringMap::new();
         defaults.insert("insecure".to_string(), "false".to_string());
         defaults.insert("server_name".to_string(), "example.com".to_string());
 
@@ -1100,7 +1305,7 @@ mod tests {
     #[test]
     fn test_gctf_document_get_proto_config() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
-        let mut config = HashMap::new();
+        let mut config = OrderedStringMap::new();
         config.insert("files".to_string(), "service.proto".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Proto,
@@ -1110,6 +1315,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let result = doc.get_proto_config().unwrap();
@@ -1129,6 +1335,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         assert!(!doc.has_response_error_conflict());
 
@@ -1140,6 +1347,7 @@ mod tests {
             start_line: 3,
             end_line: 4,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         assert!(doc.has_response_error_conflict());
     }
@@ -1165,11 +1373,13 @@ mod tests {
                 tolerance: Some(0.1),
                 redact: vec!["token".to_string()],
                 unordered_arrays: true,
+                ..InlineOptions::default()
             },
             raw_content: "".to_string(),
             start_line: 0,
             end_line: 0,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         };
 
         let header = section.format_header();
@@ -1177,6 +1387,18 @@ mod tests {
             header,
             "--- RESPONSE partial tolerance=0.1 redact=[\"token\"] unordered_arrays with_asserts ---"
         );
+    }
+
+    #[test]
+    fn test_inline_options_extra_round_trips_and_counts_toward_is_empty() {
+        let mut options = InlineOptions::default();
+        assert!(options.is_empty());
+
+        options
+            .extra
+            .insert("priority".to_string(), "urgent".to_string());
+        assert!(!options.is_empty());
+        assert_eq!(options.to_header_tokens(), vec!["priority=urgent"]);
     }
 
     #[test]
@@ -1196,6 +1418,7 @@ mod tests {
             start_line: 0,
             end_line: 2,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         };
 
         let source = "--- RESPONSE with_asserts=true ---\n{\"ok\":true}\n";
@@ -1208,7 +1431,7 @@ mod tests {
         doc.metadata.source = Some("--- HEADERS ---\nAuthorization: Bearer t\n".to_string());
         doc.sections.push(Section {
             section_type: SectionType::RequestHeaders,
-            content: SectionContent::KeyValues(HashMap::from([(
+            content: SectionContent::KeyValues(OrderedStringMap::from([(
                 "Authorization".to_string(),
                 "Bearer t".to_string(),
             )])),
@@ -1217,6 +1440,7 @@ mod tests {
             start_line: 0,
             end_line: 2,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         assert!(doc.section_uses_deprecated_headers_alias(&doc.sections[0]));
@@ -1353,6 +1577,32 @@ mod tests {
     }
 
     #[test]
+    fn test_canonical_key_spelling() {
+        assert_eq!(canonical_key_spelling("retry-delay"), "retry_delay");
+        assert_eq!(canonical_key_spelling("no-retry"), "no_retry");
+        // Already-canonical and unrelated keys pass through unchanged.
+        assert_eq!(canonical_key_spelling("retry_delay"), "retry_delay");
+        assert_eq!(canonical_key_spelling("timeout"), "timeout");
+    }
+
+    #[test]
+    fn test_gctf_attribute_format_directive_canonicalizes_deprecated_names() {
+        assert_eq!(
+            GctfAttribute::new("retry-delay", "0.5").format_directive(),
+            "#[retry_delay(0.5)]"
+        );
+        assert_eq!(
+            GctfAttribute::flag("no-retry").format_directive(),
+            "#[no_retry]"
+        );
+        // Already-canonical names are untouched.
+        assert_eq!(
+            GctfAttribute::new("timeout", "5").format_directive(),
+            "#[timeout(5)]"
+        );
+    }
+
+    #[test]
     fn test_section_get_attribute() {
         let section = Section {
             section_type: SectionType::Request,
@@ -1365,6 +1615,7 @@ mod tests {
                 GctfAttribute::new("timeout", "30"),
                 GctfAttribute::new("retry", "2"),
             ],
+            span: SectionSpan::default(),
         };
         assert!(section.get_attribute("timeout").is_some());
         assert!(section.get_attribute("retry").is_some());
@@ -1385,6 +1636,7 @@ mod tests {
             start_line: 0,
             end_line: 0,
             attributes: vec![GctfAttribute::new("timeout", "10")],
+            span: SectionSpan::default(),
         };
         assert_eq!(section.get_timeout(), Some(10));
     }
@@ -1399,6 +1651,7 @@ mod tests {
             start_line: 0,
             end_line: 0,
             attributes: vec![GctfAttribute::new("timeout", "0")],
+            span: SectionSpan::default(),
         };
         assert_eq!(section.get_timeout(), None);
     }
@@ -1419,6 +1672,7 @@ mod tests {
             start_line: 0,
             end_line: 0,
             attributes: vec![GctfAttribute::new("retry", "3")],
+            span: SectionSpan::default(),
         };
         assert_eq!(section.get_retry(), Some(3));
     }
@@ -1439,6 +1693,7 @@ mod tests {
             start_line: 0,
             end_line: 0,
             attributes: vec![GctfAttribute::flag("skip")],
+            span: SectionSpan::default(),
         };
         assert!(section.get_skip());
     }
@@ -1453,6 +1708,7 @@ mod tests {
             start_line: 0,
             end_line: 0,
             attributes: vec![GctfAttribute::new("skip", "true")],
+            span: SectionSpan::default(),
         };
         assert!(section.get_skip());
     }
@@ -1473,6 +1729,7 @@ mod tests {
             start_line: 0,
             end_line: 0,
             attributes: vec![GctfAttribute::new("tag", "smoke,slow")],
+            span: SectionSpan::default(),
         };
         assert!(section.has_tag("smoke"));
         assert!(section.has_tag("slow"));
@@ -1489,6 +1746,7 @@ mod tests {
             start_line: 0,
             end_line: 0,
             attributes: vec![GctfAttribute::new("tag", "smoke")],
+            span: SectionSpan::default(),
         };
         assert!(section.has_tag("smoke"));
         assert!(!section.has_tag("slow"));

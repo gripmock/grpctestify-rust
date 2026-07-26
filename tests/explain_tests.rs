@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // Explain output tests - compare semantic output against expected fixtures
 
 use grpctestify::execution::ExecutionPlan;
@@ -5,6 +6,69 @@ use grpctestify::parser::{parse_gctf, parse_gctf_from_str};
 use std::assert_matches;
 use std::fs;
 use std::path::Path;
+
+#[path = "support/mod.rs"]
+mod support;
+
+/// A multi-document chain's text output leads with a condensed FLOW summary
+/// (step, endpoint, expectation kind) before the full per-document dump —
+/// added so a long chain has a table-of-contents rather than requiring a
+/// full scroll to see the shape of the scenario.
+#[test]
+fn test_explain_multi_document_flow_summary() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("chain.gctf");
+    std::fs::write(
+        &file,
+        "--- ENDPOINT ---\ngrpc.health.v1.Health/Check\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n\n--- ENDPOINT ---\ngrpc.health.v1.Health/Watch\n\n--- REQUEST ---\n{}\n\n--- ERROR ---\n{\"code\": 5}\n",
+    )
+    .unwrap();
+
+    let output = support::cli_command()
+        .args(["explain", &file.to_string_lossy()])
+        .output()
+        .expect("failed to run explain");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let flow_idx = stdout.find("FLOW").expect("FLOW summary header missing");
+    let scenario_idx = stdout
+        .find("SCENARIO 1")
+        .expect("SCENARIO 1 detail missing");
+    assert!(
+        flow_idx < scenario_idx,
+        "FLOW summary must come before the detailed scenarios: {stdout}"
+    );
+    assert!(stdout.contains("1. grpc.health.v1.Health/Check [response]"));
+    assert!(stdout.contains("2. grpc.health.v1.Health/Watch [error]"));
+}
+
+/// A multi-document chain's text output also includes a fenced ```mermaid
+/// sequenceDiagram``` block — plain text, renders natively when the output
+/// is pasted into a markdown file (GitHub/VitePress).
+#[test]
+fn test_explain_multi_document_mermaid_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("chain.gctf");
+    std::fs::write(
+        &file,
+        "--- ENDPOINT ---\ngrpc.health.v1.Health/Check\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n\n--- ENDPOINT ---\ngrpc.health.v1.Health/Watch\n\n--- REQUEST ---\n{}\n\n--- ERROR ---\n{\"code\": 5}\n",
+    )
+    .unwrap();
+
+    let output = support::cli_command()
+        .args(["explain", &file.to_string_lossy()])
+        .output()
+        .expect("failed to run explain");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(stdout.contains("```mermaid"));
+    assert!(stdout.contains("sequenceDiagram"));
+    assert!(stdout.contains("Client->>Server: 1. grpc.health.v1.Health/Check"));
+    assert!(stdout.contains("Server-->>Client: response"));
+    assert!(stdout.contains("Client->>Server: 2. grpc.health.v1.Health/Watch"));
+    assert!(stdout.contains("Server--xClient: error"));
+    assert!(stdout.contains("```\n"));
+}
 
 /// Test that explain output matches expected RPC mode
 #[test]
@@ -203,6 +267,37 @@ fn test_explain_with_extractions() {
 
     // Just verify extractions exist
     assert!(!plan.extractions.is_empty(), "Extractions should exist");
+}
+
+/// Single-document `explain` text output must list EXTRACT variables in a
+/// deterministic (alphabetical) order — the underlying `SectionContent::Extract`
+/// is a `HashMap`, whose iteration order is randomized per-instance, so
+/// printing it unsorted made the "↓ Extract:" listing's order flicker
+/// between runs. Two other listing sites in the same file already sorted;
+/// this one didn't.
+#[test]
+fn test_explain_single_document_extract_listing_is_alphabetically_sorted() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("extract.gctf");
+    std::fs::write(
+        &file,
+        "--- ENDPOINT ---\ngrpc.health.v1.Health/Check\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n\n--- EXTRACT ---\nzebra = .a\napple = .b\nmiddle = .c\n",
+    )
+    .unwrap();
+
+    let output = support::cli_command()
+        .args(["explain", &file.to_string_lossy()])
+        .output()
+        .expect("failed to run explain");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let apple = stdout.find("apple").expect("apple missing: {stdout}");
+    let middle = stdout.find("middle").expect("middle missing: {stdout}");
+    let zebra = stdout.find("zebra").expect("zebra missing: {stdout}");
+    assert!(
+        apple < middle && middle < zebra,
+        "EXTRACT listing must be alphabetically sorted: {stdout}"
+    );
 }
 
 /// Test explain with assertions

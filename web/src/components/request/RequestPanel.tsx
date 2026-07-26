@@ -6,7 +6,7 @@ import { HeadersEditor } from './HeadersEditor';
 import { EnvEditor } from './EnvEditor';
 import { TabBar } from './TabBar';
 import { btn, input, colors } from '../../lib/theme';
-import { Play, Save, Copy, Square, Sparkles, ChevronDown, Loader2 } from 'lucide-react';
+import { Play, Save, Copy, Square, Sparkles, ChevronDown, Loader2, ListChecks } from 'lucide-react';
 
 function groupMethods(methods: { name: string; fullName: string; service: string }[]) {
   const map = new Map<string, { name: string; fullName: string }[]>();
@@ -25,12 +25,17 @@ export function RequestPanel() {
   const setRequestTab = useStore(s => s.setRequestTab);
   const execute = useStore(s => s.execute);
   const cancel = useStore(s => s.cancel);
+  const runTest = useStore(s => s.runTest);
+  const runStatus = useStore(s => s.runStatus);
   const getGrpcurlCommand = useStore(s => s.getGrpcurlCommand);
   const reflectionMethods = useStore(s => s.reflectionMethods);
   const address = useStore(s => s.address);
   const protocol = useStore(s => s.protocol);
   const tls = useStore(s => s.tls);
   const tlsInsecure = useStore(s => s.tlsInsecure);
+  const tlsCa = useStore(s => s.tlsCa);
+  const tlsCert = useStore(s => s.tlsCert);
+  const tlsKey = useStore(s => s.tlsKey);
   const selectedCollection = useStore(s => s.selectedCollection);
 
   const saveWorkspace = useStore(s => s.saveWorkspace);
@@ -103,6 +108,9 @@ export function RequestPanel() {
           endpoint: request.endpoint,
           tls: tls || undefined,
           tls_insecure: tls ? tlsInsecure : undefined,
+          tls_ca: tls ? (tlsCa || undefined) : undefined,
+          tls_cert: tls ? (tlsCert || undefined) : undefined,
+          tls_key: tls ? (tlsKey || undefined) : undefined,
           collection_path: selectedCollection || undefined,
           protocol: protocol || undefined,
         }),
@@ -263,6 +271,18 @@ export function RequestPanel() {
             <Play size={16} fill="#fff" /> Execute
           </button>
         )}
+
+        <button onClick={runTest} disabled={!workspacePath || runStatus === 'running' || isExecuting}
+          title={workspacePath ? 'Run the saved .gctf file — ASSERTS/EXTRACT included, same engine `grpctestify run` uses' : 'Save this as a collection file first'}
+          style={{
+            ...btn(), opacity: workspacePath && runStatus !== 'running' && !isExecuting ? 1 : 0.4,
+            cursor: workspacePath && runStatus !== 'running' && !isExecuting ? 'pointer' : 'not-allowed',
+          }}
+          onMouseEnter={e => { if (workspacePath) e.currentTarget.style.background = 'var(--bg-secondary)'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = ''; }}>
+          {runStatus === 'running' ? <Loader2 size={14} className="animate-spin" /> : <ListChecks size={14} />}
+          Run
+        </button>
 
         <button onClick={handleGetGrpcurl} disabled={!request.endpoint || isExecuting} style={{
           ...btn(), opacity: request.endpoint && !isExecuting ? 1 : 0.4, cursor: request.endpoint && !isExecuting ? 'pointer' : 'not-allowed',

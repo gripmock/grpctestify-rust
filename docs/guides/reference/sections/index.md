@@ -26,6 +26,7 @@ Section examples are intentionally partial. Combine them into one complete `.gct
 - [PROTO](./proto)
 - [OPTIONS](./options)
 - [BENCH](./bench)
+- [DATASET](./dataset)
 
 ## Modifiers
 

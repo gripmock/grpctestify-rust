@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // Auth test server implementation
 
 use std::net::SocketAddr;

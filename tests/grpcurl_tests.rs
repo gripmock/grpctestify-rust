@@ -1,34 +1,18 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 #![cfg(not(miri))]
 
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 
-fn get_binary() -> String {
-    env!("CARGO_BIN_EXE_grpctestify").to_string()
-}
+#[path = "support/mod.rs"]
+mod support;
 
 fn run_with_optional_runner(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
-    let binary = get_binary();
-    let runner = std::env::var("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER")
-        .ok()
-        .or_else(|| std::env::var("CROSS_RUNNER").ok());
-
-    let mut cmd = if let Some(runner) = runner {
-        let mut parts = runner.split_whitespace();
-        let program = parts.next().expect("Runner must not be empty");
-        let mut command = Command::new(program);
-        command.args(parts);
-        command.arg(&binary);
-        command
-    } else {
-        Command::new(&binary)
-    };
-
+    let mut cmd = support::cli_command();
     cmd.current_dir(cwd).args(args);
     for (k, v) in envs {
         cmd.env(k, v);
     }
-
     cmd.output().expect("failed to run grpctestify")
 }
 

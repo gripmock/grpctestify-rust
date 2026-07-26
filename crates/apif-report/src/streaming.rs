@@ -95,6 +95,35 @@ impl Reporter for StreamingJsonReporter {
             event["grpcDuration"] = json!(grpc_ms);
         }
 
+        // Per-assertion outcomes (line/expression/passed, expected/actual on
+        // failure) so an IDE consuming this stream can render the same diff
+        // the verbose console and other reporters show, without a second pass.
+        if !result.assertions.is_empty() {
+            event["assertions"] = json!(
+                result
+                    .assertions
+                    .iter()
+                    .map(|a| {
+                        let mut j = json!({
+                            "line": a.line,
+                            "expression": a.expression,
+                            "passed": a.passed,
+                        });
+                        if let Some(expected) = &a.expected {
+                            j["expected"] = json!(expected);
+                        }
+                        if let Some(actual) = &a.actual {
+                            j["actual"] = json!(actual);
+                        }
+                        if let Some(message) = &a.message {
+                            j["message"] = json!(message);
+                        }
+                        j
+                    })
+                    .collect::<Vec<_>>()
+            );
+        }
+
         self.emit(&event);
     }
 
@@ -156,6 +185,52 @@ mod tests {
 
         let results = TestResults::new();
         assert!(reporter.on_suite_end(&results).is_ok());
+    }
+
+    #[test]
+    fn test_streaming_test_end_includes_assertion_outcomes() {
+        use apif_state::AssertionRecord;
+        let reporter = StreamingJsonReporter::new(1);
+        let result = TestResult::fail("t.gctf", "1 assertion failed".into(), 5, None)
+            .with_assertions(vec![AssertionRecord {
+                line: 4,
+                expression: ".ok == true".into(),
+                passed: false,
+                elapsed_ms: 1,
+                message: Some("mismatch".into()),
+                endpoint: None,
+                expected: Some("true".into()),
+                actual: Some("false".into()),
+            }]);
+        reporter.on_test_end("t", &result);
+
+        let cap = reporter.captured.lock().unwrap();
+        let line = cap
+            .iter()
+            .find(|l| l.contains("test_fail"))
+            .expect("test_fail event");
+        let event: serde_json::Value = serde_json::from_str(line).unwrap();
+        let assertions = event["assertions"].as_array().expect("assertions array");
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0]["line"], 4);
+        assert_eq!(assertions[0]["passed"], false);
+        assert_eq!(assertions[0]["expected"], "true");
+        assert_eq!(assertions[0]["actual"], "false");
+    }
+
+    #[test]
+    fn test_streaming_test_end_omits_assertions_when_none_recorded() {
+        let reporter = StreamingJsonReporter::new(1);
+        let result = TestResult::pass("t.gctf", 5, None);
+        reporter.on_test_end("t", &result);
+
+        let cap = reporter.captured.lock().unwrap();
+        let line = cap
+            .iter()
+            .find(|l| l.contains("test_pass"))
+            .expect("test_pass event");
+        let event: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert!(event.get("assertions").is_none());
     }
 
     #[test]

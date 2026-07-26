@@ -84,7 +84,7 @@ pub fn split_sections_by_boundary(sections: &[Section]) -> Vec<Vec<Section>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Section, SectionContent, SectionType};
+    use crate::ast::{Section, SectionContent, SectionSpan, SectionType};
 
     fn section(stype: SectionType, line: usize) -> Section {
         Section {
@@ -95,6 +95,7 @@ mod tests {
             start_line: line,
             end_line: line,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         }
     }
 

@@ -30,6 +30,7 @@ insecure: false
 
 - Use existing certificate files; invalid paths fail at runtime
 - Use `insecure: true` only for local/test environments
+- A key set twice is a parse error (not last-wins)
 
 ## Related
 

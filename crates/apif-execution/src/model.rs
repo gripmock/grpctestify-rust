@@ -2,7 +2,6 @@ use apif_ast::{GctfDocument, SectionContent, SectionType};
 use apif_optimizer::{self, OptimizeLevel};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionPlan {
@@ -33,7 +32,7 @@ pub struct TargetInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeadersInfo {
     pub count: usize,
-    pub headers: HashMap<String, String>,
+    pub headers: apif_ast::OrderedStringMap,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestInfo {
@@ -72,7 +71,7 @@ pub struct AssertionInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractionInfo {
     pub index: usize,
-    pub variables: HashMap<String, String>,
+    pub variables: apif_ast::OrderedStringMap,
     pub line_start: usize,
     pub line_end: usize,
     pub response_index: Option<usize>,
@@ -300,7 +299,7 @@ impl ExecutionPlan {
             .map(|(i, s)| {
                 let vars = match &s.content {
                     SectionContent::Extract(v) => v.clone(),
-                    _ => HashMap::new(),
+                    _ => apif_ast::OrderedStringMap::new(),
                 };
                 ExtractionInfo {
                     index: i + 1,

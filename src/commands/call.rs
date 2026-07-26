@@ -1,5 +1,3 @@
-// Call command - execute gRPC call without assertions (like curl)
-
 use anyhow::Result;
 use futures::stream::StreamExt;
 use serde_json::Value;
@@ -40,6 +38,10 @@ struct CallOptions<'a> {
     connect_timeout: u64,
     max_time: u64,
     insecure: bool,
+    plaintext: bool,
+    tls_ca: Option<String>,
+    tls_cert: Option<String>,
+    tls_key: Option<String>,
     protocol: crate::grpc::WireProtocol,
 }
 
@@ -70,6 +72,10 @@ async fn handle_call_document_inline(doc: &parser::GctfDocument, args: &CallArgs
         connect_timeout: args.connect_timeout,
         max_time: args.max_time,
         insecure: args.insecure,
+        plaintext: args.plaintext,
+        tls_ca: args.tls_ca.clone(),
+        tls_cert: args.tls_cert.clone(),
+        tls_key: args.tls_key.clone(),
         protocol: args
             .protocol
             .parse::<crate::grpc::WireProtocol>()
@@ -205,6 +211,10 @@ pub async fn handle_call(args: &CallArgs) -> Result<()> {
             connect_timeout: args.connect_timeout,
             max_time: args.max_time,
             insecure: args.insecure,
+            plaintext: args.plaintext,
+            tls_ca: args.tls_ca.clone(),
+            tls_cert: args.tls_cert.clone(),
+            tls_key: args.tls_key.clone(),
             protocol: args
                 .protocol
                 .parse::<crate::grpc::WireProtocol>()
@@ -249,7 +259,7 @@ fn vrecv(silent: bool, line: &str) {
     }
 }
 
-fn print_send_metadata(silent: bool, entries: &std::collections::HashMap<String, String>) {
+fn print_send_metadata(silent: bool, entries: &crate::parser::OrderedStringMap) {
     let mut pairs: Vec<_> = entries.iter().collect();
     pairs.sort_by_key(|(k, _)| k.as_str());
     for (k, v) in pairs {
@@ -277,7 +287,30 @@ async fn handle_call_document(
     let full_service = runner_helpers::full_service_name(&package, &service);
 
     let address = runner_helpers::effective_address(doc, Some(opts.protocol));
-    let mut tls_config = runner_helpers::build_tls_config(doc, gctf_file);
+    // CLI TLS flags win over the file's TLS section (matching how `--protocol`
+    // overrides), and are the *sole* source in inline mode (`-e`, no file).
+    // `--plaintext` forces no TLS; `--tls-ca/-cert/-key` build a fresh config.
+    // With no CLI TLS flag, fall back to the file's TLS section. `--insecure`
+    // then applies on top of whichever source won (below), as before.
+    let cli_tls_present = opts.plaintext
+        || opts.tls_ca.is_some()
+        || opts.tls_cert.is_some()
+        || opts.tls_key.is_some();
+    let mut tls_config = if cli_tls_present {
+        if opts.plaintext {
+            None
+        } else {
+            Some(crate::grpc::TlsConfig {
+                ca_cert_path: opts.tls_ca.clone(),
+                client_cert_path: opts.tls_cert.clone(),
+                client_key_path: opts.tls_key.clone(),
+                server_name: None,
+                insecure_skip_verify: false,
+            })
+        }
+    } else {
+        runner_helpers::build_tls_config(doc, gctf_file)
+    };
     if opts.insecure {
         tls_config = tls_config
             .map(|mut t| {
@@ -353,7 +386,7 @@ async fn handle_call_document(
         timeout_seconds,
         tls_config,
         proto_config: None,
-        metadata: doc.get_request_headers(),
+        metadata: doc.get_request_headers().map(|m| m.into_iter().collect()),
         target_service: Some(full_service.clone()),
         compression: Default::default(),
         connection_id: 0,
@@ -487,8 +520,8 @@ async fn handle_call_document(
                     vinfo(
                         opts.silent,
                         &format!(
-                            "Elapsed: {:.3}s, messages received: {}",
-                            elapsed.as_secs_f64(),
+                            "Elapsed: {}, messages received: {}",
+                            crate::report::style::format_duration_ms(elapsed.as_millis() as u64),
                             msg_count
                         ),
                     );

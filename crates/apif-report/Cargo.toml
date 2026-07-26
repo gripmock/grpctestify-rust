@@ -1,6 +1,6 @@
 [package]
 name = "apif-report"
-version = "0.2.1"
+version = "0.2.2"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -10,13 +10,18 @@ rust-version.workspace = true
 description = "Reporters for .apif/.gctf test results"
 
 [dependencies]
-apif-state = { path = "../apif-state", version = "0.1.0" }
+apif-state = { path = "../apif-state", version = "0.1.2" }
 anyhow = { workspace = true }
 apif-cfg-runtime = { path = "../apif-cfg-runtime", version = "0.1.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
 tracing = { workspace = true }
-indicatif = "0.18"
+console = "0.16"
+minijinja = { workspace = true }
 
 [dev-dependencies]
+tempfile = "3.27"
+
+[lints]
+workspace = true

@@ -1,5 +1,15 @@
+use clap::builder::styling::{AnsiColor, Styles};
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
+
+/// Help styling that matches the console design language: bold-green section
+/// headers, bold-cyan flags/commands, plain placeholders. anstream strips these
+/// automatically when output is piped or `NO_COLOR` is set.
+const HELP_STYLES: Styles = Styles::styled()
+    .header(AnsiColor::Green.on_default().bold())
+    .usage(AnsiColor::Green.on_default().bold())
+    .literal(AnsiColor::Cyan.on_default().bold())
+    .placeholder(AnsiColor::White.on_default());
 
 /// Progress indicator modes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,13 +33,14 @@ impl std::str::FromStr for ProgressMode {
 }
 
 /// Log format types
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LogFormat {
     Console,
     Json,
     Yaml,
     JUnit,
     Allure,
+    Html,
 }
 
 /// gRPC testing utility written in Rust
@@ -37,7 +48,23 @@ pub enum LogFormat {
 #[command(name = "grpctestify")]
 #[command(author = "grpctestify team")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
-#[command(about = "Test gRPC services with simple .gctf files", long_about = None)]
+#[command(styles = HELP_STYLES)]
+// The snail logo is attached at runtime in `main.rs` so it renders through the
+// same colour-aware path as the welcome screen (green on TTY, plain otherwise).
+#[command(
+    about = "Native, zero-dependency gRPC testing with .gctf files",
+    long_about = "Native, zero-dependency gRPC testing with .gctf files.\n\n\
+        Run declarative .gctf tests against gRPC / gRPC-Web / Connect endpoints,\n\
+        benchmark them, scaffold new tests from reflection, and explore APIs in a\n\
+        web playground — all from a single self-contained binary.\n\n\
+        Run `grpctestify` with no arguments for a quick tour.",
+    after_help = "Examples:\n  \
+        grpctestify tests/\n  \
+        grpctestify tests/ --parallel 8 -v\n  \
+        grpctestify reflect --address localhost:4770 --plaintext\n  \
+        grpctestify scaffold --endpoint pkg.Svc/Method --reflect\n\n\
+        Docs: https://gripmock.github.io/grpctestify-rust/"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -63,42 +90,121 @@ pub struct Cli {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Run tests (default)
+    // Authoring loop — write, validate, format.
+    /// Run .gctf tests (default)
     Run(Box<RunArgs>),
-    /// Call gRPC endpoint without assertions
-    Call(CallArgs),
-    /// Generate .gctf file from external invocations
-    Gen(GenArgs),
-    /// Reflect gRPC service and list methods
-    Reflect(ReflectArgs),
-    /// Format files
-    Fmt(FmtArgs),
-    /// Validate files
+    /// Validate .gctf syntax & semantics
     Check(CheckArgs),
-    /// Show test information
+    /// Format .gctf files in place
+    Fmt(FmtArgs),
+
+    // Create tests from an existing API.
+    /// Generate a .gctf from proto/descriptor/reflection
+    Scaffold(ScaffoldArgs),
+    /// Generate a .gctf from a captured invocation
+    Gen(GenArgs),
+
+    // Explore & understand.
+    /// List services & methods via server reflection
+    Reflect(ReflectArgs),
+    /// Show a test's structure & metadata
     Inspect(InspectArgs),
-    /// Explain test execution flow
+    /// Explain a test's execution flow
     Explain(ExplainArgs),
-    /// Generate grpcurl invocation from a .gctf file
+    /// Print the equivalent grpcurl command
     Grpcurl(GrpcurlArgs),
     /// List discovered .gctf test files
     List(ListArgs),
-    /// LSP server
-    Lsp(LspArgs),
-    /// Run benchmark tests
-    Bench(BenchArgs),
-    /// Compare two bench JSON reports and gate on regressions
-    BenchCompare(BenchCompareArgs),
-    /// Manage data source indexes
-    Index(IndexArgs),
-    /// Query data sources interactively
-    Query(QueryArgs),
-    /// Check gRPC service health
+    /// Generate Markdown API docs from .gctf test files
+    Docs(DocsArgs),
+    /// Visualize fixture setup/teardown topology and multi-document chains
+    Graph(GraphArgs),
+
+    // Probe a running server.
+    /// Call a gRPC method without assertions
+    Call(CallArgs),
+    /// Check a server's gRPC health
     Health(HealthArgs),
-    /// Launch web UI playground
+
+    // Performance.
+    /// Load-test endpoints
+    Bench(BenchArgs),
+    /// Compare two bench reports & gate regressions
+    BenchCompare(BenchCompareArgs),
+
+    // Data sources.
+    /// Build & manage data-source indexes
+    Index(IndexArgs),
+    /// Query a data source (CSV/TSV/NDJSON)
+    Query(QueryArgs),
+
+    // Servers & tooling.
+    /// Launch the web playground
     Play(PlayArgs),
-    /// Scaffold a ready-to-edit .gctf test from a proto/descriptor/reflection
-    Scaffold(ScaffoldArgs),
+    /// Run the .gctf language server (LSP)
+    Lsp(LspArgs),
+
+    /// Install/manage .rhai plugins from a git host
+    Plugins(PluginsArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PluginsArgs {
+    #[command(subcommand)]
+    pub action: PluginsAction,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum PluginsAction {
+    /// Install a plugin from host/owner/repo[/subpath][@spec]
+    Install(PluginsInstallArgs),
+    /// List installed plugins
+    List(PluginsListArgs),
+    /// Remove an installed plugin
+    Remove(PluginsRemoveArgs),
+    /// Re-resolve and re-fetch installed plugins
+    Update(PluginsUpdateArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PluginsInstallArgs {
+    /// host/owner/repo[/subpath][@spec] — spec is a tag/branch (exact) or
+    /// a semver range like ^1.2.0 (omit for the highest semver tag, or HEAD
+    /// if the repo has none)
+    pub source: String,
+
+    /// Install to $HOME/.grpctestify instead of the project-local
+    /// ./.grpctestify
+    #[arg(short = 'g', long, default_value_t = false)]
+    pub global: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PluginsListArgs {
+    #[arg(short = 'g', long, default_value_t = false)]
+    pub global: bool,
+
+    /// List both the project-local and user-global tiers
+    #[arg(long, default_value_t = false)]
+    pub all: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PluginsRemoveArgs {
+    /// host/owner/repo, as shown by `plugins list`
+    pub name: String,
+
+    #[arg(short = 'g', long, default_value_t = false)]
+    pub global: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PluginsUpdateArgs {
+    /// host/owner/repo to update (omit to update every installed plugin in the tier)
+    pub name: Option<String>,
+
+    #[arg(short = 'g', long, default_value_t = false)]
+    pub global: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -119,8 +225,8 @@ pub struct ScaffoldArgs {
     #[arg(long, default_value_t = false)]
     pub reflect: bool,
 
-    /// Server address (host:port) written into the ADDRESS section
-    #[arg(long)]
+    /// Server address (host:port)
+    #[arg(long, value_name = "ADDRESS")]
     pub address: Option<String>,
 
     /// Output file (stdout if omitted)
@@ -131,62 +237,78 @@ pub struct ScaffoldArgs {
     #[arg(long, default_value_t = false)]
     pub force: bool,
 
-    /// Use TLS with certificate verification (reflection)
+    /// Use TLS with certificate verification
     #[arg(long, default_value_t = false)]
     pub tls: bool,
 
-    /// Use TLS without certificate verification (reflection)
+    /// Skip TLS certificate verification
     #[arg(long, default_value_t = false)]
     pub insecure: bool,
 
-    /// Plaintext connection, no TLS (reflection)
+    /// Plaintext connection (no TLS)
     #[arg(long, default_value_t = false)]
     pub plaintext: bool,
 
-    /// Wire protocol: grpc (default), grpc-web, connectrpc
-    #[arg(long, default_value = "grpc")]
+    /// Wire protocol: grpc, grpc-web, connectrpc
+    #[arg(long, default_value = "grpc", value_name = "PROTOCOL")]
     pub protocol: String,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct HealthArgs {
     /// Server address (host:port)
-    #[arg(required = true)]
+    #[arg(required = true, value_name = "ADDRESS")]
     pub address: String,
 
-    /// Wire protocol: grpc (default), grpc-web, connectrpc
-    #[arg(long, default_value = "grpc")]
+    /// Wire protocol: grpc, grpc-web, connectrpc
+    #[arg(long, default_value = "grpc", value_name = "PROTOCOL")]
     pub protocol: String,
 
-    /// Service name to check (default: empty — checks overall server health)
-    #[arg(long, default_value = "")]
-    pub service: String,
+    /// Service name to check (repeatable; default: none — checks overall server health)
+    #[arg(long, value_name = "NAME")]
+    pub service: Vec<String>,
 
-    /// Output format (text, json)
-    #[arg(long, default_value = "text")]
+    /// Output format: text, json
+    #[arg(long, default_value = "text", value_name = "FORMAT")]
     pub format: String,
 
-    /// Skip TLS verification
+    /// Use TLS with certificate verification
+    #[arg(long, default_value_t = false)]
+    pub tls: bool,
+
+    /// Skip TLS certificate verification
     #[arg(long, default_value_t = false)]
     pub insecure: bool,
 
-    /// Timeout in seconds
-    #[arg(long, default_value_t = 10)]
+    /// Timeout in seconds (per health-check RPC)
+    #[arg(long, default_value_t = 10, value_name = "SECS")]
     pub timeout: u64,
+
+    /// Poll until healthy instead of checking once (for CI readiness gating)
+    #[arg(long, default_value_t = false)]
+    pub watch: bool,
+
+    /// Poll interval in seconds for --watch
+    #[arg(long, default_value_t = 1.0, value_name = "SECS")]
+    pub interval: f64,
+
+    /// Give up waiting after this many seconds in --watch mode
+    #[arg(long, default_value_t = 60.0, value_name = "SECS")]
+    pub watch_timeout: f64,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct GrpcurlArgs {
-    /// File to convert into grpcurl command
-    #[arg(required = true)]
+    /// File to convert
+    #[arg(required = true, value_name = "FILE")]
     pub file: PathBuf,
 
     /// Document index for multi-document .gctf files (1-based)
     #[arg(long)]
     pub doc_index: Option<usize>,
 
-    /// Output format (text, json)
-    #[arg(long, default_value = "text")]
+    /// Output format: text, json
+    #[arg(long, default_value = "text", value_name = "FORMAT")]
     pub format: String,
 }
 
@@ -199,12 +321,12 @@ pub struct LspArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct BenchArgs {
-    /// Wire protocol: grpc (default), grpc-web, connectrpc
-    #[arg(long, default_value = "grpc")]
+    /// Wire protocol: grpc, grpc-web, connectrpc
+    #[arg(long, default_value = "grpc", value_name = "PROTOCOL")]
     pub protocol: String,
 
-    /// Path to test file or directory to benchmark
-    #[arg(required = true)]
+    /// Test files or directories to benchmark
+    #[arg(required = true, value_name = "PATH")]
     pub test_paths: Vec<PathBuf>,
 
     /// Benchmark profile (functional, load, stress, spike, soak)
@@ -323,20 +445,21 @@ pub struct BenchArgs {
     #[arg(long = "progress-interval", value_name = "DURATION")]
     pub progress_interval: Option<String>,
 
-    /// Output format (console, json, csv, ndjson, prometheus)
+    /// Report format: console, json, csv, ndjson, prometheus
     #[arg(
         long = "log-format",
         visible_alias = "bench-format",
-        default_value = "console"
+        default_value = "console",
+        value_name = "FORMAT"
     )]
     pub format: String,
 
-    /// Output file for benchmark report
+    /// Output file for the report
     #[arg(
         short = 'o',
         long = "log-output",
         visible_alias = "bench-output",
-        value_name = "OUTPUT_FILE"
+        value_name = "FILE"
     )]
     pub output: Option<PathBuf>,
 
@@ -352,16 +475,16 @@ pub struct BenchArgs {
     #[arg(long, default_value_t = false)]
     pub compact: bool,
 
-    /// Filter by tags (AND - file must have ALL tags)
-    #[arg(long = "tags", value_name = "TAGS")]
+    /// Only run tests carrying ALL of these tags (repeatable)
+    #[arg(long = "tags", value_name = "TAG")]
     pub tags: Vec<String>,
 
-    /// Skip files with these tags (NOT OR - exclude if ANY matches)
-    #[arg(long = "skip-tags", value_name = "TAGS")]
+    /// Skip tests carrying ANY of these tags (repeatable)
+    #[arg(long = "skip-tags", value_name = "TAG")]
     pub skip_tags: Vec<String>,
 
-    /// Exclude files/directories matching the given glob pattern (can be used multiple times)
-    #[arg(long, value_name = "PATTERN")]
+    /// Exclude paths matching this glob (repeatable)
+    #[arg(long, value_name = "GLOB")]
     pub exclude: Vec<String>,
 
     /// List available benchmark profiles and exit
@@ -384,11 +507,11 @@ pub struct BenchArgs {
 #[derive(Args, Debug, Clone)]
 pub struct BenchCompareArgs {
     /// Baseline bench report (JSON produced by `bench --log-format json`)
-    #[arg(required = true)]
+    #[arg(required = true, value_name = "FILE")]
     pub baseline: PathBuf,
 
     /// Current bench report to compare against the baseline
-    #[arg(required = true)]
+    #[arg(required = true, value_name = "FILE")]
     pub current: PathBuf,
 
     /// Max tolerated latency rise (percent) for mean and each percentile
@@ -403,15 +526,15 @@ pub struct BenchCompareArgs {
     #[arg(long, value_name = "PCT", default_value_t = 5.0)]
     pub min_throughput: f64,
 
-    /// Output format (console, json)
-    #[arg(long, default_value = "console")]
+    /// Report format: console, json
+    #[arg(long, default_value = "console", value_name = "FORMAT")]
     pub format: String,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct IndexArgs {
     /// .gctf file(s) or directory with BENCH.sources definitions
-    #[arg(required = true)]
+    #[arg(required = true, value_name = "PATH")]
     pub sources: Vec<PathBuf>,
 
     /// Force rebuild of all required indexes
@@ -426,7 +549,7 @@ pub struct IndexArgs {
 #[derive(Args, Debug, Clone)]
 pub struct QueryArgs {
     /// Files or directories to query (default: interactive shell)
-    #[arg(required = false)]
+    #[arg(required = false, value_name = "PATH")]
     pub files: Vec<PathBuf>,
 
     /// Query expression to execute
@@ -441,8 +564,8 @@ pub struct QueryArgs {
     #[arg(short = 'i', long, value_name = "COLUMN")]
     pub indexed_by: Option<String>,
 
-    /// Output format (json, csv, table, line, tsv)
-    #[arg(short = 'f', long, default_value = "table")]
+    /// Output format: json, csv, table, line, tsv
+    #[arg(short = 'f', long, default_value = "table", value_name = "FORMAT")]
     pub format: String,
 
     /// Maximum number of rows to return
@@ -461,7 +584,7 @@ pub struct QueryArgs {
     #[arg(long, value_name = "COLUMN")]
     pub order_by: Option<String>,
 
-    /// Output file (format auto-detected from extension: .csv, .tsv, .ndjson, .json)
+    /// Output file (stdout if omitted)
     #[arg(long, value_name = "FILE")]
     pub output: Option<PathBuf>,
 
@@ -472,12 +595,12 @@ pub struct QueryArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct ListArgs {
-    /// Path to test file or directory to list
-    #[arg(required = false)]
+    /// Test file or directory to list
+    #[arg(required = false, value_name = "PATH")]
     pub path: Option<PathBuf>,
 
-    /// Output format (text, json)
-    #[arg(long, default_value = "json")]
+    /// Output format: text, json
+    #[arg(long, default_value = "json", value_name = "FORMAT")]
     pub format: String,
 
     /// Include test range information
@@ -486,35 +609,67 @@ pub struct ListArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+pub struct DocsArgs {
+    /// Test files or directories to document (defaults to the current directory)
+    #[arg(value_name = "PATH")]
+    pub paths: Vec<PathBuf>,
+
+    /// Directory to write the generated Markdown into
+    #[arg(long, short = 'o', default_value = "docs/api", value_name = "DIR")]
+    pub output: PathBuf,
+
+    /// Embed method/field coverage from a prior `run --coverage --coverage-format json` report
+    #[arg(long, value_name = "PATH")]
+    pub coverage: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct GraphArgs {
+    /// Test files or directories to visualize (defaults to the current directory)
+    #[arg(value_name = "PATH")]
+    pub paths: Vec<PathBuf>,
+
+    /// Output format: text, mermaid
+    #[arg(long, default_value = "text", value_name = "FORMAT")]
+    pub format: String,
+}
+
+#[derive(Args, Debug, Clone)]
 pub struct InspectArgs {
     /// File to inspect
-    #[arg(required = true)]
+    #[arg(required = true, value_name = "FILE")]
     pub file: PathBuf,
 
-    /// Output format (text, json)
-    #[arg(long, default_value = "text")]
+    /// Output format: text, json
+    #[arg(long, default_value = "text", value_name = "FORMAT")]
     pub format: String,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct ExplainArgs {
     /// File to explain
-    #[arg(required = true)]
+    #[arg(required = true, value_name = "FILE")]
     pub file: PathBuf,
 
-    /// Output format (text, json)
-    #[arg(long, default_value = "text")]
+    /// Output format: text, json
+    #[arg(long, default_value = "text", value_name = "FORMAT")]
     pub format: String,
+
+    /// Post-hoc mode: JSON report from a prior `run --log-format json` to
+    /// correlate against this file's plan (actual per-assertion pass/fail +
+    /// timing, instead of just the static/optimized plan).
+    #[arg(long, value_name = "REPORT_JSON")]
+    pub against: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct CheckArgs {
     /// Files to validate
-    #[arg(required = true)]
+    #[arg(required = true, value_name = "FILES")]
     pub files: Vec<PathBuf>,
 
-    /// Output format (text, json)
-    #[arg(long, default_value = "text")]
+    /// Output format: text, json
+    #[arg(long, default_value = "text", value_name = "FORMAT")]
     pub format: String,
 
     /// Validate BENCH section configuration
@@ -524,127 +679,205 @@ pub struct CheckArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct RunArgs {
-    /// Wire protocol: grpc (default), grpc-web, connectrpc
-    #[arg(long, default_value = "grpc")]
-    pub protocol: String,
-
-    /// Path to test file or directory to execute
-    // We make this optional so it doesn't conflict with subcommands when parsed at top level,
-    // but we'll enforce it manually if no subcommand is present.
-    // However, if we use `flatten` at top level, and `subcommand` is optional,
-    // Clap might be ambiguous if `test_paths` matches a subcommand name.
-    // But since `test_paths` are files/dirs, usually they won't clash with "run", "reflect", etc.
-    // We remove `required` constraint here and handle validation manually.
-    #[arg(required = false)]
+    /// Test files or directories to run (defaults to the current directory)
+    // Optional so it doesn't clash with subcommand names when parsed at the top
+    // level; emptiness is enforced manually where a path is required.
+    #[arg(required = false, value_name = "PATH")]
     pub test_paths: Vec<PathBuf>,
 
-    /// Exclude files/directories matching the given glob pattern (can be used multiple times)
-    #[arg(long = "exclude", value_name = "PATTERN")]
+    /// Exclude paths matching this glob (repeatable)
+    #[arg(long = "exclude", value_name = "GLOB", help_heading = "Test Selection")]
     pub exclude: Vec<String>,
 
-    /// Filter by tags (AND - file must have ALL tags)
-    #[arg(long = "tags", value_name = "TAGS")]
+    /// Only run tests carrying ALL of these tags (repeatable)
+    #[arg(long = "tags", value_name = "TAG", help_heading = "Test Selection")]
     pub tags: Vec<String>,
 
-    /// Skip files with these tags (NOT OR - exclude if ANY matches)
-    #[arg(long = "skip-tags", value_name = "TAGS")]
+    /// Skip tests carrying ANY of these tags (repeatable)
+    #[arg(
+        long = "skip-tags",
+        value_name = "TAG",
+        help_heading = "Test Selection"
+    )]
     pub skip_tags: Vec<String>,
 
-    /// Run tests in parallel with N workers
-    #[arg(short = 'p', long, default_value = "auto")]
-    pub parallel: String,
-
-    /// Show commands that would be executed without running them
-    #[arg(short = 'd', long, default_value_t = false)]
-    pub dry_run: bool,
-
-    /// Sort test files by type
-    #[arg(short = 's', long, default_value = "path")]
+    /// Order tests before running: path, size, name
+    #[arg(
+        short = 's',
+        long,
+        default_value = "path",
+        value_name = "MODE",
+        help_heading = "Test Selection"
+    )]
     pub sort: String,
 
-    /// Generate test reports in specified format
-    #[arg(long, value_name = "FORMAT")]
-    pub log_format: Option<String>,
-
-    /// Output file for test reports (use with --log-format)
-    #[arg(long, value_name = "OUTPUT_FILE")]
-    pub log_output: Option<PathBuf>,
-
-    /// Output streaming JSON events (for IDE integration)
-    #[arg(long, default_value_t = false)]
-    pub stream: bool,
-
-    /// Set timeout for individual tests (seconds)
-    #[arg(short = 't', long, default_value_t = 30)]
-    pub timeout: u64,
-
-    /// Number of retries for failed network calls
-    #[arg(short = 'r', long, default_value_t = 0)]
-    pub retry: u32,
-
-    /// Initial delay between retries (seconds)
-    #[arg(long, default_value_t = 1.0)]
-    pub retry_delay: f64,
-
-    /// Disable retry mechanisms completely
-    #[arg(long, default_value_t = false)]
-    pub no_retry: bool,
-
-    /// Progress indicator style
-    #[arg(long, default_value = "auto")]
-    pub progress: String,
-
-    /// Skip assertion evaluation and print raw server responses
-    #[arg(long, default_value_t = false)]
-    pub no_assert: bool,
-
-    /// Generate Proto API coverage report
-    #[arg(long, default_value_t = false)]
-    pub coverage: bool,
-
-    /// Coverage output format (text, json)
-    #[arg(long, default_value = "text")]
-    pub coverage_format: String,
-
-    /// Write/Overwrite test files with actual server responses (Snapshot Mode)
-    #[arg(short = 'w', long, default_value_t = false)]
-    pub write: bool,
-
-    /// Data source (CSV/TSV/NDJSON) that drives each .gctf as a template,
-    /// expanding it into one test case per row (`{{source.column}}` substitution)
-    #[arg(long, value_name = "PATH")]
+    /// Data source (CSV/TSV/NDJSON) driving each .gctf as a template — one case
+    /// per row (`{{source.column}}` substitution)
+    #[arg(long, value_name = "PATH", help_heading = "Test Selection")]
     pub data: Option<PathBuf>,
 
-    /// Override the --data source format (csv, tsv, ndjson); inferred from the
-    /// file extension when omitted
-    #[arg(long, value_name = "FORMAT", requires = "data")]
+    /// Override the --data format (csv, tsv, ndjson); inferred from the extension otherwise
+    #[arg(
+        long,
+        value_name = "FORMAT",
+        requires = "data",
+        help_heading = "Test Selection"
+    )]
     pub data_format: Option<String>,
+
+    /// Only run tests whose file content differs from --since (git, no shell-out)
+    #[arg(long, default_value_t = false, help_heading = "Test Selection")]
+    pub only_changed: bool,
+
+    /// Git ref --only-changed compares against (default: HEAD, i.e. uncommitted changes)
+    #[arg(
+        long,
+        default_value = "HEAD",
+        value_name = "REF",
+        requires = "only_changed",
+        help_heading = "Test Selection"
+    )]
+    pub since: String,
+
+    /// Wire protocol: grpc, grpc-web, connectrpc
+    #[arg(
+        long,
+        default_value = "grpc",
+        value_name = "PROTOCOL",
+        help_heading = "Execution"
+    )]
+    pub protocol: String,
+
+    /// Worker count for parallel runs, or `auto`
+    #[arg(
+        short = 'p',
+        long,
+        default_value = "auto",
+        value_name = "N",
+        help_heading = "Execution"
+    )]
+    pub parallel: String,
+
+    /// Per-test timeout in seconds
+    #[arg(
+        short = 't',
+        long,
+        default_value_t = 30,
+        value_name = "SECS",
+        help_heading = "Execution"
+    )]
+    pub timeout: u64,
+
+    /// Retry failed network calls up to N times
+    #[arg(
+        short = 'r',
+        long,
+        default_value_t = 0,
+        value_name = "N",
+        help_heading = "Execution"
+    )]
+    pub retry: u32,
+
+    /// Initial delay between retries in seconds
+    #[arg(
+        long,
+        default_value_t = 1.0,
+        value_name = "SECS",
+        help_heading = "Execution"
+    )]
+    pub retry_delay: f64,
+
+    /// Disable retries entirely
+    #[arg(long, default_value_t = false, help_heading = "Execution")]
+    pub no_retry: bool,
+
+    /// Skip assertions and print raw server responses
+    #[arg(long, default_value_t = false, help_heading = "Execution")]
+    pub no_assert: bool,
+
+    /// Snapshot mode: write actual server responses back into the test files
+    #[arg(short = 'w', long, default_value_t = false, help_heading = "Execution")]
+    pub write: bool,
+
+    /// Show what would run without executing anything
+    #[arg(short = 'd', long, default_value_t = false, help_heading = "Execution")]
+    pub dry_run: bool,
+
+    /// Report format: junit, json, yaml, allure, html (comma-separated for several, e.g. junit,html)
+    #[arg(long, value_name = "FORMAT", help_heading = "Output & Reports")]
+    pub log_format: Option<String>,
+
+    /// Destination for --log-format: exact file (or directory, for allure) for
+    /// one format; a directory holding one file per format for several
+    #[arg(long, value_name = "PATH", help_heading = "Output & Reports")]
+    pub log_output: Option<PathBuf>,
+
+    /// Emit streaming NDJSON events (for IDE/CI integration)
+    #[arg(long, default_value_t = false, help_heading = "Output & Reports")]
+    pub stream: bool,
+
+    /// Progress style: auto, dots, verbose, none
+    #[arg(
+        long,
+        default_value = "auto",
+        value_name = "STYLE",
+        help_heading = "Output & Reports"
+    )]
+    pub progress: String,
+
+    /// Report proto API coverage after the run
+    #[arg(long, default_value_t = false, help_heading = "Output & Reports")]
+    pub coverage: bool,
+
+    /// Coverage format: text, json, html
+    #[arg(
+        long,
+        default_value = "text",
+        value_name = "FORMAT",
+        help_heading = "Output & Reports"
+    )]
+    pub coverage_format: String,
+
+    /// Force-capture the request/response exchange even when the active
+    /// reporter wouldn't otherwise need it (e.g. plain console, or a report
+    /// format that doesn't render it)
+    #[arg(long, default_value_t = false, help_heading = "Output & Reports")]
+    pub capture_exchange: bool,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct ReflectArgs {
-    /// Wire protocol: grpc (default), grpc-web, connectrpc
-    #[arg(long, default_value = "grpc")]
+    /// Wire protocol: grpc, grpc-web, connectrpc
+    #[arg(long, default_value = "grpc", value_name = "PROTOCOL")]
     pub protocol: String,
 
-    /// Service/method symbol OR .gctf file path
+    /// Service symbol, or service/method symbol (e.g. `pkg.Service/Method`)
     pub symbol: Option<String>,
 
-    /// Server address (overrides environment variable)
-    #[arg(long)]
+    /// Server address (host:port); overrides $GRPCTESTIFY_ADDRESS
+    #[arg(long, value_name = "ADDRESS")]
     pub address: Option<String>,
 
-    /// Plaintext connection (no TLS). If omitted, localhost/http addresses default to plaintext.
+    /// Plaintext connection (no TLS)
     #[arg(long, default_value_t = false)]
     pub plaintext: bool,
 
-    /// Output format (text, json)
-    #[arg(long, default_value = "text")]
+    /// Skip TLS certificate verification
+    #[arg(long, default_value_t = false)]
+    pub insecure: bool,
+
+    /// Output format: text, json
+    #[arg(long, default_value = "text", value_name = "FORMAT")]
     pub format: String,
 
     /// List all methods with full signatures
     #[arg(long, default_value_t = false)]
     pub list_methods: bool,
+
+    /// Only show services/methods whose name contains this substring
+    /// (case-insensitive)
+    #[arg(long, value_name = "SUBSTRING")]
+    pub filter: Option<String>,
 
     /// Describe a method's request and response message fields
     #[arg(long, value_name = "SERVICE/METHOD")]
@@ -666,7 +899,7 @@ pub struct ReflectArgs {
 #[derive(Args, Debug, Clone)]
 pub struct FmtArgs {
     /// Files to format
-    #[arg(required = true)]
+    #[arg(required = true, value_name = "FILES")]
     pub files: Vec<PathBuf>,
 
     /// Write changes to file instead of stdout
@@ -676,8 +909,8 @@ pub struct FmtArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct CallArgs {
-    /// Wire protocol: grpc (default), grpc-web, connectrpc
-    #[arg(long, default_value = "grpc")]
+    /// Wire protocol: grpc, grpc-web, connectrpc
+    #[arg(long, default_value = "grpc", value_name = "PROTOCOL")]
     pub protocol: String,
 
     /// File to call (omit if using -e)
@@ -712,8 +945,8 @@ pub struct CallArgs {
     #[arg(long = "vv", default_value_t = false)]
     pub very_verbose: bool,
 
-    /// Output to file instead of stdout (-o)
-    #[arg(short = 'o', long)]
+    /// Output file (stdout if omitted)
+    #[arg(short = 'o', long, value_name = "FILE")]
     pub output: Option<PathBuf>,
 
     /// Dump response headers to file (-D)
@@ -729,15 +962,31 @@ pub struct CallArgs {
     pub show_error: bool,
 
     /// Connection timeout in seconds
-    #[arg(long, default_value_t = 30)]
+    #[arg(long, default_value_t = 30, value_name = "SECS")]
     pub connect_timeout: u64,
 
     /// Skip TLS certificate verification
     #[arg(long, default_value_t = false)]
     pub insecure: bool,
 
+    /// Plaintext connection (no TLS) — overrides any TLS from the file
+    #[arg(long, default_value_t = false)]
+    pub plaintext: bool,
+
+    /// CA certificate path for TLS (overrides the file's TLS section)
+    #[arg(long)]
+    pub tls_ca: Option<String>,
+
+    /// Client certificate path for TLS (overrides the file's TLS section)
+    #[arg(long)]
+    pub tls_cert: Option<String>,
+
+    /// Client key path for TLS (overrides the file's TLS section)
+    #[arg(long)]
+    pub tls_key: Option<String>,
+
     /// Request timeout in seconds
-    #[arg(long, default_value_t = 60)]
+    #[arg(long, default_value_t = 60, value_name = "SECS")]
     pub max_time: u64,
 
     /// Run as benchmark instead of single call
@@ -759,8 +1008,8 @@ pub struct CallArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct GenArgs {
-    /// Output file for generated gctf (stdout if omitted)
-    #[arg(short = 'o', long)]
+    /// Output file (stdout if omitted)
+    #[arg(short = 'o', long, value_name = "FILE")]
     pub output: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -826,20 +1075,37 @@ impl Cli {
         }
     }
 
-    /// Get log format
+    /// Get log format (first one, when several were requested)
     pub fn log_format_mode(&self) -> Option<LogFormat> {
+        self.log_format_modes().into_iter().next()
+    }
+
+    /// Get every requested log format, in order, de-duplicated. `--log-format
+    /// junit,html` produces both file reports from a single run.
+    pub fn log_format_modes(&self) -> Vec<LogFormat> {
         let log_format = match &self.command {
             Some(Commands::Run(args)) => &args.log_format,
             _ => &self.run_args.log_format,
         };
 
-        log_format.as_ref().map(|fmt| match fmt.as_str() {
-            "junit" => LogFormat::JUnit,
-            "json" => LogFormat::Json,
-            "yaml" => LogFormat::Yaml,
-            "allure" => LogFormat::Allure,
-            _ => LogFormat::Console,
-        })
+        let Some(raw) = log_format else {
+            return Vec::new();
+        };
+
+        let mut seen = std::collections::HashSet::new();
+        raw.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|fmt| match fmt {
+                "junit" => LogFormat::JUnit,
+                "json" => LogFormat::Json,
+                "yaml" => LogFormat::Yaml,
+                "allure" => LogFormat::Allure,
+                "html" => LogFormat::Html,
+                _ => LogFormat::Console,
+            })
+            .filter(|fmt| seen.insert(*fmt))
+            .collect()
     }
 
     /// Get optimizer level from CLI flag or default for command
@@ -944,6 +1210,11 @@ impl RunArgs {
     pub fn is_json_coverage(&self) -> bool {
         is_json_format(&self.coverage_format)
     }
+
+    #[must_use]
+    pub fn is_html_coverage(&self) -> bool {
+        self.coverage_format.eq_ignore_ascii_case("html")
+    }
 }
 
 #[cfg(test)]
@@ -967,6 +1238,53 @@ mod tests {
     fn parallel_jobs_auto_is_at_least_one() {
         let cli = Cli::parse_from(["grpctestify", "run", "test.gctf"]);
         assert!(cli.parallel_jobs() >= 1);
+    }
+
+    #[test]
+    fn log_format_modes_single_format_unchanged() {
+        let cli = Cli::parse_from(["grpctestify", "run", "--log-format", "junit", "t.gctf"]);
+        assert_eq!(cli.log_format_modes(), vec![LogFormat::JUnit]);
+        assert_eq!(cli.log_format_mode(), Some(LogFormat::JUnit));
+    }
+
+    #[test]
+    fn log_format_modes_comma_separated() {
+        let cli = Cli::parse_from(["grpctestify", "run", "--log-format", "junit,html", "t.gctf"]);
+        assert_eq!(
+            cli.log_format_modes(),
+            vec![LogFormat::JUnit, LogFormat::Html]
+        );
+    }
+
+    #[test]
+    fn log_format_modes_dedups_and_trims() {
+        let cli = Cli::parse_from([
+            "grpctestify",
+            "run",
+            "--log-format",
+            " junit , html,junit ",
+            "t.gctf",
+        ]);
+        assert_eq!(
+            cli.log_format_modes(),
+            vec![LogFormat::JUnit, LogFormat::Html]
+        );
+    }
+
+    #[test]
+    fn log_format_modes_empty_when_unset() {
+        let cli = Cli::parse_from(["grpctestify", "run", "t.gctf"]);
+        assert!(cli.log_format_modes().is_empty());
+        assert_eq!(cli.log_format_mode(), None);
+    }
+
+    #[test]
+    fn capture_exchange_flag_defaults_false_and_parses() {
+        let cli = Cli::parse_from(["grpctestify", "run", "t.gctf"]);
+        assert!(!cli.get_run_args().capture_exchange);
+
+        let cli = Cli::parse_from(["grpctestify", "run", "--capture-exchange", "t.gctf"]);
+        assert!(cli.get_run_args().capture_exchange);
     }
 
     #[test]

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // Workflow tests - test gctf semantics using Workflow built from ExecutionPlan
 
 use grpctestify::execution::{ExecutionPlan, StreamingPattern, Workflow};
@@ -77,6 +78,31 @@ fn test_workflow_from_streaming_plan() {
             _ => panic!("Unknown mode: {}", expected_mode),
         }
     }
+}
+
+/// A single REQUEST block with several self-delimiting JSON values (the
+/// symmetric counterpart to RESPONSE's own multi-message JsonLines form)
+/// must plan as one `json-lines` request carrying all 3 values, not an
+/// empty placeholder — this is the same shape `explain`/`workflow` read.
+#[test]
+fn test_workflow_from_jsonlines_request_plan() {
+    let path = "examples/streaming/client-streaming-jsonlines.gctf";
+    if !Path::new(path).exists() {
+        return;
+    }
+
+    let doc = parse_gctf(Path::new(path));
+    assert!(doc.is_ok(), "Failed to parse {}", path);
+
+    let plan = ExecutionPlan::from_document(&doc.unwrap());
+
+    assert_eq!(plan.requests.len(), 1, "expected one REQUEST section");
+    let request = &plan.requests[0];
+    assert_eq!(request.content_type, "json-lines");
+    let values = request.content.as_array().expect("content is an array");
+    assert_eq!(values.len(), 3);
+    assert_eq!(values[0]["text"], "Message 1");
+    assert_eq!(values[2]["text"], "Message 3");
 }
 
 /// Test workflow for error cases

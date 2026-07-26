@@ -1,0 +1,44 @@
+=== <UUID>-exchange-attachment.json ===
+{
+  "headers": {
+    "content-type": "application/grpc",
+    "date": "<HTTP_DATE>"
+  },
+  "trailers": {
+    "grpc-status": "0"
+  },
+  "response": [],
+  "truncated": false
+}
+=== <UUID>-exchange-attachment.json ===
+{
+  "headers": {
+    "content-type": "application/grpc",
+    "date": "<HTTP_DATE>"
+  },
+  "trailers": {
+    "grpc-status": "0"
+  },
+  "response": [],
+  "truncated": false
+}
+=== <UUID>-result.json ===
+{"uuid":"<UUID>","historyId":"<UUID>","testCaseId":"<UUID>","fullName":"<TMPDIR>/a_pass.gctf","name":"a_pass.gctf","status":"passed","statusDetails":null,"start":<EPOCH_MS>,"stop":<EPOCH_MS>,"stage":"finished","labels":[{"name":"language","value":"gctf"},{"name":"framework","value":"grpctestify"},{"name":"grpctestify_version","value":"1.9.2"},{"name":"host","value":"<HOST>"},{"name":"thread","value":"ThreadId(<N>)"},{"name":"suite","value":"Health"},{"name":"feature","value":"Health"},{"name":"parentSuite","value":"grpc.health.v1"},{"name":"epic","value":"grpc.health.v1"},{"name":"subSuite","value":"Check"},{"name":"story","value":"Check"},{"name":"grpc_endpoint","value":"grpc.health.v1.Health/Check"},{"name":"grpc_service","value":"Health"},{"name":"grpc_method","value":"Check"},{"name":"grpc_package","value":"grpc.health.v1"}],"parameters":[{"name":"grpctestify.version","value":"1.9.2"},{"name":"documents.count","value":"1"},{"name":"runtime.timeout","value":"30"},{"name":"runtime.retry","value":"0"},{"name":"runtime.retry_delay","value":"1"},{"name":"runtime.no_retry","value":"false"},{"name":"runtime.compression","value":"none"}],"steps":[{"name":"#1 grpc.health.v1.Health/Check [Unary] (requests: 1, expect: ASSERTS)","status":"passed","start":<EPOCH_MS>,"stop":<EPOCH_MS>,"steps":[{"name":"REQUEST (messages=1)","status":"passed"},{"name":"ASSERTS (blocks=1)","status":"passed"}]},{"name":"Assertions (1)","status":"passed","steps":[{"name":"line 11: .status == \"SERVING\"","status":"passed"}]}],"attachments":[{"name":"Captured exchange","source":"<UUID>-exchange-attachment.json","type":"application/json"}]}
+=== <UUID>-result.json ===
+{"uuid":"<UUID>","historyId":"<UUID>","testCaseId":"<UUID>","fullName":"<TMPDIR>/b_fail.gctf","name":"b_fail.gctf","status":"failed","statusDetails":{"message":"Validation failed:\n  - Assertion failed at line 9 (assertion at line 11): Assertion failed: .status == \"NOT_SERVING\" (Values: String(\"SERVING\") vs String(\"NOT_SERVING\"))\n  -     Expected: == String(\"NOT_SERVING\")\n    Actual:   String(\"SERVING\")","trace":"line 11: .status == \"NOT_SERVING\"\nexpected: == String(\"NOT_SERVING\")\nactual:   String(\"SERVING\")"},"start":<EPOCH_MS>,"stop":<EPOCH_MS>,"stage":"finished","labels":[{"name":"language","value":"gctf"},{"name":"framework","value":"grpctestify"},{"name":"grpctestify_version","value":"1.9.2"},{"name":"host","value":"<HOST>"},{"name":"thread","value":"ThreadId(<N>)"},{"name":"suite","value":"Health"},{"name":"feature","value":"Health"},{"name":"parentSuite","value":"grpc.health.v1"},{"name":"epic","value":"grpc.health.v1"},{"name":"subSuite","value":"Check"},{"name":"story","value":"Check"},{"name":"grpc_endpoint","value":"grpc.health.v1.Health/Check"},{"name":"grpc_service","value":"Health"},{"name":"grpc_method","value":"Check"},{"name":"grpc_package","value":"grpc.health.v1"}],"parameters":[{"name":"grpctestify.version","value":"1.9.2"},{"name":"documents.count","value":"1"},{"name":"runtime.timeout","value":"30"},{"name":"runtime.retry","value":"0"},{"name":"runtime.retry_delay","value":"1"},{"name":"runtime.no_retry","value":"false"},{"name":"runtime.compression","value":"none"}],"steps":[{"name":"#1 grpc.health.v1.Health/Check [Unary] (requests: 1, expect: ASSERTS)","status":"failed","start":<EPOCH_MS>,"stop":<EPOCH_MS>,"steps":[{"name":"REQUEST (messages=1)","status":"passed"},{"name":"ASSERTS (blocks=1)","status":"failed"}]},{"name":"Assertions (1)","status":"failed","steps":[{"name":"line 11: .status == \"NOT_SERVING\"","status":"failed","statusDetails":{"message":"Assertion failed: .status == \"NOT_SERVING\" (Values: String(\"SERVING\") vs String(\"NOT_SERVING\"))","trace":"expected: == String(\"NOT_SERVING\")\nactual:   String(\"SERVING\")"}}]}],"attachments":[{"name":"Captured exchange","source":"<UUID>-exchange-attachment.json","type":"application/json"}]}
+=== categories.json ===
+[
+  {"name": "Assertion mismatch", "matchedStatuses": ["failed"], "messageRegex": "(?s).*(ssertion|xpected|xpect).*"},
+  {"name": "gRPC status error", "matchedStatuses": ["failed"], "messageRegex": "(?s).*gRPC code.*"},
+  {"name": "Connection error", "matchedStatuses": ["failed"], "messageRegex": "(?s).*(onnect|navailable|ransport|refused).*"},
+  {"name": "Timeout", "matchedStatuses": ["failed"], "messageRegex": "(?s).*(imeout|eadline).*"},
+  {"name": "Parse error", "matchedStatuses": ["failed"], "messageRegex": "(?s).*(arse|nvalid|yntax).*"},
+  {"name": "Validation error", "matchedStatuses": ["failed"], "messageRegex": "(?s).*alidation.*"}
+]
+=== environment.properties ===
+grpctestify.version=<VERSION>
+grpctestify.parallel_jobs=1
+tests.total=2
+tests.rpc_calls=2
+grpctestify.address=localhost:4770
+

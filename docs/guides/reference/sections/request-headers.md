@@ -19,6 +19,7 @@ x-request-id: req-123
 
 - Legacy `HEADERS` alias is recognized but deprecated
 - One section can include multiple key-value pairs
+- The same header name can't be set twice (a parse error) — each key maps to one value, not a multi-value list
 
 ## Related
 

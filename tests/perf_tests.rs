@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // Performance tests (no nightly required)
 
 use std::time::Instant;

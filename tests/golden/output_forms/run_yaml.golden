@@ -1,0 +1,82 @@
+total: 2
+passed: 1
+failed: 1
+skipped: 0
+results:
+- name: <TMPDIR>/b_fail.gctf
+  status: Fail
+  duration_ms: 0
+  call_duration_ms: 0
+  error_message: |-
+    Validation failed:
+      - Assertion failed at line 9 (assertion at line 11): Assertion failed: .status == "NOT_SERVING" (Values: String("SERVING") vs String("NOT_SERVING"))
+      -     Expected: == String("NOT_SERVING")
+        Actual:   String("SERVING")
+  execution_time: <EPOCH_S>
+  assertions:
+  - line: 11
+    expression: .status == "NOT_SERVING"
+    passed: false
+    elapsed_ms: 0
+    message: 'Assertion failed: .status == "NOT_SERVING" (Values: String("SERVING") vs String("NOT_SERVING"))'
+    endpoint: grpc.health.v1.Health/Check
+    expected: == String("NOT_SERVING")
+    actual: String("SERVING")
+  exchange:
+    headers:
+      content-type: application/grpc
+      date: <HTTP_DATE>
+    trailers:
+      grpc-status: '0'
+    response: []
+    truncated: false
+  document_durations_ms:
+  - 0
+  config_summary:
+    sections:
+    - ADDRESS
+    - ENDPOINT
+    - REQUEST
+    - ASSERTS
+    chain_steps: 1
+- name: <TMPDIR>/a_pass.gctf
+  status: Pass
+  duration_ms: 0
+  call_duration_ms: 0
+  error_message: null
+  execution_time: <EPOCH_S>
+  assertions:
+  - line: 11
+    expression: .status == "SERVING"
+    passed: true
+    elapsed_ms: 0
+    endpoint: grpc.health.v1.Health/Check
+  exchange:
+    headers:
+      content-type: application/grpc
+      date: <HTTP_DATE>
+    trailers:
+      grpc-status: '0'
+    response: []
+    truncated: false
+  document_durations_ms:
+  - 0
+  config_summary:
+    sections:
+    - ADDRESS
+    - ENDPOINT
+    - REQUEST
+    - ASSERTS
+    chain_steps: 1
+metrics:
+  total_duration_ms: 0
+  start_time: <EPOCH_S>
+  end_time: 0
+  rpc_calls: 2
+  total_rpc_ms: 0
+  sum_test_ms: 0
+  parallel_jobs: 1
+report_context:
+  tool: apif
+  version: 0.2.2
+  generated_at: <EPOCH_S>

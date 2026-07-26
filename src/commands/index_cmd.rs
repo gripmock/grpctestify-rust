@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
 use crate::bench::sources::index::SourceIndex;
 use crate::bench::sources::index_builder::{
     build_index_for_source_with_progress, index_path_for_source,
@@ -13,7 +14,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 pub fn handle_index(args: &IndexArgs) -> Result<()> {
-    // Stats mode: show index file metadata
     if args.stats {
         for path in &args.sources {
             if !path.exists() {

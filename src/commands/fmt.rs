@@ -1,4 +1,4 @@
-// Fmt command - format GCTF files
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
 
 use anyhow::Result;
 use tracing::{debug, error, warn};
@@ -15,39 +15,40 @@ use crate::utils::FileUtils;
 /// - normalize `:TypeName` spacing to stuck-together form (`.x:number` not `.x : number`)
 fn normalize_assertion_lines(raw: &str) -> Vec<String> {
     raw.lines()
-        .map(|line| {
-            let line = normalize_hash_comment_line(line).unwrap_or_else(|| line.to_string());
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("//") || trimmed.is_empty() {
-                return line;
-            }
-            // Try to parse as assertion expression for canonical formatting
-            let expr = crate::parser::assertion_ast::parse_assertion(trimmed);
-            if matches!(&expr, crate::parser::assertion_ast::AssertionExpr::Raw(_)) {
-                return line;
-            }
-            let serialized = crate::parser::assertion_ast::assertion_to_string(&expr);
-            // Round-trip guard: only rewrite to the canonical form when that form
-            // parses back to itself. Otherwise the parser can't re-read what we
-            // emit and a second format pass would change the output. This is the
-            // case for `if..then..else..end`, which serializes to a `? :` ternary
-            // the parser does not accept back (root cause: apif-ast
-            // assertion_to_string/parse_assertion asymmetry).
-            let reparsed = crate::parser::assertion_ast::parse_assertion(&serialized);
-            let stable = !matches!(
-                &reparsed,
-                crate::parser::assertion_ast::AssertionExpr::Raw(_)
-            ) && crate::parser::assertion_ast::assertion_to_string(&reparsed)
-                == serialized;
-            if !stable {
-                return line;
-            }
-            // Preserve original indentation
-            let indent_len = line.len() - trimmed.len();
-            let indent = &line[..indent_len];
-            format!("{}{}", indent, serialized)
-        })
+        .map(|line| group_numeric_literals(&normalize_assertion_line(line)))
         .collect()
+}
+
+fn normalize_assertion_line(line: &str) -> String {
+    let line = normalize_hash_comment_line(line).unwrap_or_else(|| line.to_string());
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("//") || trimmed.is_empty() {
+        return line;
+    }
+    // Try to parse as assertion expression for canonical formatting
+    let expr = crate::parser::assertion_ast::parse_assertion(trimmed);
+    if matches!(&expr, crate::parser::assertion_ast::AssertionExpr::Raw(_)) {
+        return line;
+    }
+    let serialized = crate::parser::assertion_ast::assertion_to_string(&expr);
+    // Round-trip guard: only rewrite to the canonical form when that form
+    // parses back to itself. Otherwise the parser can't re-read what we
+    // emit and a second format pass would change the output. This is the
+    // case for `if..then..else..end`, which serializes to a `? :` ternary
+    // the parser does not accept back (root cause: apif-ast
+    // assertion_to_string/parse_assertion asymmetry).
+    let reparsed = crate::parser::assertion_ast::parse_assertion(&serialized);
+    let stable = !matches!(
+        &reparsed,
+        crate::parser::assertion_ast::AssertionExpr::Raw(_)
+    ) && crate::parser::assertion_ast::assertion_to_string(&reparsed) == serialized;
+    if !stable {
+        return line;
+    }
+    // Preserve original indentation
+    let indent_len = line.len() - trimmed.len();
+    let indent = &line[..indent_len];
+    format!("{}{}", indent, serialized)
 }
 
 fn normalize_hash_comment_line(line: &str) -> Option<String> {
@@ -68,11 +69,101 @@ fn normalize_hash_comment_line(line: &str) -> Option<String> {
 }
 
 fn format_json_content(value: &serde_json::Value) -> Vec<String> {
-    serde_json::to_string_pretty(value)
-        .unwrap_or_else(|_| value.to_string())
+    let text = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
+    group_numeric_literals(&text)
         .lines()
         .map(str::to_string)
         .collect()
+}
+
+/// Canonicalize digit-separators outside string literals: `1000000` ->
+/// `1_000_000`, `1_00` -> `100`. Only triggers at the start of a digit run,
+/// so `field_1_2`-style identifiers and string contents are untouched.
+fn group_numeric_literals(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '"' {
+            out.push(c);
+            while let Some(next) = chars.next() {
+                out.push(next);
+                if next == '\\' {
+                    if let Some(escaped) = chars.next() {
+                        out.push(escaped);
+                    }
+                } else if next == '"' {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        let is_number_start = c.is_ascii_digit()
+            && out
+                .chars()
+                .next_back()
+                .is_none_or(|p| !(p.is_ascii_alphanumeric() || p == '_' || p == '.'));
+
+        if is_number_start {
+            let mut int_part = String::new();
+            int_part.push(c);
+            while let Some(&next) = chars.peek() {
+                if next.is_ascii_digit() || next == '_' {
+                    int_part.push(next);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+
+            let mut frac_part: Option<String> = None;
+            if chars.peek() == Some(&'.') {
+                let mut lookahead = chars.clone();
+                lookahead.next();
+                if lookahead.peek().is_some_and(|c| c.is_ascii_digit()) {
+                    chars.next();
+                    let mut frac = String::new();
+                    while let Some(&next) = chars.peek() {
+                        if next.is_ascii_digit() || next == '_' {
+                            frac.push(next);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    frac_part = Some(frac);
+                }
+            }
+
+            out.push_str(&group_digits(&int_part));
+            if let Some(frac) = frac_part {
+                out.push('.');
+                out.push_str(&frac.replace('_', ""));
+            }
+            continue;
+        }
+
+        out.push(c);
+    }
+
+    out
+}
+
+fn group_digits(raw: &str) -> String {
+    let digits: Vec<char> = raw.chars().filter(char::is_ascii_digit).collect();
+    let n = digits.len();
+    if n <= 3 {
+        return digits.into_iter().collect();
+    }
+    let mut grouped = String::with_capacity(n + n / 3);
+    for (i, ch) in digits.iter().enumerate() {
+        if i != 0 && (n - i).is_multiple_of(3) {
+            grouped.push('_');
+        }
+        grouped.push(*ch);
+    }
+    grouped
 }
 
 fn format_json_with_comments(raw: &str) -> Vec<String> {
@@ -246,7 +337,10 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
         }
     }
 
-    out.lines().map(str::to_string).collect()
+    group_numeric_literals(&out)
+        .lines()
+        .map(str::to_string)
+        .collect()
 }
 
 fn has_json_style_comments(raw: &str) -> bool {
@@ -380,6 +474,53 @@ fn format_key_values_section(raw: &str, sort_keys: bool) -> Vec<String> {
     items.into_iter().map(|(_, _, v)| v).collect()
 }
 
+/// Like `format_key_values_section`, but indented lines stay glued to the
+/// preceding key instead of being sorted as their own entries — needed for
+/// `sources:`'s nested YAML list.
+fn format_bench_section(raw: &str) -> Vec<String> {
+    let lines = normalize_lines(raw);
+
+    struct Item {
+        rank: usize,
+        key: String,
+        text: Vec<String>,
+    }
+    let mut items: Vec<Item> = Vec::new();
+
+    for line in &lines {
+        let is_continuation = line.starts_with(' ') || line.starts_with('\t');
+        if is_continuation && let Some(item) = items.last_mut() {
+            item.text.push(line.clone());
+            continue;
+        }
+
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") || trimmed.is_empty() {
+            continue;
+        }
+        if let Some((key, value)) = trimmed.split_once(':') {
+            let key = key.trim();
+            let value = value.trim();
+            let text = if value.is_empty() {
+                format!("{key}:")
+            } else {
+                format!("{key}: {value}")
+            };
+            items.push(Item {
+                rank: apif_source_row::schema::bench_key_rank(key),
+                key: key.to_lowercase(),
+                text: vec![text],
+            });
+        }
+    }
+
+    // Canonical order (mode → profile → ... → sources), matching `check`'s
+    // reference order and the other BENCH serializer in apif-parser — not
+    // alphabetical, so e.g. `mode` sorts before `duration`.
+    items.sort_by(|a, b| a.rank.cmp(&b.rank).then_with(|| a.key.cmp(&b.key)));
+    items.into_iter().flat_map(|item| item.text).collect()
+}
+
 fn format_options_section(raw: &str) -> Vec<String> {
     let lines = normalize_lines(raw);
     let mut items: Vec<(String, String)> = Vec::new();
@@ -390,11 +531,7 @@ fn format_options_section(raw: &str) -> Vec<String> {
             continue;
         }
         if let Some((key, value)) = trimmed.split_once(':') {
-            let normalized_key = match key.trim() {
-                "retry-delay" => "retry_delay",
-                "no-retry" => "no_retry",
-                other => other,
-            };
+            let normalized_key = crate::parser::canonical_key_spelling(key.trim());
             items.push((
                 normalized_key.to_ascii_lowercase(),
                 format!("{}: {}", normalized_key, value.trim()),
@@ -444,15 +581,19 @@ fn format_section_lines(section: &crate::parser::ast::Section) -> Vec<String> {
         (crate::parser::ast::SectionType::Asserts, _) => {
             return normalize_assertion_lines(&section.raw_content);
         }
-        // META is YAML — `#` is its comment marker, so preserve lines verbatim
-        // (rewriting `#` to `//` would corrupt the YAML).
-        (crate::parser::ast::SectionType::Meta, _) => {
+        // META/DATASET are YAML — `#` is its comment marker, so preserve
+        // lines verbatim (rewriting `#` to `//` would corrupt the YAML).
+        (crate::parser::ast::SectionType::Meta | crate::parser::ast::SectionType::Dataset, _) => {
             section.raw_content.lines().map(str::to_string).collect()
         }
         (
             crate::parser::ast::SectionType::Options,
             crate::parser::ast::SectionContent::KeyValues(_),
         ) => format_options_section(&section.raw_content),
+        (
+            crate::parser::ast::SectionType::Bench,
+            crate::parser::ast::SectionContent::KeyValues(_),
+        ) => format_bench_section(&section.raw_content),
         (_, crate::parser::ast::SectionContent::KeyValues(_)) => {
             format_key_values_section(&section.raw_content, true)
         }
@@ -466,15 +607,59 @@ fn format_section_lines(section: &crate::parser::ast::Section) -> Vec<String> {
     lines
 }
 
-/// Format a GCTF document chain via AST.
-/// Walks all sections in order.
+/// One section's rendered lines (leading comments + attributes + header +
+/// body), kept together as a unit so reordering preamble sections below
+/// carries each section's comments/attributes along with it.
+struct SectionBlock {
+    preamble_rank: Option<usize>,
+    lines: Vec<String>,
+}
+
+/// Move a trailing run of blank/`//`-comment lines off the end of each block
+/// onto the front of the next one — see the call site for why.
+/// Only re-homes comments up to `last_movable`, i.e. within the preamble
+/// (plus its boundary with the first body section) — reordering never
+/// touches body sections, so their existing comment placement is untouched.
+fn rehome_trailing_comments(blocks: &mut [SectionBlock], last_movable: usize) {
+    for i in 0..last_movable.min(blocks.len().saturating_sub(1)) {
+        let split_at = {
+            let lines = &blocks[i].lines;
+            let mut idx = lines.len();
+            while idx > 0 {
+                let trimmed = lines[idx - 1].trim();
+                if trimmed.is_empty() || trimmed.starts_with("//") {
+                    idx -= 1;
+                } else {
+                    break;
+                }
+            }
+            idx
+        };
+        if split_at < blocks[i].lines.len() {
+            let mut tail = blocks[i].lines.split_off(split_at);
+            // Only the comment text itself needs to travel —
+            // `ensure_single_section_separator` supplies the blank line
+            // between blocks at assembly time.
+            while tail.first().is_some_and(|l| l.trim().is_empty()) {
+                tail.remove(0);
+            }
+            if tail.is_empty() {
+                continue;
+            }
+            let next = &mut blocks[i + 1].lines;
+            next.splice(0..0, tail);
+        }
+    }
+}
+
+/// Format a GCTF document chain via AST. Walks all sections in order.
 fn format_gctf_chain(head: &crate::parser::GctfDocument, source: &str) -> String {
     let eol = canonical_line_ending();
     let lines: Vec<&str> = source.lines().collect();
-    let mut output: Vec<String> = Vec::new();
+    let mut blocks: Vec<SectionBlock> = Vec::new();
     let mut current_line = 0usize;
 
-    // Walk every section across all documents in the chain
+    // Walk every section across all documents in the chain, in source order.
     for doc in head.iter_chain() {
         for section in &doc.sections {
             // Skip empty EXTRACT sections
@@ -488,27 +673,68 @@ fn format_gctf_chain(head: &crate::parser::GctfDocument, source: &str) -> String
             let attr_count = section.attributes.len();
             let attr_line_start = section.start_line.saturating_sub(attr_count);
 
-            // Interleave comments/blank lines between previous section end and attribute lines
+            let mut block_lines = Vec::new();
+
+            // Interleave comments between previous section end and attribute
+            // lines. Blank lines are deliberately dropped, not copied —
+            // inter-block spacing is always synthesized at assembly time by
+            // `ensure_single_section_separator`, and every section's own
+            // rendered content is already blank-trimmed
+            // (`format_section_lines`'s `trim_trailing_blank_lines`), so a
+            // raw blank line here would just double up with that separator.
             while current_line < attr_line_start && current_line < lines.len() {
-                output.push(
-                    normalize_hash_comment_line(lines[current_line])
-                        .unwrap_or_else(|| lines[current_line].to_string()),
-                );
+                if !lines[current_line].trim().is_empty() {
+                    block_lines.push(
+                        normalize_hash_comment_line(lines[current_line])
+                            .unwrap_or_else(|| lines[current_line].to_string()),
+                    );
+                }
                 current_line += 1;
             }
 
             // Emit attributes before section header
             for attr in &section.attributes {
-                output.push(attr.format_directive());
+                block_lines.push(attr.format_directive());
             }
 
             // Normal section
-            output.push(section.format_header());
-            output.extend(format_section_lines(section));
+            block_lines.push(section.format_header());
+            block_lines.extend(format_section_lines(section));
 
             current_line = section.end_line.min(lines.len());
-            ensure_single_section_separator(&mut output, true);
+
+            blocks.push(SectionBlock {
+                preamble_rank: section.section_type.preamble_rank(),
+                lines: block_lines,
+            });
         }
+    }
+
+    let first_body_idx = blocks
+        .iter()
+        .position(|b| b.preamble_rank.is_none())
+        .unwrap_or(blocks.len());
+
+    // The parser attributes a comment sitting between two sections to the
+    // PRECEDING section's content (`extract_section_content` in
+    // apif-parser), not the section it visually precedes. Reordering
+    // preamble sections would otherwise drag such a comment along with the
+    // wrong neighbor, so move a trailing run of blank/comment lines off the
+    // end of each preamble block onto the front of the next one first.
+    // Bounded to the preamble (+ its boundary with the first body section) —
+    // body-to-body comment placement is untouched.
+    rehome_trailing_comments(&mut blocks, first_body_idx);
+
+    // Reorder only the leading run of preamble sections (META→BENCH→DATASET→
+    // ADDRESS→ENDPOINT→TLS→PROTO→OPTIONS) into canonical order; body sections
+    // keep their original order and position. A stable sort keeps each
+    // block's comments/attributes glued to its section.
+    blocks[..first_body_idx].sort_by_key(|b| b.preamble_rank.unwrap());
+
+    let mut output: Vec<String> = Vec::new();
+    for block in &blocks {
+        output.extend(block.lines.iter().cloned());
+        ensure_single_section_separator(&mut output, true);
     }
 
     // Trailing file lines
@@ -607,6 +833,18 @@ pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
     let mut files = Vec::new();
     let mut has_error = false;
     let mut files_needing_format = 0usize;
+    let mut files_written = 0usize;
+    // See `check.rs::rhai_plugin_names` — `PLUGIN_SIGNATURES` has no way to
+    // know about a script from the convention directories, so without this
+    // every valid `.rhai`-backed assertion would hard-fail `fmt` as an
+    // unknown plugin.
+    let rhai_plugin_names = crate::commands::check::rhai_plugin_names();
+    apif_optimizer::register_extra_boolean_plugins(
+        crate::commands::check::rhai_boolean_plugin_names(),
+    );
+    crate::parser::register_extra_inline_option_keys(
+        crate::plugins::rhai_plugin::load_all_inline_option_keys(),
+    );
 
     for path in &args.files {
         if path.is_dir() {
@@ -626,6 +864,7 @@ pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
+    let total_files = files.len();
     for file in files {
         let original = match std::fs::read_to_string(&file) {
             Ok(content) => content,
@@ -653,7 +892,9 @@ pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
                 error!("{}:1: [VALIDATION_ERROR] {}", file.display(), e);
                 chain_has_error = true;
             }
-            for mismatch in semantics::collect_assertion_type_mismatches(d) {
+            // detached: the semantic passes below are chain-aware internally too
+            let single = d.detached();
+            for mismatch in semantics::collect_assertion_type_mismatches(&single) {
                 error!(
                     "{}:{}: [{}] {}",
                     file.display(),
@@ -663,7 +904,9 @@ pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
                 );
                 chain_has_error = true;
             }
-            for unknown in semantics::collect_unknown_plugin_calls(d) {
+            for unknown in
+                semantics::collect_unknown_plugin_calls_with_extra(&single, &rhai_plugin_names)
+            {
                 error!(
                     "{}:{}: [{}] {}",
                     file.display(),
@@ -674,7 +917,7 @@ pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
                 chain_has_error = true;
             }
             // Suppress SEM_D001 in fmt — Safe-level optimizer auto-fixes them
-            for dep in semantics::collect_deprecated_plugin_calls(d) {
+            for dep in semantics::collect_deprecated_plugin_calls(&single) {
                 debug!(
                     "{}:{}: [{}] {}",
                     file.display(),
@@ -682,6 +925,36 @@ pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
                     dep.rule_id,
                     dep.message
                 );
+            }
+            for constant in semantics::collect_constant_assertions(&single) {
+                error!(
+                    "{}:{}: [{}] {}",
+                    file.display(),
+                    constant.line,
+                    constant.rule_id,
+                    constant.message
+                );
+                chain_has_error = true;
+            }
+            for dup in semantics::collect_duplicate_assertions(&single) {
+                error!(
+                    "{}:{}: [{}] {}",
+                    file.display(),
+                    dup.line,
+                    dup.rule_id,
+                    dup.message
+                );
+                chain_has_error = true;
+            }
+            for redundant in semantics::collect_redundant_response_assertions(&single) {
+                error!(
+                    "{}:{}: [{}] {}",
+                    file.display(),
+                    redundant.line,
+                    redundant.rule_id,
+                    redundant.message
+                );
+                chain_has_error = true;
             }
         }
         if chain_has_error {
@@ -699,47 +972,82 @@ pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
             }
         };
 
-        if args.write {
-            // Only write if content changed (idempotent check)
-            // Normalize EOL for comparison to handle CRLF input
-            let formatted_cmp = normalize_eol_for_compare(&formatted);
-            let original_cmp = normalize_eol_for_compare(&original);
-            if formatted_cmp != original_cmp
-                && let Err(e) = write_atomic(&file, &formatted)
-            {
-                error!("Failed to write {}: {}", file.display(), e);
-                has_error = true;
-            }
-        } else {
-            let formatted_cmp = normalize_eol_for_compare(&formatted);
-            let original_cmp = normalize_eol_for_compare(&original);
+        let formatted_cmp = normalize_eol_for_compare(&formatted);
+        let original_cmp = normalize_eol_for_compare(&original);
+        let changed = formatted_cmp != original_cmp;
 
-            if formatted_cmp != original_cmp {
-                println!(
-                    "{}:1: [FORMAT_NEEDED] File is not formatted",
-                    file.display()
-                );
-                println!("  hint: Run `grpctestify fmt -w {}`", file.display());
-                has_error = true;
-                files_needing_format += 1;
-            } else {
-                println!("{} ... OK", file.display());
+        if args.write {
+            if changed {
+                if let Err(e) = write_atomic(&file, &formatted) {
+                    error!("Failed to write {}: {}", file.display(), e);
+                    has_error = true;
+                } else {
+                    println!(
+                        "{} {} {}",
+                        crate::report::style::pass_icon(),
+                        file.display(),
+                        crate::report::style::dim_style().apply_to("· formatted")
+                    );
+                    files_written += 1;
+                }
             }
+        } else if changed {
+            println!(
+                "{} {}:1: [FORMAT_NEEDED] File is not formatted",
+                crate::report::style::fail_icon(),
+                file.display()
+            );
+            println!("    hint: Run `grpctestify fmt -w {}`", file.display());
+            has_error = true;
+            files_needing_format += 1;
+        } else {
+            println!(
+                "{} {} ... OK",
+                crate::report::style::pass_icon(),
+                file.display()
+            );
         }
     }
 
-    if !args.write && files_needing_format > 0 {
-        error!(
-            "{} file(s) require formatting. Run `grpctestify fmt -w ...`",
-            files_needing_format
-        );
-    }
+    print_fmt_summary(args.write, total_files, files_written, files_needing_format);
 
     if has_error {
         return Err(anyhow::anyhow!("Formatting failed with errors"));
     }
 
     Ok(())
+}
+
+fn print_fmt_summary(write: bool, total: usize, written: usize, needing: usize) {
+    use crate::report::style::{dim_style, fail_icon, fail_style, pass_icon, pass_style};
+    println!();
+    if write {
+        let unchanged = total.saturating_sub(written);
+        println!(
+            "{} {} {}",
+            pass_icon(),
+            pass_style().apply_to("Formatted"),
+            dim_style().apply_to(format!(
+                "· {written} changed · {unchanged} already formatted"
+            ))
+        );
+    } else if needing == 0 {
+        println!(
+            "{} {} {}",
+            pass_icon(),
+            pass_style().apply_to("All formatted"),
+            dim_style().apply_to(format!("· {total} files"))
+        );
+    } else {
+        println!(
+            "{} {} {}",
+            fail_icon(),
+            fail_style().apply_to("Needs formatting"),
+            dim_style().apply_to(format!(
+                "· {needing}/{total} files · run `grpctestify fmt -w`"
+            ))
+        );
+    }
 }
 
 #[cfg(test)]
@@ -806,11 +1114,52 @@ mod tests {
     // Regression: META is YAML, whose comment marker is `#`. The formatter used
     // to rewrite `#` to `//`, corrupting the YAML. It must be preserved verbatim.
     #[test]
+    fn group_digits_groups_in_threes_from_the_right() {
+        assert_eq!(super::group_digits("100"), "100");
+        assert_eq!(super::group_digits("1000"), "1_000");
+        assert_eq!(super::group_digits("1234567"), "1_234_567");
+        // Malformed grouping normalizes to the canonical form.
+        assert_eq!(super::group_digits("1_00"), "100");
+    }
+
+    #[test]
+    fn group_numeric_literals_leaves_strings_and_identifiers_alone() {
+        let input = r#"{"amount": 1000000, "id_1_2": 3, "note": "order_1_000_2"}"#;
+        let out = super::group_numeric_literals(input);
+        assert_eq!(
+            out,
+            r#"{"amount": 1_000_000, "id_1_2": 3, "note": "order_1_000_2"}"#
+        );
+    }
+
+    #[test]
+    fn test_fmt_request_response_numbers_get_grouped() {
+        let src =
+            format!("{HDR}--- RESPONSE ---\n{{\n  \"amount\": 1000000,\n  \"code\": 42\n}}\n");
+        let out = assert_idempotent(&src);
+        assert!(out.contains("1_000_000"), "expected grouped amount: {out}");
+        assert!(
+            out.contains("\"code\": 42"),
+            "small numbers stay ungrouped: {out}"
+        );
+    }
+
+    #[test]
+    fn test_fmt_asserts_numeric_literal_grouped() {
+        let src = format!("{HDR}--- ASSERTS ---\n.amount == 1000000\n");
+        let out = assert_idempotent(&src);
+        assert!(
+            out.contains(".amount == 1_000_000"),
+            "expected grouped ASSERTS literal: {out}"
+        );
+    }
+
+    #[test]
     fn test_fmt_meta_yaml_hash_comment_preserved() {
-        let src = "--- META ---\n# a comment\nsuite: demo\n\n--- ENDPOINT ---\ntest.Service/Method\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n";
+        let src = "--- META ---\n# a comment\nname: demo\n\n--- ENDPOINT ---\ntest.Service/Method\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n";
         let out = assert_idempotent(src);
         assert!(
-            out.contains("--- META ---\n# a comment\nsuite: demo"),
+            out.contains("--- META ---\n# a comment\nname: demo"),
             "META `#` comment must stay `#`, not become `//`: {out}"
         );
         assert!(
@@ -1297,9 +1646,9 @@ test.Service/Method
 
 --- RESPONSE partial ---
 {
-  "extra": "ignored",
   "id": 1,
-  "name": "test"
+  "name": "test",
+  "extra": "ignored"
 }
 "#;
         assert_eq!(formatted, expected);
@@ -1357,9 +1706,9 @@ test.Service/Method
 
 --- RESPONSE redact=["secret","token"] ---
 {
-  "public": "visible",
+  "token": "abc123",
   "secret": "xyz789",
-  "token": "abc123"
+  "public": "visible"
 }
 "#;
         assert_eq!(formatted, expected);
@@ -1588,8 +1937,8 @@ test.Service/Method
 
 --- RESPONSE with_asserts ---
 {
-  "count": 42,
-  "status": "ok"
+  "status": "ok",
+  "count": 42
 }
 
 --- ASSERTS ---
@@ -1937,12 +2286,14 @@ test.Service/Method
 {}
 "#;
         let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        // Preamble/body boundary (ENDPOINT → REQUEST) is re-homed for
+        // reorder safety, so that comment now attaches directly to REQUEST;
+        // body-to-body (REQUEST → RESPONSE) is untouched.
         let expected = r#"// This is a detached comment before the endpoint
 --- ENDPOINT ---
 test.Service/Method
 
 // Another detached comment
-
 --- REQUEST ---
 {
 }
@@ -1952,5 +2303,257 @@ test.Service/Method
 {}
 "#;
         assert_eq!(formatted, expected);
+    }
+
+    #[test]
+    fn test_fmt_attribute_between_sections_no_duplicated_or_phantom_lines() {
+        // Regression: a `#[attr]` line between two sections used to make the
+        // *preceding* section's parsed `end_line` overshoot past it, which
+        // made `format_gctf_chain`'s block-reassembly re-copy a stray raw
+        // line (extra blank line, or in the worst case a duplicated content
+        // line) around the attribute boundary.
+        let source = r#"--- ENDPOINT ---
+grpc.health.v1.Health/Check
+
+--- REQUEST ---
+{}
+
+#[timeout(5)]
+--- RESPONSE ---
+{"status": "SERVING"}
+"#;
+        let once = format_gctf_content(source, "test.gctf").unwrap();
+        let twice = format_gctf_content(&once, "test.gctf").unwrap();
+        assert_eq!(once, twice, "fmt must be idempotent: {once}");
+        assert_eq!(
+            once.matches("timeout").count(),
+            1,
+            "attribute must appear exactly once: {once}"
+        );
+        assert_eq!(
+            once.matches("SERVING").count(),
+            1,
+            "RESPONSE body must not be duplicated: {once}"
+        );
+    }
+
+    #[test]
+    fn test_fmt_reorders_scrambled_preamble_to_canonical() {
+        let source = r#"--- META ---
+name: my test
+
+--- ENDPOINT ---
+pkg.Svc/Method
+
+--- ADDRESS ---
+localhost:4770
+
+--- BENCH ---
+mode: fixed
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let positions: Vec<usize> = ["META", "BENCH", "ADDRESS", "ENDPOINT"]
+            .iter()
+            .map(|s| formatted.find(&format!("--- {s} ---")).unwrap())
+            .collect();
+        let mut sorted = positions.clone();
+        sorted.sort();
+        assert_eq!(
+            positions, sorted,
+            "sections not in canonical order: {formatted}"
+        );
+    }
+
+    #[test]
+    fn test_fmt_reorders_dataset_before_address_and_endpoint() {
+        let source = r#"--- OPTIONS ---
+timeout: 5
+
+--- ADDRESS ---
+localhost:4770
+
+--- DATASET ---
+- id: '1'
+
+--- ENDPOINT ---
+pkg.Svc/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let positions: Vec<usize> = ["DATASET", "ADDRESS", "ENDPOINT", "OPTIONS"]
+            .iter()
+            .map(|s| formatted.find(&format!("--- {s} ---")).unwrap())
+            .collect();
+        let mut sorted = positions.clone();
+        sorted.sort();
+        assert_eq!(
+            positions, sorted,
+            "DATASET must sort before ADDRESS/ENDPOINT/OPTIONS: {formatted}"
+        );
+    }
+
+    #[test]
+    fn test_fmt_preserves_hash_comments_inside_dataset() {
+        let source = r#"--- ENDPOINT ---
+pkg.Svc/Method
+
+--- DATASET ---
+# real users only
+- id: '1'  # ada
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        assert!(
+            formatted.contains("# real users only"),
+            "YAML comment must survive fmt, not become `//`: {formatted}"
+        );
+        assert!(
+            formatted.contains("# ada"),
+            "trailing YAML comment must survive fmt: {formatted}"
+        );
+        assert!(!formatted.contains("// real users only"));
+    }
+
+    #[test]
+    fn test_fmt_reorder_is_idempotent() {
+        let source = r#"--- ENDPOINT ---
+pkg.Svc/Method
+
+--- ADDRESS ---
+localhost:4770
+
+--- META ---
+name: my test
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let once = format_gctf_content(source, "test.gctf").unwrap();
+        let twice = format_gctf_content(&once, "test.gctf").unwrap();
+        assert_eq!(once, twice);
+    }
+
+    // Regression: a comment documenting a specific preamble section must
+    // travel with that section when reordering moves it, not stay behind
+    // with whatever section now precedes it (the parser attributes a
+    // trailing comment to the preceding section's raw content, not the one
+    // it visually precedes).
+    #[test]
+    fn test_fmt_reorder_carries_comment_with_its_section() {
+        let source = r#"--- META ---
+name: my test
+
+--- ENDPOINT ---
+pkg.Svc/Method
+
+--- ADDRESS ---
+localhost:4770
+
+// documents the bench profile
+--- BENCH ---
+mode: fixed
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let comment_pos = formatted.find("// documents the bench profile").unwrap();
+        let bench_pos = formatted.find("--- BENCH ---").unwrap();
+        let address_pos = formatted.find("--- ADDRESS ---").unwrap();
+        assert!(
+            comment_pos < bench_pos && bench_pos < comment_pos + 40,
+            "comment must sit directly above BENCH: {formatted}"
+        );
+        assert!(
+            bench_pos < address_pos,
+            "BENCH must now precede ADDRESS: {formatted}"
+        );
+    }
+
+    // Regression: BENCH.sources: is a nested YAML list — formatting must not
+    // scatter it into sorted, unindented top-level keys.
+    #[test]
+    fn test_fmt_bench_sources_nested_yaml_survives() {
+        let source = r#"--- BENCH ---
+duration: 30s
+mode: fixed
+sources:
+  - name: users
+    file: data/users.csv
+  - name: orders
+    file: data/orders.csv
+
+--- ENDPOINT ---
+pkg.Svc/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        assert!(
+            formatted.contains("sources:\n  - name: users\n    file: data/users.csv\n  - name: orders\n    file: data/orders.csv\n"),
+            "sources: list must stay intact and indented: {formatted}"
+        );
+        let twice = format_gctf_content(&formatted, "test.gctf").unwrap();
+        assert_eq!(formatted, twice, "must be idempotent");
+    }
+
+    // Regression: BENCH keys must sort by the canonical `bench_key_rank`
+    // order (matching `check` and the other BENCH serializer in
+    // apif-parser), not alphabetically — `mode` before `duration`, etc.
+    #[test]
+    fn test_fmt_bench_keys_sort_canonically_not_alphabetically() {
+        let source = r#"--- BENCH ---
+duration: 30s
+concurrency: 16
+mode: fixed
+requests: 5000
+profile: smoke
+
+--- ENDPOINT ---
+pkg.Svc/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let formatted = format_gctf_content(source, "test.gctf").unwrap();
+        let positions: Vec<usize> = ["mode", "profile", "concurrency", "requests", "duration"]
+            .iter()
+            .map(|k| formatted.find(&format!("{k}:")).unwrap())
+            .collect();
+        let mut sorted = positions.clone();
+        sorted.sort();
+        assert_eq!(
+            positions, sorted,
+            "BENCH keys not in canonical order: {formatted}"
+        );
     }
 }

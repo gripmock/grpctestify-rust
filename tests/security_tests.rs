@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // Security tests - TLS warnings, address validation, update mode validation
 
 use grpctestify::grpc::TlsConfig;

@@ -8,6 +8,7 @@ pub mod execution;
 pub mod grpc;
 pub mod logging;
 pub mod lsp;
+pub mod only_changed;
 pub mod optimizer;
 pub mod parser;
 pub mod plugins;

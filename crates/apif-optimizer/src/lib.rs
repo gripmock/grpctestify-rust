@@ -390,7 +390,7 @@ const REWRITE_RULES: &[RewriteRuleMetadata] = &[
         id: rule_ids::P001,
         preconditions: "@len(expr) compared to zero",
         negative_cases: "comparison is not with zero or not @len plugin",
-        proof_note: "Length check simplification: @len(x) == 0 = @empty(x)",
+        proof_note: "Length check simplification: @len(x) == 0 = @is_empty(x)",
     },
     RewriteRuleMetadata {
         id: rule_ids::P002,
@@ -476,6 +476,21 @@ static BOOLEAN_PLUGINS: LazyLock<HashSet<String>> = LazyLock::new(|| {
         .collect()
 });
 
+/// `.rhai` plugins tagged `@pure` with `@returns bool` — set once via
+/// [`register_extra_boolean_plugins`], same `OnceLock`-set-once-early
+/// pattern as `apif_semantics::register_extra_plugin_names`. `BOOLEAN_PLUGINS`
+/// itself stays built-ins-only; `is_boolean_plugin_expr` checks both.
+static EXTRA_BOOLEAN_PLUGINS: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+
+/// Register `.rhai` plugin names that are safe to treat as boolean/pure for
+/// rewrite purposes (i.e. loaded plugins whose `signature()` reports
+/// `return_type: Bool` and `safe_for_rewrite`/`deterministic`/`idempotent:
+/// true` — the `@pure`+`@returns bool` doc-tag combination). Must be called
+/// before the first optimizer pass of the run — later calls are no-ops.
+pub fn register_extra_boolean_plugins(names: HashSet<String>) {
+    let _ = EXTRA_BOOLEAN_PLUGINS.set(names);
+}
+
 fn plugin_signatures() -> &'static HashMap<String, PluginSignature> {
     &PLUGIN_SIGNATURES
 }
@@ -490,6 +505,9 @@ fn is_boolean_plugin_expr(expr: &str, bool_plugins: &HashSet<String>) -> bool {
     };
 
     bool_plugins.contains(plugin_name.as_str())
+        || EXTRA_BOOLEAN_PLUGINS
+            .get()
+            .is_some_and(|extra| extra.contains(plugin_name.as_str()))
 }
 
 fn suggest_boolean_rewrite(
@@ -1129,7 +1147,7 @@ fn suggest_boolean_identity_laws(expr: &str, level: OptimizeLevel) -> Option<(Ru
     None
 }
 
-/// Plugin-specific: @len(.x) == 0 → @empty(.x)
+/// Plugin-specific: @len(.x) == 0 → @is_empty(.x)
 fn suggest_plugin_length_simplification(
     expr: &str,
     level: OptimizeLevel,
@@ -1164,11 +1182,15 @@ fn suggest_plugin_length_simplification(
 
     fn rewrite_len_zero_cmp(op: &str, inner: &str, len_on_left: bool) -> Option<String> {
         // `@len(x)` is unsigned, so it is always `>= 0`. The rewrite must be
-        // operand-side aware: `@len(x) <= 0` collapses to `@empty(x)`, but
-        // `0 <= @len(x)` is a tautology and must not become `@empty(x)`.
+        // operand-side aware: `@len(x) <= 0` collapses to `@is_empty(x)`, but
+        // `0 <= @len(x)` is a tautology and must not become `@is_empty(x)`.
+        // Emit the canonical `is_empty` name directly (not the deprecated
+        // `empty` alias) — otherwise a second `fmt` pass would rename it via
+        // the deprecated-plugin-rename rule, making the rewrite non-idempotent
+        // within a single format call.
         match (op, len_on_left) {
-            ("==", _) => Some(format!("@empty({})", inner)),
-            ("<=", true) => Some(format!("@empty({})", inner)),
+            ("==", _) => Some(format!("@is_empty({})", inner)),
+            ("<=", true) => Some(format!("@is_empty({})", inner)),
             ("<=", false) => Some("true".to_string()),
             ("!=", _) => Some(format!("@len({}) > 0", inner)),
             (">", true) => None,
@@ -1599,7 +1621,8 @@ pub fn collect_assertion_optimizations(
     let mode = normalization_mode();
     let mut hints = Vec::new();
 
-    for section in &doc.sections {
+    // A chain's 2nd+ document is not the head — scan every document.
+    for section in doc.iter_chain().flat_map(|d| d.sections.iter()) {
         if section.section_type != parser::ast::SectionType::Asserts {
             continue;
         }
@@ -1656,6 +1679,30 @@ test.Service/Method
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::B001);
         assert_eq!(hints[0].after, "@has_header(\"x-request-id\")");
+    }
+
+    #[test]
+    fn test_collect_assertion_optimizations_finds_second_document_in_chain() {
+        // A chain's 2nd+ document is not `doc.sections` (the head) — this
+        // must scan every document via `doc.iter_chain()`, not just the head.
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+.ok == true
+
+--- ENDPOINT ---
+test.Service/Method2
+
+--- ASSERTS ---
+@has_header("x-request-id") == true
+"#;
+
+        let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
+        assert!(!doc.is_single_document(), "fixture must actually chain");
+        let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
+        assert_eq!(hints.len(), 1, "{hints:?}");
+        assert_eq!(hints[0].rule_id, rule_ids::B001);
     }
 
     #[test]
@@ -2178,12 +2225,12 @@ if .status == 200 then false else true end
 
     #[test]
     fn test_plugin_length_simplification() {
-        // @len(.x) == 0 → @empty(.x)
+        // @len(.x) == 0 → @is_empty(.x)
         let (rule_id, rewritten) =
             suggest_plugin_length_simplification("@len(.items) == 0", OptimizeLevel::Advisory)
                 .unwrap();
         assert_eq!(rule_id, rule_ids::P001);
-        assert_eq!(rewritten, "@empty(.items)");
+        assert_eq!(rewritten, "@is_empty(.items)");
 
         // @len(.x) != 0 → @len(.x) > 0
         let (rule_id, rewritten) =
@@ -2197,30 +2244,30 @@ if .status == 200 then false else true end
             suggest_plugin_length_simplification("@len(.items) > 0", OptimizeLevel::Advisory);
         assert!(result.is_none());
 
-        // 0 == @len(.x) → @empty(.x)
+        // 0 == @len(.x) → @is_empty(.x)
         let (rule_id, rewritten) =
             suggest_plugin_length_simplification("0 == @len(.items)", OptimizeLevel::Advisory)
                 .unwrap();
         assert_eq!(rule_id, rule_ids::P001);
-        assert_eq!(rewritten, "@empty(.items)");
+        assert_eq!(rewritten, "@is_empty(.items)");
     }
 
     #[test]
     fn test_plugin_length_le_zero_is_operand_side_aware() {
-        // @len(x) <= 0 is `@empty(x)` (len is unsigned, so <= 0 means == 0).
+        // @len(x) <= 0 is `@is_empty(x)` (len is unsigned, so <= 0 means == 0).
         let (rule_id, rewritten) =
             suggest_plugin_length_simplification("@len(.items) <= 0", OptimizeLevel::Advisory)
                 .unwrap();
         assert_eq!(rule_id, rule_ids::P001);
-        assert_eq!(rewritten, "@empty(.items)");
+        assert_eq!(rewritten, "@is_empty(.items)");
 
-        // 0 <= @len(x) is always true (len is unsigned) — must NOT become @empty(x).
+        // 0 <= @len(x) is always true (len is unsigned) — must NOT become @is_empty(x).
         let (rule_id, rewritten) =
             suggest_plugin_length_simplification("0 <= @len(.items)", OptimizeLevel::Advisory)
                 .unwrap();
         assert_eq!(rule_id, rule_ids::P001);
         assert_eq!(rewritten, "true");
-        assert_ne!(rewritten, "@empty(.items)");
+        assert_ne!(rewritten, "@is_empty(.items)");
     }
 
     #[test]
@@ -2288,7 +2335,7 @@ test.Service/Method
         let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::P001);
-        assert_eq!(hints[0].after, "@empty(.items)");
+        assert_eq!(hints[0].after, "@is_empty(.items)");
     }
 
     #[test]
@@ -2840,7 +2887,7 @@ test.Service/Method
     #[test]
     fn test_len_zero_simplification_requires_whole_lhs() {
         // Regression: the @len(...) call must span the entire compared side.
-        // `@len(a) and @len(b) == 0` must not become `@empty(a) and @len(b)`.
+        // `@len(a) and @len(b) == 0` must not become `@is_empty(a) and @len(b)`.
         assert_eq!(
             suggest_plugin_length_simplification(
                 "@len(a) and @len(b) == 0",
@@ -2851,12 +2898,12 @@ test.Service/Method
         // Simple whole-LHS case still works.
         assert_eq!(
             suggest_plugin_length_simplification("@len(.x) == 0", OptimizeLevel::Advisory),
-            Some((rule_ids::P001, "@empty(.x)".to_string()))
+            Some((rule_ids::P001, "@is_empty(.x)".to_string()))
         );
         // Nested parens inside the argument are matched correctly.
         assert_eq!(
             suggest_plugin_length_simplification("@len(f(.x)) == 0", OptimizeLevel::Advisory),
-            Some((rule_ids::P001, "@empty(f(.x))".to_string()))
+            Some((rule_ids::P001, "@is_empty(f(.x))".to_string()))
         );
     }
 

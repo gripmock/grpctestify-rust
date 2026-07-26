@@ -1,9 +1,6 @@
-// Inspect command - show detailed AST analysis and structure
-
 use crate::cli::args::HasFormat;
 use crate::utils::file::FileUtils;
 use anyhow::Result;
-use std::collections::HashMap;
 use std::path::Path;
 
 use crate::bench::schema::bench_key_rank;
@@ -111,6 +108,14 @@ fn sort_report_diagnostics(diags: &mut [crate::report::Diagnostic]) {
 }
 
 pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
+    apif_semantics::register_extra_plugin_names(crate::commands::check::rhai_plugin_names());
+    apif_optimizer::register_extra_boolean_plugins(
+        crate::commands::check::rhai_boolean_plugin_names(),
+    );
+    crate::parser::register_extra_inline_option_keys(
+        crate::plugins::rhai_plugin::load_all_inline_option_keys(),
+    );
+
     let file_path = &args.file;
     if !file_path.exists() {
         return Err(anyhow::anyhow!("File not found: {}", file_path.display()));
@@ -129,7 +134,7 @@ pub async fn handle_inspect(args: &InspectArgs) -> Result<()> {
     if !diagnostics.is_empty() {
         eprintln!();
         eprintln!("PARSE DIAGNOSTICS");
-        eprintln!("=================");
+        eprintln!("═════════════════");
         eprintln!("File: {}", file_path.display());
         eprintln!("Recovered sections: {}", parse_result.recovered_sections);
         eprintln!("Failed sections: {}", parse_result.failed_sections);
@@ -173,8 +178,32 @@ fn print_json_report(
     let mut optimization_hints: Vec<crate::report::Diagnostic> = Vec::new();
     let file_str = file_path.to_string_lossy().to_string();
 
+    // Deprecation warnings (HEADERS alias, kebab OPTIONS keys, kebab attrs)
+    // from the one shared `detect_deprecations` (§7.1) — same source the text
+    // mode and `check` use, so JSON output no longer diverges (it used to emit
+    // only a differently-worded HEADERS warning and miss kebab entirely).
+    if let Some(source) = doc.metadata.source.as_deref() {
+        for dep in parser::detect_deprecations(&parser::tokenize_gctf(source)) {
+            let line = dep.range.start.line + 1;
+            let (code, hint) = if dep.message.contains("HEADERS") {
+                (
+                    "DEPRECATED_SECTION",
+                    Some("Replace --- HEADERS --- with --- REQUEST_HEADERS ---"),
+                )
+            } else {
+                ("DEPRECATED_KEY_SPELLING", None)
+            };
+            let mut diag = crate::report::Diagnostic::warning(&file_str, code, &dep.message, line);
+            if let Some(h) = hint {
+                diag = diag.with_hint(h);
+            }
+            inspect_diagnostics.push(diag);
+        }
+    }
+
     for (doc_idx, d) in doc.iter_chain().enumerate() {
-        let w = Workflow::from_document_with_analysis(d);
+        // detached: from_document_with_analysis is chain-aware internally too
+        let w = Workflow::from_document_with_analysis(&d.detached());
         for err in workflow_validation_errors(&w) {
             let msg = if doc.is_single_document() {
                 err
@@ -189,18 +218,8 @@ fn print_json_report(
             ));
         }
         for section in &d.sections {
-            if doc.section_uses_deprecated_headers_alias(section) {
-                inspect_diagnostics.push(
-                    crate::report::Diagnostic::warning(
-                        &file_str,
-                        "DEPRECATED_SECTION",
-                        "HEADERS section is deprecated, use REQUEST_HEADERS instead",
-                        section.start_line + 1,
-                    )
-                    .with_hint("Replace --- HEADERS --- with --- REQUEST_HEADERS ---"),
-                );
-            }
-
+            // (HEADERS/kebab deprecations come from the shared detector pass
+            // above, not a per-section scan here.)
             if !section.attributes.is_empty() {
                 for attr in &section.attributes {
                     if attr.name == "skip" && attr.value == "true" {
@@ -341,10 +360,12 @@ fn section_to_info(section: &parser::ast::Section) -> SectionInfo {
         SectionContent::Assertions(_) => "assertions",
         SectionContent::Extract(_) => "extract",
         SectionContent::Meta(_) => "meta",
+        SectionContent::Rows(_) => "rows",
         SectionContent::Empty => "empty",
     };
     let message_count = match &section.content {
         SectionContent::JsonLines(lines) => Some(lines.len()),
+        SectionContent::Rows(rows) => Some(rows.len()),
         _ => None,
     };
     SectionInfo {
@@ -378,27 +399,27 @@ fn print_detailed_analysis(
 
     println!();
     println!("ANALYSIS REPORT");
-    println!("===============");
+    println!("═══════════════");
     println!();
     println!("FILE: {}", file_path.display());
     println!();
 
     println!("PARSE PROFILING");
-    println!("---------------");
+    println!("───────────────");
     println!("  File size:         {} bytes", parse_diagnostics.bytes);
     println!("  Total lines:       {}", parse_diagnostics.total_lines);
     println!("  Section headers:   {}", parse_diagnostics.section_headers);
     println!("  Parse total:       {:.3}ms", parse_ms);
     println!(
-        "    - read:          {:.3}ms",
+        "    • read:          {:.3}ms",
         parse_diagnostics.timings.read_ms
     );
     println!(
-        "    - parse-sections:{:.3}ms",
+        "    • parse-sections:{:.3}ms",
         parse_diagnostics.timings.parse_sections_ms
     );
     println!(
-        "    - build-doc:     {:.3}ms",
+        "    • build-doc:     {:.3}ms",
         parse_diagnostics.timings.build_document_ms
     );
     println!("  Validation:        {:.3}ms", validation_ms);
@@ -425,41 +446,45 @@ fn print_detailed_analysis(
                 d.sections.first().map(|s| s.start_line + 1).unwrap_or(0),
                 d.sections.last().map(|s| s.end_line + 1).unwrap_or(0)
             );
-            println!("{}", "=".repeat(56));
+            println!("{}", "═".repeat(56));
             print_ast_overview(d);
             println!();
             print_structure(d);
             println!();
             print_variables(d);
             println!();
-            let w = Workflow::from_document_with_analysis(d);
+            // detached: from_document_with_analysis is chain-aware internally too
+            let w = Workflow::from_document_with_analysis(&d.detached());
             print_logic_flow(d, &w);
             println!();
         }
 
         println!("WARNINGS & HINTS");
-        println!("----------------");
+        println!("────────────────");
         for (doc_idx, d) in doc.iter_chain().enumerate() {
-            print_warnings_for_doc(d, doc_idx + 1);
+            print_warnings_for_doc(&d.detached(), doc_idx + 1);
         }
         println!();
         println!("SUMMARY");
-        println!("-------");
+        println!("───────");
         match validation_error {
-            Some(e) => println!("  FAILED: {}", e),
-            None => println!("  OK - No issues found. Test appears structurally valid."),
+            Some(e) => println!("  {} {}", crate::report::style::fail_icon(), e),
+            None => println!(
+                "  {} No issues found. Test appears structurally valid.",
+                crate::report::style::pass_icon()
+            ),
         }
         return;
     }
 
     // Single document: original format
     println!("AST OVERVIEW");
-    println!("------------");
+    println!("────────────");
     print_ast_overview(doc);
     println!();
 
     println!("STRUCTURE");
-    println!("---------");
+    println!("─────────");
     print_structure(doc);
     println!();
 
@@ -467,36 +492,39 @@ fn print_detailed_analysis(
     println!();
 
     println!("VARIABLES");
-    println!("---------");
+    println!("─────────");
     print_variables(doc);
     println!();
 
     println!("LOGIC FLOW");
-    println!("----------");
+    println!("──────────");
     print_logic_flow(doc, workflow);
     println!();
 
     println!("SOURCE CONFIGURATION");
-    println!("--------------------");
+    println!("────────────────────");
     print_source_info(doc, file_path);
     println!();
 
     println!("WARNINGS & HINTS");
-    println!("----------------");
+    println!("────────────────");
     print_warnings(doc);
     println!();
 
     println!("SUMMARY");
-    println!("-------");
+    println!("───────");
     match validation_error {
-        Some(e) => println!("  FAILED: {}", e),
-        None => println!("  OK - No issues found. Test appears structurally valid."),
+        Some(e) => println!("  {} {}", crate::report::style::fail_icon(), e),
+        None => println!(
+            "  {} No issues found. Test appears structurally valid.",
+            crate::report::style::pass_icon()
+        ),
     }
 }
 
 fn print_effective_runtime(effective: Option<&EffectiveRuntimeOptions>) {
     println!("EFFECTIVE RUNTIME");
-    println!("-----------------");
+    println!("─────────────────");
     match effective {
         Some(v) => {
             println!(
@@ -532,6 +560,7 @@ fn print_ast_overview(doc: &parser::GctfDocument) {
             SectionContent::Assertions(_) => "assertions",
             SectionContent::Extract(_) => "extract",
             SectionContent::Meta(_) => "meta",
+            SectionContent::Rows(_) => "rows",
             SectionContent::Empty => "empty",
         };
         let raw_bytes = section.raw_content.len();
@@ -594,33 +623,40 @@ fn print_structure(doc: &parser::GctfDocument) {
         .iter()
         .any(|s| s.section_type == SectionType::RequestHeaders);
 
+    let pass = crate::report::style::pass_icon();
     if has_endpoint {
-        println!("  [OK] ENDPOINT section present");
+        println!("  {pass} ENDPOINT section present");
     }
     if has_request {
-        println!("  [OK] REQUEST section present");
+        println!("  {pass} REQUEST section present");
     }
     if has_response {
-        println!("  [OK] RESPONSE section present");
+        println!("  {pass} RESPONSE section present");
     }
     if has_error {
-        println!("  [OK] ERROR section present (testing error handling)");
+        println!("  {pass} ERROR section present (testing error handling)");
     }
     if has_extract {
-        println!("  [OK] EXTRACT section present (variable extraction)");
+        println!("  {pass} EXTRACT section present (variable extraction)");
     }
     if has_asserts {
-        println!("  [OK] ASSERTS section present (custom assertions)");
+        println!("  {pass} ASSERTS section present (custom assertions)");
     }
     if has_request_headers {
-        println!("  [OK] REQUEST_HEADERS section present");
+        println!("  {pass} REQUEST_HEADERS section present");
     }
 
     if !has_endpoint {
-        println!("  [ERROR] Missing ENDPOINT section");
+        println!(
+            "  {} Missing ENDPOINT section",
+            crate::report::style::fail_icon()
+        );
     }
     if !has_request && !has_error {
-        println!("  [WARN] No REQUEST or ERROR section");
+        println!(
+            "  {} No REQUEST or ERROR section",
+            crate::report::style::warn_icon()
+        );
     }
 }
 
@@ -669,7 +705,7 @@ fn print_variables(doc: &parser::GctfDocument) {
     if !var_usages.is_empty() {
         println!("  Variable usages:");
         for (section_type, line) in var_usages {
-            println!("    - {} section at line {}", section_type, line + 1);
+            println!("    • {} section at line {}", section_type, line + 1);
         }
     }
 }
@@ -762,7 +798,7 @@ fn print_logic_flow(doc: &parser::GctfDocument, workflow: &Workflow) {
         sorted.sort_by(|a, b| a.0.cmp(&b.0));
         println!("  OPTIONS Overrides:");
         for (key, value) in sorted {
-            println!("    - {}: {}", key, value);
+            println!("    • {}: {}", key, value);
         }
     }
 
@@ -778,7 +814,7 @@ fn print_logic_flow(doc: &parser::GctfDocument, workflow: &Workflow) {
             });
             println!("  BENCH Profile:");
             for (key, value) in sorted {
-                println!("    - {}: {}", key, value);
+                println!("    • {}: {}", key, value);
             }
         }
     }
@@ -798,7 +834,10 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
         .iter()
         .any(|s| s.section_type == SectionType::Endpoint);
     if !has_endpoint {
-        println!("  [ERROR] No ENDPOINT section found");
+        println!(
+            "  {} No ENDPOINT section found",
+            crate::report::style::fail_icon()
+        );
         has_warnings = true;
     }
 
@@ -809,7 +848,10 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
         .iter()
         .any(|s| s.section_type == SectionType::Error);
     if !has_request && !has_error {
-        println!("  [WARN] No REQUEST or ERROR section found");
+        println!(
+            "  {} No REQUEST or ERROR section found",
+            crate::report::style::warn_icon()
+        );
         has_warnings = true;
     }
 
@@ -817,7 +859,10 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
         .iter()
         .any(|s| s.section_type == SectionType::Response);
     if has_request && !has_response && !has_error {
-        println!("  [WARN] REQUEST section present but no RESPONSE or ERROR section");
+        println!(
+            "  {} REQUEST section present but no RESPONSE or ERROR section",
+            crate::report::style::warn_icon()
+        );
         has_warnings = true;
     }
 
@@ -830,7 +875,12 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
         } = event
         {
             for mismatch in type_mismatches {
-                println!("  [ERROR] Line {}: {}", mismatch.line, mismatch.message);
+                println!(
+                    "  {} Line {}: {}",
+                    crate::report::style::fail_icon(),
+                    mismatch.line,
+                    mismatch.message
+                );
                 println!(
                     "         Expression: {}",
                     mismatch.expression.as_ref().unwrap_or(&"".to_string())
@@ -838,7 +888,12 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
                 has_warnings = true;
             }
             for unknown in unknown_plugins {
-                println!("  [ERROR] Line {}: {}", unknown.line, unknown.message);
+                println!(
+                    "  {} Line {}: {}",
+                    crate::report::style::fail_icon(),
+                    unknown.line,
+                    unknown.message
+                );
                 println!(
                     "         Assertion: {}",
                     unknown.expression.as_ref().unwrap_or(&"".to_string())
@@ -850,7 +905,7 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
 
     for hint in workflow_optimizer_hints(&workflow) {
         println!(
-            "  [HINT] Line {}: [{}] {} -> {}",
+            "  → Line {}: [{}] {} -> {}",
             hint.line, hint.rule_id, hint.before, hint.after
         );
         println!("         Boolean expression compared with true/false can be simplified");
@@ -864,7 +919,8 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
                 .is_some_and(|s| s.section_type == SectionType::Asserts);
             if !has_following_asserts {
                 println!(
-                    "  [WARN] Line {}: with_asserts option set but no",
+                    "  {} Line {}: with_asserts option set but no",
+                    crate::report::style::warn_icon(),
                     section.start_line + 1
                 );
                 println!("         ASSERTS section follows");
@@ -876,7 +932,7 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
             && matches!(section.content, SectionContent::Empty)
         {
             println!(
-                "  [INFO] Line {}: Empty REQUEST section will send",
+                "  ℹ Line {}: Empty REQUEST section will send",
                 section.start_line + 1
             );
             println!("         empty JSON object {{}}");
@@ -888,7 +944,8 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
             && extractions.is_empty()
         {
             println!(
-                "  [WARN] Line {}: EXTRACT section has no variables",
+                "  {} Line {}: EXTRACT section has no variables",
+                crate::report::style::warn_icon(),
                 section.start_line + 1
             );
             has_warnings = true;
@@ -899,7 +956,8 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
             && assertions.is_empty()
         {
             println!(
-                "  [WARN] Line {}: ASSERTS section has no assertions",
+                "  {} Line {}: ASSERTS section has no assertions",
+                crate::report::style::warn_icon(),
                 section.start_line + 1
             );
             has_warnings = true;
@@ -907,7 +965,10 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
     }
 
     if !has_warnings {
-        println!("  [OK] No structural warnings or hints.");
+        println!(
+            "  {} No structural warnings or hints.",
+            crate::report::style::pass_icon()
+        );
     }
 }
 
@@ -948,7 +1009,7 @@ fn print_source_info(doc: &parser::GctfDocument, file_path: &Path) {
     }
 
     println!("SOURCES");
-    println!("-------");
+    println!("───────");
     for s in &sources {
         let source_file_path = s.file.as_str();
         let resolved_path = FileUtils::resolve_relative_path(file_path, source_file_path);
@@ -973,9 +1034,17 @@ fn print_source_info(doc: &parser::GctfDocument, file_path: &Path) {
                 .and_then(|mut f| read_index_key_type(&mut f).ok())
                 .map(|t| format!("{:?}", t))
                 .unwrap_or_else(|| "?".to_string());
-            (if fresh { "✓ fresh" } else { "⚠ stale" }, type_from_idx)
+            let status = if fresh {
+                format!("{} fresh", crate::report::style::pass_icon())
+            } else {
+                format!("{} stale", crate::report::style::warn_icon())
+            };
+            (status, type_from_idx)
         } else {
-            ("✗ missing", "?".to_string())
+            (
+                format!("{} missing", crate::report::style::fail_icon()),
+                "?".to_string(),
+            )
         };
 
         let name_display = s.name.as_deref().unwrap_or("(unnamed)");
@@ -985,7 +1054,7 @@ fn print_source_info(doc: &parser::GctfDocument, file_path: &Path) {
             columns.join(", ")
         };
         println!(
-            "  - {}: file={}, indexed_by=[{}], type={}, index={}",
+            "  • {}: file={}, indexed_by=[{}], type={}, index={}",
             name_display, s.file, indexed_by_display, type_display, status
         );
     }
@@ -993,17 +1062,17 @@ fn print_source_info(doc: &parser::GctfDocument, file_path: &Path) {
     if !plan.required_indexes.is_empty() {
         println!();
         println!("INDEX REQUIREMENTS (used by templates)");
-        println!("--------------------------------------");
+        println!("──────────────────────────────────────");
         for req in &plan.required_indexes {
             println!(
-                "  - {}.{} (reason: {:?})",
+                "  • {}.{} (reason: {:?})",
                 req.source, req.column, req.reason
             );
         }
     }
 }
 
-fn bench_section_map(doc: &parser::GctfDocument) -> Option<&HashMap<String, String>> {
+fn bench_section_map(doc: &parser::GctfDocument) -> Option<&crate::parser::OrderedStringMap> {
     doc.sections.iter().find_map(|section| {
         if section.section_type == SectionType::Bench
             && let SectionContent::KeyValues(bench) = &section.content
@@ -1064,11 +1133,15 @@ fn print_bench_resolved(doc: &parser::GctfDocument) {
                     "progress_interval" => format!("{}ms", config.progress_interval.as_millis()),
                     _ => "<n/a>".to_string(),
                 };
-                println!("    - {}: {} (source: {})", output_key, value, source);
+                println!("    • {}: {} (source: {})", output_key, value, source);
             }
         }
         Err(err) => {
-            println!("  [WARN] Unable to resolve BENCH defaults/sources: {}", err);
+            println!(
+                "  {} Unable to resolve BENCH defaults/sources: {}",
+                crate::report::style::warn_icon(),
+                err
+            );
         }
     }
 }

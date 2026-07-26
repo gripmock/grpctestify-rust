@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 use grpctestify::serialize_gctf;
 
 fn format_with_serializer(content: &str) -> String {

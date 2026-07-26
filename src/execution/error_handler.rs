@@ -1,5 +1,3 @@
-// Error handling for test execution
-
 use apif_grpc_transport::GrpcError;
 use prost::Message;
 use prost_types::Any;
@@ -39,7 +37,6 @@ struct GoogleRpcBadRequestFieldViolation {
     description: String,
 }
 
-/// Error handler for gRPC test execution
 pub struct ErrorHandler;
 
 /// Normalize field names in `actual` to match `expected` key naming (camelCase ↔ snake_case).

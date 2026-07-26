@@ -11,3 +11,6 @@ description = "Runtime capabilities and clock abstraction"
 
 [dependencies]
 chrono = { workspace = true }
+
+[lints]
+workspace = true

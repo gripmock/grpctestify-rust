@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // EXTRACT section tests - JQ functions and metadata extraction
 
 use grpctestify::execution::{ExecutionPlan, Workflow, WorkflowEvent};

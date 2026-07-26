@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
 #![allow(clippy::collapsible_if)]
 use super::channel::create_channel;
 use crate::config::GrpcClientConfig;
@@ -104,36 +105,41 @@ fn load_from_proto_files(files: &[String], import_paths: &[String]) -> Result<De
     Ok(pool)
 }
 
-async fn load_via_reflection(config: &GrpcClientConfig) -> Result<DescriptorPool> {
-    let channel = create_channel(config).await?;
-    let mut client = ServerReflectionClient::new(channel);
-    let mut services = Vec::new();
-    let mut files_to_process = Vec::new();
-
-    if let Some(target) = &config.target_service {
-        files_to_process.push(target.clone());
-    } else {
-        let req = ServerReflectionRequest {
-            host: config.address.clone(),
-            message_request: Some(MessageRequest::ListServices("".to_string())),
-        };
-        let mut stream = client
-            .server_reflection_info(Request::new(futures::stream::iter(vec![req])))
-            .await?
-            .into_inner();
-        if let Some(Ok(msg)) = stream.next().await
-            && let Some(tonic_reflection::pb::v1::server_reflection_response::MessageResponse::ListServicesResponse(resp)) = msg.message_response {
-                services = resp.service;
-        }
-        for s in services {
+async fn list_services(
+    client: &mut ServerReflectionClient<tonic::transport::Channel>,
+    host: &str,
+) -> Vec<String> {
+    let req = ServerReflectionRequest {
+        host: host.to_string(),
+        message_request: Some(MessageRequest::ListServices("".to_string())),
+    };
+    let Ok(stream) = client
+        .server_reflection_info(Request::new(futures::stream::iter(vec![req])))
+        .await
+    else {
+        return Vec::new();
+    };
+    let mut stream = stream.into_inner();
+    let mut out = Vec::new();
+    if let Some(Ok(msg)) = stream.next().await
+        && let Some(tonic_reflection::pb::v1::server_reflection_response::MessageResponse::ListServicesResponse(resp)) = msg.message_response {
+        for s in resp.service {
             if s.name != "grpc.reflection.v1alpha.ServerReflection"
                 && s.name != "grpc.reflection.v1.ServerReflection"
             {
-                files_to_process.push(s.name);
+                out.push(s.name);
             }
         }
     }
+    out
+}
 
+async fn fetch_descriptors(
+    client: &mut ServerReflectionClient<tonic::transport::Channel>,
+    host: &str,
+    seed: Vec<String>,
+) -> HashMap<String, FileDescriptorProto> {
+    let mut files_to_process = seed;
     let mut fd_bytes = HashMap::new();
     let mut processed = HashSet::new();
     while let Some(sym) = files_to_process.pop() {
@@ -142,12 +148,12 @@ async fn load_via_reflection(config: &GrpcClientConfig) -> Result<DescriptorPool
         }
         let req = if sym.ends_with(".proto") {
             ServerReflectionRequest {
-                host: config.address.clone(),
+                host: host.to_string(),
                 message_request: Some(MessageRequest::FileByFilename(sym.clone())),
             }
         } else {
             ServerReflectionRequest {
-                host: config.address.clone(),
+                host: host.to_string(),
                 message_request: Some(MessageRequest::FileContainingSymbol(sym.clone())),
             }
         };
@@ -171,6 +177,31 @@ async fn load_via_reflection(config: &GrpcClientConfig) -> Result<DescriptorPool
                         }
                     }
             }
+        }
+    }
+    fd_bytes
+}
+
+async fn load_via_reflection(config: &GrpcClientConfig) -> Result<DescriptorPool> {
+    let channel = create_channel(config).await?;
+    let mut client = ServerReflectionClient::new(channel);
+    let host = config.address.clone();
+
+    let seed = if let Some(target) = &config.target_service {
+        vec![target.clone()]
+    } else {
+        list_services(&mut client, &host).await
+    };
+
+    let mut fd_bytes = fetch_descriptors(&mut client, &host, seed).await;
+
+    // Fallback: some servers (e.g. gripmock) don't answer
+    // FileContainingSymbol for a targeted service but do answer ListServices.
+    // If the targeted fetch came back empty, retry over the full service list.
+    if fd_bytes.is_empty() && config.target_service.is_some() {
+        let all = list_services(&mut client, &host).await;
+        if !all.is_empty() {
+            fd_bytes = fetch_descriptors(&mut client, &host, all).await;
         }
     }
 

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
 //! gRPC method and protobuf message field coverage collector.
 //!
 //! Tracks which gRPC service/method calls were made during test execution
@@ -19,6 +20,15 @@ pub struct CoverageFile {
     pub functions: Option<CoverageStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fields: Option<CoverageStats>,
+    #[serde(default)]
+    pub methods: Vec<MethodCoverage>,
+}
+
+/// Per-method call coverage within a service.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MethodCoverage {
+    pub name: String,
+    pub calls: u64,
 }
 
 /// Coverage statistics (covered vs total).
@@ -34,6 +44,8 @@ pub struct MessageFieldCoverage {
     pub message_type: String,
     pub covered_fields: Vec<String>,
     pub total_fields: usize,
+    #[serde(default)]
+    pub missing_fields: Vec<String>,
 }
 
 /// Full coverage report with file and message-level statistics.
@@ -143,6 +155,43 @@ impl CoverageCollector {
         count(msg, &mut HashSet::new())
     }
 
+    /// Enumerate every dotted field path the schema defines for `message_type`,
+    /// the same walk `count_fields_recursive` does but collecting names instead
+    /// of a count — lets the report show which specific fields are missing,
+    /// not just how many.
+    fn field_paths_recursive(pool: &DescriptorPool, message_type: &str) -> Vec<String> {
+        fn walk(
+            msg: &MessageDescriptor,
+            prefix: &str,
+            visited: &mut HashSet<String>,
+            out: &mut Vec<String>,
+        ) {
+            if !visited.insert(msg.full_name().to_string()) {
+                return;
+            }
+            for field in msg.fields() {
+                let path = if prefix.is_empty() {
+                    field.name().to_string()
+                } else {
+                    format!("{}.{}", prefix, field.name())
+                };
+                out.push(path.clone());
+                if !field.is_map()
+                    && let prost_reflect::Kind::Message(sub) = field.kind()
+                {
+                    walk(&sub, &path, visited, out);
+                }
+            }
+            visited.remove(msg.full_name());
+        }
+
+        let mut out = Vec::new();
+        if let Some(msg) = pool.get_message_by_name(message_type) {
+            walk(&msg, "", &mut HashSet::new(), &mut out);
+        }
+        out
+    }
+
     pub fn generate_json_report(&self) -> CoverageReport {
         let calls = self.calls.lock().unwrap_or_else(|e| e.into_inner());
         let pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
@@ -184,12 +233,22 @@ impl CoverageCollector {
                 total_covered += covered;
                 total_methods += total;
 
+                let mut method_rows: Vec<MethodCoverage> = methods
+                    .iter()
+                    .map(|m| MethodCoverage {
+                        name: m.name().to_string(),
+                        calls: *called_methods.get(m.name()).unwrap_or(&0),
+                    })
+                    .collect();
+                method_rows.sort_by(|a, b| a.name.cmp(&b.name));
+
                 files.push(CoverageFile {
                     uri: format!("grpc://{}", service_name),
                     statements: CoverageStats { covered, total },
                     branches: None,
                     functions: Some(CoverageStats { covered, total }),
                     fields: None,
+                    methods: method_rows,
                 });
             }
         }
@@ -214,19 +273,26 @@ impl CoverageCollector {
                 total_fields_covered += covered.min(total);
                 total_fields += total;
 
-                let covered_fields: Vec<String> = fields_covered
+                let covered_set = fields_covered
                     .get(&message_type)
-                    .map(|s| {
-                        let mut v: Vec<_> = s.iter().cloned().collect();
-                        v.sort();
-                        v
-                    })
+                    .cloned()
                     .unwrap_or_default();
+                let mut covered_fields: Vec<String> = covered_set.iter().cloned().collect();
+                covered_fields.sort();
+
+                let mut missing_fields: Vec<String> =
+                    Self::field_paths_recursive(&pool, &message_type)
+                        .into_iter()
+                        .filter(|p| !covered_set.contains(p))
+                        .collect();
+                missing_fields.sort();
+                missing_fields.dedup();
 
                 messages.push(MessageFieldCoverage {
                     message_type,
                     covered_fields,
                     total_fields: total,
+                    missing_fields,
                 });
             }
         }
@@ -346,6 +412,123 @@ impl CoverageCollector {
 
         report
     }
+
+    pub fn generate_html_report(&self) -> String {
+        let report = self.generate_json_report();
+
+        let pct = |covered: usize, total: usize| -> f64 {
+            if total > 0 {
+                covered as f64 / total as f64 * 100.0
+            } else {
+                0.0
+            }
+        };
+
+        let services: Vec<ServiceRow> = report
+            .files
+            .iter()
+            .map(|f| ServiceRow {
+                name: f.uri.trim_start_matches("grpc://").to_string(),
+                covered: f.statements.covered,
+                total: f.statements.total,
+                pct: format!("{:.1}", pct(f.statements.covered, f.statements.total)),
+                methods: f
+                    .methods
+                    .iter()
+                    .map(|m| MethodRow {
+                        name: m.name.clone(),
+                        calls: m.calls,
+                        covered: m.calls > 0,
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        let messages: Vec<MessageRow> = report
+            .messages
+            .iter()
+            .map(|m| {
+                let covered = m.covered_fields.len().min(m.total_fields);
+                MessageRow {
+                    name: m.message_type.clone(),
+                    covered,
+                    total: m.total_fields,
+                    pct: format!("{:.1}", pct(covered, m.total_fields)),
+                    missing_fields: m.missing_fields.clone(),
+                    status: if covered == 0 {
+                        "empty"
+                    } else if covered >= m.total_fields {
+                        "full"
+                    } else {
+                        "partial"
+                    },
+                }
+            })
+            .collect();
+
+        let ctx = CoverageHtmlContext {
+            method_covered: report.summary.covered,
+            method_total: report.summary.total,
+            method_pct: format!("{:.1}", pct(report.summary.covered, report.summary.total)),
+            field_covered: report.field_summary.covered,
+            field_total: report.field_summary.total,
+            field_pct: format!(
+                "{:.1}",
+                pct(report.field_summary.covered, report.field_summary.total)
+            ),
+            services,
+            messages,
+        };
+
+        let mut env = minijinja::Environment::new();
+        env.set_auto_escape_callback(|_| minijinja::AutoEscape::Html);
+        env.add_template("coverage.html", TEMPLATE)
+            .expect("invalid built-in coverage HTML template");
+        env.get_template("coverage.html")
+            .unwrap()
+            .render(&ctx)
+            .expect("failed to render coverage HTML report")
+    }
+}
+
+const TEMPLATE: &str = include_str!("../templates/coverage.html");
+
+#[derive(Serialize)]
+struct ServiceRow {
+    name: String,
+    covered: usize,
+    total: usize,
+    pct: String,
+    methods: Vec<MethodRow>,
+}
+
+#[derive(Serialize)]
+struct MethodRow {
+    name: String,
+    calls: u64,
+    covered: bool,
+}
+
+#[derive(Serialize)]
+struct MessageRow {
+    name: String,
+    covered: usize,
+    total: usize,
+    pct: String,
+    missing_fields: Vec<String>,
+    status: &'static str,
+}
+
+#[derive(Serialize)]
+struct CoverageHtmlContext {
+    method_covered: usize,
+    method_total: usize,
+    method_pct: String,
+    field_covered: usize,
+    field_total: usize,
+    field_pct: String,
+    services: Vec<ServiceRow>,
+    messages: Vec<MessageRow>,
 }
 
 impl Default for CoverageCollector {
@@ -505,5 +688,63 @@ mod tests {
         let report = collector.generate_json_report();
         assert_eq!(report.field_summary.total, 5);
         assert_eq!(report.field_summary.covered, 3);
+    }
+
+    #[test]
+    fn html_report_contains_bar_chart_and_summary() {
+        let collector = CoverageCollector::new();
+        collector.register_pool(&pool_with_packaged_service());
+        collector.record_call("my.pkg.Greeter", "SayHello");
+
+        let html = collector.generate_html_report();
+        // No JS charting library or CDN fetch — renders fully offline.
+        assert!(!html.contains("<script"), "no script tag: {html}");
+        assert!(!html.contains("cdn.jsdelivr.net"));
+        assert!(html.contains("bar-fill"), "CSS bar chart present");
+        assert!(html.contains("Greeter"));
+        assert!(html.contains("1/1"));
+    }
+
+    #[test]
+    fn html_report_escapes_service_and_message_names() {
+        use prost_reflect::prost_types::FieldDescriptorProto;
+        use prost_reflect::prost_types::field_descriptor_proto::{Label, Type};
+
+        let mut pool = DescriptorPool::new();
+        let file = FileDescriptorProto {
+            name: Some("evil.proto".to_string()),
+            message_type: vec![DescriptorProto {
+                name: Some("<script>Evil</script>".to_string()),
+                field: vec![FieldDescriptorProto {
+                    name: Some("x".to_string()),
+                    number: Some(1),
+                    label: Some(Label::Optional as i32),
+                    r#type: Some(Type::String as i32),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        pool.add_file_descriptor_proto(file).unwrap();
+
+        let collector = CoverageCollector::new();
+        collector.register_pool(&pool);
+        collector.record_fields_from_json("<script>Evil</script>", &serde_json::json!({"x": 1}));
+
+        let html = collector.generate_html_report();
+        assert!(!html.contains("<script>Evil</script>"));
+        assert!(html.contains("&lt;script&gt;Evil&lt;&#x2f;script&gt;"));
+    }
+
+    #[test]
+    fn html_report_shows_per_method_and_missing_fields() {
+        let collector = CoverageCollector::new();
+        collector.register_pool(&pool_with_packaged_service());
+        collector.record_call("my.pkg.Greeter", "SayHello");
+
+        let html = collector.generate_html_report();
+        assert!(html.contains("SayHello"), "method name listed: {html}");
+        assert!(html.contains("1 call<"), "call count rendered: {html}");
     }
 }

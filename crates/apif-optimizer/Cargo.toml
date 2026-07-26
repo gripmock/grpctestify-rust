@@ -1,6 +1,6 @@
 [package]
 name = "apif-optimizer"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -19,3 +19,6 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 apif-assert = { path = "../apif-assert", version = "0.2.0" }
+
+[lints]
+workspace = true

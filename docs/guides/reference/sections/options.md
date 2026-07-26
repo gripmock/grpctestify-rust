@@ -29,6 +29,7 @@ compression: gzip
 ## Rules
 
 - Unknown keys produce validation warnings
+- A key set twice is a parse error (not last-wins)
 - Canonical keys use snake_case (`retry_delay`, `no_retry`)
 - Runtime precedence quick map:
   - `run`: section attributes > `OPTIONS` > CLI runtime baseline/defaults

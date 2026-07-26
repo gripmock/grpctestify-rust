@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 #[test]
 fn test_allure_passed_test_structure() {
     let allure_result = serde_json::json!({

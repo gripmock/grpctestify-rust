@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { PlayStore, HistoryEntry, CallResult, CollectionParsed, Tab, StoredTab, TabsStorage, Environment, WireProtocol } from './types';
-import { ENVS_KEY, ACTIVE_ENV_KEY, TABS_KEY, SETTINGS_KEY, defaultAddressFor } from './types';
+import { ENVS_KEY, ACTIVE_ENV_KEY, TABS_KEY, SETTINGS_KEY, defaultAddressFor, isAddressAtDefault } from './types';
 import type { ClientSettings } from './types';
 import { LRUCache } from './cache';
 import { getSessionId } from './session';
@@ -61,6 +61,8 @@ function defaultTab(): Tab {
     collectionPath: null,
     collectionParsed: null,
     collectionOriginal: null,
+    rawContent: null,
+    rawOriginal: null,
   };
 }
 
@@ -82,6 +84,8 @@ function snapshot(state: PlayStore, tabId: string, overrides?: Partial<Tab>): Ta
     collectionPath: overrides?.collectionPath ?? state.workspacePath,
     collectionParsed: overrides?.collectionParsed ?? state.collectionParsed,
     collectionOriginal: overrides?.collectionOriginal ?? state.workspaceOriginal,
+    rawContent: overrides?.rawContent ?? state.rawContent,
+    rawOriginal: overrides?.rawOriginal ?? state.rawOriginal,
     ...overrides,
   };
 }
@@ -98,6 +102,8 @@ function loadTab(tab: Tab) {
     workspacePath: tab.collectionPath,
     collectionParsed: tab.collectionParsed,
     collectionOriginal: tab.collectionOriginal,
+    rawContent: tab.rawContent,
+    rawOriginal: tab.rawOriginal,
     selectedCollection: tab.collectionPath,
   };
 }
@@ -127,6 +133,8 @@ function deserializeTab(s: StoredTab): Tab {
     collectionPath: s.c || null,
     collectionParsed: null,
     collectionOriginal: null,
+    rawContent: null,
+    rawOriginal: null,
   };
 }
 
@@ -202,6 +210,9 @@ const DEFAULT_SETTINGS: ClientSettings = {
   protocol: 'grpc',
   tls: false,
   tlsInsecure: true,
+  tlsCa: '',
+  tlsCert: '',
+  tlsKey: '',
   requestTimeoutMs: 0,
 };
 
@@ -228,6 +239,9 @@ function clientSettings(s: PlayStore): ClientSettings {
     protocol: s.protocol,
     tls: s.tls,
     tlsInsecure: s.tlsInsecure,
+    tlsCa: s.tlsCa,
+    tlsCert: s.tlsCert,
+    tlsKey: s.tlsKey,
     requestTimeoutMs: s.requestTimeoutMs,
   };
 }
@@ -249,6 +263,9 @@ export const useStore = create<PlayStore>((set, get) => ({
   protocol: initialSettings.protocol,
   tls: initialSettings.tls,
   tlsInsecure: initialSettings.tlsInsecure,
+  tlsCa: initialSettings.tlsCa,
+  tlsCert: initialSettings.tlsCert,
+  tlsKey: initialSettings.tlsKey,
   requestTimeoutMs: initialSettings.requestTimeoutMs,
   environment: initTab?.environment || {},
   collections: [],
@@ -262,6 +279,8 @@ export const useStore = create<PlayStore>((set, get) => ({
   workspaceOriginal: null,
   selectedCollection: initTab?.collectionPath || null,
   collectionParsed: null,
+  rawContent: null,
+  rawOriginal: null,
   request: initTab ? { endpoint: initTab.endpoint, headers: initTab.headers, bodies: initTab.bodies } : { ...EMPTY_REQUEST },
   requestTab: 'body',
   gctfTab: 'request',
@@ -290,6 +309,7 @@ export const useStore = create<PlayStore>((set, get) => ({
   collectionsMtime: 0,
   sidebarVisible: true,
   showHotkeyHelp: false,
+  runStatus: 'idle',
   environments: (() => {
     try { return JSON.parse(localStorage.getItem(ENVS_KEY) || '[]'); }
     catch { return []; }
@@ -305,7 +325,7 @@ export const useStore = create<PlayStore>((set, get) => ({
   setProtocol: (v) => {
     const s = get();
     const updates: Partial<PlayStore> = { protocol: v };
-    if (s.address === defaultAddressFor(s.protocol as WireProtocol)) {
+    if (isAddressAtDefault(s.address, s.protocol as WireProtocol)) {
       updates.address = defaultAddressFor(v);
     }
     set(updates);
@@ -313,6 +333,9 @@ export const useStore = create<PlayStore>((set, get) => ({
   },
   setTls: (v) => { set({ tls: v }); saveSettings(clientSettings(get())); },
   setTlsInsecure: (v) => { set({ tlsInsecure: v }); saveSettings(clientSettings(get())); },
+  setTlsCa: (v) => { set({ tlsCa: v }); saveSettings(clientSettings(get())); },
+  setTlsCert: (v) => { set({ tlsCert: v }); saveSettings(clientSettings(get())); },
+  setTlsKey: (v) => { set({ tlsKey: v }); saveSettings(clientSettings(get())); },
   setRequestTimeoutMs: (v) => { set({ requestTimeoutMs: v }); saveSettings(clientSettings(get())); },
 
   setEndpoint: (v) => set(s => {
@@ -390,7 +413,7 @@ export const useStore = create<PlayStore>((set, get) => ({
   setReflectionMethods: (v) => set({ reflectionMethods: v, reflectStatus: v.length > 0 ? 'ok' : 'error' }),
 
   reflect: async () => {
-    const { address, protocol, tls, tlsInsecure, workspacePath } = get();
+    const { address, protocol, tls, tlsInsecure, tlsCa, tlsCert, tlsKey, workspacePath } = get();
     if (!address) return;
     set({ reflectStatus: 'loading', reflectError: null });
     if (reflectController) reflectController.abort();
@@ -405,6 +428,9 @@ export const useStore = create<PlayStore>((set, get) => ({
           address,
           tls: tls || undefined,
           tls_insecure: tls ? tlsInsecure : undefined,
+          tls_ca: tls ? (tlsCa || undefined) : undefined,
+          tls_cert: tls ? (tlsCert || undefined) : undefined,
+          tls_key: tls ? (tlsKey || undefined) : undefined,
           collection_path: workspacePath || undefined,
           protocol: protocol || undefined,
         }),
@@ -654,7 +680,7 @@ export const useStore = create<PlayStore>((set, get) => ({
 
   execute: async () => {
     const st = get();
-    const { workspacePath, tls, tlsInsecure, address, protocol } = st;
+    const { workspacePath, tls, tlsInsecure, tlsCa, tlsCert, tlsKey, address, protocol } = st;
 
     // Capture the tab that issued this request. All response writes below target
     // THIS tab, not whichever tab happens to be active when the call completes.
@@ -724,6 +750,9 @@ export const useStore = create<PlayStore>((set, get) => ({
           bodies_raw,
           headers: Object.keys(substituted.headers).length > 0 ? substituted.headers : undefined,
           tls: tls || undefined, tls_insecure: tls ? tlsInsecure : undefined,
+          tls_ca: tls ? (tlsCa || undefined) : undefined,
+          tls_cert: tls ? (tlsCert || undefined) : undefined,
+          tls_key: tls ? (tlsKey || undefined) : undefined,
           address: effectiveAddress || undefined,
           protocol: protocol || undefined,
           environment: Object.keys(st.environment).length > 0 ? st.environment : undefined,
@@ -783,6 +812,143 @@ export const useStore = create<PlayStore>((set, get) => ({
       writeResponse(errResult, { history: historyCache.values(), totalError });
     } finally {
       if (timeoutId !== undefined) clearTimeout(timeoutId);
+    }
+  },
+
+  runTest: async () => {
+    const st = get();
+    const { workspacePath, sessionId } = st;
+    const tabId = st.activeTabId;
+    const writeResponse = (r: CallResult | null, extra?: Partial<PlayStore>) => set(s => {
+      const tabs = s.tabs.map(t => t.id === tabId ? { ...t, response: r } : t);
+      const patch: Partial<PlayStore> = { tabs, ...extra };
+      if (s.activeTabId === tabId) patch.response = r;
+      return patch;
+    });
+
+    if (!workspacePath) {
+      writeResponse({ status: 'error', statusCode: null, messages: [], headers: {}, trailers: {}, error: 'Save this as a collection file before running it — /api/run executes the saved .gctf, not the unsaved editor state.', durationMs: null });
+      return;
+    }
+
+    set({ runStatus: 'running' });
+    const pending: CallResult = { status: 'pending', statusCode: null, messages: [], headers: {}, trailers: {}, error: null, durationMs: null };
+    writeResponse(pending);
+    const start = performance.now();
+    try {
+      const res = await fetch('/api/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          collection_path: workspacePath,
+          session_id: sessionId || undefined,
+        }),
+      });
+      const durationMs = Math.round(performance.now() - start);
+      let data: any;
+      try { data = await res.json(); } catch {
+        writeResponse({ status: 'error', statusCode: res.status, messages: [], headers: {}, trailers: {}, error: `Server returned ${res.status} ${res.statusText}`, durationMs });
+        return;
+      }
+      if (!res.ok) {
+        writeResponse({ status: 'error', statusCode: res.status, messages: [], headers: {}, trailers: {}, error: typeof data === 'string' ? data : (data.error || `Server returned ${res.status}`), durationMs });
+        return;
+      }
+      const result: CallResult = {
+        status: data.success ? 'ok' : 'error',
+        statusCode: res.status,
+        messages: data.response_messages ?? [],
+        headers: data.headers || {},
+        trailers: data.trailers || {},
+        error: data.error || null,
+        durationMs: data.call_duration_ms ?? durationMs,
+        assertions: data.assertions ?? [],
+      };
+      if (data.success) {
+        const totalOk = get().totalOk + 1;
+        saveTotals(totalOk, get().totalError);
+        writeResponse(result, { responseTab: 'assertions', totalOk });
+      } else {
+        const totalError = get().totalError + 1;
+        saveTotals(get().totalOk, totalError);
+        writeResponse(result, { responseTab: 'assertions', totalError });
+      }
+    } catch (err: any) {
+      writeResponse({ status: 'error', statusCode: null, messages: [], headers: {}, trailers: {}, error: err?.message || String(err), durationMs: Math.round(performance.now() - start) });
+    } finally {
+      set({ runStatus: 'idle' });
+    }
+  },
+
+  loadRawContent: async () => {
+    const st = get();
+    if (!st.workspacePath) return;
+    if (st.rawContent !== null) return;
+    const res = await fetch(`/api/collections/${st.workspacePath}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const content: string = data.content ?? '';
+    set(s => {
+      const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, rawContent: content, rawOriginal: content } : t);
+      return { tabs, rawContent: content, rawOriginal: content };
+    });
+  },
+
+  setRawContent: (v) => set(s => {
+    const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, rawContent: v } : t);
+    return { tabs, rawContent: v };
+  }),
+
+  saveRawContent: async () => {
+    const st = get();
+    if (!st.workspacePath || st.rawContent === null) return;
+    const res = await fetch('/api/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: st.workspacePath, content: st.rawContent }),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => 'Save failed');
+      throw new Error(text);
+    }
+    const savedContent = st.rawContent;
+    set(s => {
+      const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, rawOriginal: savedContent } : t);
+      return { tabs, rawOriginal: savedContent };
+    });
+    // Other tabs (structured request fields, Asserts/Extracts/Meta views) read
+    // from `collectionParsed`, which only reflects the file as of the last
+    // load — re-fetch so they don't silently drift from what's now on disk.
+    const res2 = await fetch(`/api/collections/${st.workspacePath}`);
+    if (res2.ok) {
+      const data = await res2.json();
+      const p: CollectionParsed = data.parsed;
+      set(s => {
+        const tabs = s.tabs.map(t => t.id === s.activeTabId ? {
+          ...t, endpoint: p.endpoint, headers: p.headers,
+          bodies: p.bodies.length > 0 ? p.bodies : [...DEFAULT_BODIES],
+          collectionParsed: p, collectionOriginal: p,
+        } : t);
+        return {
+          tabs, collectionParsed: p, workspaceOriginal: p,
+          request: { endpoint: p.endpoint, headers: p.headers, bodies: p.bodies.length > 0 ? p.bodies : [...DEFAULT_BODIES] },
+        };
+      });
+    }
+    get().refreshCollections();
+  },
+
+  fetchDiagnostics: async (content: string) => {
+    try {
+      const res = await fetch('/api/diagnostics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+      });
+      if (!res.ok) return [];
+      return await res.json();
+    } catch {
+      return [];
     }
   },
 

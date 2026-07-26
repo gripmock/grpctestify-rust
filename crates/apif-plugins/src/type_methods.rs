@@ -148,7 +148,6 @@ impl Plugin for UrlFragment {
     }
 }
 
-/// Email methods
 pub struct EmailLocalPart;
 impl Plugin for EmailLocalPart {
     fn name(&self) -> &str {
@@ -233,7 +232,6 @@ impl Plugin for EmailDomain {
     }
 }
 
-/// IP methods
 pub struct IpVersion;
 impl Plugin for IpVersion {
     fn name(&self) -> &str {
@@ -276,7 +274,6 @@ impl Plugin for IpVersion {
     }
 }
 
-/// UUID methods
 pub struct UuidVersion;
 impl Plugin for UuidVersion {
     fn name(&self) -> &str {
@@ -320,7 +317,6 @@ impl Plugin for UuidVersion {
     }
 }
 
-/// JSON methods
 pub struct JsonKey;
 impl Plugin for JsonKey {
     fn name(&self) -> &str {

@@ -89,6 +89,11 @@ pub struct ReflectRequest {
     pub address: String,
     pub tls: Option<bool>,
     pub tls_insecure: Option<bool>,
+    /// mTLS: paths to CA cert / client cert / client key, mirroring
+    /// `reflect --tls-ca`/`--tls-cert`/`--tls-key`.
+    pub tls_ca: Option<String>,
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
     /// Optional: collection path to load PROTO config from
     pub collection_path: Option<String>,
     /// Wire protocol: "grpc" (default), "grpc-web", "connectrpc"
@@ -118,6 +123,9 @@ pub struct SchemaFillRequest {
     pub endpoint: String,
     pub tls: Option<bool>,
     pub tls_insecure: Option<bool>,
+    pub tls_ca: Option<String>,
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
     pub collection_path: Option<String>,
     /// Wire protocol: "grpc" (default), "grpc-web", "connectrpc"
     pub protocol: Option<String>,
@@ -153,18 +161,18 @@ pub struct CollectionItem {
 pub struct CollectionParsed {
     pub endpoint: String,
     pub address: String,
-    pub headers: std::collections::HashMap<String, String>,
+    pub headers: crate::parser::OrderedStringMap,
     pub bodies: Vec<String>,
     pub asserts: Vec<String>,
-    pub extracts: std::collections::HashMap<String, String>,
+    pub extracts: crate::parser::OrderedStringMap,
     pub meta_name: Option<String>,
     pub meta_tags: Vec<String>,
     pub meta_owner: Option<String>,
     pub meta_summary: Option<String>,
-    pub tls: std::collections::HashMap<String, String>,
-    pub options: std::collections::HashMap<String, String>,
-    pub bench: std::collections::HashMap<String, String>,
-    pub proto: std::collections::HashMap<String, String>,
+    pub tls: crate::parser::OrderedStringMap,
+    pub options: crate::parser::OrderedStringMap,
+    pub bench: crate::parser::OrderedStringMap,
+    pub proto: crate::parser::OrderedStringMap,
 }
 
 fn parse_collection(doc: &crate::parser::GctfDocument) -> CollectionParsed {
@@ -190,7 +198,7 @@ fn parse_collection(doc: &crate::parser::GctfDocument) -> CollectionParsed {
             })
     };
 
-    let get_kv = |t: SectionType| -> std::collections::HashMap<String, String> {
+    let get_kv = |t: SectionType| -> crate::parser::OrderedStringMap {
         doc.sections
             .iter()
             .find(|s| s.section_type == t)
@@ -239,7 +247,7 @@ fn parse_collection(doc: &crate::parser::GctfDocument) -> CollectionParsed {
         })
         .collect();
 
-    let extracts: std::collections::HashMap<String, String> = doc
+    let extracts: crate::parser::OrderedStringMap = doc
         .sections
         .iter()
         .filter(|s| s.section_type == SectionType::Extract)
@@ -250,7 +258,7 @@ fn parse_collection(doc: &crate::parser::GctfDocument) -> CollectionParsed {
                 _ => None,
             }
         })
-        .fold(std::collections::HashMap::new(), |mut acc, m| {
+        .fold(crate::parser::OrderedStringMap::new(), |mut acc, m| {
             acc.extend(m);
             acc
         });
@@ -340,6 +348,9 @@ pub struct CallRequest {
     pub headers: Option<std::collections::HashMap<String, String>>,
     pub tls: Option<bool>,
     pub tls_insecure: Option<bool>,
+    pub tls_ca: Option<String>,
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
     pub address: Option<String>,
     pub protocol: Option<String>,
     pub environment: Option<std::collections::HashMap<String, String>>,
@@ -527,6 +538,25 @@ pub async fn save_collection(
     Ok(Json(()))
 }
 
+#[derive(Deserialize)]
+pub struct DiagnosticsRequest {
+    pub content: String,
+    pub file_name: Option<String>,
+}
+
+/// POST /api/diagnostics — run the same parse/validation/semantic/optimizer/
+/// sources/unused-variable passes the LSP uses, against unsaved editor
+/// content. No file I/O, no `collection_path` needed.
+pub async fn get_diagnostics(
+    Json(req): Json<DiagnosticsRequest>,
+) -> Json<Vec<tower_lsp::lsp_types::Diagnostic>> {
+    let file_name = req.file_name.as_deref().unwrap_or("playground.gctf");
+    Json(crate::lsp::handlers::collect_all_diagnostics(
+        &req.content,
+        file_name,
+    ))
+}
+
 /// POST /api/save-structured — save structured request data, backend builds .gctf
 pub async fn save_collection_structured(
     State(state): State<Arc<PlayState>>,
@@ -663,9 +693,9 @@ pub async fn reflect_server(
 ) -> Json<ReflectResponse> {
     let tls_config = if req.tls.unwrap_or(false) {
         Some(crate::grpc::TlsConfig {
-            ca_cert_path: None,
-            client_cert_path: None,
-            client_key_path: None,
+            ca_cert_path: req.tls_ca.clone(),
+            client_cert_path: req.tls_cert.clone(),
+            client_key_path: req.tls_key.clone(),
             server_name: None,
             insecure_skip_verify: req.tls_insecure.unwrap_or(true),
         })
@@ -819,9 +849,9 @@ pub async fn schema_fill(
 
     let tls_config = if req.tls.unwrap_or(false) {
         Some(crate::grpc::TlsConfig {
-            ca_cert_path: None,
-            client_cert_path: None,
-            client_key_path: None,
+            ca_cert_path: req.tls_ca.clone(),
+            client_cert_path: req.tls_cert.clone(),
+            client_key_path: req.tls_key.clone(),
             server_name: None,
             insecure_skip_verify: req.tls_insecure.unwrap_or(true),
         })
@@ -1152,9 +1182,9 @@ pub async fn execute_call(
 
     let tls_config = if req.tls.unwrap_or(false) {
         Some(crate::grpc::TlsConfig {
-            ca_cert_path: None,
-            client_cert_path: None,
-            client_key_path: None,
+            ca_cert_path: req.tls_ca.clone(),
+            client_cert_path: req.tls_cert.clone(),
+            client_key_path: req.tls_key.clone(),
             server_name: None,
             insecure_skip_verify: req.tls_insecure.unwrap_or(true),
         })
@@ -1301,6 +1331,124 @@ pub async fn execute_call(
         headers: resp_headers,
         trailers: response_trailers,
         error: response_error,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct RunTestRequest {
+    pub collection_path: String,
+    /// Session ID for project history auto-save.
+    pub session_id: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct RunAssertionResult {
+    pub line: usize,
+    pub expression: String,
+    pub passed: bool,
+    pub elapsed_ms: u64,
+    pub message: Option<String>,
+    pub expected: Option<String>,
+    pub actual: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct RunTestResponse {
+    pub success: bool,
+    pub error: Option<String>,
+    pub call_duration_ms: Option<u64>,
+    pub assertions: Vec<RunAssertionResult>,
+    pub response_messages: Vec<serde_json::Value>,
+    pub headers: HashMap<String, String>,
+    pub trailers: HashMap<String, String>,
+}
+
+/// Runs a saved `.gctf` file through the same [`crate::execution::runner::TestRunner`]
+/// `run` uses — ASSERTS/EXTRACT/multi-doc chain included — instead of the
+/// single-RPC [`execute_call`], so the playground and the CLI never
+/// disagree about whether a test passes.
+pub async fn execute_test(
+    State(state): State<Arc<PlayState>>,
+    Json(req): Json<RunTestRequest>,
+) -> Result<Json<RunTestResponse>, (StatusCode, String)> {
+    reject_traversal(&req.collection_path)?;
+    let file_path = resolve_file(&state, &req.collection_path)
+        .ok_or((StatusCode::NOT_FOUND, "File not found".to_string()))?;
+
+    let document = tokio::task::spawn_blocking(move || {
+        crate::parser::parse_with_recovery(&file_path).document
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let exec = crate::execution::runner::TestRunner::new(false, 30, false, false, false, None)
+        .with_capture_exchange(true)
+        .run_test(&document)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let (success, error) = match exec.status {
+        crate::execution::runner::TestExecutionStatus::Pass => (true, None),
+        crate::execution::runner::TestExecutionStatus::Fail(msg) => (false, Some(msg)),
+    };
+
+    let assertions: Vec<RunAssertionResult> = exec
+        .assertions
+        .into_iter()
+        .map(|a| RunAssertionResult {
+            line: a.line,
+            expression: a.expression,
+            passed: a.passed,
+            elapsed_ms: a.elapsed_ms,
+            message: a.message,
+            expected: a.expected,
+            actual: a.actual,
+        })
+        .collect();
+
+    let (response_messages, headers, trailers) = match exec.captured_response {
+        Some(r) => (r.messages, r.headers, r.trailers),
+        None => (vec![], HashMap::new(), HashMap::new()),
+    };
+
+    if let Some(sid) = req.session_id.clone()
+        && let Ok(root) = require_project(&state)
+    {
+        let entry = serde_json::json!({
+            "id": uuid::Uuid::new_v4().to_string(),
+            "timestamp": apif_cfg_runtime::now_unix_millis(),
+            "kind": "run",
+            "collection_path": req.collection_path,
+            "response": {
+                "status": if success { "ok" } else { "error" },
+                "error": error.clone(),
+                "assertions_passed": assertions.iter().filter(|a| a.passed).count(),
+                "assertions_total": assertions.len(),
+                "messages": response_messages.clone(),
+                "headers": headers.clone(),
+                "trailers": trailers.clone(),
+            },
+        });
+
+        if let Ok(line) = serde_json::to_string(&entry) {
+            let _guard = state.history_lock.lock().await;
+            let root = root.to_path_buf();
+            tokio::task::spawn_blocking(move || {
+                super::project::append_history_entry(&root, &sid, &line).ok();
+            })
+            .await
+            .ok();
+        }
+    }
+
+    Ok(Json(RunTestResponse {
+        success,
+        error,
+        call_duration_ms: exec.call_duration_ms,
+        assertions,
+        response_messages,
+        headers,
+        trailers,
     }))
 }
 
@@ -1808,6 +1956,36 @@ mod tests {
         assert!(require_gctf("foo.proto").is_err());
         assert!(require_gctf("foo.sh").is_err());
         assert!(require_gctf("gctf").is_err());
+    }
+
+    #[test]
+    fn parse_collection_preserves_source_order_of_options_and_extracts() {
+        // The playground JSON (`CollectionParsed`) must echo OPTIONS/EXTRACT in
+        // the author's source order, not a hash-randomized one — this is the
+        // serve-API side of the §2.3 ordered-storage guarantee.
+        let src = "--- ENDPOINT ---\npkg.Svc/M\n\n\
+             --- OPTIONS ---\ntimeout: 5\nretry: 2\ncompression: gzip\nno_retry: false\n\n\
+             --- REQUEST ---\n{}\n\n\
+             --- RESPONSE ---\n{}\n\n\
+             --- EXTRACT ---\nzulu = .a\nmike = .b\nalpha = .c\n";
+        let doc = crate::parser::parse_gctf_from_str(src, "order.gctf").expect("parse");
+        let parsed = parse_collection(&doc);
+        assert_eq!(
+            parsed
+                .options
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["timeout", "retry", "compression", "no_retry"],
+        );
+        assert_eq!(
+            parsed
+                .extracts
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["zulu", "mike", "alpha"],
+        );
     }
 
     #[test]

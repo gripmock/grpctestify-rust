@@ -1,31 +1,15 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 #![cfg(not(miri))]
 
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 
-fn get_binary() -> String {
-    env!("CARGO_BIN_EXE_grpctestify").to_string()
-}
-
-fn run_cli(args: &[&str]) -> Output {
-    run_cli_internal(args, None)
-}
+#[path = "support/mod.rs"]
+mod support;
+use support::run_cli;
 
 fn run_cli_internal(args: &[&str], path_override: Option<&Path>) -> Output {
-    let binary = get_binary();
-    let runner = std::env::var("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER")
-        .ok()
-        .or_else(|| std::env::var("CROSS_RUNNER").ok());
-
-    let mut cmd = if let Some(runner) = runner {
-        let mut parts = runner.split_whitespace();
-        let prog = parts.next().expect("runner must not be empty");
-        let mut c = Command::new(prog);
-        c.args(parts).arg(&binary);
-        c
-    } else {
-        Command::new(&binary)
-    };
+    let mut cmd = support::cli_command();
 
     if let Some(path) = path_override {
         let current_path = std::env::var("PATH").unwrap_or_default();

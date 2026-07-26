@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 //! Tests for LSP server functionality.
 //!
 //! Extracted from src/lsp/server.rs during refactoring.

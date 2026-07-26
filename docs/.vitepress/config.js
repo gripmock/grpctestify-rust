@@ -48,7 +48,11 @@ export default defineConfig({
           items: [
             { text: 'Test Files', link: '/guides/reference/api/test-files' },
             { text: 'Assertions', link: '/guides/reference/api/assertions' },
-            { text: 'Plugin System', link: '/guides/plugins/' }
+            { text: 'Plugin System', link: '/guides/plugins/' },
+            { text: 'Custom Assertion Plugins', link: '/guides/plugins/custom-scripts' },
+            { text: 'Installing From a Git Host', link: '/guides/plugins/installing' },
+            { text: 'Reporter Plugins', link: '/guides/plugins/reporters' },
+            { text: 'Script Stdlib', link: '/guides/plugins/stdlib' }
           ]
         },
         {
@@ -65,7 +69,9 @@ export default defineConfig({
           text: 'CLI Reference',
           items: [
             { text: 'Command Line', link: '/guides/reference/api/command-line' },
-            { text: 'Report Formats', link: '/guides/reference/api/report-formats' }
+            { text: 'Output Forms', link: '/guides/reference/api/output-forms' },
+            { text: 'Report Formats', link: '/guides/reference/api/report-formats' },
+            { text: 'Coverage', link: '/guides/reference/api/coverage' }
           ]
         },
         {
@@ -86,6 +92,7 @@ export default defineConfig({
             { text: 'PROTO', link: '/guides/reference/sections/proto' },
             { text: 'OPTIONS', link: '/guides/reference/sections/options' },
             { text: 'BENCH', link: '/guides/reference/sections/bench' },
+            { text: 'DATASET', link: '/guides/reference/sections/dataset' },
             { text: 'Attributes', link: '/guides/reference/sections/attributes' }
           ]
         }

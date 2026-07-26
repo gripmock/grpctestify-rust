@@ -111,11 +111,6 @@ pub fn list_env_files(root: &Path) -> Result<Vec<String>> {
     Ok(names)
 }
 
-/// Check whether a .local file exists for the given env.
-pub fn env_local_exists(root: &Path, name: &str) -> bool {
-    env_local_path(root, name).is_file()
-}
-
 /// Read .env.{name} file content.
 pub fn read_dotenv(root: &Path, name: &str) -> Result<Option<String>> {
     read_text_file(&env_path(root, name))

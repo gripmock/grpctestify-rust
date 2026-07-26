@@ -199,6 +199,78 @@ fn scan_section_header(line_idx: usize, line: &str, bytes: &[u8], len: usize) ->
     })
 }
 
+/// Drop whole-line GCTF comments (`#` and `//`) from multi-line `raw`,
+/// returning the surviving lines rejoined with `\n`. Used before handing
+/// META/DATASET content to the YAML parser: YAML understands `#` comments
+/// natively but not GCTF's `//`, so a `//` comment line would otherwise be a
+/// YAML error. Sharing this one rule across the strict and lenient parsers
+/// keeps `check`/`fmt` and `run`/`explain`/etc. from disagreeing on whether a
+/// `//`-commented META/DATASET parses (`--- one comment rule set ---`).
+pub fn strip_gctf_comment_lines(raw: &str) -> String {
+    tokenize_gctf(raw)
+        .into_iter()
+        .zip(raw.lines())
+        .filter(|(token, _)| !matches!(token.kind, GctfTokenKind::Comment(_)))
+        .map(|(_, line)| line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Detect a line *shaped* like a section header (`--- NAME ---`) whose NAME
+/// isn't a valid uppercase section-name token — so `tokenize_gctf` classified
+/// it as `Content` rather than a `SectionHeader`. Returns the raw name (any
+/// case) so the lenient parser can diagnose it (e.g. a miscased
+/// `--- endpoint ---` → hint "did you mean ENDPOINT?"). Returns `None` for
+/// genuine content lines and pure-dash rules. This keeps every byte-level
+/// scan of raw `.gctf` text inside this module — the lenient parser calls
+/// this instead of re-scanning the line itself.
+pub fn scan_miscased_section_header_name(line: &str) -> Option<String> {
+    let bytes = line.as_bytes();
+    let len = bytes.len();
+    let mut pos = 0;
+
+    while pos < len && is_ws(bytes[pos]) {
+        pos += 1;
+    }
+
+    // Leading `---`.
+    if pos + 2 >= len || bytes[pos] != b'-' || bytes[pos + 1] != b'-' || bytes[pos + 2] != b'-' {
+        return None;
+    }
+    pos += 3;
+
+    while pos < len && is_ws(bytes[pos]) {
+        pos += 1;
+    }
+
+    // Name: ASCII alphanumeric or `_`, ANY case (unlike `is_section_name_char`,
+    // which is uppercase-only — that difference is exactly why such a line is a
+    // `Content` token and needs this helper).
+    let name_start = pos;
+    while pos < len && (bytes[pos].is_ascii_alphanumeric() || bytes[pos] == b'_') {
+        pos += 1;
+    }
+    if pos == name_start {
+        return None;
+    }
+    let name = slice_str(line, name_start, pos);
+
+    // Trailing `---` (ignoring any inline-option text between name and it).
+    let mut trailing = len;
+    while trailing > pos && is_ws(bytes[trailing - 1]) {
+        trailing -= 1;
+    }
+    if trailing < pos + 3
+        || bytes[trailing - 3] != b'-'
+        || bytes[trailing - 2] != b'-'
+        || bytes[trailing - 1] != b'-'
+    {
+        return None;
+    }
+
+    Some(name)
+}
+
 pub fn tokenize_kv_line(line: &str) -> Option<(String, String)> {
     let bytes = line.as_bytes();
     let len = bytes.len();
@@ -466,6 +538,53 @@ mod tests {
         assert_eq!(tokens.len(), 2);
         assert!(matches!(&tokens[0].kind, GctfTokenKind::Comment(t) if t == "# hello"));
         assert!(matches!(&tokens[1].kind, GctfTokenKind::Comment(t) if t == "// world"));
+    }
+
+    #[test]
+    fn test_strip_gctf_comment_lines() {
+        // Both `#` and `//` whole-line comments are dropped; real content
+        // (including a `#` trailing a value, which YAML handles natively) is
+        // preserved verbatim.
+        let raw = "# hash comment\nname: Test\n// slash comment\ntags: [a] # inline\n";
+        assert_eq!(
+            strip_gctf_comment_lines(raw),
+            "name: Test\ntags: [a] # inline"
+        );
+    }
+
+    #[test]
+    fn test_scan_miscased_section_header_name() {
+        // Miscased/lowercase header shapes are `Content` tokens (the real
+        // scanner is uppercase-only), so the lenient parser uses this to
+        // recover a name for its "did you mean" hint.
+        assert_eq!(
+            scan_miscased_section_header_name("--- endpoint ---"),
+            Some("endpoint".to_string())
+        );
+        assert_eq!(
+            scan_miscased_section_header_name("--- Endpoint ---"),
+            Some("Endpoint".to_string())
+        );
+        assert_eq!(
+            scan_miscased_section_header_name("  --- garbage ---  "),
+            Some("garbage".to_string())
+        );
+        // Inline-option text between name and trailing dashes is ignored.
+        assert_eq!(
+            scan_miscased_section_header_name("--- endpoint with_asserts=true ---"),
+            Some("endpoint".to_string())
+        );
+    }
+
+    #[test]
+    fn test_scan_miscased_section_header_name_rejects_non_headers() {
+        // Genuine content, pure-dash rules, and headers missing their trailing
+        // `---` must not be treated as header attempts.
+        assert_eq!(scan_miscased_section_header_name("some random line"), None);
+        assert_eq!(scan_miscased_section_header_name("-----"), None);
+        assert_eq!(scan_miscased_section_header_name("--- endpoint"), None);
+        assert_eq!(scan_miscased_section_header_name(""), None);
+        assert_eq!(scan_miscased_section_header_name("{\"a\": 1}"), None);
     }
 
     #[test]

@@ -1,7 +1,9 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // Allure reporter integration tests — exercise the real AllureReporter
 
 use grpctestify::report::{AllureReporter, Reporter};
-use grpctestify::state::{TestMeta, TestResult, TestStatus};
+use grpctestify::state::{CapturedExchange, ConfigSummary, TestMeta, TestResult, TestStatus};
+use std::collections::HashMap;
 
 #[test]
 fn test_allure_reporter_passing_test() {
@@ -16,6 +18,12 @@ fn test_allure_reporter_passing_test() {
         error_message: None,
         execution_time: 1700000000,
         meta: TestMeta::default(),
+        assertions: Vec::new(),
+        exchange: None,
+        retried: false,
+        document_durations_ms: Vec::new(),
+        row_params: Vec::new(),
+        config_summary: ConfigSummary::default(),
     };
 
     // Allure writes files in on_test_end, not on_suite_end
@@ -103,6 +111,12 @@ fn test_allure_reporter_mixed_results() {
             error_message: None,
             execution_time: 1700000000,
             meta: TestMeta::default(),
+            assertions: Vec::new(),
+            exchange: None,
+            retried: false,
+            document_durations_ms: Vec::new(),
+            row_params: Vec::new(),
+            config_summary: ConfigSummary::default(),
         },
     );
     reporter.on_test_end(
@@ -119,6 +133,12 @@ fn test_allure_reporter_mixed_results() {
             error_message: Some("Skipped".to_string()),
             execution_time: 1700000001,
             meta: TestMeta::default(),
+            assertions: Vec::new(),
+            exchange: None,
+            retried: false,
+            document_durations_ms: Vec::new(),
+            row_params: Vec::new(),
+            config_summary: ConfigSummary::default(),
         },
     );
 
@@ -152,6 +172,12 @@ fn test_allure_reporter_labels_present() {
             error_message: None,
             execution_time: 1700000000,
             meta: TestMeta::default(),
+            assertions: Vec::new(),
+            exchange: None,
+            retried: false,
+            document_durations_ms: Vec::new(),
+            row_params: Vec::new(),
+            config_summary: ConfigSummary::default(),
         },
     );
 
@@ -194,6 +220,12 @@ fn test_allure_reporter_test_name_from_path() {
             error_message: None,
             execution_time: 1700000000,
             meta: TestMeta::default(),
+            assertions: Vec::new(),
+            exchange: None,
+            retried: false,
+            document_durations_ms: Vec::new(),
+            row_params: Vec::new(),
+            config_summary: ConfigSummary::default(),
         },
     );
 
@@ -228,6 +260,12 @@ fn test_allure_reporter_timestamps() {
             error_message: None,
             execution_time: 1700000000,
             meta: TestMeta::default(),
+            assertions: Vec::new(),
+            exchange: None,
+            retried: false,
+            document_durations_ms: Vec::new(),
+            row_params: Vec::new(),
+            config_summary: ConfigSummary::default(),
         },
     );
 
@@ -265,6 +303,12 @@ fn test_allure_reporter_tags_and_owner_labels() {
             error_message: None,
             execution_time: 1700000000,
             meta,
+            assertions: Vec::new(),
+            exchange: None,
+            retried: false,
+            document_durations_ms: Vec::new(),
+            row_params: Vec::new(),
+            config_summary: ConfigSummary::default(),
         },
     );
 
@@ -324,6 +368,12 @@ tasktracker.TaskService/GetTask
             error_message: None,
             execution_time: 1700000000,
             meta: TestMeta::default(),
+            assertions: Vec::new(),
+            exchange: None,
+            retried: false,
+            document_durations_ms: Vec::new(),
+            row_params: Vec::new(),
+            config_summary: ConfigSummary::default(),
         },
     );
 
@@ -394,6 +444,12 @@ tasktracker.TaskService/GetTask
             error_message: None,
             execution_time: 1700000000,
             meta: TestMeta::default(),
+            assertions: Vec::new(),
+            exchange: None,
+            retried: false,
+            document_durations_ms: Vec::new(),
+            row_params: Vec::new(),
+            config_summary: ConfigSummary::default(),
         },
     );
 
@@ -428,6 +484,58 @@ tasktracker.TaskService/GetTask
     );
 }
 
+// Regression: a test expanded from a `--data` row must carry that row's
+// values as Allure parameters, so history/retries can be traced back to the
+// exact row that produced them.
+#[test]
+fn test_allure_reporter_row_params_present() {
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
+
+    let test_file = temp_dir.path().join("row.gctf#[row=0 user=alice]");
+    reporter.on_test_end(
+        test_file.to_string_lossy().as_ref(),
+        &TestResult {
+            name: test_file.to_string_lossy().to_string(),
+            status: TestStatus::Pass,
+            duration_ms: 10,
+            call_duration_ms: Some(5),
+            error_message: None,
+            execution_time: 1700000000,
+            meta: TestMeta::default(),
+            assertions: Vec::new(),
+            exchange: None,
+            retried: false,
+            document_durations_ms: Vec::new(),
+            row_params: vec![
+                ("id".to_string(), "1".to_string()),
+                ("user".to_string(), "alice".to_string()),
+            ],
+            config_summary: ConfigSummary::default(),
+        },
+    );
+
+    let mut found = false;
+    for entry in std::fs::read_dir(temp_dir.path()).unwrap() {
+        let entry = entry.unwrap();
+        if entry.path().extension().is_some_and(|ext| ext == "json") {
+            let content = std::fs::read_to_string(entry.path()).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+            let params = json["parameters"].as_array().expect("parameters array");
+            let has_user = params
+                .iter()
+                .any(|p| p["name"] == "user" && p["value"] == "alice");
+            let has_id = params
+                .iter()
+                .any(|p| p["name"] == "id" && p["value"] == "1");
+            if has_user && has_id {
+                found = true;
+            }
+        }
+    }
+    assert!(found, "expected row values as Allure parameters");
+}
+
 #[test]
 fn test_allure_reporter_display_name_from_meta() {
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
@@ -448,6 +556,12 @@ fn test_allure_reporter_display_name_from_meta() {
             error_message: None,
             execution_time: 1700000000,
             meta,
+            assertions: Vec::new(),
+            exchange: None,
+            retried: false,
+            document_durations_ms: Vec::new(),
+            row_params: Vec::new(),
+            config_summary: ConfigSummary::default(),
         },
     );
 
@@ -459,4 +573,217 @@ fn test_allure_reporter_display_name_from_meta() {
             assert_eq!(json["name"].as_str(), Some("Custom Test Name"));
         }
     }
+}
+
+#[test]
+fn test_allure_reporter_description_and_links_from_meta() {
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
+
+    let meta = TestMeta {
+        summary: Some("Verifies the checkout flow returns a receipt".to_string()),
+        links: vec!["https://example.com/JIRA-123".to_string()],
+        ..TestMeta::default()
+    };
+
+    reporter.on_test_end(
+        "test.gctf",
+        &TestResult {
+            name: "test.gctf".to_string(),
+            status: TestStatus::Pass,
+            duration_ms: 10,
+            call_duration_ms: None,
+            error_message: None,
+            execution_time: 1700000000,
+            meta,
+            assertions: Vec::new(),
+            exchange: None,
+            retried: false,
+            document_durations_ms: Vec::new(),
+            row_params: Vec::new(),
+            config_summary: ConfigSummary::default(),
+        },
+    );
+
+    let mut found = false;
+    for entry in std::fs::read_dir(temp_dir.path()).unwrap() {
+        let entry = entry.unwrap();
+        if entry.path().extension().is_some_and(|ext| ext == "json") {
+            let content = std::fs::read_to_string(entry.path()).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+            assert_eq!(
+                json["description"].as_str(),
+                Some("Verifies the checkout flow returns a receipt")
+            );
+            assert_eq!(
+                json["links"][0]["url"].as_str(),
+                Some("https://example.com/JIRA-123")
+            );
+            assert_eq!(json["links"][0]["type"].as_str(), Some("custom"));
+            found = true;
+        }
+    }
+    assert!(found, "expected a result json file to be written");
+}
+
+#[test]
+fn test_allure_reporter_no_description_or_links_when_meta_empty() {
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
+
+    reporter.on_test_end(
+        "test.gctf",
+        &TestResult {
+            name: "test.gctf".to_string(),
+            status: TestStatus::Pass,
+            duration_ms: 10,
+            call_duration_ms: None,
+            error_message: None,
+            execution_time: 1700000000,
+            meta: TestMeta::default(),
+            assertions: Vec::new(),
+            exchange: None,
+            retried: false,
+            document_durations_ms: Vec::new(),
+            row_params: Vec::new(),
+            config_summary: ConfigSummary::default(),
+        },
+    );
+
+    let mut found = false;
+    for entry in std::fs::read_dir(temp_dir.path()).unwrap() {
+        let entry = entry.unwrap();
+        if entry.path().extension().is_some_and(|ext| ext == "json") {
+            let content = std::fs::read_to_string(entry.path()).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+            assert!(json.get("description").is_none());
+            assert!(json.get("links").is_none());
+            found = true;
+        }
+    }
+    assert!(found, "expected a result json file to be written");
+}
+
+#[test]
+fn test_allure_reporter_writes_exchange_attachment() {
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
+
+    let mut headers = HashMap::new();
+    headers.insert("content-type".to_string(), "application/grpc".to_string());
+    let exchange = CapturedExchange::capture(
+        headers,
+        HashMap::new(),
+        vec![serde_json::json!({"message": "Hello, World!"})],
+    );
+
+    reporter.on_test_end(
+        "test.gctf",
+        &TestResult {
+            name: "test.gctf".to_string(),
+            status: TestStatus::Pass,
+            duration_ms: 10,
+            call_duration_ms: Some(5),
+            error_message: None,
+            execution_time: 1700000000,
+            meta: TestMeta::default(),
+            assertions: Vec::new(),
+            exchange: Some(exchange),
+            retried: false,
+            document_durations_ms: Vec::new(),
+            row_params: Vec::new(),
+            config_summary: ConfigSummary::default(),
+        },
+    );
+
+    let mut result_json = None;
+    let mut attachment_files = Vec::new();
+    for entry in std::fs::read_dir(temp_dir.path()).unwrap() {
+        let path = entry.unwrap().path();
+        if path.to_string_lossy().ends_with("-result.json") {
+            result_json = Some(
+                serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&path).unwrap())
+                    .unwrap(),
+            );
+        } else if path
+            .to_string_lossy()
+            .ends_with("-exchange-attachment.json")
+        {
+            attachment_files.push(path);
+        }
+    }
+
+    let result_json = result_json.expect("expected a -result.json file");
+    let attachments = result_json["attachments"]
+        .as_array()
+        .expect("expected attachments array on the result");
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0]["type"], "application/json");
+    let source = attachments[0]["source"].as_str().unwrap();
+
+    assert_eq!(
+        attachment_files.len(),
+        1,
+        "expected one attachment file written to disk"
+    );
+    assert_eq!(
+        attachment_files[0].file_name().unwrap().to_str().unwrap(),
+        source,
+        "result.json must reference the attachment file that was actually written"
+    );
+
+    let attachment_content: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&attachment_files[0]).unwrap()).unwrap();
+    assert_eq!(
+        attachment_content["headers"]["content-type"],
+        "application/grpc"
+    );
+    assert_eq!(
+        attachment_content["response"][0]["message"],
+        "Hello, World!"
+    );
+    assert_eq!(attachment_content["truncated"], false);
+}
+
+#[test]
+fn test_allure_reporter_no_attachment_when_exchange_absent() {
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
+
+    reporter.on_test_end(
+        "test.gctf",
+        &TestResult {
+            name: "test.gctf".to_string(),
+            status: TestStatus::Pass,
+            duration_ms: 10,
+            call_duration_ms: None,
+            error_message: None,
+            execution_time: 1700000000,
+            meta: TestMeta::default(),
+            assertions: Vec::new(),
+            exchange: None,
+            retried: false,
+            document_durations_ms: Vec::new(),
+            row_params: Vec::new(),
+            config_summary: ConfigSummary::default(),
+        },
+    );
+
+    let mut found = false;
+    for entry in std::fs::read_dir(temp_dir.path()).unwrap() {
+        let path = entry.unwrap().path();
+        assert!(
+            !path
+                .to_string_lossy()
+                .ends_with("-exchange-attachment.json"),
+            "no attachment file should be written when exchange is None"
+        );
+        if path.to_string_lossy().ends_with("-result.json") {
+            let json: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert!(json.get("attachments").is_none());
+            found = true;
+        }
+    }
+    assert!(found, "expected a result json file to be written");
 }

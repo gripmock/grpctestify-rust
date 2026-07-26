@@ -42,27 +42,6 @@ pub struct KernelGrpcLabels {
     pub methods: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KernelFailure {
-    pub call_index: usize,
-    pub phase: String,
-    pub category: String,
-    pub message: String,
-    pub grpc_code: Option<i32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KernelTestCase {
-    pub case_index: usize,
-    pub test_path: String,
-    pub display_name: String,
-    pub status: String,
-    pub duration_ms: Option<u64>,
-    pub calls: Vec<KernelCall>,
-    pub failures: Vec<KernelFailure>,
-    pub grpc_labels: KernelGrpcLabels,
-}
-
 fn call_display_name(doc: &GctfDocument, call_index: usize, endpoint: &str) -> String {
     let named = doc
         .sections
@@ -238,7 +217,9 @@ pub fn build_kernel_calls(test_path: &str, result: &TestResult) -> Option<Vec<Ke
             .unwrap_or_else(|| "<missing endpoint>".to_string());
         let parsed = d.parse_endpoint();
         let plan = ExecutionPlan::from_document(d);
-        let workflow = Workflow::from_document_with_analysis(d);
+        // detached: from_document_with_analysis is chain-aware internally too
+        let single = d.detached();
+        let workflow = Workflow::from_document_with_analysis(&single);
         let request_count = plan.summary.total_requests;
 
         let has_error_expectation = d.first_section(SectionType::Error).is_some();
@@ -365,99 +346,6 @@ pub fn runtime_properties(test_path: &str) -> Vec<(String, String)> {
     props
 }
 
-pub fn build_kernel_test_case(test_path: &str, result: &TestResult) -> Option<KernelTestCase> {
-    let doc = crate::parser::parse_gctf(std::path::Path::new(test_path)).ok()?;
-    let calls = build_kernel_calls(test_path, result)?;
-    let grpc_labels = collect_grpc_labels(test_path);
-    let failures = extract_failures(test_path, result);
-
-    let display_name = doc
-        .sections
-        .iter()
-        .find_map(|s| s.get_attribute("name").map(|a| a.value.trim().to_string()))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            std::path::Path::new(test_path)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| test_path.to_string())
-        });
-
-    Some(KernelTestCase {
-        case_index: 0,
-        test_path: test_path.to_string(),
-        display_name,
-        status: match result.status {
-            TestStatus::Pass => "passed".to_string(),
-            TestStatus::Fail => "failed".to_string(),
-            TestStatus::Skip => "skipped".to_string(),
-        },
-        duration_ms: Some(result.duration_ms),
-        calls,
-        failures,
-        grpc_labels,
-    })
-}
-
-fn extract_failures(test_path: &str, result: &TestResult) -> Vec<KernelFailure> {
-    let mut failures = Vec::new();
-    if result.status != TestStatus::Fail {
-        return failures;
-    }
-
-    let doc = match crate::parser::parse_gctf(std::path::Path::new(test_path)) {
-        Ok(d) => d,
-        Err(_) => return failures,
-    };
-
-    let chain: Vec<&GctfDocument> = doc.iter_chain().collect();
-    let failed_doc_idx = resolve_failed_doc_index(&chain, &result.error_message);
-
-    failures.push(KernelFailure {
-        call_index: failed_doc_idx + 1,
-        phase: "execution".to_string(),
-        category: categorize_failure(&result.error_message),
-        message: result.error_message.clone().unwrap_or_default(),
-        grpc_code: extract_grpc_code(&result.error_message),
-    });
-
-    failures
-}
-
-fn categorize_failure(error_msg: &Option<String>) -> String {
-    let msg = match error_msg {
-        Some(m) => m.to_lowercase(),
-        None => return "unknown".to_string(),
-    };
-
-    if msg.contains("timeout") {
-        "timeout".to_string()
-    } else if msg.contains("connection") || msg.contains("network") {
-        "connection_error".to_string()
-    } else if msg.contains("assertion") || msg.contains("diff") || msg.contains("expected") {
-        "assertion_failure".to_string()
-    } else if msg.contains("parse") || msg.contains("syntax") {
-        "parse_error".to_string()
-    } else if msg.contains("validation") {
-        "validation_error".to_string()
-    } else {
-        "execution_error".to_string()
-    }
-}
-
-fn extract_grpc_code(error_msg: &Option<String>) -> Option<i32> {
-    let msg = error_msg.as_ref()?;
-
-    if let Some(pos) = msg.find("gRPC code ") {
-        let rest = &msg[pos + 10..];
-        if let Some(end) = rest.find([' ', ',', ')']) {
-            let code_str = &rest[..end];
-            return code_str.parse().ok();
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,11 +438,6 @@ pkg.Service/MethodC
             "skipped call phases: {:?}",
             calls[2].phases
         );
-
-        // extract_failures must point at document #2, not the last document.
-        let failures = extract_failures(&path, &result);
-        assert_eq!(failures.len(), 1);
-        assert_eq!(failures[0].call_index, 2);
     }
 
     #[cfg_attr(miri, ignore)]
@@ -575,6 +458,5 @@ pkg.Service/MethodC
         let result = TestResult::pass(path.clone(), 10, None);
         let calls = build_kernel_calls(&path, &result).unwrap();
         assert!(calls.iter().all(|c| c.status == "passed"));
-        assert!(extract_failures(&path, &result).is_empty());
     }
 }

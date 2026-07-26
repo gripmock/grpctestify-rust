@@ -10,21 +10,40 @@ export function defaultAddressFor(protocol: WireProtocol): string {
   }
 }
 
+/** True when `address` is still the untouched default for `protocol` — the
+ * signal `setProtocol` uses to decide whether to carry a manual override
+ * forward instead of overwriting it with the new protocol's default. */
+export function isAddressAtDefault(address: string, protocol: WireProtocol): boolean {
+  return address === defaultAddressFor(protocol);
+}
+
 export interface RequestConfig {
   endpoint: string;
   headers: Record<string, string>;
   bodies: string[];
 }
 
+export interface RunAssertionResult {
+  line: number;
+  expression: string;
+  passed: boolean;
+  elapsed_ms: number;
+  message: string | null;
+  expected: string | null;
+  actual: string | null;
+}
+
 export interface CallResult {
   status: 'ok' | 'error' | 'pending';
   statusCode: number | null;
-  
+
   messages: unknown[];
   headers: Record<string, string>;
   trailers: Record<string, string>;
   error: string | null;
   durationMs: number | null;
+  /** Set only when this result came from `/api/run` (full .gctf ASSERTS/EXTRACT run), not a raw `/api/call`. */
+  assertions?: RunAssertionResult[];
 }
 
 export interface HistoryEntry {
@@ -85,8 +104,8 @@ export interface CollectionParsed {
 }
 
 export type RequestTab = 'body' | 'headers' | 'env';
-export type GctfTab = 'request' | 'asserts' | 'extracts' | 'meta' | 'proto';
-export type ResponseTab = 'response' | 'headers';
+export type GctfTab = 'request' | 'raw' | 'asserts' | 'extracts' | 'meta' | 'proto';
+export type ResponseTab = 'response' | 'headers' | 'assertions';
 
 export interface Environment {
   name: string;
@@ -107,6 +126,9 @@ export interface ClientSettings {
   protocol: WireProtocol;
   tls: boolean;
   tlsInsecure: boolean;
+  tlsCa: string;
+  tlsCert: string;
+  tlsKey: string;
   requestTimeoutMs: number;
 }
 
@@ -161,6 +183,23 @@ export interface Tab {
   collectionPath: string | null;
   collectionParsed: CollectionParsed | null;
   collectionOriginal: CollectionParsed | null;
+  /** Full raw `.gctf` text, loaded lazily when the "Raw" tab is opened. */
+  rawContent: string | null;
+  rawOriginal: string | null;
+}
+
+
+export interface GctfDiagnosticPosition {
+  line: number;
+  character: number;
+}
+
+export interface GctfDiagnostic {
+  range: { start: GctfDiagnosticPosition; end: GctfDiagnosticPosition };
+  severity?: number;
+  message: string;
+  code?: string | number;
+  source?: string;
 }
 
 
@@ -184,6 +223,9 @@ export interface PlayStore {
   protocol: WireProtocol;
   tls: boolean;
   tlsInsecure: boolean;
+  tlsCa: string;
+  tlsCert: string;
+  tlsKey: string;
   environment: Record<string, string>;
   collections: CollectionItem[];
 
@@ -199,6 +241,8 @@ export interface PlayStore {
   
   selectedCollection: string | null;
   collectionParsed: CollectionParsed | null;
+  rawContent: string | null;
+  rawOriginal: string | null;
   request: RequestConfig;
   requestTab: RequestTab;
   gctfTab: GctfTab;
@@ -219,12 +263,16 @@ export interface PlayStore {
   activeEnvironment: string | null;
   sidebarVisible: boolean;
   showHotkeyHelp: boolean;
+  runStatus: 'idle' | 'running';
 
   requestTimeoutMs: number;
   setAddress: (v: string) => void;
   setProtocol: (v: WireProtocol) => void;
   setTls: (v: boolean) => void;
   setTlsInsecure: (v: boolean) => void;
+  setTlsCa: (v: string) => void;
+  setTlsCert: (v: string) => void;
+  setTlsKey: (v: string) => void;
   setRequestTimeoutMs: (v: number) => void;
   setEndpoint: (v: string) => void;
   setRequestBody: (idx: number, v: string) => void;
@@ -245,6 +293,11 @@ export interface PlayStore {
   saveWorkspace: () => Promise<void>;
   saveWorkspaceAs: (name: string) => Promise<void>;
   execute: () => Promise<void>;
+  runTest: () => Promise<void>;
+  loadRawContent: () => Promise<void>;
+  setRawContent: (v: string) => void;
+  saveRawContent: () => Promise<void>;
+  fetchDiagnostics: (content: string) => Promise<GctfDiagnostic[]>;
   loadStartupInfo: () => Promise<void>;
   setReflectionMethods: (v: { name: string; fullName: string; service: string }[]) => void;
   reflect: () => Promise<void>;

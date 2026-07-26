@@ -1,7 +1,9 @@
 import { MonacoEditor as Editor } from '../MonacoEditor';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import get from 'lodash-es/get';
 import { useStore } from '../../lib/store';
-import { Tag, User, FileText, Shield, Wrench } from 'lucide-react';
+import { Tag, User, FileText, Shield, Wrench, Save, Loader2, Check } from 'lucide-react';
+import { btn, colors } from '../../lib/theme';
 import type { CollectionParsed } from '../../lib/types';
 import { ProtoManager } from './ProtoManager';
 
@@ -14,6 +16,7 @@ export function GctfInfoPanel() {
 
   const tabs: { key: typeof tab; label: string; count?: number }[] = [
     { key: 'request', label: 'Config' },
+    { key: 'raw', label: 'Raw' },
     { key: 'asserts', label: 'Asserts', count: get(p, 'asserts.length', 0) },
     { key: 'extracts', label: 'Extracts', count: Object.keys(get(p, 'extracts', {})).length },
     { key: 'meta', label: 'Info' },
@@ -46,11 +49,120 @@ export function GctfInfoPanel() {
       </div>
 
       {tab === 'request' && <RequestInfo p={p} />}
+      {tab === 'raw' && <RawEditor />}
       {tab === 'asserts' && <AssertsView asserts={p.asserts || []} />}
       {tab === 'extracts' && <ExtractsView extracts={p.extracts || {}} />}
       {tab === 'meta' && <MetaView p={p} />}
       {tab === 'proto' && <ProtoManager />}
     </section>
+  );
+}
+
+const SEVERITY_MAP: Record<number, number> = { 1: 8, 2: 4, 3: 2, 4: 1 }; // LSP -> monaco.MarkerSeverity
+
+function RawEditor() {
+  const rawContent = useStore(s => s.rawContent);
+  const loadRawContent = useStore(s => s.loadRawContent);
+  const setRawContent = useStore(s => s.setRawContent);
+  const saveRawContent = useStore(s => s.saveRawContent);
+  const fetchDiagnostics = useStore(s => s.fetchDiagnostics);
+  const monacoTheme = useStore(s => s.theme === 'dark' ? 'vs-dark' : 'light');
+  const workspacePath = useStore(s => s.workspacePath);
+  const rawOriginal = useStore(s => s.rawOriginal);
+
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const monacoRef = useRef<any>(null);
+  const editorRef = useRef<any>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => { loadRawContent(); }, [workspacePath]);
+
+  const runDiagnostics = useCallback(async (value: string) => {
+    const diags = await fetchDiagnostics(value);
+    const monaco = monacoRef.current;
+    const editor = editorRef.current;
+    if (!monaco || !editor) return;
+    const model = editor.getModel();
+    if (!model) return;
+    const markers = diags.map((d: any) => ({
+      startLineNumber: d.range.start.line + 1,
+      startColumn: d.range.start.character + 1,
+      endLineNumber: d.range.end.line + 1,
+      endColumn: d.range.end.character + 1,
+      message: d.message,
+      severity: SEVERITY_MAP[d.severity ?? 1] ?? monaco.MarkerSeverity.Error,
+      code: typeof d.code === 'string' || typeof d.code === 'number' ? String(d.code) : undefined,
+    }));
+    monaco.editor.setModelMarkers(model, 'grpctestify', markers);
+  }, [fetchDiagnostics]);
+
+  const handleChange = (v: string | undefined) => {
+    const value = v ?? '';
+    setRawContent(value);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => runDiagnostics(value), 400);
+  };
+
+  useEffect(() => {
+    if (rawContent !== null) runDiagnostics(rawContent);
+  }, [workspacePath]);
+
+  const dirty = rawContent !== null && rawOriginal !== null && rawContent !== rawOriginal;
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await saveRawContent();
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err: any) {
+      setError(err?.message || String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (rawContent === null) {
+    return <div style={{ padding: 12, fontSize: 12, color: 'var(--text-muted)' }}>Loading…</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          Full file — edit ASSERTS/EXTRACT and any other section directly. Diagnostics match the LSP.
+        </span>
+        <span style={{ flex: 1 }} />
+        {dirty && <span style={{ fontSize: 10, color: colors.warning }}>unsaved</span>}
+        <button onClick={handleSave} disabled={saving || !dirty} style={{ ...btn('ghost', 'sm'), opacity: dirty ? 1 : 0.4 }}>
+          {saving ? <Loader2 size={12} className="animate-spin" /> : saved ? <Check size={12} color={colors.success} /> : <Save size={12} />}
+          Save
+        </button>
+      </div>
+      {error && <div style={{ fontSize: 11, color: colors.error, marginBottom: 6 }}>{error}</div>}
+      <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+        <Editor
+          height="360px"
+          language="plaintext"
+          value={rawContent}
+          onChange={handleChange}
+          theme={monacoTheme}
+          onMount={(ed, monaco) => {
+            editorRef.current = ed;
+            monacoRef.current = monaco;
+            runDiagnostics(rawContent);
+          }}
+          options={{
+            minimap: { enabled: false }, fontSize: 13,
+            scrollBeyondLastLine: false, wordWrap: 'on',
+            automaticLayout: true, lineNumbers: 'on', tabSize: 2,
+          }}
+        />
+      </div>
+    </div>
   );
 }
 

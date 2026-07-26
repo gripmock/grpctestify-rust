@@ -1,0 +1,59 @@
+=== STDOUT ===
+
+MULTI-DOCUMENT EXECUTION PLAN
+══════════════════════════════
+File: <TMPDIR>/chain.gctf
+Documents: 2
+
+FLOW
+────
+  1. grpc.health.v1.Health/Check [response]
+  2. grpc.health.v1.Health/Watch [error]
+
+MERMAID
+───────
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
+    Client->>Server: 1. grpc.health.v1.Health/Check
+    Server-->>Client: response
+    Client->>Server: 2. grpc.health.v1.Health/Watch
+    Server--xClient: error
+```
+
+SCENARIO 1: grpc.health.v1.Health/Check
+  ────────────────────────────────────────────────────────────
+  -> Effective runtime:
+    timeout=30s (CliDefaults), retry=0 (CliDefaults), retry_delay=1s (CliDefaults), no_retry=false (CliDefaults), compression=none (CliDefaults)
+  → Send:
+    {}
+  ← Expect response:
+    {
+      "status": "SERVING"
+    }
+    [with_asserts]
+  ✓ 1 assertion(s) at lines 10-12
+    1. .status == "SERVING"
+
+SCENARIO 2: grpc.health.v1.Health/Watch
+  ────────────────────────────────────────────────────────────
+  -> Effective runtime:
+    timeout=30s (CliDefaults), retry=0 (CliDefaults), retry_delay=1s (CliDefaults), no_retry=false (CliDefaults), compression=none (CliDefaults)
+  → Send:
+    {}
+  ← Expect error:
+    {
+      "code": 5
+    }
+
+OPTIMIZATION TRACE:
+  (no safe rewrites found)
+
+VALIDATION:
+  ✓ All documents structurally valid.
+
+TIMING:
+  Parse:      <MS>ms
+
+=== STDERR ===

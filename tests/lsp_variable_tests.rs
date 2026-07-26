@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // LSP variable tests
 
 use grpctestify::parser::parse_gctf_from_str;

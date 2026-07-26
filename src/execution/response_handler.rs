@@ -1,31 +1,20 @@
-// Response Handler - handles response validation and processing
-
 use crate::assert::{AssertionEngine, JsonComparator};
-use crate::execution::runner::{TestExecutionResult, TestExecutionStatus};
+use crate::execution::runner::TestExecutionResult;
 use crate::grpc::GrpcResponse;
 use crate::parser::GctfDocument;
 use crate::parser::ast::{InlineOptions, Section, SectionContent, SectionType};
-use crate::plugins::PluginManager;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
-/// Response validation result
-#[derive(Debug, Clone)]
-pub struct ResponseValidationResult {
-    pub status: TestExecutionStatus,
-    pub failure_reasons: Vec<String>,
-}
-
-/// Response Handler - validates responses against expected values
 pub struct ResponseHandler {
     no_assert: bool,
     assertion_engine: AssertionEngine,
 }
 
 static PLUGIN_REGISTRY: LazyLock<Arc<dyn apif_assert::registry::PluginRegistry>> =
-    LazyLock::new(|| Arc::new(PluginManager::new()));
+    LazyLock::new(|| Arc::new(crate::execution::plugin_dir::build_plugin_manager()));
 
 impl ResponseHandler {
     /// Create new response handler

@@ -33,7 +33,9 @@ pub use assertion_ast::{
     AssertionExpr, BinaryOp, Expr, Literal, assertion_to_string, parse_assertion,
     remove_redundant_parens,
 };
-pub use content_parser::{build_section, parse_inline_options, parse_section_content};
+pub use content_parser::{
+    build_section, parse_inline_options, parse_section_content, register_extra_inline_option_keys,
+};
 pub use tokenizer::{
     Span, Token, TokenKind, collect_identifiers, collect_operators, collect_plugin_calls,
     tokenize_assertion,

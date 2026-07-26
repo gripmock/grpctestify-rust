@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // Tests for @header and @trailer plugins in EXTRACT section
 
 use grpctestify::parser::parse_gctf_from_str;

@@ -21,8 +21,8 @@ use std::path::Path;
 pub const REQUEST_CHANNEL_BUFFER: usize = 100;
 
 /// Default TLS configuration from environment variables.
-pub fn tls_env_defaults() -> HashMap<String, String> {
-    let mut defaults = HashMap::new();
+pub fn tls_env_defaults() -> apif_ast::OrderedStringMap {
+    let mut defaults = apif_ast::OrderedStringMap::new();
 
     if let Ok(value) = std::env::var("GRPCTESTIFY_TLS_CA_FILE")
         && !value.trim().is_empty()
@@ -77,7 +77,7 @@ pub fn effective_address(
 }
 
 /// Resolve compression setting from OPTIONS section with env fallback.
-pub fn parse_compression_option(options: &HashMap<String, String>) -> Option<CompressionMode> {
+pub fn parse_compression_option(options: &apif_ast::OrderedStringMap) -> Option<CompressionMode> {
     options
         .get("compression")
         .map(|v| v.trim().to_ascii_lowercase())
@@ -93,7 +93,7 @@ pub fn parse_compression_option(options: &HashMap<String, String>) -> Option<Com
 /// at either level is a configuration error (never a silent fall-back).
 pub fn resolve_compression(
     document: &GctfDocument,
-    options: &HashMap<String, String>,
+    options: &apif_ast::OrderedStringMap,
     env_default: CompressionMode,
 ) -> Result<CompressionMode, String> {
     // `get_compression` only yields validated "gzip"/"none" (an invalid attribute
@@ -639,7 +639,9 @@ pub fn metadata_map_to_hashmap(metadata: &tonic::metadata::MetadataMap) -> HashM
 #[cfg(test)]
 mod tests {
     use super::*;
-    use apif_ast::{GctfAttribute, GctfDocument, Section, SectionContent, SectionType};
+    use apif_ast::{
+        GctfAttribute, GctfDocument, Section, SectionContent, SectionSpan, SectionType,
+    };
 
     fn make_doc(sections: Vec<Section>) -> GctfDocument {
         GctfDocument {
@@ -659,6 +661,7 @@ mod tests {
             start_line: 0,
             end_line: 0,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         }
     }
 
@@ -1150,7 +1153,7 @@ mod tests {
         assert_eq!(result.compression.source, RuntimeOptionSource::FileOptions);
     }
 
-    fn opts(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+    fn opts(pairs: &[(&str, &str)]) -> apif_ast::OrderedStringMap {
         pairs
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -1215,7 +1218,11 @@ mod tests {
             SectionContent::Single("svc/M".into()),
         )]);
         assert_eq!(
-            resolve_compression(&doc, &HashMap::new(), CompressionMode::Gzip),
+            resolve_compression(
+                &doc,
+                &apif_ast::OrderedStringMap::new(),
+                CompressionMode::Gzip
+            ),
             Ok(CompressionMode::Gzip)
         );
     }

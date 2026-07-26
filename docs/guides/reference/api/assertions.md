@@ -74,11 +74,14 @@ Scope behavior:
 
 ## String helpers
 
-Preferred canonical operators:
+Substring, prefix, and suffix checks — written infix, like the other operators:
 
-- `contains`
-- `startsWith`
-- `endsWith`
+```gctf
+--- ASSERTS ---
+.name contains "ell"
+.name startsWith "he"
+.name endsWith "lo"
+```
 
 ## Regex literals
 
@@ -148,8 +151,30 @@ engine substitutes the value preserving its JSON type:
 | `:yaml` | YAML document |
 
 `uuid`, `email`, `url`, `ip` are treated as `string`. Runtime validation
-catches actual type mismatches — a `:number` annotation on a string value
-produces a cast error at runtime.
+catches actual type mismatches — a `:number` annotation on a non-numeric
+string value produces a cast error at runtime.
+
+`:number`/`:uint` coerce a numeric-looking JSON *string* into a real number
+before comparing. This matters because protobuf's JSON mapping encodes
+`int64`/`uint64`/`sint64`/`fixed64`/`sfixed64` fields as strings (to avoid
+precision loss) — `.big_id:number > 100` works even though `big_id` arrives
+as `"123456789012345"`, not a bare number.
+
+## Full jq pipelines
+
+Any line that isn't a plain `.field` comparison or plugin call runs through a full jq engine ([jaq](https://github.com/01mf02/jaq)) — `reduce`, `foreach`, `map`, object/array construction, and string interpolation all work today, not just the patterns shown above:
+
+```gctf
+--- ASSERTS ---
+reduce (.items[]) as $i (0; . + $i.amount) == .total
+[.items[] | select(.active)] | length > 0
+{name: .user.name, active: .user.active} == {name: "Ada", active: true}
+"\(.user.name)-verified" == "Ada-verified"
+```
+
+One limitation: an `EXTRACT`'d `$name` variable resolves inside simple comparisons and indexing (`$name`, `$name[0]`, `$name == 3`), but **not** inside a pipeline complex enough to fall through to the jq engine (`reduce $name[] as ...`, `$name | map(...)`) — those report a clear "undefined variable" error rather than silently misbehaving. Build the array/object you need to `reduce`/`map` over from `.` directly instead of from an extracted variable.
+
+[`examples/assertions/jq-pipelines.gctf`](https://github.com/gripmock/grpctestify-rust/blob/master/examples/assertions/jq-pipelines.gctf) is a runnable test proving `reduce`/`map`/object-construction/string-interpolation/`foreach` all pass through a real gRPC call (against `grpc.health.v1.Health`, so the field names there are `.status`-shaped rather than `.items`/`.total` like the illustration above — same operators, different schema).
 
 ## Notes
 

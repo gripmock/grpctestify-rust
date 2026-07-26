@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use grpctestify::bench::sources::definition::SourceDefinition;
 use grpctestify::bench::sources::index_builder::{build_index_for_source, load_or_build_index};

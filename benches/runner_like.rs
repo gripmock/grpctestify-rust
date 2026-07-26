@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 mod common;
 
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -10,7 +11,8 @@ fn bench_workflow_and_plan(c: &mut Criterion) {
     c.bench_function("runner_like/workflow_from_document_chain_100", |b| {
         b.iter(|| {
             for d in doc.iter_chain() {
-                let w = grpctestify::execution::Workflow::from_document_with_analysis(d);
+                let w =
+                    grpctestify::execution::Workflow::from_document_with_analysis(&d.detached());
                 black_box(w.summary.total_requests);
             }
         });

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 use grpctestify::assert::engine::{AssertionEngine, AssertionResult};
 use grpctestify::plugins::PluginManager;
 use serde_json::json;

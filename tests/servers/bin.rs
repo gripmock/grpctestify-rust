@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // Test server binary - starts all reference gRPC servers
 // Usage: cargo run --bin test-server --features test-servers -- --port 50051
 

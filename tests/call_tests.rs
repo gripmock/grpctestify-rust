@@ -1,39 +1,141 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 #![cfg(not(miri))]
 
-use std::path::Path;
-use std::process::{Command, Output};
+#[path = "support/mod.rs"]
+mod support;
+use support::cli_command;
+use support::fixture_path as fixture;
+use support::run_cli as run;
 
-fn get_binary() -> String {
-    env!("CARGO_BIN_EXE_grpctestify").to_string()
+async fn spawn_health_server() -> String {
+    let (reporter, health_service) = tonic_health::server::health_reporter();
+    reporter
+        .set_service_status("", tonic_health::ServingStatus::Serving)
+        .await;
+    let reflection_service = tonic_reflection::server::Builder::configure()
+        .register_encoded_file_descriptor_set(tonic_health::pb::FILE_DESCRIPTOR_SET)
+        .build_v1()
+        .expect("build reflection service");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local addr");
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+    tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(health_service)
+            .add_service(reflection_service)
+            .serve_with_incoming(incoming)
+            .await
+            .expect("health server run");
+    });
+    addr.to_string()
 }
 
-fn fixture(rel: &str) -> String {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(rel)
-        .to_string_lossy()
-        .into_owned()
-}
-
-fn run(args: &[&str]) -> Output {
-    let binary = get_binary();
-    let runner = std::env::var("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER")
-        .ok()
-        .or_else(|| std::env::var("CROSS_RUNNER").ok());
-
-    let mut cmd = if let Some(runner) = runner {
-        let mut parts = runner.split_whitespace();
-        let prog = parts.next().expect("runner must not be empty");
-        let mut c = Command::new(prog);
-        c.args(parts).arg(&binary);
-        c
-    } else {
-        Command::new(&binary)
-    };
-
-    cmd.current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(args)
+/// §2.2: `call`'s inline mode (`-e`, no file) can drive TLS from CLI flags. The
+/// `--plaintext` flag forces a no-TLS connection from inline mode alone (there
+/// is no file to carry a TLS section), reaching the spawned plaintext server —
+/// proving the CLI-TLS-config path is wired for inline calls.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn call_inline_plaintext_flag_connects_to_the_server() {
+    let address = spawn_health_server().await;
+    let output = cli_command()
+        .env("GRPCTESTIFY_ADDRESS", &address)
+        .args([
+            "call",
+            "-e",
+            "grpc.health.v1.Health/Check",
+            "-d",
+            "{}",
+            "--plaintext",
+        ])
         .output()
-        .expect("failed to run grpctestify")
+        .expect("failed to run call");
+    assert!(
+        output.status.success(),
+        "inline call --plaintext must reach the plaintext server:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("SERVING"),
+        "expected a health SERVING response: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+/// §4.1: golden success output, and NO_COLOR-invariance. `call`'s body is
+/// deterministic for a health Check (`{"status": "SERVING"}` pretty JSON) and
+/// carries no ANSI, so stdout is byte-identical with and without NO_COLOR.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn call_success_output_is_exact_and_no_color_invariant() {
+    let address = spawn_health_server().await;
+
+    let with_color = cli_command()
+        .env("GRPCTESTIFY_ADDRESS", &address)
+        .args([
+            "call",
+            "-e",
+            "grpc.health.v1.Health/Check",
+            "-d",
+            "{}",
+            "--plaintext",
+        ])
+        .output()
+        .expect("run call");
+    assert!(with_color.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&with_color.stdout).trim(),
+        "{\n  \"status\": \"SERVING\"\n}",
+        "exact pretty-JSON body"
+    );
+
+    let no_color = cli_command()
+        .env("GRPCTESTIFY_ADDRESS", &address)
+        .env("NO_COLOR", "1")
+        .args([
+            "call",
+            "-e",
+            "grpc.health.v1.Health/Check",
+            "-d",
+            "{}",
+            "--plaintext",
+        ])
+        .output()
+        .expect("run call NO_COLOR");
+    assert!(no_color.status.success());
+    assert_eq!(
+        with_color.stdout, no_color.stdout,
+        "call emits no ANSI — stdout must be byte-identical with/without NO_COLOR"
+    );
+}
+
+/// §4.1 (TLS path): a CLI TLS flag actually reaches the transport's TLS setup —
+/// `--tls-ca <missing>` fails while loading the CA, proving the flag is wired
+/// into the connection (not silently ignored). (A full happy-path TLS handshake
+/// would need a cert-generating TLS server, deferred.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn call_tls_ca_flag_reaches_transport_tls_setup() {
+    let address = spawn_health_server().await;
+    let output = cli_command()
+        .env("GRPCTESTIFY_ADDRESS", &address)
+        .args([
+            "call",
+            "-e",
+            "grpc.health.v1.Health/Check",
+            "-d",
+            "{}",
+            "--tls-ca",
+            "/no/such/ca-cert-4f3a.pem",
+        ])
+        .output()
+        .expect("run call");
+    assert!(
+        !output.status.success(),
+        "a missing --tls-ca file must fail (TLS setup reached), not silently succeed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 // ── error cases ────────────────────────────────────────────────────────────────

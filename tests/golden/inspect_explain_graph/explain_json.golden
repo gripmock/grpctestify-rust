@@ -1,0 +1,144 @@
+=== STDOUT ===
+{
+  "documents": [
+    {
+      "index": 1,
+      "endpoint": "grpc.health.v1.Health/Check",
+      "address": null,
+      "execution_plan": {
+        "file_path": "<TMPDIR>/chain.gctf",
+        "connection": {
+          "address": "<env:GRPCTESTIFY_ADDRESS>",
+          "source": "Environment variable (implicit)",
+          "backend": "default"
+        },
+        "target": {
+          "endpoint": "grpc.health.v1.Health/Check",
+          "package": "grpc.health.v1",
+          "service": "Health",
+          "method": "Check"
+        },
+        "headers": null,
+        "requests": [
+          {
+            "index": 1,
+            "content": {},
+            "content_type": "json",
+            "line_start": 3,
+            "line_end": 5
+          }
+        ],
+        "expectations": [
+          {
+            "index": 1,
+            "expectation_type": "response",
+            "content": {
+              "status": "SERVING"
+            },
+            "message_count": null,
+            "comparison_options": {
+              "partial": false,
+              "redact": [],
+              "tolerance": null,
+              "unordered_arrays": false,
+              "with_asserts": true
+            },
+            "line_start": 6,
+            "line_end": 8
+          }
+        ],
+        "assertions": [
+          {
+            "index": 1,
+            "assertions": [
+              ".status == \"SERVING\""
+            ],
+            "line_start": 9,
+            "line_end": 11,
+            "response_index": null
+          }
+        ],
+        "extractions": [],
+        "rpc_mode": "unary",
+        "summary": {
+          "total_requests": 1,
+          "total_responses": 1,
+          "total_errors": 0,
+          "error_expected": false,
+          "assertion_blocks": 1,
+          "variable_extractions": 0,
+          "rpc_mode_name": "Unary"
+        }
+      },
+      "variable_extractions": [],
+      "has_streaming": false,
+      "rpc_mode": "Unary"
+    },
+    {
+      "index": 2,
+      "endpoint": "grpc.health.v1.Health/Watch",
+      "address": null,
+      "execution_plan": {
+        "file_path": "<TMPDIR>/chain.gctf",
+        "connection": {
+          "address": "<env:GRPCTESTIFY_ADDRESS>",
+          "source": "Environment variable (implicit)",
+          "backend": "default"
+        },
+        "target": {
+          "endpoint": "grpc.health.v1.Health/Watch",
+          "package": "grpc.health.v1",
+          "service": "Health",
+          "method": "Watch"
+        },
+        "headers": null,
+        "requests": [
+          {
+            "index": 1,
+            "content": {},
+            "content_type": "json",
+            "line_start": 15,
+            "line_end": 17
+          }
+        ],
+        "expectations": [
+          {
+            "index": 1,
+            "expectation_type": "error",
+            "content": {
+              "code": 5
+            },
+            "message_count": null,
+            "comparison_options": {
+              "partial": false,
+              "redact": [],
+              "tolerance": null,
+              "unordered_arrays": false,
+              "with_asserts": false
+            },
+            "line_start": 18,
+            "line_end": 19
+          }
+        ],
+        "assertions": [],
+        "extractions": [],
+        "rpc_mode": "unary_error",
+        "summary": {
+          "total_requests": 1,
+          "total_responses": 0,
+          "total_errors": 1,
+          "error_expected": true,
+          "assertion_blocks": 0,
+          "variable_extractions": 0,
+          "rpc_mode_name": "Unary Error"
+        }
+      },
+      "variable_extractions": [],
+      "has_streaming": false,
+      "rpc_mode": "Unary"
+    }
+  ],
+  "optimization_trace": []
+}
+
+=== STDERR ===

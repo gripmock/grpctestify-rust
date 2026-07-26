@@ -1,7 +1,6 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
-/// File utilities for cross-platform operations
 pub struct FileUtils;
 
 impl FileUtils {

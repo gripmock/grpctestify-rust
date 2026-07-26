@@ -37,6 +37,7 @@ pub enum DiagnosticCode {
     EmptySection = 2004,
     InvalidSectionContent = 2005,
     UnknownSectionType = 2006,
+    DuplicateKey = 2007,
 
     // Syntax errors (3000-3999)
     InvalidSyntax = 3001,
@@ -85,6 +86,7 @@ impl DiagnosticCode {
             DiagnosticCode::EmptySection => "empty_section",
             DiagnosticCode::InvalidSectionContent => "invalid_section_content",
             DiagnosticCode::UnknownSectionType => "unknown_section_type",
+            DiagnosticCode::DuplicateKey => "duplicate_key",
 
             // Syntax errors
             DiagnosticCode::InvalidSyntax => "invalid_syntax",

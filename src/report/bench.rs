@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Write as FmtWrite;
@@ -242,27 +243,36 @@ impl BenchReport {
     }
 
     pub fn to_summary_text(&self, compact: bool) -> String {
+        use crate::report::style::{fail_style, pass_style, rule};
         let mut out = String::new();
+        let heavy = rule('═', 80);
+        let light = rule('─', 80);
 
-        let _ = writeln!(out, "Summary:");
-        let _ = writeln!(out, "  Count:        {}", self.summary.count);
-        let _ = writeln!(out, "  Total:        {}", format_ns(self.summary.total_ns));
+        let _ = writeln!(out, "{heavy}");
+        let _ = writeln!(out, "📊 Benchmark Summary");
+        let _ = writeln!(out, "{light}");
+        let _ = writeln!(out, "   • Count:        {}", self.summary.count);
         let _ = writeln!(
             out,
-            "  Slowest:      {}",
+            "   • Total:        {}",
+            format_ns(self.summary.total_ns)
+        );
+        let _ = writeln!(
+            out,
+            "   • Slowest:      {}",
             format_ns(self.summary.slowest_ns)
         );
         let _ = writeln!(
             out,
-            "  Fastest:      {}",
+            "   • Fastest:      {}",
             format_ns(self.summary.fastest_ns)
         );
         let _ = writeln!(
             out,
-            "  Average:      {}",
+            "   • Average:      {}",
             format_ns(self.summary.average_ns)
         );
-        let _ = writeln!(out, "  Requests/sec: {:.2}", self.summary.rps_observed);
+        let _ = writeln!(out, "   • Requests/sec: {:.2}", self.summary.rps_observed);
 
         if !self.threshold_evaluation.is_empty() {
             let passed = self
@@ -271,23 +281,32 @@ impl BenchReport {
                 .filter(|t| t.passed)
                 .count();
             let total = self.threshold_evaluation.len();
-            let _ = writeln!(out, "  Thresholds:   {}/{} passed", passed, total);
+            let text = format!("{passed}/{total} passed");
+            let styled = if passed == total {
+                pass_style().apply_to(text).to_string()
+            } else {
+                fail_style().apply_to(text).to_string()
+            };
+            let _ = writeln!(out, "   • Thresholds:   {styled}");
         }
 
         if compact {
-            out.push_str("\nLatency distribution:\n");
+            let _ = writeln!(out, "{light}");
+            out.push_str("📈 Latency distribution:\n");
             for p in &self.latency_distribution {
                 out.push_str(&format!(
-                    "  {:>5.2}% in {}\n",
+                    "   {:>5.2}% in {}\n",
                     p.percentile,
                     format_ns(p.latency_ns)
                 ));
             }
             append_status_and_errors(&mut out, self);
+            let _ = writeln!(out, "{heavy}");
             return out;
         }
 
-        out.push_str("\nResponse time histogram:\n");
+        let _ = writeln!(out, "{light}");
+        out.push_str("📊 Response time histogram:\n");
         for bucket in &self.histogram {
             let mark = if bucket.upper_ns > 0 {
                 format_histogram_mark_ms(bucket.upper_ns)
@@ -295,113 +314,157 @@ impl BenchReport {
                 format_histogram_mark_ms(bucket.lower_ns)
             };
             let bars = histogram_bars(bucket.frequency);
-            let _ = writeln!(out, "  {:<12} [{:<5}] |{}", mark, bucket.count, bars);
+            let count_str = format!("[{}]", bucket.count);
+            let _ = writeln!(out, "   {:>9} {:<7} |{}", mark, count_str, bars);
         }
 
-        out.push_str("\nLatency distribution:\n");
+        let _ = writeln!(out, "{light}");
+        out.push_str("📈 Latency distribution:\n");
         for p in &self.latency_distribution {
             out.push_str(&format!(
-                "  {} in {}\n",
+                "   {} in {}\n",
                 format_percentile(p.percentile),
                 format_ns(p.latency_ns)
             ));
         }
 
         append_status_and_errors(&mut out, self);
+        let _ = writeln!(out, "{heavy}");
         out
     }
 }
 
+const BENCH_HTML_TEMPLATE: &str = include_str!("templates/bench.html");
+
+/// Serialize `v` as JSON safe to embed verbatim inside a `<script>` block —
+/// Percentage (0-100, rounded) of `value` relative to `max`. `0` when `max` is
+/// `0` so an all-zero dataset renders empty bars instead of dividing by zero.
+fn pct_of(value: u64, max: u64) -> u32 {
+    if max == 0 {
+        0
+    } else {
+        ((value as f64 / max as f64) * 100.0).round() as u32
+    }
+}
+
+#[derive(serde::Serialize)]
+struct BenchLatRow {
+    percentile_label: String,
+    latency_ms: String,
+    /// Bar width as a percentage of the slowest percentile, for the CSS bar chart.
+    pct_of_max: u32,
+}
+
+#[derive(serde::Serialize)]
+struct BenchEndpointRow<'a> {
+    endpoint: &'a str,
+    count: u64,
+    errors: u64,
+    p50: String,
+    p90: String,
+    p95: String,
+    p99: String,
+}
+
+#[derive(serde::Serialize)]
+struct BenchHtmlContext<'a> {
+    count: u64,
+    ok: u64,
+    errors: u64,
+    total: String,
+    avg: String,
+    fastest: String,
+    slowest: String,
+    rps: String,
+    latency_distribution: Vec<BenchLatRow>,
+    per_endpoint: Vec<BenchEndpointRow<'a>>,
+}
+
 impl BenchReport {
-    /// Generate an HTML report with Chart.js histogram and latency distribution.
+    /// Generate an HTML report with a CSS latency-distribution bar chart (no
+    /// JS charting library or CDN fetch — renders fully offline) plus
+    /// summary/per-endpoint tables.
     pub fn to_html(&self) -> String {
-        let lat_rows: Vec<String> = self
+        let max_latency_ns = self
             .latency_distribution
             .iter()
-            .map(|p| {
-                format!(
-                    "<tr><td>p{:.0}</td><td>{:.3} ms</td></tr>",
-                    p.percentile,
-                    p.latency_ns as f64 / 1_000_000.0
-                )
+            .map(|p| p.latency_ns)
+            .max()
+            .unwrap_or(0);
+        let latency_distribution: Vec<BenchLatRow> = self
+            .latency_distribution
+            .iter()
+            .map(|p| BenchLatRow {
+                percentile_label: format!("p{:.0}", p.percentile),
+                latency_ms: format!("{:.3}", p.latency_ns as f64 / 1_000_000.0),
+                pct_of_max: pct_of(p.latency_ns, max_latency_ns),
             })
             .collect();
-        let ep_rows: Vec<String> = self.per_endpoint.iter().map(|ep| {
-            format!("<tr><td>{}</td><td>{}</td><td>{}</td><td>{:.3}</td><td>{:.3}</td><td>{:.3}</td><td>{:.3}</td></tr>",
-                ep.endpoint, ep.count, ep.errors,
-                ep.latency_p50 as f64 / 1_000_000.0,
-                ep.latency_p90 as f64 / 1_000_000.0,
-                ep.latency_p95 as f64 / 1_000_000.0,
-                ep.latency_p99 as f64 / 1_000_000.0)
-        }).collect();
+        let per_endpoint: Vec<BenchEndpointRow> = self
+            .per_endpoint
+            .iter()
+            .map(|ep| BenchEndpointRow {
+                endpoint: &ep.endpoint,
+                count: ep.count,
+                errors: ep.errors,
+                p50: format!("{:.3}", ep.latency_p50 as f64 / 1_000_000.0),
+                p90: format!("{:.3}", ep.latency_p90 as f64 / 1_000_000.0),
+                p95: format!("{:.3}", ep.latency_p95 as f64 / 1_000_000.0),
+                p99: format!("{:.3}", ep.latency_p99 as f64 / 1_000_000.0),
+            })
+            .collect();
 
-        format!(
-            r#"<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><title>Benchmark Report</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<style>body{{font-family:sans-serif;margin:40px;}}table{{border-collapse:collapse;}}td,th{{padding:6px 12px;border:1px solid #ccc;text-align:right;}}th{{background:#f5f5f5;}}</style>
-</head>
-<body>
-<h1>Benchmark Report</h1>
-<table>
-<tr><th>Metric</th><th>Value</th></tr>
-<tr><td>Count</td><td>{c}</td></tr>
-<tr><td>OK</td><td>{ok}</td></tr>
-<tr><td>Errors</td><td>{err}</td></tr>
-<tr><td>Total</td><td>{t}</td></tr>
-<tr><td>Average</td><td>{avg:.3} ms</td></tr>
-<tr><td>Fastest</td><td>{fast:.3} ms</td></tr>
-<tr><td>Slowest</td><td>{slow:.3} ms</td></tr>
-<tr><td>RPS</td><td>{rps:.2}</td></tr>
-</table>
-<h2>Latency Distribution</h2>
-<table><tr><th>Percentile</th><th>Latency</th></tr>{lat_rows}</table>
-<h2>Per-Endpoint Breakdown</h2>
-<table><tr><th>Endpoint</th><th>Count</th><th>Errors</th><th>p50</th><th>p90</th><th>p95</th><th>p99</th></tr>{ep_rows}</table>
-<p>Generated by grpctestify</p>
-</body>
-</html>"#,
-            c = self.summary.count,
-            ok = self.summary.ok,
-            err = self.summary.errors,
-            t = format_ns(self.summary.total_ns),
-            avg = self.summary.average_ns as f64 / 1_000_000.0,
-            fast = self.summary.fastest_ns as f64 / 1_000_000.0,
-            slow = self.summary.slowest_ns as f64 / 1_000_000.0,
-            rps = self.summary.rps_observed,
-            lat_rows = lat_rows.join("\n"),
-            ep_rows = ep_rows.join("\n"),
-        )
+        let ctx = BenchHtmlContext {
+            count: self.summary.count,
+            ok: self.summary.ok,
+            errors: self.summary.errors,
+            total: format_ns(self.summary.total_ns),
+            avg: format!("{:.3}", self.summary.average_ns as f64 / 1_000_000.0),
+            fastest: format!("{:.3}", self.summary.fastest_ns as f64 / 1_000_000.0),
+            slowest: format!("{:.3}", self.summary.slowest_ns as f64 / 1_000_000.0),
+            rps: format!("{:.2}", self.summary.rps_observed),
+            latency_distribution,
+            per_endpoint,
+        };
+
+        let mut env = minijinja::Environment::new();
+        env.set_auto_escape_callback(|_| minijinja::AutoEscape::Html);
+        env.add_template("bench.html", BENCH_HTML_TEMPLATE)
+            .expect("invalid built-in bench HTML template");
+        env.get_template("bench.html")
+            .unwrap()
+            .render(&ctx)
+            .expect("failed to render bench HTML report")
     }
 }
 
 fn append_status_and_errors(out: &mut String, report: &BenchReport) {
-    out.push_str("\nStatus code distribution:\n");
+    let light = crate::report::style::rule('─', 80);
+    let _ = writeln!(out, "{light}");
+    out.push_str("🚦 Status code distribution:\n");
     if report.grpc_status_distribution.is_empty() {
-        out.push_str("  (none)\n");
+        out.push_str("   (none)\n");
     } else {
-        let total = report.summary.count.max(1);
         for (status, count) in &report.grpc_status_distribution {
-            let _ = writeln!(out, "  [{}]   {} responses", status, count);
-            let _ = total;
+            let _ = writeln!(out, "   • {}: {} responses", status, count);
         }
     }
 
-    out.push_str("Error distribution:\n");
+    out.push_str("⚠️  Error distribution:\n");
     if report.error_distribution.is_empty() {
-        out.push_str("  (none)\n");
+        out.push_str("   (none)\n");
     } else {
         for (err, count) in &report.error_distribution {
-            let _ = writeln!(out, "  [{}] {}", count, err);
+            let _ = writeln!(out, "   • {}× {}", count, err);
         }
     }
 
     if !report.per_endpoint.is_empty() {
-        out.push_str("\nPer-endpoint breakdown:\n");
+        let _ = writeln!(out, "{light}");
+        out.push_str("🎯 Per-endpoint breakdown:\n");
         for ep in &report.per_endpoint {
             out.push_str(&format!(
-                "  {}: {} req, {} err, p50={} p90={} p95={} p99={}\n",
+                "   {}: {} req, {} err, p50={} p90={} p95={} p99={}\n",
                 ep.endpoint,
                 ep.count,
                 ep.errors,
@@ -428,7 +491,7 @@ fn format_ns(ns: u64) -> String {
 
 fn histogram_bars(frequency: f64) -> String {
     let n = (frequency * 40.0).round() as usize;
-    "#".repeat(n)
+    "∎".repeat(n)
 }
 
 fn format_histogram_mark_ms(ns: u64) -> String {
@@ -437,9 +500,9 @@ fn format_histogram_mark_ms(ns: u64) -> String {
 
 fn format_percentile(p: f64) -> String {
     if (p - p.round()).abs() < f64::EPSILON {
-        format!("{:>3.0} %", p)
+        format!("{:>3.0}%", p)
     } else {
-        format!("{:>5.2} %", p)
+        format!("{:>5.2}%", p)
     }
 }
 
@@ -489,6 +552,35 @@ mod tests {
     }
 
     #[test]
+    fn test_to_html_renders_bars_and_escapes_endpoint() {
+        let mut report = sample_report();
+        report.latency_distribution.push(BenchPercentile {
+            percentile: 95.0,
+            latency_ns: 12_000_000,
+        });
+        report.per_endpoint.push(PerEndpointSummary {
+            endpoint: "<script>evil</script>".to_string(),
+            count: 10,
+            errors: 0,
+            latency_p50: 1_000_000,
+            latency_p90: 2_000_000,
+            latency_p95: 3_000_000,
+            latency_p99: 4_000_000,
+        });
+
+        let html = report.to_html();
+        // No JS charting library or CDN fetch — renders fully offline.
+        assert!(!html.contains("<script"), "no script tag: {html}");
+        assert!(!html.contains("cdn.jsdelivr.net"));
+        assert!(html.contains("bar-fill"), "CSS bar chart present");
+        assert!(html.contains("p95"));
+        assert!(html.contains("12.000"));
+        // The endpoint name must be escaped, not injected verbatim.
+        assert!(!html.contains("<script>evil</script>"));
+        assert!(html.contains("&lt;script&gt;evil&lt;&#x2f;script&gt;"));
+    }
+
+    #[test]
     fn test_prometheus_summary_contains_core_metrics() {
         let report = sample_report();
         let text = report.to_prometheus_summary();
@@ -522,7 +614,7 @@ mod tests {
             .insert("rpc error: code = Internal".to_string(), 1);
 
         let text = report.to_summary_text(false);
-        assert!(text.contains("Summary:"));
+        assert!(text.contains("Benchmark Summary"));
         assert!(text.contains("Response time histogram:"));
         assert!(text.contains("Latency distribution:"));
         assert!(text.contains("Status code distribution:"));
@@ -533,7 +625,7 @@ mod tests {
     fn test_summary_text_compact_omits_histogram() {
         let report = sample_report();
         let text = report.to_summary_text(true);
-        assert!(text.contains("Summary:"));
+        assert!(text.contains("Benchmark Summary"));
         assert!(!text.contains("Response time histogram:"));
     }
 }

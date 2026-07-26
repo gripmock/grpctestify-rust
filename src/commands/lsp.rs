@@ -1,5 +1,3 @@
-// LSP command - start language server
-
 use crate::cli::args::LspArgs;
 use crate::lsp::server::start_lsp_server;
 use anyhow::Result;
