@@ -709,7 +709,7 @@ pub fn collect_assertion_type_mismatches(doc: &parser::GctfDocument) -> Vec<Asse
 
     // A chain's 2nd+ document is not the head — scan every document, not
     // just `doc.sections` (the earlier `extract_variable_types` already does
-    // this for EXTRACT; ASSERTS type-checking must match or vars EXTRACTed
+    // this for EXTRACT; ASSERTS type-checking must match or vars extracted
     // in one document silently go unchecked wherever they're actually used).
     for section in doc.iter_chain().flat_map(|d| d.sections.iter()) {
         if section.section_type != parser::ast::SectionType::Asserts {

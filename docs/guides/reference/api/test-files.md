@@ -43,7 +43,8 @@ For section details, use [Section Reference](../sections/).
 - `ADDRESS` may be omitted if `GRPCTESTIFY_ADDRESS` is set
 - `META` is optional, but only one is allowed and it must be the first section
 - `BENCH` is optional, but only one is allowed and it should be first or immediately after `META`
-- `DATASET` is optional, but only one is allowed; its fields are used as `{{dataset.field}}` template variables and it's mutually exclusive with `run --data` for that file
+- `DATASET` is optional, but only one is allowed; its fields are used as `{{dataset.field}}` template
+  variables and it's mutually exclusive with `run --data` for that file
 
 ## Type annotations
 

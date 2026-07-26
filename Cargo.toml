@@ -175,10 +175,11 @@ notify = "8"
 
 # Pure-Rust git (no shell-out). Not zlib-ng/max-performance/curl/native-tls —
 # those pull in C libraries; -rust-tls reuses reqwest's rustls stack.
-gix = { version = "0.70", default-features = false, features = [
+gix = { version = "0.86", default-features = false, features = [
   "basic",
   "worktree-mutation",
   "blocking-http-transport-reqwest-rust-tls",
+  "sha1",
 ] }
 
 # Rhai for `--plugin-dir` reporter scripts (metrics-collector plugins) — the

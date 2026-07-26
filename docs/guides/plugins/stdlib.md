@@ -1,6 +1,7 @@
 # Script Stdlib
 
-Every script engine — [assertion plugin](custom-scripts) or [reporter](reporters) — gets the same small set of native helpers registered automatically, no import needed:
+Every script engine — [assertion plugin](custom-scripts) or [reporter](reporters) — gets the same small set
+of native helpers registered automatically, no import needed:
 
 | Function | Does |
 | --- | --- |
@@ -19,7 +20,10 @@ fn stdlib_demo(value) {
 }
 ```
 
-This keeps a script from reimplementing what already exists (see how `luhn_valid.rhai`/`is_palindrome.rhai` had to hand-roll their logic before this existed) — it's a small, deliberately curated set, not a mirror of every built-in plugin. All of it stays inside the pure-function boundary: no file or network access is granted by any of these helpers.
+This keeps a script from reimplementing what already exists (see how `luhn_valid.rhai`/`is_palindrome.rhai`
+had to hand-roll their logic before this existed) — it's a small, deliberately curated set, not a mirror of
+every built-in plugin. All of it stays inside the pure-function boundary: no file or network access is
+granted by any of these helpers.
 
 ## Related
 

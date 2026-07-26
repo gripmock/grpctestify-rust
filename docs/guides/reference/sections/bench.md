@@ -70,7 +70,8 @@ thresholds.error_rate_pct: <1.0
 - `load_step_duration`: duration per step for `step` schedule.
 - `load_max_duration`: max time window for schedule adjustments.
 - `load_midpoint`, `load_amplitude`, `load_frequency`: baseline RPS, swing, and frequency for the `sine` schedule.
-- `load_spike_target`, `load_spike_after`, `load_spike_duration`: peak RPS, delay before the spike, and how long it lasts for the `spike` schedule.
+- `load_spike_target`, `load_spike_after`, `load_spike_duration`: peak RPS, delay before the spike, and how
+  long it lasts for the `spike` schedule.
 - `connect_timeout`: connection timeout duration.
 - `keepalive`: keepalive interval.
 - `cpus`: optional CPU pinning hint.
@@ -114,14 +115,15 @@ These are emitted in `options_resolved` so the effective value is explainable.
 
 ## Profiles
 
-A profile is a named preset of BENCH keys, applied with `grpctestify bench --profile <name>`. Profiles set a baseline; anything the `BENCH` section or a CLI flag specifies still wins.
+A profile is a named preset of BENCH keys, applied with `grpctestify bench --profile <name>`. Profiles set
+a baseline; anything the `BENCH` section or a CLI flag specifies still wins.
 
 Precedence: `CLI flags > BENCH section > --profile preset > built-in defaults`.
 
 ### Built-in profiles
 
 | Profile | Purpose | Key settings |
-|---------|---------|--------------|
+| --- | --- | --- |
 | `functional` | Quick functional check (the default) | `mode: fixed`, `concurrency: 1`, `requests: 100`, `duration: 30s` |
 | `load` | Stepped load test 50→200 RPS | `mode: stepping`, `concurrency: 10`, `duration: 60s`, `load_schedule: step`, `load_start: 50`, `load_step: 10`, `load_end: 200`, `load_step_duration: 10s` |
 | `stress` | Linear stress test 10→500 RPS | `mode: stepping`, `concurrency: 50`, `duration: 120s`, `load_schedule: line`, `load_start: 10`, `load_step: 5`, `load_end: 500` |
@@ -132,7 +134,8 @@ Precedence: `CLI flags > BENCH section > --profile preset > built-in defaults`.
 
 - `--profile <name>`: apply a built-in or custom profile.
 - `--list-profiles`: print every available profile (built-in + custom) with its description, then exit.
-- `--profile-file <path>`: load custom profiles from a YAML file. A custom profile may `extends` another to inherit its keys.
+- `--profile-file <path>`: load custom profiles from a YAML file. A custom profile may `extends` another
+  to inherit its keys.
 
 ### Example
 

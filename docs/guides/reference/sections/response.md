@@ -30,7 +30,8 @@ Expected successful response payload.
 For server- or bidi-streaming methods that expect several messages, either form works:
 
 - Multiple `RESPONSE` blocks, one expected message each
-- A single `RESPONSE` block containing several self-delimiting JSON values, one per line — each matched against one streamed message, in order:
+- A single `RESPONSE` block containing several self-delimiting JSON values, one per line — each matched
+  against one streamed message, in order:
 
 ```gctf
 --- RESPONSE ---

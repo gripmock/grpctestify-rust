@@ -1,6 +1,10 @@
 # Custom Plugin Examples (`.rhai`)
 
-Copy any of these into `~/.grpctestify/plugins` or `./.grpctestify/plugins` and they're loaded automatically — no flag. Every public function in a script becomes its own assertion plugin, named directly after itself (`fn is_even(x) {...}` → `@is_even(...)`) — one file can define many. `on_test_start`/`on_test_end`/`on_suite_end` make a script a reporter instead (or as well). `private fn` stays internal. Full reference: [docs/guides/plugins](../../docs/guides/plugins/).
+Copy any of these into `~/.grpctestify/plugins` or `./.grpctestify/plugins` and they're loaded
+automatically — no flag. Every public function in a script becomes its own assertion plugin, named directly
+after itself (`fn is_even(x) {...}` → `@is_even(...)`) — one file can define many.
+`on_test_start`/`on_test_end`/`on_suite_end` make a script a reporter instead (or as well). `private fn`
+stays internal. Full reference: [docs/guides/plugins](../../docs/guides/plugins/).
 
 ```bash
 mkdir -p .grpctestify/plugins
@@ -29,4 +33,5 @@ grpctestify run tests/
 
 ## Both at once
 
-`combined_example.rhai` defines `combined_example` (assertion) and `on_test_start` (reporter) in the same file — a script isn't limited to one role, and one file isn't limited to one plugin.
+`combined_example.rhai` defines `combined_example` (assertion) and `on_test_start` (reporter) in the same
+file — a script isn't limited to one role, and one file isn't limited to one plugin.

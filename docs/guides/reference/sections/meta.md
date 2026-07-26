@@ -36,7 +36,9 @@ links:
 
 ## Attribute-form fallback
 
-Without a `META` section, `tags`/`owner`/`summary` can be set via `#[tag(...)]`/`#[owner(...)]`/`#[summary(...)]` attributes on any section — used only for whichever of the three `META` doesn't already provide:
+Without a `META` section, `tags`/`owner`/`summary` can be set via
+`#[tag(...)]`/`#[owner(...)]`/`#[summary(...)]` attributes on any section — used only for whichever of
+the three `META` doesn't already provide:
 
 ```gctf
 #[tag(smoke,user)]

@@ -1,6 +1,7 @@
 # Plugin System
 
-Built-in assertion plugins available in `ASSERTS`. For writing your own — drop a `.rhai` file into `~/.grpctestify/plugins` or `./.grpctestify/plugins`, no flag needed — see:
+Built-in assertion plugins available in `ASSERTS`. For writing your own — drop a `.rhai` file into
+`~/.grpctestify/plugins` or `./.grpctestify/plugins`, no flag needed — see:
 
 - [Custom assertion plugins](custom-scripts) — `.rhai` scripts, one file can define many, naming/arity/`private fn`/sandboxing
 - [Installing from a git host](installing) — `grpctestify plugins install github.com/owner/repo`, versioning, lockfile

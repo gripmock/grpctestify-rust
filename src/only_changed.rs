@@ -27,7 +27,7 @@ pub fn changed_files(
     let tree = commit.tree().context("failed to read tree")?;
 
     let work_dir = repo
-        .work_dir()
+        .workdir()
         .context("repository has no working directory (bare repo?)")?
         .canonicalize()
         .context("failed to canonicalize repository working directory")?;
@@ -74,7 +74,7 @@ fn lookup_blob(tree: &gix::Tree<'_>, rel_path: &Path) -> Option<Vec<u8>> {
     Some(object.data.clone())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
     use std::process::Command;
@@ -84,7 +84,6 @@ mod tests {
     /// uses `gix`, not this). Building a real repo through actual `git`
     /// commands is the most trustworthy way to test against real on-disk
     /// git state, short of hand-crafting object files.
-    #[cfg(not(miri))]
     fn git(dir: &Path, args: &[&str]) {
         let status = Command::new("git")
             .args(args)
@@ -98,7 +97,6 @@ mod tests {
         assert!(status.success(), "git {args:?} failed");
     }
 
-    #[cfg(not(miri))]
     fn init_repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         git(dir.path(), &["init", "-q", "-b", "main"]);
@@ -106,7 +104,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn unmodified_tracked_file_is_not_changed() {
         let dir = init_repo();
         let file = dir.path().join("a.gctf");
@@ -119,7 +116,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn modified_tracked_file_is_changed() {
         let dir = init_repo();
         let file = dir.path().join("a.gctf");
@@ -134,7 +130,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn untracked_new_file_is_changed() {
         let dir = init_repo();
         // Need at least one commit for "HEAD" to resolve.
@@ -150,7 +145,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn since_a_branch_compares_against_that_branch_not_head() {
         let dir = init_repo();
         let file = dir.path().join("a.gctf");
@@ -172,7 +166,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn deleted_file_is_silently_skipped_not_an_error() {
         let dir = init_repo();
         std::fs::write(dir.path().join("seed.txt"), "seed").unwrap();

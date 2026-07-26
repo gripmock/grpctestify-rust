@@ -5,22 +5,19 @@
   "skipped": 0,
   "results": [
     {
-      "name": "<TMPDIR>/b_fail.gctf",
-      "status": "Fail",
+      "name": "<TMPDIR>/a_pass.gctf",
+      "status": "Pass",
       "duration_ms": 0,
       "call_duration_ms": 0,
-      "error_message": "Validation failed:\n  - Assertion failed at line 9 (assertion at line 11): Assertion failed: .status == \"NOT_SERVING\" (Values: String(\"SERVING\") vs String(\"NOT_SERVING\"))\n  -     Expected: == String(\"NOT_SERVING\")\n    Actual:   String(\"SERVING\")",
+      "error_message": null,
       "execution_time": <EPOCH_S>,
       "assertions": [
         {
           "line": 11,
-          "expression": ".status == \"NOT_SERVING\"",
-          "passed": false,
+          "expression": ".status == \"SERVING\"",
+          "passed": true,
           "elapsed_ms": 0,
-          "message": "Assertion failed: .status == \"NOT_SERVING\" (Values: String(\"SERVING\") vs String(\"NOT_SERVING\"))",
-          "endpoint": "grpc.health.v1.Health/Check",
-          "expected": "== String(\"NOT_SERVING\")",
-          "actual": "String(\"SERVING\")"
+          "endpoint": "grpc.health.v1.Health/Check"
         }
       ],
       "exchange": {
@@ -46,19 +43,22 @@
       }
     },
     {
-      "name": "<TMPDIR>/a_pass.gctf",
-      "status": "Pass",
+      "name": "<TMPDIR>/b_fail.gctf",
+      "status": "Fail",
       "duration_ms": 0,
       "call_duration_ms": 0,
-      "error_message": null,
+      "error_message": "Validation failed:\n  - Assertion failed at line 9 (assertion at line 11): Assertion failed: .status == \"NOT_SERVING\" (Values: String(\"SERVING\") vs String(\"NOT_SERVING\"))\n  -     Expected: == String(\"NOT_SERVING\")\n    Actual:   String(\"SERVING\")",
       "execution_time": <EPOCH_S>,
       "assertions": [
         {
           "line": 11,
-          "expression": ".status == \"SERVING\"",
-          "passed": true,
+          "expression": ".status == \"NOT_SERVING\"",
+          "passed": false,
           "elapsed_ms": 0,
-          "endpoint": "grpc.health.v1.Health/Check"
+          "message": "Assertion failed: .status == \"NOT_SERVING\" (Values: String(\"SERVING\") vs String(\"NOT_SERVING\"))",
+          "endpoint": "grpc.health.v1.Health/Check",
+          "expected": "== String(\"NOT_SERVING\")",
+          "actual": "String(\"SERVING\")"
         }
       ],
       "exchange": {

@@ -23,10 +23,12 @@ Input payload sent to the gRPC method.
 
 ## Multiple messages (client/bidi streaming)
 
-For client- or bidi-streaming methods that send several messages, either form works and both send messages in the order written:
+For client- or bidi-streaming methods that send several messages, either form works and both send messages
+in the order written:
 
 - Multiple `REQUEST` blocks, one message each (as above)
-- A single `REQUEST` block containing several self-delimiting JSON values, one per line — the same newline-delimited form `RESPONSE` already supports for multi-message expectations:
+- A single `REQUEST` block containing several self-delimiting JSON values, one per line — the same
+  newline-delimited form `RESPONSE` already supports for multi-message expectations:
 
 ```gctf
 --- REQUEST ---

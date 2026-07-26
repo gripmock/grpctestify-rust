@@ -22,7 +22,8 @@ Native CLI for gRPC testing with `.gctf` files.
 - Output formats: `console`, `json`, `yaml`, `junit`, `allure`, `html`
 - Load/benchmark testing (`bench`) with regression gating (`bench-compare`)
 - Web UI playground (`play`) with proto reflection, saved requests, history, and environments
-- Extra tools for developer workflows: `check`, `fmt`, `inspect`, `explain`, `reflect`, `lsp`, `call`, `gen`, `grpcurl`, `list`, `index`, `query`, `health`, `scaffold`
+- Extra tools for developer workflows: `check`, `fmt`, `inspect`, `explain`, `reflect`, `lsp`, `call`, `gen`,
+  `grpcurl`, `list`, `index`, `query`, `health`, `scaffold`
 
 ## Requirements
 
@@ -75,7 +76,7 @@ hello.HelloService/SayHello
 .message == "Hello, World!"
 ```
 
-2. Run test:
+1. Run test:
 
 ```bash
 grpctestify hello.gctf

@@ -89,7 +89,7 @@ fn install_source(source: &InstallSource, plugins_dir: &Path) -> Result<Installe
     let resolved_commit = repo.head_id()?.to_string();
 
     let work_dir = repo
-        .work_dir()
+        .workdir()
         .ok_or_else(|| anyhow::anyhow!("clone of {} has no working tree", source.key()))?;
     let source_dir = match &source.subpath {
         Some(sub) => work_dir.join(sub),

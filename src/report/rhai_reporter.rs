@@ -178,12 +178,11 @@ pub fn load_all_configured_reporters() -> Vec<Box<dyn Reporter>> {
     reporters
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
     use apif_state::TestMeta;
 
-    #[cfg(not(miri))]
     fn write_script(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
         let path = dir.join(name);
         std::fs::write(&path, body).unwrap();
@@ -191,7 +190,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn assertion_only_script_is_not_a_reporter() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_script(dir.path(), "assert_only.rhai", "fn check() { true }");
@@ -199,7 +197,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn script_with_any_hook_is_detected_as_a_reporter() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_script(
@@ -211,7 +208,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn on_test_end_receives_the_real_name_and_status() {
         let dir = tempfile::tempdir().unwrap();
         // Throws (call_fn errors) if the received data doesn't match —
@@ -232,7 +228,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn on_test_end_actually_fails_when_data_is_wrong() {
         // Proves the throw mechanism the test above relies on really does
         // propagate as an `Err` — without this, a bug that fed the script
@@ -250,7 +245,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn on_suite_end_receives_aggregate_counts_and_full_results() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_script(
@@ -273,7 +267,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn a_hook_that_throws_surfaces_as_an_error_from_on_suite_end() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_script(
@@ -287,7 +280,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn meta_and_optional_fields_serialize_without_error() {
         // Regression: TestResult carries several Option/skip_serializing_if
         // fields (meta, exchange, retried, ...) — confirm a populated one

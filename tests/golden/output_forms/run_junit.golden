@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <testsuites name="grpctestify" time="<N>" tests="2" failures="1" errors="0" skipped="0">
 <testsuite name="e2e" time="<N>" tests="2" failures="1" errors="0" skipped="0">
+    <testcase name="<TMPDIR>/a_pass.gctf" classname="a_pass" time="<N>">
+      <system-out>=== Captured exchange ===
+headers:
+  content-type: application/grpc
+  date: <HTTP_DATE>
+trailers:
+  grpc-status: 0</system-out>
+    </testcase>
     <testcase name="<TMPDIR>/b_fail.gctf" classname="b_fail" time="<N>">
       <failure message="Validation failed:
   - Assertion failed at line 9 (assertion at line 11): Assertion failed: .status == &quot;NOT_SERVING&quot; (Values: String(&quot;SERVING&quot;) vs String(&quot;NOT_SERVING&quot;))
@@ -13,14 +21,6 @@
   line 11: .status == &quot;NOT_SERVING&quot;
     expected: == String(&quot;NOT_SERVING&quot;)
     actual:   String(&quot;SERVING&quot;)</failure>
-      <system-out>=== Captured exchange ===
-headers:
-  content-type: application/grpc
-  date: <HTTP_DATE>
-trailers:
-  grpc-status: 0</system-out>
-    </testcase>
-    <testcase name="<TMPDIR>/a_pass.gctf" classname="a_pass" time="<N>">
       <system-out>=== Captured exchange ===
 headers:
   content-type: application/grpc

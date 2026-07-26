@@ -1,6 +1,6 @@
 === STDOUT ===
 Running 2 tests
-E.
+.E
 
 grpctestify ════════════════════════════════════════════════════════════════════
    ✗ FAILED  1 failed · 1 passed · <MS>ms

@@ -11,13 +11,19 @@ gRPC Testify includes a built-in Language Server Protocol (LSP) server that prov
 - **Folding ranges** — collapse/expand sections
 - **Semantic tokens** — syntax highlighting tokens for rich editor support
 - **Variable definitions** — go-to-definition for extracted variables
-- **Proto definitions** — go-to-definition on an ENDPOINT's `pkg.Service`/`Method` jumps to its declaration in the `.proto` source. Requires `PROTO.files=` + `import_paths=` (local `.proto` compilation); schemas loaded via server reflection have no source file to jump to.
+- **Proto definitions** — go-to-definition on an ENDPOINT's `pkg.Service`/`Method` jumps to its declaration
+  in the `.proto` source. Requires `PROTO.files=` + `import_paths=` (local `.proto` compilation); schemas loaded
+  via server reflection have no source file to jump to.
 
 ## VS Code Setup
 
-The VS Code extension lives in its own repository: [gripmock/grpctestify-vscode](https://github.com/gripmock/grpctestify-vscode). Follow its README to install a packaged `.vsix` (or build from source).
+The VS Code extension lives in its own repository:
+[gripmock/grpctestify-vscode](https://github.com/gripmock/grpctestify-vscode). Follow its README to install
+a packaged `.vsix` (or build from source).
 
-Once installed, open any `.gctf` file — the LSP server starts automatically (it spawns `grpctestify lsp`, so `grpctestify` must be on `PATH`; the repo's README covers the `grpctestify.serverPath` setting). The extension also ships `.gctf` syntax highlighting and bracket/comment support, on top of every LSP feature listed above.
+Once installed, open any `.gctf` file — the LSP server starts automatically (it spawns `grpctestify lsp`,
+so `grpctestify` must be on `PATH`; the repo's README covers the `grpctestify.serverPath` setting). The extension
+also ships `.gctf` syntax highlighting and bracket/comment support, on top of every LSP feature listed above.
 
 ## Starting Manually
 

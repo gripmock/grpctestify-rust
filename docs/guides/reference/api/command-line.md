@@ -38,7 +38,8 @@ grpctestify [OPTIONS] [TEST_PATHS]... [COMMAND]
 - `list [PATH]` - list discovered tests for tooling and IDE integration
 - `reflect [SYMBOL]` - list reflected services and methods from a target server
 - `grpcurl <FILE>` - generate a `grpcurl` invocation from an existing `.gctf` file
-- `call <FILE>` - call gRPC endpoint without assertions (or inline: `call -e <pkg.Service/Method> -d '<json>'`, no file needed)
+- `call <FILE>` - call gRPC endpoint without assertions (or inline: `call -e <pkg.Service/Method> -d '<json>'`,
+  no file needed)
 - `health <ADDRESS>` - check gRPC service health
 - `lsp` - start language server protocol mode
 - `index <SOURCES...>` - build/rebuild data source indexes
@@ -81,16 +82,21 @@ Note: if `--log-format` is set without `--log-output`, the run continues and fil
 - `fmt`: `-w, --write` rewrites files in place (without `-w`, checks formatting)
 - `check`: `--format <text|json>`
 - `inspect`: `--format <text|json>`
-- `explain`: `--format <text|json>`, `--against <REPORT_JSON>` (post-hoc: correlate against a prior `run --log-format json` report — shows actual per-assertion pass/fail + timing instead of just the static plan)
+- `explain`: `--format <text|json>`, `--against <REPORT_JSON>` (post-hoc: correlate against a prior
+  `run --log-format json` report — shows actual per-assertion pass/fail + timing instead of just the static plan)
 - `graph`: `--format <text|mermaid>`
 - `list`: `--format <text|json>`, `--with-range`
 - `reflect`: `--address <ADDR>`, `--plaintext`, `--insecure`, `--format <text|json>`,
   `--list-methods`, `--describe <SERVICE/METHOD>`,
   `--tls-ca <FILE>`, `--tls-cert <FILE>`, `--tls-key <FILE>`
 - `lsp`: `--stdio`
-- `call`: `-e <pkg.Service/Method>` + `-d '<json>'` (inline call with no file), `--insecure`, `--plaintext`, `--tls-ca <FILE>`, `--tls-cert <FILE>`, `--tls-key <FILE>` (TLS flags override the file's TLS section, and are the sole TLS source in inline `-e` mode), `--bench`, `--concurrency <N>`, `--requests <N>`, `--duration <DURATION>`
+- `call`: `-e <pkg.Service/Method>` + `-d '<json>'` (inline call with no file), `--insecure`, `--plaintext`,
+  `--tls-ca <FILE>`, `--tls-cert <FILE>`, `--tls-key <FILE>` (TLS flags override the file's TLS section, and
+  are the sole TLS source in inline `-e` mode), `--bench`, `--concurrency <N>`, `--requests <N>`,
+  `--duration <DURATION>`
 - `health`: `--service <NAME>`, `--format <text|json>`, `--tls`, `--insecure`, `--timeout <SECONDS>`
-- `scaffold`: `--endpoint <SERVICE/METHOD>`, `--proto <FILE_OR_DIR>`, `--descriptor <FILE>`, `--reflect`, `--address <ADDR>`, `--tls`, `--insecure`, `--plaintext`
+- `scaffold`: `--endpoint <SERVICE/METHOD>`, `--proto <FILE_OR_DIR>`, `--descriptor <FILE>`, `--reflect`,
+  `--address <ADDR>`, `--tls`, `--insecure`, `--plaintext`
 - `bench` (selected):
   - stop conditions: `-n, --requests`, `-d, --duration`, `--max-duration`
   - load profile: `--max-rps`, `--load-schedule`, `--load-start`, `--load-step`, `--load-end`, `--load-step-duration`, `--load-max-duration`
@@ -98,7 +104,9 @@ Note: if `--log-format` is set without `--log-output`, the run continues and fil
   - runtime/transport: `-c, --concurrency`, `--connections`, `--connect-timeout`, `--keepalive`, `--cpus`
   - validation/progress: `--assert-mode`, `--no-assert`, `--sample-rate`, `--progress-interval`
   - profiles: `--profile <name>`, `--list-profiles`, `--profile-file <path>` (see [BENCH § Profiles](../sections/bench#profiles))
-  - metadata/output: `--name`, `--log-format` (`console`/`json`/`csv`/`ndjson`/`prometheus`), `--output`, `--allure-output-dir <dir>` (emits the shared `allure-results` contract — one result per benchmarked endpoint — plus a raw `benchmark-report.json`)
+  - metadata/output: `--name`, `--log-format` (`console`/`json`/`csv`/`ndjson`/`prometheus`), `--output`,
+    `--allure-output-dir <dir>` (emits the shared `allure-results` contract — one result per benchmarked
+    endpoint — plus a raw `benchmark-report.json`)
 
 ## Bench examples
 
@@ -119,13 +127,18 @@ grpctestify bench tests/ \
 grpctestify bench tests/ --progress-interval 2s
 ```
 
-`reflect --plaintext` expects `http://...` or `host:port` addresses. It is rejected for explicit `https://...` addresses. `reflect --insecure` forces skip-verify even for an explicit `https://` address (a bare `host:port` already skips verification by default).
+`reflect --plaintext` expects `http://...` or `host:port` addresses. It is rejected for explicit
+`https://...` addresses. `reflect --insecure` forces skip-verify even for an explicit `https://` address
+(a bare `host:port` already skips verification by default).
 
-`health`/`scaffold --tls` requests a verified TLS connection — without it, `health` and `scaffold --reflect` connect in plaintext by default (TLS-with-skip-verify only via `--insecure`).
+`health`/`scaffold --tls` requests a verified TLS connection — without it, `health` and `scaffold --reflect`
+connect in plaintext by default (TLS-with-skip-verify only via `--insecure`).
 
 ## Explain and graph examples
 
-`explain` on a multi-document chain leads with a `FLOW` summary (step, endpoint, expectation kind) plus a fenced Mermaid sequence diagram — paste either straight into a markdown file and GitHub/VitePress render it natively:
+`explain` on a multi-document chain leads with a `FLOW` summary (step, endpoint, expectation kind) plus
+a fenced Mermaid sequence diagram — paste either straight into a markdown file and GitHub/VitePress render
+it natively:
 
 ```bash
 grpctestify explain tests/chain.gctf
@@ -185,7 +198,8 @@ grpctestify call test.gctf --insecure
 
 ## Reflect
 
-`reflect`'s positional argument is a service symbol or `service/method` symbol — not a `.gctf` file, and not the address. Pass the server address via `--address` (or `$GRPCTESTIFY_ADDRESS`).
+`reflect`'s positional argument is a service symbol or `service/method` symbol — not a `.gctf` file, and
+not the address. Pass the server address via `--address` (or `$GRPCTESTIFY_ADDRESS`).
 
 ```bash
 # List all methods with signatures
