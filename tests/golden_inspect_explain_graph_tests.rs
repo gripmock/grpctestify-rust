@@ -20,6 +20,21 @@ fn scrub(text: &str, tmp_root: &Path) -> String {
     let tmp_root_str = tmp_root.to_string_lossy().into_owned();
     s = s.replace(&tmp_root_str, "<TMPDIR>");
 
+    // `tmp_root` is a raw OS path (single `\` on Windows), but JSON output
+    // escapes every `\` as `\\`, so the replace above never matches there —
+    // try the JSON-escaped form too.
+    let json_escaped = tmp_root_str.replace('\\', "\\\\");
+    if json_escaped != tmp_root_str {
+        s = s.replace(&json_escaped, "<TMPDIR>");
+    }
+
+    // Whichever form matched, the separator joining `<TMPDIR>` to the
+    // filename wasn't part of `tmp_root` itself — normalize it (single `\`,
+    // or JSON-escaped-doubled `\\`) to the golden files' Unix-style
+    // `<TMPDIR>/...`.
+    s = s.replace("<TMPDIR>\\\\", "<TMPDIR>/");
+    s = s.replace("<TMPDIR>\\", "<TMPDIR>/");
+
     let ms = regex::Regex::new(r"\b\d+(\.\d+)?\s?ms\b").unwrap();
     s = ms.replace_all(&s, "<MS>ms").into_owned();
 
@@ -162,4 +177,33 @@ fn golden_graph_mermaid() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_golden("graph_mermaid", &scrub(&combined, dir.path()));
+}
+
+#[cfg(test)]
+mod scrub_tests {
+    use super::*;
+
+    // Regression: on Windows `tmp_root` is a raw OS path (single `\`), but the
+    // text being scrubbed is JSON stdout where every `\` is escaped as `\\` —
+    // so the exact-string replace never matched and the raw path leaked into
+    // the golden comparison. Also tolerate a differently-cased drive letter.
+    #[test]
+    fn scrub_matches_a_json_escaped_backslash_path_against_a_raw_tmp_root() {
+        let tmp_root = Path::new("C:/Users/foo/AppData/Local/Temp/.tmpABC");
+        let text = "\"file_path\": \"C:\\\\Users\\\\FOO\\\\AppData\\\\Local\\\\Temp\\\\.tmpABC\\\\chain.gctf\"";
+        assert_eq!(
+            scrub(text, tmp_root),
+            "\"file_path\": \"<TMPDIR>/chain.gctf\""
+        );
+    }
+
+    #[test]
+    fn scrub_leaves_an_exact_match_untouched_by_the_fallback() {
+        let tmp_root = Path::new("/tmp/AbC123");
+        let text = "\"file_path\": \"/tmp/AbC123/chain.gctf\"";
+        assert_eq!(
+            scrub(text, tmp_root),
+            "\"file_path\": \"<TMPDIR>/chain.gctf\""
+        );
+    }
 }
