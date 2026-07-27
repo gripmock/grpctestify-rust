@@ -314,7 +314,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn node_label_annotates_multi_step_chains() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("chain.gctf");
@@ -328,7 +327,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(miri))]
     fn node_label_single_document_is_bare_name() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("single.gctf");

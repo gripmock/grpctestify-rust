@@ -1612,6 +1612,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn expand_dataset_files_passes_through_files_without_a_dataset_section() {
         let (plain, dataset_files, items) =
             expand_dataset_files(vec![PathBuf::from("plain.gctf")], false);

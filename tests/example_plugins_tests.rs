@@ -196,7 +196,17 @@ async fn slow_test_alert_fires_when_duration_exceeds_threshold() {
     // A real network round-trip against a spawned local server is fast
     // (single-digit ms), so it should stay under slow_test_alert's 200ms
     // threshold and print nothing for it — proving the threshold isn't
-    // trivially always-on.
+    // trivially always-on. Doesn't hold under QEMU-emulated cross-compilation
+    // (`cross test --target aarch64-unknown-linux-gnu`, which runs inside a
+    // Docker container) — real aarch64 hardware (e.g. Apple Silicon) isn't
+    // emulated and stays fast, so only skip inside that container.
+    if cfg!(target_arch = "aarch64") && std::path::Path::new("/.dockerenv").exists() {
+        eprintln!(
+            "skipping slow_test_alert_fires_when_duration_exceeds_threshold: unreliable under QEMU-emulated cross-compilation"
+        );
+        return;
+    }
+
     let address = spawn_health_server().await;
     let dir = tempfile::tempdir().unwrap();
     setup_project_plugin_dir(dir.path());
