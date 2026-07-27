@@ -46,14 +46,26 @@ pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
     {
         let cache = CHANNEL_CACHE.read().await;
         if let Some(channel) = cache.get(&cache_key) {
+            tracing::debug!("channel: reusing cached connection to {}", config.address);
             return Ok(channel.clone());
         }
     }
 
     PROXY_WARNED.get_or_init(|| ProxyEnv::from_env().warn_if_set());
     let channel = if let Some(tls_config) = &config.tls_config {
+        tracing::debug!(
+            "channel: connecting to {} with TLS (server_name={:?}, client_cert={}, insecure_skip_verify={})",
+            config.address,
+            tls_config.server_name,
+            tls_config.client_cert_path.is_some(),
+            tls_config.insecure_skip_verify
+        );
         create_tls_channel(config, tls_config).await?
     } else {
+        tracing::debug!(
+            "channel: connecting to {} without TLS (plaintext)",
+            config.address
+        );
         create_plaintext_channel(config).await?
     };
 

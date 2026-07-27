@@ -25,6 +25,7 @@ pub enum TransportRef {
 
 impl TransportRef {
     pub async fn new(config: &GrpcClientConfig) -> Result<Self> {
+        tracing::debug!("dialing {} via {:?}", config.address, config.protocol);
         match config.protocol {
             WireProtocol::Grpc => {
                 let client = TonicGrpcClient::new(config.clone()).await?;
@@ -42,7 +43,7 @@ impl TransportRef {
         body: Value,
         rpc_mode: Option<RpcMode>,
     ) -> TransportResult {
-        match self {
+        let result = match self {
             TransportRef::Tonic(client) => execute_tonic(client, service, method, body).await,
             TransportRef::Http => {
                 match web::execute_web_with_mode(config, service, method, body, rpc_mode).await {
@@ -58,7 +59,15 @@ impl TransportRef {
                     },
                 }
             }
-        }
+        };
+        tracing::debug!(
+            "{}/{} -> {} message(s), error={:?}",
+            service,
+            method,
+            result.messages.len(),
+            result.error
+        );
+        result
     }
 }
 

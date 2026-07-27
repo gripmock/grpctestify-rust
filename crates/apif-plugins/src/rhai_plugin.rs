@@ -379,6 +379,11 @@ fn load_rhai_plugins_typed(dir: &Path) -> Vec<RhaiPlugin> {
                             );
                         }
                         None => {
+                            tracing::debug!(
+                                "loaded plugin @{} from {}",
+                                plugin.name(),
+                                path.display()
+                            );
                             owner.insert(plugin.name().to_string(), path.clone());
                             plugins.push(plugin);
                         }

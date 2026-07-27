@@ -61,6 +61,7 @@ pub fn open_source_reader(
     } else {
         detect_format(&resolved)?
     };
+    tracing::debug!("bench source: {} as {:?}", resolved.display(), format);
 
     let reader = BufReader::new(file);
     match format {

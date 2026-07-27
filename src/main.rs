@@ -44,26 +44,45 @@ async fn main() -> Result<()> {
     };
 
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
-    // Access log (tower_http) goes to stdout, other logs to stderr.
     // `-v` raises visibility to info (not debug) so verbose test output isn't
-    // buried in gRPC debug traces — full debug is still available via
-    // `RUST_LOG=grpctestify=debug`, which the env filter below honours first.
+    // buried in gRPC debug traces. `grpctestify=debug`/`=trace` only scopes to
+    // this one crate — the `apif-*` workspace crates (grpc transport,
+    // assertion engine, plugin loading, ...) have their own crate-name
+    // targets and won't match it. For full debug detail (e.g. before filing
+    // a bug report), use the bare `RUST_LOG=debug` or `RUST_LOG=trace` (no
+    // crate scope) — it covers every first-party crate plus tonic/hyper
+    // internals in one go, and is honoured first by the env filter below.
     let base_filter = if cli.verbose {
         "grpctestify=info,warn"
     } else {
         "grpctestify=warn,error"
     };
+    let is_play = matches!(cli.command, Some(Commands::Play(_)));
     // In play mode, include HTTP access logs from tower_http
-    let filter = if matches!(cli.command, Some(Commands::Play(_))) {
+    let filter = if is_play {
         format!("{},tower_http=info", base_filter)
     } else {
         base_filter.to_string()
     };
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&filter));
 
+    // Logs must never share a stream with a command's primary payload — `gen`,
+    // `inspect`, `query`, `explain`, etc. print their real output to stdout
+    // for piping/redirection, and raising verbosity to debug a bug is exactly
+    // when a user is most likely to be capturing that stdout for a report.
+    // `play` is a long-running dev server with no piped payload of its own,
+    // so its access/app logs stay on stdout (prior behavior, easier to `|
+    // grep`/tail alongside the proxied traffic it's serving).
+    let writer = if is_play {
+        BoxMakeWriter::new(std::io::stdout)
+    } else {
+        BoxMakeWriter::new(std::io::stderr)
+    };
+
     tracing_subscriber::fmt()
-        .with_writer(std::io::stdout)
+        .with_writer(writer)
         .event_format(grpctestify::logging::CustomFormatter)
         .with_env_filter(env_filter)
         .init();

@@ -188,31 +188,6 @@ fn parse_json_or_string(value: &str) -> Value {
     serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_string()))
 }
 
-pub fn parse_response_payload(stdout: &str) -> Vec<Value> {
-    if stdout.trim().is_empty() {
-        return vec![Value::Object(serde_json::Map::new())];
-    }
-
-    if let Ok(value) = serde_json::from_str::<Value>(stdout) {
-        return vec![value];
-    }
-
-    let mut values = Vec::new();
-    for line in stdout.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        values.push(parse_json_or_string(trimmed));
-    }
-
-    if values.is_empty() {
-        vec![Value::Object(serde_json::Map::new())]
-    } else {
-        values
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,25 +359,6 @@ mod tests {
             parsed.options.get("format").map(String::as_str),
             Some("json")
         );
-    }
-
-    #[test]
-    fn parse_response_payload_json_lines() {
-        let payload = "{\"a\":1}\n{\"b\":2}\n";
-        let parsed = parse_response_payload(payload);
-        assert_eq!(parsed, vec![json!({"a": 1}), json!({"b": 2})]);
-    }
-
-    #[test]
-    fn parse_response_payload_empty_defaults_to_empty_object() {
-        let parsed = parse_response_payload("\n\n");
-        assert_eq!(parsed, vec![json!({})]);
-    }
-
-    #[test]
-    fn parse_response_payload_single_json_object() {
-        let parsed = parse_response_payload(r#"{"ok":true,"count":2}"#);
-        assert_eq!(parsed, vec![json!({"ok": true, "count": 2})]);
     }
 
     fn p(args: &[&str]) -> ParsedGrpcurl {

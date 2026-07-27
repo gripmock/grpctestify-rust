@@ -1058,6 +1058,11 @@ impl TestRunner {
                     substituted.insert(key, new_val);
                 }
                 if !unresolved.is_empty() {
+                    tracing::debug!(
+                        "unresolved placeholder(s) in REQUEST_HEADERS: {:?} (known variables: {:?})",
+                        unresolved,
+                        variables.keys().collect::<Vec<_>>()
+                    );
                     return Ok(TestExecutionResult::fail(
                         format!(
                             "Unresolved variable placeholder(s) in REQUEST_HEADERS: {}",
@@ -1097,6 +1102,19 @@ impl TestRunner {
 
         let client_protocol = client_config.protocol;
         let client_address = client_config.address.clone();
+        tracing::debug!(
+            "dialing {} ({:?}, service={}, timeout={}s, tls={}, proto_source={})",
+            client_address,
+            client_protocol,
+            full_service,
+            client_config.timeout_seconds,
+            client_config.tls_config.is_some(),
+            if client_config.proto_config.is_some() {
+                "explicit"
+            } else {
+                "reflection"
+            }
+        );
         let client = GrpcClient::new(client_config).await?;
 
         // Get input/output message types for field coverage tracking
@@ -1398,6 +1416,13 @@ impl TestRunner {
                                     }
                                     break r;
                                 }
+                                tracing::debug!(
+                                    "retry {}/{} at line {}: {:?}",
+                                    attempt + 1,
+                                    max_retries,
+                                    section.start_line,
+                                    r.error_message
+                                );
                                 attempt += 1;
                             };
                             if !result.success
@@ -1921,6 +1946,9 @@ impl TestRunner {
                                     match self.assertion_engine.query(query, msg) {
                                         Ok(results) => {
                                             if let Some(val) = results.first() {
+                                                tracing::trace!(
+                                                    "extract: {key} = {query} -> {val:?}"
+                                                );
                                                 variables.insert(key.clone(), val.clone());
                                             } else {
                                                 failure_reasons.push(format!(

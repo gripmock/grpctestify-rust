@@ -150,7 +150,10 @@ pub fn load_rhai_reporters(dir: &Path) -> Vec<Box<dyn Reporter>> {
             continue;
         }
         match RhaiReporter::load(&path) {
-            Ok(Some(reporter)) => reporters.push(Box::new(reporter)),
+            Ok(Some(reporter)) => {
+                tracing::debug!("loaded reporter from {}", path.display());
+                reporters.push(Box::new(reporter));
+            }
             Ok(None) => {}
             Err(e) => tracing::error!("skipping reporter script {}: {e:#}", path.display()),
         }

@@ -495,6 +495,7 @@ pub fn interpolate_variables(template: &str, variables: &HashMap<String, Value>)
             let var_name = template[after_open..close].trim();
 
             if let Some(var_value) = variables.get(var_name) {
+                tracing::trace!("interpolate: {{{{{var_name}}}}} -> {var_value:?}");
                 if let Value::String(s) = var_value {
                     out.push_str(s);
                 } else {
@@ -502,6 +503,9 @@ pub fn interpolate_variables(template: &str, variables: &HashMap<String, Value>)
                 }
                 changed = true;
             } else {
+                tracing::trace!(
+                    "interpolate: {{{{{var_name}}}}} has no matching variable, left as-is"
+                );
                 out.push_str(&template[open..close + 2]);
             }
             cursor = close + 2;

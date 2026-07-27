@@ -1,40 +1,42 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 #![cfg(not(miri))]
 
-use std::path::Path;
-use std::process::Output;
+use tonic_health::ServingStatus;
 
 #[path = "support/mod.rs"]
 mod support;
 use support::run_cli;
 
-#[cfg(unix)]
-fn run_cli_internal(args: &[&str], path_override: Option<&Path>) -> Output {
-    let mut cmd = support::cli_command();
+/// Spawn a real `grpc.health.v1.Health` server plus reflection-v1 on an
+/// ephemeral port, so `gen grpcurl --execute` has a live native target
+/// instead of shelling out to a `grpcurl` binary (see memory
+/// [[native-zero-dependency]]).
+async fn spawn_health_server() -> String {
+    let (reporter, health_service) = tonic_health::server::health_reporter();
+    reporter
+        .set_service_status("", ServingStatus::Serving)
+        .await;
+    let reflection_service = tonic_reflection::server::Builder::configure()
+        .register_encoded_file_descriptor_set(tonic_health::pb::FILE_DESCRIPTOR_SET)
+        .build_v1()
+        .expect("build reflection service");
 
-    if let Some(path) = path_override {
-        let current_path = std::env::var("PATH").unwrap_or_default();
-        let merged_path = format!("{}:{}", path.display(), current_path);
-        cmd.env("PATH", merged_path);
-    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local addr");
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
 
-    cmd.current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(args)
-        .output()
-        .expect("failed to run command")
-}
+    tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(health_service)
+            .add_service(reflection_service)
+            .serve_with_incoming(incoming)
+            .await
+            .expect("health server run");
+    });
 
-#[cfg(unix)]
-fn run_cli_with_path(args: &[&str], path: &Path) -> Output {
-    run_cli_internal(args, Some(path))
-}
-
-#[cfg(unix)]
-fn make_executable(path: &std::path::Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = std::fs::metadata(path).expect("metadata").permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(path, perms).expect("set perms");
+    addr.to_string()
 }
 
 #[test]
@@ -199,6 +201,18 @@ fn gen_grpcurl_writes_proto_section() {
     assert!(stdout.contains("import_paths: proto,third_party"));
 }
 
+/// Extract a `--- NAME ---` section body verbatim (trimmed) for exact
+/// content assertions instead of loose substring checks.
+fn section_body<'a>(stdout: &'a str, marker: &str) -> &'a str {
+    let start = stdout
+        .find(marker)
+        .unwrap_or_else(|| panic!("missing section {marker:?} in:\n{stdout}"))
+        + marker.len();
+    let rest = &stdout[start..];
+    let end = rest.find("\n--- ").unwrap_or(rest.len());
+    rest[..end].trim()
+}
+
 #[test]
 fn gen_grpcurl_invalid_header_fails() {
     let out = run_cli(&[
@@ -215,70 +229,157 @@ fn gen_grpcurl_invalid_header_fails() {
     assert!(stderr.contains("Invalid header"));
 }
 
-#[test]
-#[cfg(unix)]
-fn gen_grpcurl_execute_appends_response_section() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let grpcurl = dir.path().join("grpcurl");
-    std::fs::write(
-        &grpcurl,
-        "#!/bin/sh\necho '{\"ok\":true,\"source\":\"fake\"}'\nexit 0\n",
-    )
-    .expect("write fake grpcurl");
-    make_executable(&grpcurl);
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gen_grpcurl_execute_appends_response_section() {
+    let address = spawn_health_server().await;
 
-    let out = run_cli_with_path(
-        &[
+    let out = run_cli(&[
+        "gen",
+        "grpcurl",
+        "-e",
+        "-plaintext",
+        "-d",
+        "{}",
+        &address,
+        "grpc.health.v1.Health/Check",
+    ]);
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        section_body(&stdout, "--- RESPONSE ---"),
+        "{\n  \"status\": \"SERVING\"\n}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gen_grpcurl_execute_appends_error_section_on_failure() {
+    // Nothing listens on this port — the native client must fail to dial
+    // and surface that failure as an ERROR section, not a shell exit code.
+    let out = run_cli(&[
+        "gen",
+        "grpcurl",
+        "-e",
+        "-plaintext",
+        "127.0.0.1:1",
+        "grpc.health.v1.Health/Check",
+    ]);
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        section_body(&stdout, "--- ERROR ---"),
+        "No descriptors loaded via reflection"
+    );
+}
+
+/// Regression: `tracing` output used to share stdout with a command's actual
+/// payload (`src/main.rs`'s subscriber was `.with_writer(std::io::stdout)`),
+/// so turning on `RUST_LOG=trace` to debug a failure corrupted the exact
+/// `.gctf` a user would redirect into a bug report. Logs must land on
+/// stderr; stdout must stay byte-for-byte the same regardless of verbosity.
+#[test]
+fn gen_grpcurl_verbose_logging_does_not_leak_into_stdout() {
+    // `-e` against an unreachable port guarantees at least the dial debug
+    // log fires (no live server needed), so this actually exercises the
+    // regression instead of trivially comparing two silent runs.
+    let args = [
+        "gen",
+        "grpcurl",
+        "-e",
+        "-plaintext",
+        "127.0.0.1:1",
+        "grpc.health.v1.Health/Check",
+    ];
+
+    let quiet = support::cli_command()
+        .args(args)
+        .output()
+        .expect("failed to run CLI");
+
+    let verbose = support::cli_command()
+        .env("RUST_LOG", "trace")
+        .args(args)
+        .output()
+        .expect("failed to run CLI");
+
+    assert_eq!(
+        quiet.stdout, verbose.stdout,
+        "stdout must be identical regardless of log verbosity"
+    );
+    assert!(
+        String::from_utf8_lossy(&verbose.stdout).contains("--- ERROR ---"),
+        "stdout must still contain the generated document"
+    );
+    assert!(
+        !String::from_utf8_lossy(&verbose.stderr).is_empty(),
+        "RUST_LOG=trace must actually produce log output (on stderr)"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gen_grpcurl_execute_rejects_unparseable_max_time() {
+    let address = spawn_health_server().await;
+
+    let out = run_cli(&[
+        "gen",
+        "grpcurl",
+        "-e",
+        "-plaintext",
+        "-max-time",
+        "not-a-number",
+        &address,
+        "grpc.health.v1.Health/Check",
+    ]);
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        section_body(&stdout, "--- ERROR ---"),
+        "Invalid -max-time value 'not-a-number'"
+    );
+}
+
+/// Regression: a negative/zero -max-time parses fine as f64, so it used to
+/// slip past the parse-failure check and silently clamp to a 1s timeout
+/// instead of being rejected like non-numeric input.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gen_grpcurl_execute_rejects_non_positive_max_time() {
+    let address = spawn_health_server().await;
+
+    for bad in ["-5", "0"] {
+        let out = run_cli(&[
             "gen",
             "grpcurl",
             "-e",
             "-plaintext",
-            "localhost:4770",
-            "auth.AuthService/CheckAccess",
-        ],
-        dir.path(),
-    );
+            "-max-time",
+            bad,
+            &address,
+            "grpc.health.v1.Health/Check",
+        ]);
 
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("--- RESPONSE ---"));
-    assert!(stdout.contains("\"ok\": true"));
-    assert!(stdout.contains("\"source\": \"fake\""));
-}
-
-#[test]
-#[cfg(unix)]
-fn gen_grpcurl_execute_appends_error_section_on_failure() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let grpcurl = dir.path().join("grpcurl");
-    std::fs::write(
-        &grpcurl,
-        "#!/bin/sh\necho 'permission denied' 1>&2\nexit 7\n",
-    )
-    .expect("write fake grpcurl");
-    make_executable(&grpcurl);
-
-    let out = run_cli_with_path(
-        &[
-            "gen",
-            "grpcurl",
-            "-e",
-            "localhost:4770",
-            "auth.AuthService/CheckAccess",
-        ],
-        dir.path(),
-    );
-
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("--- ERROR ---"));
-    assert!(stdout.contains("permission denied"));
+        assert!(
+            out.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            section_body(&stdout, "--- ERROR ---"),
+            format!("Invalid -max-time value '{bad}'")
+        );
+    }
 }

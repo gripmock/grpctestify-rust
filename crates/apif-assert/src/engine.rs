@@ -592,6 +592,7 @@ impl AssertionEngine {
                         assertion, response, headers, trailers, timing, variables, protocol,
                     )
                     .unwrap_or_else(|e| AssertionResult::Error(format!("Internal error: {}", e)));
+                tracing::trace!("assertion: {assertion} -> {result:?}");
                 (result, start.elapsed().as_millis() as u64)
             })
             .collect()

@@ -30,3 +30,4 @@ granted by any of these helpers.
 - [Plugin System overview](index)
 - [Custom assertion plugins](custom-scripts)
 - [Reporter plugins](reporters)
+- [Log levels / `RUST_LOG`](../troubleshooting#log-levels)

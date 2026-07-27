@@ -1,14 +1,17 @@
 use anyhow::{Context, Result};
+use serde_json::Value;
 use std::fs;
-use std::process::Command;
+use std::path::Path;
 
 use crate::cli::args::{GenArgs, GenGrpcurlArgs, GenSource};
-use crate::grpc::grpcurl_invocation::{ParsedGrpcurl, parse_response_payload};
+use crate::execution::runner_helpers::{build_proto_config, build_tls_config, full_service_name};
+use crate::grpc::grpcurl_invocation::ParsedGrpcurl;
+use crate::grpc::{CompressionMode, GrpcClientConfig, TransportRef, WireProtocol};
 use crate::parser::GctfDocumentBuilder;
 
 pub async fn handle_gen(args: &GenArgs) -> Result<()> {
     let rendered = match &args.source {
-        GenSource::Grpcurl(grpcurl) => handle_gen_grpcurl(grpcurl).await?,
+        GenSource::Grpcurl(grpcurl) => handle_gen_grpcurl(grpcurl, args.output.as_deref()).await?,
     };
 
     if let Some(path) = &args.output {
@@ -20,7 +23,7 @@ pub async fn handle_gen(args: &GenArgs) -> Result<()> {
     Ok(())
 }
 
-async fn handle_gen_grpcurl(args: &GenGrpcurlArgs) -> Result<String> {
+async fn handle_gen_grpcurl(args: &GenGrpcurlArgs, output: Option<&Path>) -> Result<String> {
     let parsed = ParsedGrpcurl::parse(&args.grpcurl_args)?;
     let mut options = parsed.options.clone();
     // Native mode defaults to plaintext when TLS is not configured.
@@ -41,29 +44,85 @@ async fn handle_gen_grpcurl(args: &GenGrpcurlArgs) -> Result<String> {
     }
 
     if args.execute {
-        let output = Command::new("grpcurl")
-            .args(&args.grpcurl_args)
-            .output()
-            .context("Failed to execute grpcurl")?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-
-        if output.status.success() {
-            for response in parse_response_payload(&stdout) {
-                builder = builder.response(response);
+        match execute_call(&builder, &parsed, output).await {
+            Ok(responses) => {
+                for response in responses {
+                    builder = builder.response(response);
+                }
             }
-        } else {
-            let message = if stderr.is_empty() {
-                "grpcurl execution failed".to_string()
-            } else {
-                stderr
-            };
-            builder = builder.error(message);
+            Err(message) => builder = builder.error(message),
         }
     }
 
     Ok(builder.render())
+}
+
+/// Dial the target address and run the parsed invocation as one live RPC
+/// call, using the same native gRPC client `.gctf` test execution uses —
+/// no `grpcurl` binary involved (see memory [[native-zero-dependency]]).
+async fn execute_call(
+    builder: &GctfDocumentBuilder,
+    parsed: &ParsedGrpcurl,
+    output: Option<&Path>,
+) -> Result<Vec<Value>, String> {
+    let document = builder.clone().build();
+    // Relative TLS/proto paths (-cacert, -proto, ...) must resolve the same
+    // way the saved .gctf will resolve them later, so use the real output
+    // path when writing to a file, and a bare (parent-less) name — resolving
+    // against CWD — when the doc only ever goes to stdout.
+    let document_path = output.unwrap_or_else(|| Path::new("gen.gctf"));
+
+    let (package, service, method) = document
+        .parse_endpoint()
+        .ok_or_else(|| format!("Invalid endpoint '{}'", parsed.symbol))?;
+    let full_service = full_service_name(&package, &service);
+
+    let timeout_seconds = match parsed.options.get("max-time") {
+        Some(raw) => match raw.parse::<f64>() {
+            Ok(secs) if secs > 0.0 => secs.ceil() as u64,
+            _ => return Err(format!("Invalid -max-time value '{raw}'")),
+        },
+        None => 30,
+    };
+
+    let config = GrpcClientConfig {
+        address: parsed.address.clone(),
+        timeout_seconds,
+        tls_config: build_tls_config(&document, document_path),
+        proto_config: build_proto_config(&document, document_path),
+        metadata: (!parsed.headers.is_empty()).then(|| parsed.headers.clone()),
+        target_service: Some(full_service.clone()),
+        compression: if parsed.options.get("compression").map(String::as_str) == Some("gzip") {
+            CompressionMode::Gzip
+        } else {
+            CompressionMode::default()
+        },
+        connection_id: 0,
+        protocol: parsed
+            .options
+            .get("protocol")
+            .and_then(|p| p.parse::<WireProtocol>().ok())
+            .unwrap_or_default(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+
+    let mut transport = TransportRef::new(&config)
+        .await
+        .map_err(|e| e.to_string())?;
+    let result = transport
+        .execute(
+            &config,
+            &full_service,
+            &method,
+            parsed.request_body.clone(),
+            None,
+        )
+        .await;
+
+    match result.error {
+        Some(error) => Err(error.to_string()),
+        None => Ok(result.messages),
+    }
 }
 
 #[cfg(test)]
