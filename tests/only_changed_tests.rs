@@ -6,22 +6,78 @@ mod support;
 use support::cli_command;
 
 use std::path::Path;
-use std::process::Command;
 
-/// Shells out to the real `git` binary — test-harness setup only, mirroring
-/// `src/only_changed.rs`'s own test helper (the shipped `--only-changed`
-/// implementation uses `gix`, never a `git` subprocess).
-fn git(dir: &Path, args: &[&str]) {
-    let status = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "test@example.com")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@example.com")
-        .status()
-        .expect("failed to run git");
-    assert!(status.success(), "git {args:?} failed");
+/// Real on-disk git repo via `gix` — no shell-out, see memory
+/// [[native-zero-dependency]]. Sets the identity needed to write commits.
+fn init_repo(dir: &Path) -> gix::Repository {
+    let mut repo = gix::init(dir).unwrap();
+    let mut cfg = repo.config_snapshot_mut();
+    cfg.set_raw_value(gix::config::tree::User::NAME, "test")
+        .unwrap();
+    cfg.set_raw_value(gix::config::tree::User::EMAIL, "test@example.com")
+        .unwrap();
+    drop(cfg);
+    repo
+}
+
+/// Force HEAD to `refs/heads/main` regardless of this machine's
+/// `init.defaultBranch` config, so `--since main` below is deterministic
+/// across environments.
+fn point_head_at_main(repo: &gix::Repository) {
+    let name: gix::refs::FullName = "refs/heads/main".try_into().unwrap();
+    repo.edit_reference(gix::refs::transaction::RefEdit {
+        change: gix::refs::transaction::Change::Update {
+            log: Default::default(),
+            expected: gix::refs::transaction::PreviousValue::Any,
+            new: gix::refs::Target::Symbolic(name),
+        },
+        name: "HEAD".try_into().unwrap(),
+        deref: false,
+    })
+    .unwrap();
+}
+
+/// Detach HEAD at `commit_id` — further commits move HEAD only, leaving
+/// whatever branch it used to point at frozen where it was.
+fn detach_head(repo: &gix::Repository, commit_id: gix::ObjectId) {
+    repo.edit_reference(gix::refs::transaction::RefEdit {
+        change: gix::refs::transaction::Change::Update {
+            log: Default::default(),
+            expected: gix::refs::transaction::PreviousValue::Any,
+            new: gix::refs::Target::Object(commit_id),
+        },
+        name: "HEAD".try_into().unwrap(),
+        deref: false,
+    })
+    .unwrap();
+}
+
+/// Write `files` to disk under `dir` and commit them as a new commit on top of `parent`.
+fn write_commit(
+    repo: &gix::Repository,
+    dir: &Path,
+    parent: Option<gix::ObjectId>,
+    files: &[(&str, &str)],
+    message: &str,
+) -> gix::ObjectId {
+    let entries = files
+        .iter()
+        .map(|(name, content)| {
+            std::fs::write(dir.join(name), content).unwrap();
+            gix::objs::tree::Entry {
+                mode: gix::objs::tree::EntryKind::Blob.into(),
+                filename: (*name).into(),
+                oid: repo.write_blob(content.as_bytes()).unwrap().detach(),
+            }
+        })
+        .collect();
+    let tree_id = repo
+        .write_object(&gix::objs::Tree { entries })
+        .unwrap()
+        .detach();
+    repo.commit("HEAD", message, tree_id, parent)
+        .unwrap()
+        .detach()
 }
 
 const UNARY: &str =
@@ -32,11 +88,14 @@ const UNARY: &str =
 #[cfg(not(miri))]
 fn run_only_changed_dry_run_skips_unmodified_files() {
     let dir = tempfile::tempdir().unwrap();
-    git(dir.path(), &["init", "-q", "-b", "main"]);
-    std::fs::write(dir.path().join("a.gctf"), UNARY).unwrap();
-    std::fs::write(dir.path().join("b.gctf"), UNARY).unwrap();
-    git(dir.path(), &["add", "-A"]);
-    git(dir.path(), &["commit", "-q", "-m", "init"]);
+    let repo = init_repo(dir.path());
+    write_commit(
+        &repo,
+        dir.path(),
+        None,
+        &[("a.gctf", UNARY), ("b.gctf", UNARY)],
+        "init",
+    );
 
     // Modify only b.gctf.
     std::fs::write(dir.path().join("b.gctf"), format!("{UNARY}\n# touched\n")).unwrap();
@@ -57,18 +116,19 @@ fn run_only_changed_dry_run_skips_unmodified_files() {
 #[cfg(not(miri))]
 fn run_only_changed_since_a_branch() {
     let dir = tempfile::tempdir().unwrap();
-    git(dir.path(), &["init", "-q", "-b", "main"]);
-    std::fs::write(dir.path().join("a.gctf"), UNARY).unwrap();
-    git(dir.path(), &["add", "-A"]);
-    git(dir.path(), &["commit", "-q", "-m", "on main"]);
+    let repo = init_repo(dir.path());
+    point_head_at_main(&repo);
+    let on_main = write_commit(&repo, dir.path(), None, &[("a.gctf", UNARY)], "on main");
 
-    git(dir.path(), &["checkout", "-q", "-b", "feature"]);
-    std::fs::write(
-        dir.path().join("a.gctf"),
-        format!("{UNARY}\n# feature change\n"),
-    )
-    .unwrap();
-    git(dir.path(), &["commit", "-q", "-am", "on feature"]);
+    // Diverge from main without moving it, like being on a feature branch.
+    detach_head(&repo, on_main);
+    write_commit(
+        &repo,
+        dir.path(),
+        Some(on_main),
+        &[("a.gctf", &format!("{UNARY}\n# feature change\n"))],
+        "on feature",
+    );
 
     // Nothing changed relative to the feature branch's own HEAD.
     let output = cli_command()

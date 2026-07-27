@@ -229,7 +229,7 @@ fn mermaid_escape(s: &str) -> String {
     s.replace('"', "&quot;")
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
 
