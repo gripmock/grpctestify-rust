@@ -37,6 +37,7 @@ export default defineConfig({
           text: 'Getting Started',
           items: [
             { text: 'Overview', link: '/guides/' },
+            { text: 'Why grpctestify', link: '/guides/why' },
             { text: 'Installation', link: '/guides/getting-started/installation' },
             { text: 'First Test', link: '/guides/getting-started/first-test' },
             { text: 'Basic Concepts', link: '/guides/getting-started/basic-concepts' },
@@ -58,6 +59,8 @@ export default defineConfig({
         {
           text: 'Features',
           items: [
+            { text: 'Streaming', link: '/guides/features/streaming' },
+            { text: 'TLS and mTLS', link: '/guides/features/tls' },
             { text: 'Data Sources', link: '/guides/bench-sources' },
             { text: 'Query', link: '/guides/query' },
             { text: 'Playground', link: '/guides/playground' },

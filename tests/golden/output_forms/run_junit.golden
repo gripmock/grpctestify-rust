@@ -7,7 +7,11 @@ headers:
   content-type: application/grpc
   date: <HTTP_DATE>
 trailers:
-  grpc-status: 0</system-out>
+  grpc-status: 0
+response:
+{
+  &quot;status&quot;: &quot;SERVING&quot;
+}</system-out>
     </testcase>
     <testcase name="<TMPDIR>/b_fail.gctf" classname="b_fail" time="<N>">
       <failure message="Validation failed:
@@ -26,7 +30,11 @@ headers:
   content-type: application/grpc
   date: <HTTP_DATE>
 trailers:
-  grpc-status: 0</system-out>
+  grpc-status: 0
+response:
+{
+  &quot;status&quot;: &quot;SERVING&quot;
+}</system-out>
     </testcase>
   </testsuite>
 </testsuites>

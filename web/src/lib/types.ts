@@ -85,6 +85,26 @@ export interface ServiceInfo {
   methods: MethodInfo[];
 }
 
+export interface ReflectionMethod {
+  name: string;
+  fullName: string;
+  service: string;
+  clientStreaming: boolean;
+  serverStreaming: boolean;
+}
+
+/** Response contract for `POST /api/reflect` (see `ReflectResponse` in src/serve/api.rs). */
+export interface ReflectResponse {
+  services?: ServiceInfo[];
+  error?: string | null;
+}
+
+/** Response contract for `POST /api/proto-source` (see `ProtoSourceResponse` in src/serve/api.rs). */
+export interface ProtoSourceResponse {
+  source?: string | null;
+  error?: string | null;
+}
+
 
 export interface CollectionParsed {
   endpoint: string;
@@ -111,8 +131,13 @@ export interface Environment {
   name: string;
   address?: string;
   variables: Record<string, string>;
-  
+
   mutedVariables?: string[];
+  tls?: boolean;
+  tlsCa?: string;
+  tlsCert?: string;
+  tlsKey?: string;
+  tlsInsecure?: boolean;
 }
 
 export const ENVS_KEY = 'grpctestify-envs';
@@ -254,7 +279,7 @@ export interface PlayStore {
   version: string;
   sessionId: string;
   theme: 'light' | 'dark';
-  reflectionMethods: { name: string; fullName: string; service: string }[];
+  reflectionMethods: ReflectionMethod[];
   reflectStatus: 'idle' | 'loading' | 'ok' | 'error';
   reflectError: string | null;
   serverHealthy: boolean;
@@ -264,6 +289,7 @@ export interface PlayStore {
   sidebarVisible: boolean;
   showHotkeyHelp: boolean;
   runStatus: 'idle' | 'running';
+  runMode: 'execute' | 'run';
 
   requestTimeoutMs: number;
   setAddress: (v: string) => void;
@@ -289,17 +315,19 @@ export interface PlayStore {
   setTheme: (v: 'light' | 'dark') => void;
   getGrpcurlCommand: () => Promise<string>;
   loadCollection: (path: string) => Promise<void>;
+  hydrateStaleTabs: () => Promise<void>;
   newWorkspace: () => void;
   saveWorkspace: () => Promise<void>;
   saveWorkspaceAs: (name: string) => Promise<void>;
   execute: () => Promise<void>;
   runTest: () => Promise<void>;
+  setRunMode: (v: 'execute' | 'run') => void;
   loadRawContent: () => Promise<void>;
   setRawContent: (v: string) => void;
   saveRawContent: () => Promise<void>;
   fetchDiagnostics: (content: string) => Promise<GctfDiagnostic[]>;
   loadStartupInfo: () => Promise<void>;
-  setReflectionMethods: (v: { name: string; fullName: string; service: string }[]) => void;
+  setReflectionMethods: (v: ReflectionMethod[]) => void;
   reflect: () => Promise<void>;
   checkHealth: () => Promise<void>;
   setActiveEnvironment: (name: string | null) => void;

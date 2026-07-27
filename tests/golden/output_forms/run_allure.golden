@@ -7,7 +7,11 @@
   "trailers": {
     "grpc-status": "0"
   },
-  "response": [],
+  "response": [
+    {
+      "status": "SERVING"
+    }
+  ],
   "truncated": false
 }
 === <UUID>-exchange-attachment.json ===
@@ -19,7 +23,11 @@
   "trailers": {
     "grpc-status": "0"
   },
-  "response": [],
+  "response": [
+    {
+      "status": "SERVING"
+    }
+  ],
   "truncated": false
 }
 === <UUID>-result.json ===

@@ -93,31 +93,7 @@ impl ResponseHandler {
 
     /// Substitute variables in a JSON value (public for use by orchestrator)
     pub fn substitute_variables_in_value(value: &mut Value, variables: &HashMap<String, Value>) {
-        match value {
-            Value::String(s) => {
-                for (var_name, var_value) in variables {
-                    let pattern = format!("{{{{ {} }}}}", var_name);
-                    if s.contains(&pattern) {
-                        if let Value::String(replacement) = var_value {
-                            *s = s.replace(&pattern, replacement);
-                        } else {
-                            *s = s.replace(&pattern, &var_value.to_string());
-                        }
-                    }
-                }
-            }
-            Value::Array(arr) => {
-                for item in arr {
-                    Self::substitute_variables_in_value(item, variables);
-                }
-            }
-            Value::Object(map) => {
-                for (_, val) in map {
-                    Self::substitute_variables_in_value(val, variables);
-                }
-            }
-            _ => {}
-        }
+        crate::execution::runner_helpers::substitute_variables(value, variables);
     }
 
     /// Validate a full document against a response (for testing purposes)

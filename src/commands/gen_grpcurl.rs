@@ -79,7 +79,7 @@ async fn execute_call(
 
     let timeout_seconds = match parsed.options.get("max-time") {
         Some(raw) => match raw.parse::<f64>() {
-            Ok(secs) if secs > 0.0 => secs.ceil() as u64,
+            Ok(secs) if secs > 0.0 && secs.is_finite() => secs.ceil() as u64,
             _ => return Err(format!("Invalid -max-time value '{raw}'")),
         },
         None => 30,

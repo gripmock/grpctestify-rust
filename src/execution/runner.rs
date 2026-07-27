@@ -1823,6 +1823,9 @@ impl TestRunner {
                                     assertion_timing.finish_scope(scope_start_ms, scope_end_ms, 1);
 
                                 last_message = Some(msg.clone());
+                                if let Some(resp) = &mut captured_response {
+                                    resp.messages.push(msg.clone());
+                                }
 
                                 let should_format_message =
                                     tracing::enabled!(tracing::Level::DEBUG) || effective_no_assert;
@@ -1863,6 +1866,10 @@ impl TestRunner {
                                 }
                             }
                             Some(Ok(crate::grpc::client::StreamItem::Trailers(t))) => {
+                                if let Some(resp) = &mut captured_response {
+                                    resp.trailers
+                                        .extend(t.iter().map(|(k, v)| (k.clone(), v.clone())));
+                                }
                                 captured_trailers.extend(t);
                                 // Trailers arrive at end-of-stream. A standalone ASSERTS
                                 // positioned here is asserting on trailers/status rather
@@ -1901,6 +1908,9 @@ impl TestRunner {
                                     assertion_timing.finish_scope(scope_start_ms, scope_end_ms, 1);
 
                                 last_error_message = Some(status.message().to_string());
+                                if let Some(resp) = &mut captured_response {
+                                    resp.error = Some(status.message().to_string());
+                                }
                                 let error_json =
                                     super::error_handler::ErrorHandler::status_to_json(&status);
                                 last_error_json = Some(error_json.clone());

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { PlayStore, HistoryEntry, CallResult, CollectionParsed, Tab, StoredTab, TabsStorage, Environment, WireProtocol } from './types';
+import type { PlayStore, HistoryEntry, CallResult, CollectionParsed, Tab, StoredTab, TabsStorage, Environment, WireProtocol, ReflectResponse } from './types';
 import { ENVS_KEY, ACTIVE_ENV_KEY, TABS_KEY, SETTINGS_KEY, defaultAddressFor, isAddressAtDefault } from './types';
 import type { ClientSettings } from './types';
 import { LRUCache } from './cache';
@@ -91,6 +91,61 @@ function snapshot(state: PlayStore, tabId: string, overrides?: Partial<Tab>): Ta
 }
 
 
+export function effectiveTls(st: PlayStore) {
+  const env = st.activeEnvironment
+    ? st.environments.find(e => e.name === st.activeEnvironment)
+    : null;
+  if (env && env.tls !== undefined) {
+    return {
+      tls: env.tls,
+      tlsInsecure: env.tlsInsecure ?? true,
+      tlsCa: env.tlsCa || '',
+      tlsCert: env.tlsCert || '',
+      tlsKey: env.tlsKey || '',
+    };
+  }
+  return { tls: st.tls, tlsInsecure: st.tlsInsecure, tlsCa: st.tlsCa, tlsCert: st.tlsCert, tlsKey: st.tlsKey };
+}
+
+function headersEqual(a: Record<string, string>, b: Record<string, string>): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every(k => a[k] === b[k]);
+}
+
+function structuredDirty(endpoint: string, headers: Record<string, string>, bodies: string[], orig: CollectionParsed | null): boolean {
+  if (!orig) return false;
+  return (
+    endpoint !== orig.endpoint ||
+    !headersEqual(headers, orig.headers) ||
+    JSON.stringify(bodies) !== JSON.stringify(orig.bodies)
+  );
+}
+
+/** True when the live request editor (endpoint/headers/bodies) has diverged from
+ * the on-disk file `runTest` will actually run — Run reads the saved file, not this state. */
+export function isRequestDirty(st: PlayStore): boolean {
+  return structuredDirty(st.request.endpoint, st.request.headers, st.request.bodies, st.workspaceOriginal);
+}
+
+/** Same check as `isRequestDirty`, but from a (possibly inactive) tab's own snapshot —
+ * lets the tab bar mark unsaved tabs without switching to them first. */
+export function isTabDirty(tab: Tab): boolean {
+  if (tab.rawContent !== null && tab.rawOriginal !== null && tab.rawContent !== tab.rawOriginal) return true;
+  return structuredDirty(tab.endpoint, tab.headers, tab.bodies, tab.collectionOriginal);
+}
+
+async function fetchCollectionParsed(path: string): Promise<CollectionParsed | null> {
+  try {
+    const res = await fetch(`/api/collections/${path}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.parsed ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function loadTab(tab: Tab) {
   return {
     request: { endpoint: tab.endpoint, headers: tab.headers, bodies: tab.bodies },
@@ -101,10 +156,11 @@ function loadTab(tab: Tab) {
     responseTab: tab.responseTab,
     workspacePath: tab.collectionPath,
     collectionParsed: tab.collectionParsed,
-    collectionOriginal: tab.collectionOriginal,
+    workspaceOriginal: tab.collectionOriginal,
     rawContent: tab.rawContent,
     rawOriginal: tab.rawOriginal,
     selectedCollection: tab.collectionPath,
+    ...(tab.collectionParsed?.address ? { address: tab.collectionParsed.address } : {}),
   };
 }
 
@@ -310,6 +366,7 @@ export const useStore = create<PlayStore>((set, get) => ({
   sidebarVisible: true,
   showHotkeyHelp: false,
   runStatus: 'idle',
+  runMode: 'execute',
   environments: (() => {
     try { return JSON.parse(localStorage.getItem(ENVS_KEY) || '[]'); }
     catch { return []; }
@@ -382,6 +439,8 @@ export const useStore = create<PlayStore>((set, get) => ({
     return { tabs, requestTab: v };
   }),
 
+  setRunMode: (v) => set({ runMode: v }),
+
   setGctfTab: (v) => set(s => {
     const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, gctfTab: v } : t);
     return { tabs, gctfTab: v };
@@ -413,7 +472,8 @@ export const useStore = create<PlayStore>((set, get) => ({
   setReflectionMethods: (v) => set({ reflectionMethods: v, reflectStatus: v.length > 0 ? 'ok' : 'error' }),
 
   reflect: async () => {
-    const { address, protocol, tls, tlsInsecure, tlsCa, tlsCert, tlsKey, workspacePath } = get();
+    const { address, protocol, workspacePath } = get();
+    const { tls, tlsInsecure, tlsCa, tlsCert, tlsKey } = effectiveTls(get());
     if (!address) return;
     set({ reflectStatus: 'loading', reflectError: null });
     if (reflectController) reflectController.abort();
@@ -437,16 +497,17 @@ export const useStore = create<PlayStore>((set, get) => ({
         signal: reflector.signal,
       });
       if (reflectController === reflector) reflectController = null;
-      const data = await res.json();
+      const data: ReflectResponse = await res.json();
       if (data.error) {
         set({ reflectionMethods: [], reflectStatus: 'error', reflectError: data.error });
         return;
       }
-      const services: any[] = data.services || [];
-      const methods = services.flatMap((s: any) => (s.methods || []).map((m: any) => ({
+      const methods = (data.services ?? []).flatMap(s => (s.methods ?? []).map(m => ({
         name: m.name,
         fullName: m.full_name,
         service: s.name,
+        clientStreaming: m.client_streaming,
+        serverStreaming: m.server_streaming,
       })));
       set({ reflectionMethods: methods, reflectStatus: methods.length > 0 ? 'ok' : 'error', reflectError: methods.length === 0 ? 'No methods found' : null });
     } catch {
@@ -552,17 +613,15 @@ export const useStore = create<PlayStore>((set, get) => ({
 
   loadCollection: async (path: string) => {
     const state = get();
-    
+
     const existing = state.tabs.find(t => t.collectionPath === path);
     if (existing) {
       get().setActiveTab(existing.id);
       return;
     }
-    
-    const res = await fetch(`/api/collections/${path}`);
-    if (!res.ok) return;
-    const data = await res.json();
-    const p: CollectionParsed = data.parsed;
+
+    const p = await fetchCollectionParsed(path);
+    if (!p) return;
     const label = path.split('/').pop() || path;
     const newTab: Tab = {
       ...defaultTab(),
@@ -582,6 +641,23 @@ export const useStore = create<PlayStore>((set, get) => ({
     const tabs = [...state.tabs, newTab];
     saveTabsToStorage(tabs, newTab.id);
     set({ tabs, activeTabId: newTab.id, ...loadTab(newTab) });
+  },
+
+  hydrateStaleTabs: async () => {
+    const stale = get().tabs.flatMap(t =>
+      t.collectionPath && !t.collectionParsed ? [{ id: t.id, path: t.collectionPath }] : []
+    );
+    await Promise.all(stale.map(async ({ id: tabId, path }) => {
+      const parsed = await fetchCollectionParsed(path);
+      if (!parsed) return;
+      set(s => {
+        const tabs = s.tabs.map(t =>
+          t.id === tabId ? { ...t, collectionParsed: parsed, collectionOriginal: parsed } : t
+        );
+        const updated = tabs.find(t => t.id === tabId);
+        return updated && s.activeTabId === tabId ? { tabs, ...loadTab(updated) } : { tabs };
+      });
+    }));
   },
 
   saveWorkspace: async () => {
@@ -634,16 +710,26 @@ export const useStore = create<PlayStore>((set, get) => ({
       throw new Error(text);
     }
     const label = finalName.split('/').pop() || finalName;
+    const updatedParsed: CollectionParsed = st.collectionParsed
+      ? { ...st.collectionParsed, endpoint: st.request.endpoint, headers: st.request.headers, bodies: st.request.bodies, address: st.address }
+      : {
+          endpoint: st.request.endpoint, address: st.address, headers: st.request.headers, bodies: st.request.bodies,
+          asserts: [], extracts: {}, meta_name: null, meta_tags: [], meta_owner: null, meta_summary: null,
+          tls: {}, options: {}, bench: {}, proto: {},
+        };
     set(s => {
-      const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, collectionPath: finalName, label } : t);
+      const tabs = s.tabs.map(t => t.id === s.activeTabId
+        ? { ...t, collectionPath: finalName, label, collectionOriginal: updatedParsed, collectionParsed: updatedParsed }
+        : t);
       saveTabsToStorage(tabs, s.activeTabId);
-      return { tabs, workspacePath: finalName, selectedCollection: finalName };
+      return { tabs, workspacePath: finalName, selectedCollection: finalName, workspaceOriginal: updatedParsed, collectionParsed: updatedParsed };
     });
     get().refreshCollections();
   },
 
   getGrpcurlCommand: async () => {
-    const { request, address, tls, tlsInsecure, protocol } = get();
+    const { request, address, protocol } = get();
+    const { tls, tlsInsecure } = effectiveTls(get());
     // Keep each body as its raw JSON literal so int64 precision survives (a
     // JS JSON.parse round-trip would corrupt integers > 2^53). Non-JSON bodies
     // fall back to a quoted string, preserving the old lenient behaviour.
@@ -680,7 +766,8 @@ export const useStore = create<PlayStore>((set, get) => ({
 
   execute: async () => {
     const st = get();
-    const { workspacePath, tls, tlsInsecure, tlsCa, tlsCert, tlsKey, address, protocol } = st;
+    const { workspacePath, address, protocol } = st;
+    const { tls, tlsInsecure, tlsCa, tlsCert, tlsKey } = effectiveTls(st);
 
     // Capture the tab that issued this request. All response writes below target
     // THIS tab, not whichever tab happens to be active when the call completes.
@@ -1006,8 +1093,12 @@ export const useStore = create<PlayStore>((set, get) => ({
   updateEnvironment: (name, env) => {
     set(s => {
       const envs = s.environments.map(e => e.name === name ? env : e);
-      try { localStorage.setItem(ENVS_KEY, JSON.stringify(envs)); } catch {  }
-      return { environments: envs };
+      const activeEnvironment = s.activeEnvironment === name ? env.name : s.activeEnvironment;
+      try {
+        localStorage.setItem(ENVS_KEY, JSON.stringify(envs));
+        if (activeEnvironment) localStorage.setItem(ACTIVE_ENV_KEY, activeEnvironment);
+      } catch {  }
+      return { environments: envs, activeEnvironment };
     });
   },
   deleteEnvironment: (name) => {

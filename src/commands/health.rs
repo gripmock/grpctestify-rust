@@ -8,17 +8,7 @@ use std::time::Duration;
 /// `--insecure` was the only way to get a TLS connection at all (skipping
 /// verification), with no way to request a *verified* TLS connection.
 fn resolve_tls_config(tls: bool, insecure: bool) -> Option<TlsConfig> {
-    if tls || insecure {
-        Some(TlsConfig {
-            ca_cert_path: None,
-            client_cert_path: None,
-            client_key_path: None,
-            server_name: None,
-            insecure_skip_verify: insecure,
-        })
-    } else {
-        None
-    }
+    (tls || insecure).then(|| super::tls_config_from_flags(None, None, None, insecure))
 }
 
 fn client_config(args: &HealthArgs) -> GrpcClientConfig {

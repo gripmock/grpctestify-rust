@@ -186,7 +186,11 @@ summary:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-of
 <details class="exchange"><summary>Captured exchange</summary>
 <div class="kv-block"><div class="kv-title">Headers</div><div class="kv-row">content-type: application&#x2f;grpc</div><div class="kv-row">date: <HTTP_DATE></div></div>
 <div class="kv-block"><div class="kv-title">Trailers</div><div class="kv-row">grpc-status: 0</div></div>
-<pre class="response-json">[]</pre>
+<pre class="response-json">[
+  {
+    &quot;status&quot;: &quot;SERVING&quot;
+  }
+]</pre>
 </details>
 </div>
 </details>
@@ -206,7 +210,11 @@ summary:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-of
 <details class="exchange"><summary>Captured exchange</summary>
 <div class="kv-block"><div class="kv-title">Headers</div><div class="kv-row">content-type: application&#x2f;grpc</div><div class="kv-row">date: <HTTP_DATE></div></div>
 <div class="kv-block"><div class="kv-title">Trailers</div><div class="kv-row">grpc-status: 0</div></div>
-<pre class="response-json">[]</pre>
+<pre class="response-json">[
+  {
+    &quot;status&quot;: &quot;SERVING&quot;
+  }
+]</pre>
 </details>
 </div>
 </details>

@@ -338,6 +338,7 @@ pub fn build_app(state: Arc<PlayState>) -> Router {
         .route("/api/import-grpcurl", post(api::import_grpcurl))
         .route("/api/grpcurl", post(api::generate_grpcurl))
         .route("/api/schema-fill", post(api::schema_fill))
+        .route("/api/proto-source", post(api::proto_source))
         .route("/api/proto-upload", post(api::proto_upload))
         .route("/api/proto-files", get(api::proto_files))
         .route("/api/dir/{*path}", post(api::create_directory))

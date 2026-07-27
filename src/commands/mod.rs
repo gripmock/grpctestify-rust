@@ -1,4 +1,5 @@
 use crate::diagnostics::{Diagnostic, DiagnosticSeverity};
+use crate::grpc::TlsConfig;
 use anyhow::Result;
 
 pub mod bench;
@@ -45,6 +46,25 @@ pub use reflect::handle_reflect;
 pub use run::run_tests;
 pub use scaffold::handle_scaffold;
 pub use serve::handle_play;
+
+/// Build a `TlsConfig` from resolved CLI cert paths — the field-construction
+/// step shared by every command's own `resolve_tls_config`, which otherwise
+/// each decide independently whether TLS applies at all (that decision's
+/// default/flag surface genuinely differs per command, so it stays local).
+pub fn tls_config_from_flags(
+    ca_cert_path: Option<String>,
+    client_cert_path: Option<String>,
+    client_key_path: Option<String>,
+    insecure_skip_verify: bool,
+) -> TlsConfig {
+    TlsConfig {
+        ca_cert_path,
+        client_cert_path,
+        client_key_path,
+        server_name: None,
+        insecure_skip_verify,
+    }
+}
 
 /// Print diagnostic to stderr
 pub fn print_diagnostic(diagnostic: &Diagnostic) {

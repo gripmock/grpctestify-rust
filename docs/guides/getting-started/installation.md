@@ -71,6 +71,12 @@ EOF
 grpctestify test.gctf
 ```
 
+This example targets the standard `grpc.health.v1.Health` service, which most
+gRPC servers expose — point `ADDRESS` at any server you already have and it
+should pass without writing a custom test. No server yet? Any gRPC server
+with health checks enabled works, e.g. a stub server like
+[gripmock](https://github.com/bavix/gripmock).
+
 ## Next Steps
 
 1. [Write Your First Test](first-test)

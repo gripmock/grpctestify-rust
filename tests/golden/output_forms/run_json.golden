@@ -28,7 +28,11 @@
         "trailers": {
           "grpc-status": "0"
         },
-        "response": [],
+        "response": [
+          {
+            "status": "SERVING"
+          }
+        ],
         "truncated": false
       },
       "document_durations_ms": [0],
@@ -69,7 +73,11 @@
         "trailers": {
           "grpc-status": "0"
         },
-        "response": [],
+        "response": [
+          {
+            "status": "SERVING"
+          }
+        ],
         "truncated": false
       },
       "document_durations_ms": [0],

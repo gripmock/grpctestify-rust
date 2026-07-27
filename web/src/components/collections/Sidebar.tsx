@@ -3,6 +3,7 @@ import { useStore } from '../../lib/store';
 import { useModal } from '../ui/ModalContext';
 import { useToast } from '../ui/ToastContext';
 import type { TreeNode } from '../../lib/types';
+import { copyToClipboard } from '../../lib/clipboard';
 import { btn, colors } from '../../lib/theme';
 import { FileJson, Folder, FolderOpen, ChevronRight, RefreshCw, Search, Tag, Pencil, Trash2, FolderPlus, Copy } from 'lucide-react';
 
@@ -228,16 +229,7 @@ export function Sidebar() {
           </div>
           {!ctxMenu.node.isDir && (<>
             <div onClick={() => {
-              const p = ctxMenu.node.path;
-              if (navigator.clipboard?.writeText) {
-                navigator.clipboard.writeText(p);
-              } else {
-                const ta = document.createElement('textarea');
-                ta.value = p; ta.style.position = 'fixed'; ta.style.opacity = '0';
-                document.body.appendChild(ta); ta.select();
-                document.execCommand('copy');
-                document.body.removeChild(ta);
-              }
+              copyToClipboard(ctxMenu.node.path);
               setCtxMenu(null);
             }} style={ctxItemStyle}>
               <Copy size={13} /> Copy path

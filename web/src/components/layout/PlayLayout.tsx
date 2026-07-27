@@ -28,7 +28,7 @@ export function PlayLayout() {
   const collectionParsed = useStore(s => s.collectionParsed);
   const collectionsMtime = useStore(s => s.collectionsMtime);
 
-  useEffect(() => { refreshCollections(); loadStartupInfo(); }, []);
+  useEffect(() => { refreshCollections(); loadStartupInfo(); useStore.getState().hydrateStaleTabs(); }, []);
 
   
   useEffect(() => {

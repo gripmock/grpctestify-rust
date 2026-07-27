@@ -41,7 +41,7 @@ Use [Section Reference](../reference/sections/) for exact syntax and section rul
 
 - `META` is optional, but only one is allowed and it must be first
 - `ENDPOINT` is required
-- At least one validation block is required: `RESPONSE`, `ERROR`, or `ASSERTS`
+- At least one verification block is required: `RESPONSE`, `ERROR`, or `ASSERTS`
 - `RESPONSE` and `ERROR` cannot be used in the same test file
 - `ADDRESS` can be omitted if `GRPCTESTIFY_ADDRESS` is set
 

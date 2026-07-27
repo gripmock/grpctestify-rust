@@ -182,9 +182,10 @@ or incorrect assertion expressions.
 
 ### Can I test streaming endpoints?
 
-Yes. gRPC Testify supports unary, server streaming, client streaming,
-and bidirectional streaming. Use inline options on `ENDPOINT`
-(e.g., `--- ENDPOINT --- with_stream`).
+Yes — unary, server streaming, client streaming, and bidirectional. The
+streaming mode comes from the method's proto definition; in the test file
+you just write multiple `REQUEST` sections (client streaming) or multiple
+`RESPONSE` sections (server streaming). See [Streaming](features/streaming).
 
 ### How do benchmark sources work?
 

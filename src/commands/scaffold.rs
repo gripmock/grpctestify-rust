@@ -145,15 +145,14 @@ fn resolve_tls_config(
     Ok(if plaintext {
         None
     } else {
-        Some(TlsConfig {
-            ca_cert_path: None,
-            client_cert_path: None,
-            client_key_path: None,
-            server_name: None,
+        Some(super::tls_config_from_flags(
+            None,
+            None,
+            None,
             // `--tls` demands verification even for a bare host:port address
             // that would otherwise fall back to skip-verify below.
-            insecure_skip_verify: !tls && (insecure || !address.starts_with("https://")),
-        })
+            !tls && (insecure || !address.starts_with("https://")),
+        ))
     })
 }
 

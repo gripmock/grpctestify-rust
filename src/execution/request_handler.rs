@@ -112,31 +112,7 @@ impl RequestHandler {
         value: &mut Value,
         variables: &std::collections::HashMap<String, Value>,
     ) {
-        match value {
-            Value::String(s) => {
-                for (var_name, var_value) in variables {
-                    let pattern = format!("{{{{ {} }}}}", var_name);
-                    if s.contains(&pattern) {
-                        if let Value::String(replacement) = var_value {
-                            *s = s.replace(&pattern, replacement);
-                        } else {
-                            *s = s.replace(&pattern, &var_value.to_string());
-                        }
-                    }
-                }
-            }
-            Value::Array(arr) => {
-                for item in arr {
-                    self.substitute_variables(item, variables);
-                }
-            }
-            Value::Object(map) => {
-                for (_, val) in map {
-                    self.substitute_variables(val, variables);
-                }
-            }
-            _ => {}
-        }
+        crate::execution::runner_helpers::substitute_variables(value, variables);
     }
 
     /// Build TLS config from document (test-only)

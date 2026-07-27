@@ -1,4 +1,8 @@
 import { useState, useEffect } from 'react';
+import { useStore, effectiveTls } from '../../lib/store';
+import { useShallow } from 'zustand/react/shallow';
+import { MonacoEditor as Editor } from '../MonacoEditor';
+import type { ProtoSourceResponse } from '../../lib/types';
 import { btn, colors } from '../../lib/theme';
 import { Upload, FileText, Check, AlertCircle, Loader2 } from 'lucide-react';
 
@@ -6,6 +10,85 @@ interface ProtoFile {
   path: string;
   name: string;
   size: number;
+}
+
+function ServiceSchema() {
+  const endpoint = useStore(s => s.request.endpoint);
+  const address = useStore(s => s.address);
+  const protocol = useStore(s => s.protocol);
+  const selectedCollection = useStore(s => s.selectedCollection);
+  const monacoTheme = useStore(s => s.theme === 'dark' ? 'vs-dark' : 'light');
+  const { tls, tlsInsecure, tlsCa, tlsCert, tlsKey } = useStore(useShallow(effectiveTls));
+
+  const [source, setSource] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!endpoint) { setSource(null); setError(null); return; }
+    let active = true;
+    // Each request dials the target and runs a reflection handshake, so wait
+    // for typing in the address bar to settle before spending one.
+    const timer = setTimeout(() => {
+      setLoading(true);
+      setError(null);
+      fetch('/api/proto-source', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          address,
+          endpoint,
+          tls: tls || undefined,
+          tls_insecure: tls ? tlsInsecure : undefined,
+          tls_ca: tls ? (tlsCa || undefined) : undefined,
+          tls_cert: tls ? (tlsCert || undefined) : undefined,
+          tls_key: tls ? (tlsKey || undefined) : undefined,
+          collection_path: selectedCollection || undefined,
+          protocol: protocol || undefined,
+        }),
+      })
+        .then(res => res.json() as Promise<ProtoSourceResponse>)
+        .then(data => {
+          if (!active) return;
+          setSource(data.error ? null : (data.source ?? null));
+          setError(data.error ?? null);
+        })
+        .catch(err => {
+          if (!active) return;
+          setSource(null);
+          setError(String(err?.message || err));
+        })
+        .finally(() => { if (active) setLoading(false); });
+    }, 400);
+    return () => { active = false; clearTimeout(timer); };
+  }, [endpoint, selectedCollection, address, protocol, tls, tlsInsecure, tlsCa, tlsCert, tlsKey]);
+
+  if (!endpoint) return null;
+
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+        <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.6px' }}>
+          Service Schema
+        </span>
+        <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--text-muted)' }}>{endpoint}</span>
+        <span style={{ flex: 1 }} />
+        {loading && <Loader2 size={12} className="animate-spin" />}
+      </div>
+      {error && <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}><AlertCircle size={11} /> {error}</div>}
+      {source && (
+        <div style={{ border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+          <Editor
+            height={Math.min(320, source.split('\n').length * 20)}
+            language="protobuf"
+            value={source}
+            theme={monacoTheme}
+            options={{ readOnly: true, minimap: { enabled: false }, fontSize: 12, lineNumbers: 'off', scrollBeyondLastLine: false }}
+          />
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function ProtoManager() {
@@ -73,6 +156,7 @@ message HelloReply {
 
   return (
     <div>
+      <ServiceSchema />
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
         <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.6px' }}>
           Proto Files

@@ -62,6 +62,26 @@ fn parse_protocol(s: Option<&str>) -> crate::grpc::WireProtocol {
     s.and_then(|s| s.parse().ok()).unwrap_or_default()
 }
 
+/// TLS config from a playground request's `tls`/`tls_ca`/`tls_cert`/`tls_key`/
+/// `tls_insecure` fields — shared by every endpoint that dials a target
+/// (reflect, schema fill, call/test execution).
+fn tls_config_from_request(
+    tls: Option<bool>,
+    tls_ca: &Option<String>,
+    tls_cert: &Option<String>,
+    tls_key: &Option<String>,
+    tls_insecure: Option<bool>,
+) -> Option<crate::grpc::TlsConfig> {
+    tls.unwrap_or(false).then(|| {
+        crate::commands::tls_config_from_flags(
+            tls_ca.clone(),
+            tls_cert.clone(),
+            tls_key.clone(),
+            tls_insecure.unwrap_or(true),
+        )
+    })
+}
+
 /// Resolve a relative path across all collections dirs. Returns first match.
 /// Defense in depth: the canonicalized result must stay inside the
 /// canonicalized collections dir (catches anything reject_traversal missed
@@ -691,17 +711,13 @@ pub async fn reflect_server(
     State(state): State<Arc<PlayState>>,
     Json(req): Json<ReflectRequest>,
 ) -> Json<ReflectResponse> {
-    let tls_config = if req.tls.unwrap_or(false) {
-        Some(crate::grpc::TlsConfig {
-            ca_cert_path: req.tls_ca.clone(),
-            client_cert_path: req.tls_cert.clone(),
-            client_key_path: req.tls_key.clone(),
-            server_name: None,
-            insecure_skip_verify: req.tls_insecure.unwrap_or(true),
-        })
-    } else {
-        None
-    };
+    let tls_config = tls_config_from_request(
+        req.tls,
+        &req.tls_ca,
+        &req.tls_cert,
+        &req.tls_key,
+        req.tls_insecure,
+    );
 
     let proto_config = if let Some(ref coll_path) = req.collection_path {
         if reject_traversal(coll_path).is_err() {
@@ -834,40 +850,35 @@ pub struct SchemaFillResponse {
     pub error: Option<String>,
 }
 
-pub async fn schema_fill(
-    State(state): State<Arc<PlayState>>,
-    Json(req): Json<SchemaFillRequest>,
-) -> Json<SchemaFillResponse> {
-    let parts: Vec<&str> = req.endpoint.split('/').collect();
-    if parts.len() != 2 {
-        return Json(SchemaFillResponse {
-            schema: None,
-            error: Some("Invalid endpoint format".into()),
-        });
-    }
-    let (full_service, method_name) = (parts[0], parts[1]);
+async fn resolve_endpoint_descriptors(
+    state: &PlayState,
+    req: &SchemaFillRequest,
+) -> Result<
+    (
+        prost_reflect::ServiceDescriptor,
+        prost_reflect::MethodDescriptor,
+    ),
+    String,
+> {
+    let (full_service, method_name) = req
+        .endpoint
+        .split_once('/')
+        .ok_or_else(|| "Invalid endpoint format".to_string())?;
 
-    let tls_config = if req.tls.unwrap_or(false) {
-        Some(crate::grpc::TlsConfig {
-            ca_cert_path: req.tls_ca.clone(),
-            client_cert_path: req.tls_cert.clone(),
-            client_key_path: req.tls_key.clone(),
-            server_name: None,
-            insecure_skip_verify: req.tls_insecure.unwrap_or(true),
-        })
-    } else {
-        None
-    };
+    let tls_config = tls_config_from_request(
+        req.tls,
+        &req.tls_ca,
+        &req.tls_cert,
+        &req.tls_key,
+        req.tls_insecure,
+    );
 
     let proto_config = if let Some(ref coll_path) = req.collection_path {
         if reject_traversal(coll_path).is_err() {
-            return Json(SchemaFillResponse {
-                schema: None,
-                error: Some("Invalid collection_path".into()),
-            });
+            return Err("Invalid collection_path".to_string());
         }
         let file_path =
-            resolve_file(&state, coll_path).unwrap_or_else(|| primary_dir(&state).join(coll_path));
+            resolve_file(state, coll_path).unwrap_or_else(|| primary_dir(state).join(coll_path));
         if file_path.exists() {
             let parse_result = crate::parser::parse_with_recovery(&file_path);
             crate::execution::runner_helpers::build_proto_config(&parse_result.document, &file_path)
@@ -878,7 +889,6 @@ pub async fn schema_fill(
         None
     };
 
-    // Create a temporary gRPC client to load descriptors
     let grpc_config = crate::grpc::GrpcClientConfig {
         address: req.address.clone(),
         timeout_seconds: 10,
@@ -892,46 +902,100 @@ pub async fn schema_fill(
         version: env!("CARGO_PKG_VERSION").to_string(),
     };
 
-    let client = match crate::grpc::GrpcClient::new(grpc_config).await {
-        Ok(c) => c,
-        Err(e) => {
-            return Json(SchemaFillResponse {
-                schema: None,
-                error: Some(format!("Failed to load descriptors: {}", e)),
-            });
-        }
-    };
+    let client = crate::grpc::GrpcClient::new(grpc_config)
+        .await
+        .map_err(|e| format!("Failed to load descriptors: {}", e))?;
 
-    let pool = client.descriptor_pool();
-    let svc = match pool.get_service_by_name(full_service) {
-        Some(s) => s,
-        None => {
-            return Json(SchemaFillResponse {
-                schema: None,
-                error: Some(format!("Service '{}' not found", full_service)),
-            });
-        }
-    };
-    let method = match svc.methods().find(|m| m.name() == method_name) {
-        Some(m) => m,
-        None => {
-            return Json(SchemaFillResponse {
-                schema: None,
-                error: Some(format!(
-                    "Method '{}' not found in '{}'",
-                    method_name, full_service
-                )),
-            });
-        }
-    };
+    let svc = client
+        .descriptor_pool()
+        .get_service_by_name(full_service)
+        .ok_or_else(|| format!("Service '{}' not found", full_service))?;
+    let method = svc
+        .methods()
+        .find(|m| m.name() == method_name)
+        .ok_or_else(|| format!("Method '{}' not found in '{}'", method_name, full_service))?;
 
-    let input_desc = method.input();
-    let template = generate_json_template(&input_desc);
+    Ok((svc, method))
+}
 
-    Json(SchemaFillResponse {
-        schema: Some(template),
-        error: None,
-    })
+pub async fn schema_fill(
+    State(state): State<Arc<PlayState>>,
+    Json(req): Json<SchemaFillRequest>,
+) -> Json<SchemaFillResponse> {
+    match resolve_endpoint_descriptors(&state, &req).await {
+        Ok((_, method)) => Json(SchemaFillResponse {
+            schema: Some(generate_json_template(&method.input())),
+            error: None,
+        }),
+        Err(e) => Json(SchemaFillResponse {
+            schema: None,
+            error: Some(e),
+        }),
+    }
+}
+
+#[derive(Serialize)]
+pub struct ProtoSourceResponse {
+    pub source: Option<String>,
+    pub error: Option<String>,
+}
+
+pub async fn proto_source(
+    State(state): State<Arc<PlayState>>,
+    Json(req): Json<SchemaFillRequest>,
+) -> Json<ProtoSourceResponse> {
+    match resolve_endpoint_descriptors(&state, &req).await {
+        Ok((svc, _)) => Json(ProtoSourceResponse {
+            source: Some(render_service_schema(&svc)),
+            error: None,
+        }),
+        Err(e) => Json(ProtoSourceResponse {
+            source: None,
+            error: Some(e),
+        }),
+    }
+}
+
+fn render_service_schema(svc: &prost_reflect::ServiceDescriptor) -> String {
+    let mut out = format!("service {} {{\n", svc.full_name());
+    for m in svc.methods() {
+        let stream_in = if m.is_client_streaming() {
+            "stream "
+        } else {
+            ""
+        };
+        let stream_out = if m.is_server_streaming() {
+            "stream "
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "  rpc {}({}{}) returns ({}{});\n",
+            m.name(),
+            stream_in,
+            m.input().name(),
+            stream_out,
+            m.output().name()
+        ));
+    }
+    out.push_str("}\n");
+
+    let mut seen = Vec::new();
+    for m in svc.methods() {
+        for desc in [m.input(), m.output()] {
+            let full_name = desc.full_name().to_string();
+            if seen.contains(&full_name) {
+                continue;
+            }
+            seen.push(full_name);
+            out.push_str(&format!("\nmessage {} {{\n", desc.name()));
+            let mut tree = String::new();
+            crate::commands::reflect::describe_message_tree(&desc, 1, &mut Vec::new(), &mut tree);
+            out.push_str(&console::strip_ansi_codes(&tree));
+            out.push_str("}\n");
+        }
+    }
+    out
 }
 
 /// Generate a fake value for a given field name + type.
@@ -1120,6 +1184,27 @@ pub async fn generate_grpcurl(Json(req): Json<CallRequest>) -> Json<GrpcurlRespo
         .with_file_path("<convert>")
         .endpoint(&req.endpoint);
 
+    if let Some(address) = &req.address {
+        builder = builder.address(address);
+    }
+
+    if req.tls.unwrap_or(false) {
+        let mut tls: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        if let Some(ca) = &req.tls_ca {
+            tls.insert("ca_cert".to_string(), ca.clone());
+        }
+        if let Some(cert) = &req.tls_cert {
+            tls.insert("client_cert".to_string(), cert.clone());
+        }
+        if let Some(key) = &req.tls_key {
+            tls.insert("client_key".to_string(), key.clone());
+        }
+        if req.tls_insecure.unwrap_or(true) {
+            tls.insert("insecure".to_string(), "true".to_string());
+        }
+        builder = builder.tls(tls);
+    }
+
     for msg in &messages {
         builder = builder.request(msg.clone());
     }
@@ -1180,51 +1265,50 @@ pub async fn execute_call(
         return Err((StatusCode::BAD_REQUEST, "No request messages".to_string()));
     }
 
-    let tls_config = if req.tls.unwrap_or(false) {
-        Some(crate::grpc::TlsConfig {
-            ca_cert_path: req.tls_ca.clone(),
-            client_cert_path: req.tls_cert.clone(),
-            client_key_path: req.tls_key.clone(),
-            server_name: None,
-            insecure_skip_verify: req.tls_insecure.unwrap_or(true),
-        })
-    } else {
-        None
-    };
+    let tls_config = tls_config_from_request(
+        req.tls,
+        &req.tls_ca,
+        &req.tls_cert,
+        &req.tls_key,
+        req.tls_insecure,
+    );
 
-    let proto_config = if let Some(ref coll_path) = req.collection_path {
+    type FileConfig = (Option<crate::grpc::ProtoConfig>, Option<String>);
+    let (proto_config, file_address) = if let Some(ref coll_path) = req.collection_path {
         if reject_traversal(coll_path).is_err() {
             return Err((StatusCode::NOT_FOUND, "Invalid collection_path".to_string()));
         }
         let state = state.clone();
         let path = coll_path.clone();
-        let result = tokio::task::spawn_blocking(
-            move || -> Result<Option<crate::grpc::ProtoConfig>, (StatusCode, String)> {
+        let result =
+            tokio::task::spawn_blocking(move || -> Result<FileConfig, (StatusCode, String)> {
                 let file_path =
                     resolve_file(&state, &path).unwrap_or_else(|| primary_dir(&state).join(&path));
                 if file_path.exists() {
                     let parse_result = crate::parser::parse_with_recovery(&file_path);
-                    Ok(crate::execution::runner_helpers::build_proto_config(
-                        &parse_result.document,
-                        &file_path,
+                    Ok((
+                        crate::execution::runner_helpers::build_proto_config(
+                            &parse_result.document,
+                            &file_path,
+                        ),
+                        parse_result.document.get_address(None),
                     ))
                 } else {
-                    Ok(None)
+                    Ok((None, None))
                 }
-            },
-        )
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            })
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         result?
     } else {
-        None
+        (None, None)
     };
 
     let protocol = parse_protocol(req.protocol.as_deref());
 
-    let address = req
-        .address
-        .clone()
+    // File ADDRESS wins over client state, matching /api/run's trust model.
+    let address = file_address
+        .or(req.address.clone())
         .unwrap_or_else(|| crate::grpc::default_address_for(protocol).to_string());
 
     let env_ref = req.environment.as_ref();

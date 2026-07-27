@@ -26,13 +26,12 @@ fn resolve_tls_config(
     Ok(if plaintext {
         None
     } else {
-        Some(TlsConfig {
-            ca_cert_path: tls_ca,
-            client_cert_path: tls_cert,
-            client_key_path: tls_key,
-            server_name: None,
-            insecure_skip_verify: insecure || !address.starts_with("https://"),
-        })
+        Some(super::tls_config_from_flags(
+            tls_ca,
+            tls_cert,
+            tls_key,
+            insecure || !address.starts_with("https://"),
+        ))
     })
 }
 
@@ -40,7 +39,7 @@ const MAX_DESCRIBE_DEPTH: usize = 8;
 
 /// A field's type as a short label — scalar name, `MessageName`, `EnumName`,
 /// or `map<K, V>`.
-fn field_type_label(field: &prost_reflect::FieldDescriptor) -> String {
+pub(crate) fn field_type_label(field: &prost_reflect::FieldDescriptor) -> String {
     use prost_reflect::Kind;
     if field.is_map() {
         let Kind::Message(entry) = field.kind() else {
@@ -72,7 +71,7 @@ fn field_type_label(field: &prost_reflect::FieldDescriptor) -> String {
 /// Indented text tree of a message's fields, recursing into nested message
 /// fields up to [`MAX_DESCRIBE_DEPTH`] and stopping early on a cycle
 /// (self-referential/recursive message types are legal in protobuf).
-fn describe_message_tree(
+pub(crate) fn describe_message_tree(
     desc: &prost_reflect::MessageDescriptor,
     indent: usize,
     visiting: &mut Vec<String>,

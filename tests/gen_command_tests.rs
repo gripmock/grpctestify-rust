@@ -359,7 +359,7 @@ async fn gen_grpcurl_execute_rejects_unparseable_max_time() {
 async fn gen_grpcurl_execute_rejects_non_positive_max_time() {
     let address = spawn_health_server().await;
 
-    for bad in ["-5", "0"] {
+    for bad in ["-5", "0", "inf"] {
         let out = run_cli(&[
             "gen",
             "grpcurl",

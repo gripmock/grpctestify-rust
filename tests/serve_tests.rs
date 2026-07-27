@@ -648,6 +648,64 @@ async fn test_run_passing_gctf_reports_success_and_assertion_detail() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Regression: the ASSERTS stream handler consumed messages without pushing
+/// them into `captured_response`, so ASSERTS-only tests returned zero
+/// `response_messages` and the playground showed "No response messages".
+#[tokio::test]
+async fn test_run_asserts_only_gctf_returns_response_messages() {
+    let address = spawn_health_server_for_run().await;
+    let dir = std::env::temp_dir().join("grpctestify-srv-run-msgs");
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(
+        dir.join("msgs.gctf"),
+        format!(
+            "--- ADDRESS ---\n{address}\n\n--- ENDPOINT ---\ngrpc.health.v1.Health/Check\n\n--- REQUEST ---\n{{}}\n\n--- ASSERTS ---\n.status == \"SERVING\"\n"
+        ),
+    )
+    .unwrap();
+
+    let url = start_server(test_app(dir.clone())).await;
+    let req = serde_json::json!({"collection_path": "msgs.gctf"});
+    let (status, body) = post_json(&url, "/api/run", &req).await;
+
+    assert_eq!(status, 200);
+    assert!(body["success"].as_bool().unwrap_or(false), "{body:#}");
+    assert_eq!(
+        body["response_messages"],
+        serde_json::json!([{"status": "SERVING"}]),
+        "{body:#}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn test_proto_source_renders_service_schema_via_reflection() {
+    let address = spawn_health_server_for_run().await;
+    let dir = std::env::temp_dir().join("grpctestify-srv-proto-src");
+    let _ = std::fs::create_dir_all(&dir);
+
+    let url = start_server(test_app(dir.clone())).await;
+    let req = serde_json::json!({
+        "address": address,
+        "endpoint": "grpc.health.v1.Health/Check",
+        "body": {},
+    });
+    let (status, body) = post_json(&url, "/api/proto-source", &req).await;
+
+    assert_eq!(status, 200);
+    let source = body["source"].as_str().unwrap_or_default();
+    assert!(source.contains("service grpc.health.v1.Health"), "{body:#}");
+    assert!(
+        source.contains("rpc Check(HealthCheckRequest) returns (HealthCheckResponse);"),
+        "{body:#}"
+    );
+    assert!(source.contains("message HealthCheckRequest"), "{body:#}");
+    assert!(source.contains("status ServingStatus"), "{body:#}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test]
 async fn test_run_failing_gctf_reports_expected_and_actual() {
     let address = spawn_health_server_for_run().await;
