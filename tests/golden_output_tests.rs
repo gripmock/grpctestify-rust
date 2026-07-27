@@ -320,6 +320,8 @@ async fn run_report_form(name: &str, format: &str) {
 
     let output = support::cli_command()
         .env("NO_COLOR", "1")
+        .env_remove("GITHUB_ACTIONS")
+        .env_remove("CI")
         .args([
             "run",
             "--parallel",

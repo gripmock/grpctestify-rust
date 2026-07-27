@@ -8,6 +8,7 @@ use std::process::Output;
 mod support;
 use support::run_cli;
 
+#[cfg(unix)]
 fn run_cli_internal(args: &[&str], path_override: Option<&Path>) -> Output {
     let mut cmd = support::cli_command();
 

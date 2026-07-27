@@ -75,6 +75,7 @@ fn lookup_blob(tree: &gix::Tree<'_>, rel_path: &Path) -> Option<Vec<u8>> {
 }
 
 #[cfg(all(test, not(miri)))]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use std::process::Command;
