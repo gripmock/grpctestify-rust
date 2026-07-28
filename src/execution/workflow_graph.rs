@@ -1,8 +1,5 @@
-// Workflow summary and call type detection
-
 use crate::parser::ast::{Section, SectionType};
 
-/// Get workflow summary statistics
 pub struct WorkflowSummary {
     pub total_requests: usize,
     pub total_responses: usize,

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import type { PlayStore, HistoryEntry, CallResult, CollectionParsed, Tab, StoredTab, TabsStorage, Environment, WireProtocol } from './types';
-import { ENVS_KEY, ACTIVE_ENV_KEY, TABS_KEY, SETTINGS_KEY, defaultAddressFor } from './types';
+import type { PlayStore, HistoryEntry, CallResult, CollectionParsed, Tab, StoredTab, TabsStorage, Environment, WireProtocol, ReflectResponse } from './types';
+import { ENVS_KEY, ACTIVE_ENV_KEY, TABS_KEY, SETTINGS_KEY, defaultAddressFor, isAddressAtDefault } from './types';
 import type { ClientSettings } from './types';
 import { LRUCache } from './cache';
 import { getSessionId } from './session';
@@ -61,6 +61,8 @@ function defaultTab(): Tab {
     collectionPath: null,
     collectionParsed: null,
     collectionOriginal: null,
+    rawContent: null,
+    rawOriginal: null,
   };
 }
 
@@ -82,10 +84,67 @@ function snapshot(state: PlayStore, tabId: string, overrides?: Partial<Tab>): Ta
     collectionPath: overrides?.collectionPath ?? state.workspacePath,
     collectionParsed: overrides?.collectionParsed ?? state.collectionParsed,
     collectionOriginal: overrides?.collectionOriginal ?? state.workspaceOriginal,
+    rawContent: overrides?.rawContent ?? state.rawContent,
+    rawOriginal: overrides?.rawOriginal ?? state.rawOriginal,
     ...overrides,
   };
 }
 
+
+export function effectiveTls(st: PlayStore) {
+  const env = st.activeEnvironment
+    ? st.environments.find(e => e.name === st.activeEnvironment)
+    : null;
+  if (env && env.tls !== undefined) {
+    return {
+      tls: env.tls,
+      tlsInsecure: env.tlsInsecure ?? true,
+      tlsCa: env.tlsCa || '',
+      tlsCert: env.tlsCert || '',
+      tlsKey: env.tlsKey || '',
+    };
+  }
+  return { tls: st.tls, tlsInsecure: st.tlsInsecure, tlsCa: st.tlsCa, tlsCert: st.tlsCert, tlsKey: st.tlsKey };
+}
+
+function headersEqual(a: Record<string, string>, b: Record<string, string>): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every(k => a[k] === b[k]);
+}
+
+function structuredDirty(endpoint: string, headers: Record<string, string>, bodies: string[], orig: CollectionParsed | null): boolean {
+  if (!orig) return false;
+  return (
+    endpoint !== orig.endpoint ||
+    !headersEqual(headers, orig.headers) ||
+    JSON.stringify(bodies) !== JSON.stringify(orig.bodies)
+  );
+}
+
+/** True when the live request editor (endpoint/headers/bodies) has diverged from
+ * the on-disk file `runTest` will actually run — Run reads the saved file, not this state. */
+export function isRequestDirty(st: PlayStore): boolean {
+  return structuredDirty(st.request.endpoint, st.request.headers, st.request.bodies, st.workspaceOriginal);
+}
+
+/** Same check as `isRequestDirty`, but from a (possibly inactive) tab's own snapshot —
+ * lets the tab bar mark unsaved tabs without switching to them first. */
+export function isTabDirty(tab: Tab): boolean {
+  if (tab.rawContent !== null && tab.rawOriginal !== null && tab.rawContent !== tab.rawOriginal) return true;
+  return structuredDirty(tab.endpoint, tab.headers, tab.bodies, tab.collectionOriginal);
+}
+
+async function fetchCollectionParsed(path: string): Promise<CollectionParsed | null> {
+  try {
+    const res = await fetch(`/api/collections/${path}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.parsed ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function loadTab(tab: Tab) {
   return {
@@ -97,8 +156,11 @@ function loadTab(tab: Tab) {
     responseTab: tab.responseTab,
     workspacePath: tab.collectionPath,
     collectionParsed: tab.collectionParsed,
-    collectionOriginal: tab.collectionOriginal,
+    workspaceOriginal: tab.collectionOriginal,
+    rawContent: tab.rawContent,
+    rawOriginal: tab.rawOriginal,
     selectedCollection: tab.collectionPath,
+    ...(tab.collectionParsed?.address ? { address: tab.collectionParsed.address } : {}),
   };
 }
 
@@ -127,6 +189,8 @@ function deserializeTab(s: StoredTab): Tab {
     collectionPath: s.c || null,
     collectionParsed: null,
     collectionOriginal: null,
+    rawContent: null,
+    rawOriginal: null,
   };
 }
 
@@ -202,6 +266,9 @@ const DEFAULT_SETTINGS: ClientSettings = {
   protocol: 'grpc',
   tls: false,
   tlsInsecure: true,
+  tlsCa: '',
+  tlsCert: '',
+  tlsKey: '',
   requestTimeoutMs: 0,
 };
 
@@ -228,6 +295,9 @@ function clientSettings(s: PlayStore): ClientSettings {
     protocol: s.protocol,
     tls: s.tls,
     tlsInsecure: s.tlsInsecure,
+    tlsCa: s.tlsCa,
+    tlsCert: s.tlsCert,
+    tlsKey: s.tlsKey,
     requestTimeoutMs: s.requestTimeoutMs,
   };
 }
@@ -249,6 +319,9 @@ export const useStore = create<PlayStore>((set, get) => ({
   protocol: initialSettings.protocol,
   tls: initialSettings.tls,
   tlsInsecure: initialSettings.tlsInsecure,
+  tlsCa: initialSettings.tlsCa,
+  tlsCert: initialSettings.tlsCert,
+  tlsKey: initialSettings.tlsKey,
   requestTimeoutMs: initialSettings.requestTimeoutMs,
   environment: initTab?.environment || {},
   collections: [],
@@ -262,6 +335,8 @@ export const useStore = create<PlayStore>((set, get) => ({
   workspaceOriginal: null,
   selectedCollection: initTab?.collectionPath || null,
   collectionParsed: null,
+  rawContent: null,
+  rawOriginal: null,
   request: initTab ? { endpoint: initTab.endpoint, headers: initTab.headers, bodies: initTab.bodies } : { ...EMPTY_REQUEST },
   requestTab: 'body',
   gctfTab: 'request',
@@ -290,6 +365,8 @@ export const useStore = create<PlayStore>((set, get) => ({
   collectionsMtime: 0,
   sidebarVisible: true,
   showHotkeyHelp: false,
+  runStatus: 'idle',
+  runMode: 'execute',
   environments: (() => {
     try { return JSON.parse(localStorage.getItem(ENVS_KEY) || '[]'); }
     catch { return []; }
@@ -305,7 +382,7 @@ export const useStore = create<PlayStore>((set, get) => ({
   setProtocol: (v) => {
     const s = get();
     const updates: Partial<PlayStore> = { protocol: v };
-    if (s.address === defaultAddressFor(s.protocol as WireProtocol)) {
+    if (isAddressAtDefault(s.address, s.protocol as WireProtocol)) {
       updates.address = defaultAddressFor(v);
     }
     set(updates);
@@ -313,6 +390,9 @@ export const useStore = create<PlayStore>((set, get) => ({
   },
   setTls: (v) => { set({ tls: v }); saveSettings(clientSettings(get())); },
   setTlsInsecure: (v) => { set({ tlsInsecure: v }); saveSettings(clientSettings(get())); },
+  setTlsCa: (v) => { set({ tlsCa: v }); saveSettings(clientSettings(get())); },
+  setTlsCert: (v) => { set({ tlsCert: v }); saveSettings(clientSettings(get())); },
+  setTlsKey: (v) => { set({ tlsKey: v }); saveSettings(clientSettings(get())); },
   setRequestTimeoutMs: (v) => { set({ requestTimeoutMs: v }); saveSettings(clientSettings(get())); },
 
   setEndpoint: (v) => set(s => {
@@ -359,6 +439,8 @@ export const useStore = create<PlayStore>((set, get) => ({
     return { tabs, requestTab: v };
   }),
 
+  setRunMode: (v) => set({ runMode: v }),
+
   setGctfTab: (v) => set(s => {
     const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, gctfTab: v } : t);
     return { tabs, gctfTab: v };
@@ -390,7 +472,8 @@ export const useStore = create<PlayStore>((set, get) => ({
   setReflectionMethods: (v) => set({ reflectionMethods: v, reflectStatus: v.length > 0 ? 'ok' : 'error' }),
 
   reflect: async () => {
-    const { address, protocol, tls, tlsInsecure, workspacePath } = get();
+    const { address, protocol, workspacePath } = get();
+    const { tls, tlsInsecure, tlsCa, tlsCert, tlsKey } = effectiveTls(get());
     if (!address) return;
     set({ reflectStatus: 'loading', reflectError: null });
     if (reflectController) reflectController.abort();
@@ -405,22 +488,26 @@ export const useStore = create<PlayStore>((set, get) => ({
           address,
           tls: tls || undefined,
           tls_insecure: tls ? tlsInsecure : undefined,
+          tls_ca: tls ? (tlsCa || undefined) : undefined,
+          tls_cert: tls ? (tlsCert || undefined) : undefined,
+          tls_key: tls ? (tlsKey || undefined) : undefined,
           collection_path: workspacePath || undefined,
           protocol: protocol || undefined,
         }),
         signal: reflector.signal,
       });
       if (reflectController === reflector) reflectController = null;
-      const data = await res.json();
+      const data: ReflectResponse = await res.json();
       if (data.error) {
         set({ reflectionMethods: [], reflectStatus: 'error', reflectError: data.error });
         return;
       }
-      const services: any[] = data.services || [];
-      const methods = services.flatMap((s: any) => (s.methods || []).map((m: any) => ({
+      const methods = (data.services ?? []).flatMap(s => (s.methods ?? []).map(m => ({
         name: m.name,
         fullName: m.full_name,
         service: s.name,
+        clientStreaming: m.client_streaming,
+        serverStreaming: m.server_streaming,
       })));
       set({ reflectionMethods: methods, reflectStatus: methods.length > 0 ? 'ok' : 'error', reflectError: methods.length === 0 ? 'No methods found' : null });
     } catch {
@@ -526,17 +613,15 @@ export const useStore = create<PlayStore>((set, get) => ({
 
   loadCollection: async (path: string) => {
     const state = get();
-    
+
     const existing = state.tabs.find(t => t.collectionPath === path);
     if (existing) {
       get().setActiveTab(existing.id);
       return;
     }
-    
-    const res = await fetch(`/api/collections/${path}`);
-    if (!res.ok) return;
-    const data = await res.json();
-    const p: CollectionParsed = data.parsed;
+
+    const p = await fetchCollectionParsed(path);
+    if (!p) return;
     const label = path.split('/').pop() || path;
     const newTab: Tab = {
       ...defaultTab(),
@@ -556,6 +641,23 @@ export const useStore = create<PlayStore>((set, get) => ({
     const tabs = [...state.tabs, newTab];
     saveTabsToStorage(tabs, newTab.id);
     set({ tabs, activeTabId: newTab.id, ...loadTab(newTab) });
+  },
+
+  hydrateStaleTabs: async () => {
+    const stale = get().tabs.flatMap(t =>
+      t.collectionPath && !t.collectionParsed ? [{ id: t.id, path: t.collectionPath }] : []
+    );
+    await Promise.all(stale.map(async ({ id: tabId, path }) => {
+      const parsed = await fetchCollectionParsed(path);
+      if (!parsed) return;
+      set(s => {
+        const tabs = s.tabs.map(t =>
+          t.id === tabId ? { ...t, collectionParsed: parsed, collectionOriginal: parsed } : t
+        );
+        const updated = tabs.find(t => t.id === tabId);
+        return updated && s.activeTabId === tabId ? { tabs, ...loadTab(updated) } : { tabs };
+      });
+    }));
   },
 
   saveWorkspace: async () => {
@@ -608,16 +710,26 @@ export const useStore = create<PlayStore>((set, get) => ({
       throw new Error(text);
     }
     const label = finalName.split('/').pop() || finalName;
+    const updatedParsed: CollectionParsed = st.collectionParsed
+      ? { ...st.collectionParsed, endpoint: st.request.endpoint, headers: st.request.headers, bodies: st.request.bodies, address: st.address }
+      : {
+          endpoint: st.request.endpoint, address: st.address, headers: st.request.headers, bodies: st.request.bodies,
+          asserts: [], extracts: {}, meta_name: null, meta_tags: [], meta_owner: null, meta_summary: null,
+          tls: {}, options: {}, bench: {}, proto: {},
+        };
     set(s => {
-      const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, collectionPath: finalName, label } : t);
+      const tabs = s.tabs.map(t => t.id === s.activeTabId
+        ? { ...t, collectionPath: finalName, label, collectionOriginal: updatedParsed, collectionParsed: updatedParsed }
+        : t);
       saveTabsToStorage(tabs, s.activeTabId);
-      return { tabs, workspacePath: finalName, selectedCollection: finalName };
+      return { tabs, workspacePath: finalName, selectedCollection: finalName, workspaceOriginal: updatedParsed, collectionParsed: updatedParsed };
     });
     get().refreshCollections();
   },
 
   getGrpcurlCommand: async () => {
-    const { request, address, tls, tlsInsecure, protocol } = get();
+    const { request, address, protocol } = get();
+    const { tls, tlsInsecure } = effectiveTls(get());
     // Keep each body as its raw JSON literal so int64 precision survives (a
     // JS JSON.parse round-trip would corrupt integers > 2^53). Non-JSON bodies
     // fall back to a quoted string, preserving the old lenient behaviour.
@@ -654,7 +766,8 @@ export const useStore = create<PlayStore>((set, get) => ({
 
   execute: async () => {
     const st = get();
-    const { workspacePath, tls, tlsInsecure, address, protocol } = st;
+    const { workspacePath, address, protocol } = st;
+    const { tls, tlsInsecure, tlsCa, tlsCert, tlsKey } = effectiveTls(st);
 
     // Capture the tab that issued this request. All response writes below target
     // THIS tab, not whichever tab happens to be active when the call completes.
@@ -724,6 +837,9 @@ export const useStore = create<PlayStore>((set, get) => ({
           bodies_raw,
           headers: Object.keys(substituted.headers).length > 0 ? substituted.headers : undefined,
           tls: tls || undefined, tls_insecure: tls ? tlsInsecure : undefined,
+          tls_ca: tls ? (tlsCa || undefined) : undefined,
+          tls_cert: tls ? (tlsCert || undefined) : undefined,
+          tls_key: tls ? (tlsKey || undefined) : undefined,
           address: effectiveAddress || undefined,
           protocol: protocol || undefined,
           environment: Object.keys(st.environment).length > 0 ? st.environment : undefined,
@@ -786,6 +902,143 @@ export const useStore = create<PlayStore>((set, get) => ({
     }
   },
 
+  runTest: async () => {
+    const st = get();
+    const { workspacePath, sessionId } = st;
+    const tabId = st.activeTabId;
+    const writeResponse = (r: CallResult | null, extra?: Partial<PlayStore>) => set(s => {
+      const tabs = s.tabs.map(t => t.id === tabId ? { ...t, response: r } : t);
+      const patch: Partial<PlayStore> = { tabs, ...extra };
+      if (s.activeTabId === tabId) patch.response = r;
+      return patch;
+    });
+
+    if (!workspacePath) {
+      writeResponse({ status: 'error', statusCode: null, messages: [], headers: {}, trailers: {}, error: 'Save this as a collection file before running it — /api/run executes the saved .gctf, not the unsaved editor state.', durationMs: null });
+      return;
+    }
+
+    set({ runStatus: 'running' });
+    const pending: CallResult = { status: 'pending', statusCode: null, messages: [], headers: {}, trailers: {}, error: null, durationMs: null };
+    writeResponse(pending);
+    const start = performance.now();
+    try {
+      const res = await fetch('/api/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          collection_path: workspacePath,
+          session_id: sessionId || undefined,
+        }),
+      });
+      const durationMs = Math.round(performance.now() - start);
+      let data: any;
+      try { data = await res.json(); } catch {
+        writeResponse({ status: 'error', statusCode: res.status, messages: [], headers: {}, trailers: {}, error: `Server returned ${res.status} ${res.statusText}`, durationMs });
+        return;
+      }
+      if (!res.ok) {
+        writeResponse({ status: 'error', statusCode: res.status, messages: [], headers: {}, trailers: {}, error: typeof data === 'string' ? data : (data.error || `Server returned ${res.status}`), durationMs });
+        return;
+      }
+      const result: CallResult = {
+        status: data.success ? 'ok' : 'error',
+        statusCode: res.status,
+        messages: data.response_messages ?? [],
+        headers: data.headers || {},
+        trailers: data.trailers || {},
+        error: data.error || null,
+        durationMs: data.call_duration_ms ?? durationMs,
+        assertions: data.assertions ?? [],
+      };
+      if (data.success) {
+        const totalOk = get().totalOk + 1;
+        saveTotals(totalOk, get().totalError);
+        writeResponse(result, { responseTab: 'assertions', totalOk });
+      } else {
+        const totalError = get().totalError + 1;
+        saveTotals(get().totalOk, totalError);
+        writeResponse(result, { responseTab: 'assertions', totalError });
+      }
+    } catch (err: any) {
+      writeResponse({ status: 'error', statusCode: null, messages: [], headers: {}, trailers: {}, error: err?.message || String(err), durationMs: Math.round(performance.now() - start) });
+    } finally {
+      set({ runStatus: 'idle' });
+    }
+  },
+
+  loadRawContent: async () => {
+    const st = get();
+    if (!st.workspacePath) return;
+    if (st.rawContent !== null) return;
+    const res = await fetch(`/api/collections/${st.workspacePath}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const content: string = data.content ?? '';
+    set(s => {
+      const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, rawContent: content, rawOriginal: content } : t);
+      return { tabs, rawContent: content, rawOriginal: content };
+    });
+  },
+
+  setRawContent: (v) => set(s => {
+    const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, rawContent: v } : t);
+    return { tabs, rawContent: v };
+  }),
+
+  saveRawContent: async () => {
+    const st = get();
+    if (!st.workspacePath || st.rawContent === null) return;
+    const res = await fetch('/api/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: st.workspacePath, content: st.rawContent }),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => 'Save failed');
+      throw new Error(text);
+    }
+    const savedContent = st.rawContent;
+    set(s => {
+      const tabs = s.tabs.map(t => t.id === s.activeTabId ? { ...t, rawOriginal: savedContent } : t);
+      return { tabs, rawOriginal: savedContent };
+    });
+    // Other tabs (structured request fields, Asserts/Extracts/Meta views) read
+    // from `collectionParsed`, which only reflects the file as of the last
+    // load — re-fetch so they don't silently drift from what's now on disk.
+    const res2 = await fetch(`/api/collections/${st.workspacePath}`);
+    if (res2.ok) {
+      const data = await res2.json();
+      const p: CollectionParsed = data.parsed;
+      set(s => {
+        const tabs = s.tabs.map(t => t.id === s.activeTabId ? {
+          ...t, endpoint: p.endpoint, headers: p.headers,
+          bodies: p.bodies.length > 0 ? p.bodies : [...DEFAULT_BODIES],
+          collectionParsed: p, collectionOriginal: p,
+        } : t);
+        return {
+          tabs, collectionParsed: p, workspaceOriginal: p,
+          request: { endpoint: p.endpoint, headers: p.headers, bodies: p.bodies.length > 0 ? p.bodies : [...DEFAULT_BODIES] },
+        };
+      });
+    }
+    get().refreshCollections();
+  },
+
+  fetchDiagnostics: async (content: string) => {
+    try {
+      const res = await fetch('/api/diagnostics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+      });
+      if (!res.ok) return [];
+      return await res.json();
+    } catch {
+      return [];
+    }
+  },
+
   loadStartupInfo: async () => {
     try {
       const res = await fetch('/api/info');
@@ -840,8 +1093,12 @@ export const useStore = create<PlayStore>((set, get) => ({
   updateEnvironment: (name, env) => {
     set(s => {
       const envs = s.environments.map(e => e.name === name ? env : e);
-      try { localStorage.setItem(ENVS_KEY, JSON.stringify(envs)); } catch {  }
-      return { environments: envs };
+      const activeEnvironment = s.activeEnvironment === name ? env.name : s.activeEnvironment;
+      try {
+        localStorage.setItem(ENVS_KEY, JSON.stringify(envs));
+        if (activeEnvironment) localStorage.setItem(ACTIVE_ENV_KEY, activeEnvironment);
+      } catch {  }
+      return { environments: envs, activeEnvironment };
     });
   },
   deleteEnvironment: (name) => {

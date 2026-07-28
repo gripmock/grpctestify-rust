@@ -1,0 +1,13 @@
+--- ENDPOINT ---
+chat.ChatService/SendMessages
+
+--- REQUEST ---
+{ "from": "Alice", "text": "Message 1" }
+{ "from": "Alice", "text": "Message 2" }
+{ "from": "Alice", "text": "Message 3" }
+
+--- RESPONSE ---
+{
+  "count": 3,
+  "status": "OK"
+}

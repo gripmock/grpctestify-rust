@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // Integration tests for ternary AST in EXTRACT section
 
 use grpctestify::parser::{

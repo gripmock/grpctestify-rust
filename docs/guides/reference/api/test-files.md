@@ -25,7 +25,7 @@ package.Service/Method
 ## Supported Sections
 
 - Core: `META`, `ADDRESS`, `ENDPOINT`, `REQUEST`, `RESPONSE`, `ERROR`, `ASSERTS`
-- Supporting: `EXTRACT`, `REQUEST_HEADERS`, `TLS`, `PROTO`, `OPTIONS`, `BENCH`
+- Supporting: `EXTRACT`, `REQUEST_HEADERS`, `TLS`, `PROTO`, `OPTIONS`, `BENCH`, `DATASET`
 
 For section details, use [Section Reference](../sections/).
 
@@ -43,6 +43,8 @@ For section details, use [Section Reference](../sections/).
 - `ADDRESS` may be omitted if `GRPCTESTIFY_ADDRESS` is set
 - `META` is optional, but only one is allowed and it must be the first section
 - `BENCH` is optional, but only one is allowed and it should be first or immediately after `META`
+- `DATASET` is optional, but only one is allowed; its fields are used as `{{dataset.field}}` template
+  variables and it's mutually exclusive with `run --data` for that file
 
 ## Type annotations
 
@@ -121,6 +123,7 @@ If `details` is not returned by the server, it can be omitted from expected `ERR
 - [PROTO](../sections/proto)
 - [OPTIONS](../sections/options)
 - [BENCH](../sections/bench)
+- [DATASET](../sections/dataset)
 - [Attributes](../sections/attributes)
 
 Related: [Assertions](./assertions), [Plugin System](../../plugins/).

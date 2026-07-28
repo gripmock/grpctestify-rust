@@ -1,31 +1,20 @@
-// Response Handler - handles response validation and processing
-
 use crate::assert::{AssertionEngine, JsonComparator};
-use crate::execution::runner::{TestExecutionResult, TestExecutionStatus};
+use crate::execution::runner::TestExecutionResult;
 use crate::grpc::GrpcResponse;
 use crate::parser::GctfDocument;
 use crate::parser::ast::{InlineOptions, Section, SectionContent, SectionType};
-use crate::plugins::PluginManager;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
-/// Response validation result
-#[derive(Debug, Clone)]
-pub struct ResponseValidationResult {
-    pub status: TestExecutionStatus,
-    pub failure_reasons: Vec<String>,
-}
-
-/// Response Handler - validates responses against expected values
 pub struct ResponseHandler {
     no_assert: bool,
     assertion_engine: AssertionEngine,
 }
 
 static PLUGIN_REGISTRY: LazyLock<Arc<dyn apif_assert::registry::PluginRegistry>> =
-    LazyLock::new(|| Arc::new(PluginManager::new()));
+    LazyLock::new(|| Arc::new(crate::execution::plugin_dir::build_plugin_manager()));
 
 impl ResponseHandler {
     /// Create new response handler
@@ -104,31 +93,7 @@ impl ResponseHandler {
 
     /// Substitute variables in a JSON value (public for use by orchestrator)
     pub fn substitute_variables_in_value(value: &mut Value, variables: &HashMap<String, Value>) {
-        match value {
-            Value::String(s) => {
-                for (var_name, var_value) in variables {
-                    let pattern = format!("{{{{ {} }}}}", var_name);
-                    if s.contains(&pattern) {
-                        if let Value::String(replacement) = var_value {
-                            *s = s.replace(&pattern, replacement);
-                        } else {
-                            *s = s.replace(&pattern, &var_value.to_string());
-                        }
-                    }
-                }
-            }
-            Value::Array(arr) => {
-                for item in arr {
-                    Self::substitute_variables_in_value(item, variables);
-                }
-            }
-            Value::Object(map) => {
-                for (_, val) in map {
-                    Self::substitute_variables_in_value(val, variables);
-                }
-            }
-            _ => {}
-        }
+        crate::execution::runner_helpers::substitute_variables(value, variables);
     }
 
     /// Validate a full document against a response (for testing purposes)
@@ -361,7 +326,10 @@ impl ResponseHandler {
     }
 }
 
-#[cfg(test)]
+// Most tests here construct a `ResponseHandler`, which forces this file's own
+// `PLUGIN_REGISTRY` lazy static (`build_plugin_manager()` → `fs::metadata` on
+// configured plugin dirs) — blocked under miri isolation.
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
     use serde_json::json;

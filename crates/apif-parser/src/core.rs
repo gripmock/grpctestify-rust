@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
 // GCTF file parser - converts .gctf text to AST
 // Handles section extraction, comment removal, and inline option parsing
 
@@ -26,8 +27,11 @@ pub fn parse_gctf(file_path: &Path) -> Result<GctfDocument> {
 }
 
 /// Parse .gctf content from string (for LSP/editor use).
-/// Documents are determined implicitly: REQUEST after RESPONSE/ERROR/ASSERTS,
-/// or ENDPOINT/ADDRESS starts a new document.
+/// Documents are split on `ENDPOINT` boundaries — each `ENDPOINT` with
+/// meaningful content already accumulated before it starts a new document,
+/// pulling any trailing preamble sections (`ADDRESS`/`TLS`/`PROTO`/`OPTIONS`/
+/// `REQUEST_HEADERS`) forward into that new document with it (see
+/// `document_splitter::split_sections_by_boundary_owned`).
 pub fn parse_gctf_from_str(content: &str, file_path: &str) -> Result<GctfDocument> {
     let (all_sections, _) = parse_sections_from_str(content)?;
     let source_lines: Vec<&str> = content.lines().collect();
@@ -150,6 +154,7 @@ pub fn parse_gctf_with_diagnostics(file_path: &Path) -> Result<(GctfDocument, Pa
 
 fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
     let tokens = tokenize_gctf(source);
+    let line_offsets = line_start_byte_offsets(source);
     let mut sections = Vec::new();
     let mut section_headers = 0;
     let mut current_section: CurrentSection = None;
@@ -161,14 +166,35 @@ fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
                 if let Some((section_type, start_line, content, options, raw_attrs)) =
                     current_section.take()
                 {
-                    let section = content_parser::build_section(
+                    // `token.line` is the *next* section's header line —
+                    // usually correct (content includes any blank/comment gap
+                    // lines, since only `AttributeBlock` tokens are diverted
+                    // to `pending_attributes` instead of `content`), but
+                    // overshoots whenever `#[attr]` lines sit between this
+                    // section and the next header — those lines belong to
+                    // the *next* section's `pending_attributes`, not here.
+                    // The correct exclusive bound (index of the first line
+                    // NOT belonging to this section) is always
+                    // `start_line + content.len() + 1` (content starts at
+                    // `start_line + 1`, one entry per line). EOF's
+                    // `end_line` below needs no such fix —
+                    // `source.lines().count()` is already exact there, since
+                    // nothing follows the last section.
+                    let end_line = start_line + content.len() + 1;
+                    let mut section = content_parser::build_section(
                         section_type,
                         start_line,
-                        token.line,
+                        end_line,
                         &content,
                         options,
                         raw_attrs,
                     )?;
+                    section.span = SectionSpan::from_line_range(
+                        &line_offsets,
+                        start_line,
+                        end_line,
+                        source.len(),
+                    );
                     sections.push(section);
                 }
 
@@ -192,11 +218,16 @@ fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
                     return Err(anyhow::anyhow!("Unknown section type: {}", name));
                 }
             }
-            GctfTokenKind::AttributeBlock(attr_content) => {
-                if let Some(attr) = parse_attribute(&attr_content) {
-                    pending_attributes.push(attr);
+            GctfTokenKind::AttributeBlock(attr_content) => match parse_attribute(&attr_content) {
+                Some(attr) => pending_attributes.push(attr),
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "Malformed attribute at line {}: #[{}]",
+                        token.line,
+                        attr_content
+                    ));
                 }
-            }
+            },
             GctfTokenKind::Comment(text) | GctfTokenKind::Content(text) => {
                 if let Some((_, _, ref mut content, _, _)) = current_section {
                     content.push(text);
@@ -212,7 +243,7 @@ fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
 
     if let Some((section_type, start_line, content, options, raw_attrs)) = current_section {
         let end_line = source.lines().count();
-        let section = content_parser::build_section(
+        let mut section = content_parser::build_section(
             section_type,
             start_line,
             end_line,
@@ -220,6 +251,8 @@ fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
             options,
             raw_attrs,
         )?;
+        section.span =
+            SectionSpan::from_line_range(&line_offsets, start_line, end_line, source.len());
         sections.push(section);
     }
     Ok((sections, section_headers))
@@ -289,6 +322,11 @@ pub fn serialize_gctf(doc: &GctfDocument) -> String {
             }
             SectionContent::Meta(meta) => {
                 if let Ok(yaml) = serde_yaml_ng::to_string(meta) {
+                    output.push_str(yaml.trim_end());
+                }
+            }
+            SectionContent::Rows(rows) => {
+                if let Ok(yaml) = serde_yaml_ng::to_string(rows) {
                     output.push_str(yaml.trim_end());
                 }
             }
@@ -394,6 +432,74 @@ test.Service/Method
         let (sections, count) = parse_sections_from_str(input).unwrap();
         assert_eq!(count, 3);
         assert_eq!(sections.len(), 3);
+    }
+
+    #[test]
+    fn test_malformed_attribute_is_a_hard_error_in_strict_path() {
+        // §3.4: a malformed `#[...]` attribute must not be silently swallowed
+        // by the strict path — `#[]` (empty, `parse_attribute` returns None)
+        // is a hard parse error.
+        let input = "--- ENDPOINT ---\nsvc/Method\n#[]\n--- REQUEST ---\n{}\n";
+        let err = parse_sections_from_str(input).unwrap_err();
+        assert!(err.to_string().contains("Malformed attribute"), "{err}");
+    }
+
+    #[test]
+    fn test_section_span_slices_back_to_the_sections_own_source_text() {
+        let input = "\
+--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+";
+        let (sections, _) = parse_sections_from_str(input).unwrap();
+        let request = sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Request)
+            .unwrap();
+        // The span's byte range, sliced straight out of the original
+        // source, must reproduce exactly the section's own header + content
+        // — no more, no less (not the previous/next section's text either).
+        let sliced = &input[request.span.start_byte..request.span.end_byte];
+        assert_eq!(sliced, "--- REQUEST ---\n{}\n\n");
+        assert_eq!(request.span.start_line, request.start_line);
+        assert_eq!(request.span.end_line, request.end_line);
+    }
+
+    #[test]
+    fn test_section_end_line_excludes_attribute_lines_of_next_section() {
+        // Regression: `end_line` used to be set to the *next* section's
+        // header line unconditionally, overshooting past `#[attr]` lines
+        // that sit between this section and that header (those lines belong
+        // to the next section's `pending_attributes`, never to this
+        // section's own `content`).
+        let input = "\
+--- ENDPOINT ---
+test.Service/Method
+
+--- REQUEST ---
+{}
+
+#[timeout(5)]
+--- RESPONSE ---
+{}
+";
+        let (sections, _) = parse_sections_from_str(input).unwrap();
+        let request = sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Request)
+            .unwrap();
+        // Line 6 (0-indexed) is `#[timeout(5)]`; REQUEST's own content ends
+        // at line 5 (the blank line right after `{}`), so `end_line` must
+        // stop there, not overshoot to line 7 (RESPONSE's header).
+        assert_eq!(
+            request.end_line, 6,
+            "REQUEST must not swallow the #[timeout] line ahead of RESPONSE"
+        );
     }
 
     #[test]
@@ -566,6 +672,7 @@ test.Service/Method
             start_line: 1,
             end_line: 2,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         }];
         let result = extract_doc_source_from_lines(&sections, &lines);
         assert_eq!(result, "line1");
@@ -618,6 +725,43 @@ test.Service/Method
         assert!(sections[0].attributes.is_empty());
         assert_eq!(sections[1].attributes.len(), 1);
         assert_eq!(sections[1].attributes[0].name, "timeout");
+    }
+
+    #[test]
+    fn test_dataset_section_round_trips_through_serialize_gctf() {
+        let input = "\
+--- ENDPOINT ---
+test.Service/Method
+
+--- DATASET ---
+- id: '1'
+  name: Ada
+- id: '2'
+  name: Grace
+
+--- REQUEST ---
+{\"id\": \"{{dataset.id}}\"}
+
+--- RESPONSE ---
+{}
+";
+        let doc = parse_gctf_from_str(input, "test.gctf").unwrap();
+        let section = doc.first_section(SectionType::Dataset).unwrap();
+        let SectionContent::Rows(rows) = &section.content else {
+            panic!("expected Rows content");
+        };
+        assert_eq!(rows.len(), 2);
+
+        let serialized = serialize_gctf(&doc);
+        assert!(serialized.contains("--- DATASET ---"));
+
+        // Round-trip: re-parsing the serialized output must yield the same rows.
+        let reparsed = parse_gctf_from_str(&serialized, "test.gctf").unwrap();
+        let reparsed_section = reparsed.first_section(SectionType::Dataset).unwrap();
+        let SectionContent::Rows(reparsed_rows) = &reparsed_section.content else {
+            panic!("expected Rows content after round-trip");
+        };
+        assert_eq!(reparsed_rows, rows);
     }
 
     #[test]

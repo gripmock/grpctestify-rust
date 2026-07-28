@@ -12,15 +12,22 @@ When a data source has `indexed_by` configured, the CLI builds a **SourceIndex**
 
 ## Index Commands
 
+`index` reads the `BENCH.sources` definitions in a `.gctf` file (or every `.gctf`
+in a directory) and builds the `.gcti` index each source's `indexed_by` needs —
+you point it at tests, not at raw data files.
+
 ```bash
-# Rebuild indexes for a data source
-grpctestify index --rebuild data/users.csv --key user_id
+# Build any missing indexes for a test's data sources
+grpctestify index test.gctf
 
-# Force rebuild (ignore cache)
-grpctestify index --rebuild data/users.csv --key user_id --force
+# A whole directory of tests
+grpctestify index tests/
 
-# Show index statistics
-grpctestify index --stats data/users.gcti
+# Force rebuild, ignoring cached indexes
+grpctestify index test.gctf --force
+
+# Show index file statistics instead of building
+grpctestify index test.gctf --stats
 ```
 
 ## Key Types

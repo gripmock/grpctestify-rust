@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 //! Integration tests: pure plugins called from inside jaq/jq expressions.
 //!
 //! These exercise the jaq-fallback path of the assertion engine wired with the

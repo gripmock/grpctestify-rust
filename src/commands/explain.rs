@@ -1,9 +1,7 @@
-// Explain command - show detailed execution plan via Workflow
-
 use crate::bench::sources::index_builder::index_path_for_source;
 use crate::cli::args::HasFormat;
 use crate::utils::file::FileUtils;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Serialize;
 use std::path::Path;
 
@@ -47,13 +45,13 @@ fn validation_passed_from_workflow(workflow: &Workflow) -> bool {
     true
 }
 
-fn sorted_key_values(map: &std::collections::HashMap<String, String>) -> Vec<(&str, &str)> {
+fn sorted_key_values(map: &crate::parser::OrderedStringMap) -> Vec<(&str, &str)> {
     let mut pairs: Vec<(&str, &str)> = map.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     pairs.sort_by_key(|(ka, _)| *ka);
     pairs
 }
 
-fn sorted_bench_key_values(map: &std::collections::HashMap<String, String>) -> Vec<(&str, &str)> {
+fn sorted_bench_key_values(map: &crate::parser::OrderedStringMap) -> Vec<(&str, &str)> {
     let mut pairs: Vec<(&str, &str)> = map.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     pairs.sort_by(|(ka, _), (kb, _)| {
         bench_key_rank(ka)
@@ -69,12 +67,59 @@ struct ExplainJsonOutput {
     optimization_trace: Vec<optimizer::OptimizationHint>,
     #[serde(skip_serializing_if = "Option::is_none")]
     bench_resolved: Option<Vec<crate::report::BenchResolvedOption>>,
+    /// Post-hoc data from `--against`: the matching entry from a prior
+    /// `run --log-format json` report, verbatim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    actual: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
 struct MultiDocExplainJson {
     documents: Vec<DocumentPlan>,
     optimization_trace: Vec<optimizer::OptimizationHint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    actual: Option<serde_json::Value>,
+}
+
+/// Load a `run --log-format json` report and pull out the entry matching
+/// `file_path`, for `explain --against`. Matches by exact name first, falling
+/// back to file-name suffix so a report generated from a different working
+/// directory (or a `--data` row's derived name) still resolves.
+fn load_actual_result(report_path: &Path, file_path: &Path) -> Result<Option<serde_json::Value>> {
+    let content = std::fs::read_to_string(report_path)
+        .with_context(|| format!("Failed to read --against report: {}", report_path.display()))?;
+    let report: serde_json::Value = serde_json::from_str(&content).with_context(|| {
+        format!(
+            "--against report is not valid JSON: {}",
+            report_path.display()
+        )
+    })?;
+
+    let results = report
+        .get("results")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let target = file_path.to_string_lossy().to_string();
+    let target_name = file_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string());
+
+    let exact = results
+        .iter()
+        .find(|r| r.get("name").and_then(|n| n.as_str()) == Some(target.as_str()));
+    if exact.is_some() {
+        return Ok(exact.cloned());
+    }
+
+    Ok(target_name.and_then(|name| {
+        results.into_iter().find(|r| {
+            r.get("name")
+                .and_then(|n| n.as_str())
+                .is_some_and(|n| n.ends_with(name.as_str()))
+        })
+    }))
 }
 
 #[derive(Serialize)]
@@ -90,9 +135,7 @@ struct DocumentPlan {
     bench_resolved: Option<Vec<crate::report::BenchResolvedOption>>,
 }
 
-fn bench_section_map(
-    doc: &parser::GctfDocument,
-) -> Option<&std::collections::HashMap<String, String>> {
+fn bench_section_map(doc: &parser::GctfDocument) -> Option<&crate::parser::OrderedStringMap> {
     doc.sections.iter().find_map(|section| {
         if section.section_type == SectionType::Bench
             && let SectionContent::KeyValues(bench) = &section.content
@@ -163,6 +206,14 @@ fn bench_resolved_options(
 }
 
 pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
+    apif_semantics::register_extra_plugin_names(crate::commands::check::rhai_plugin_names());
+    apif_optimizer::register_extra_boolean_plugins(
+        crate::commands::check::rhai_boolean_plugin_names(),
+    );
+    crate::parser::register_extra_inline_option_keys(
+        crate::plugins::rhai_plugin::load_all_inline_option_keys(),
+    );
+
     let file_path = &args.file;
     if !file_path.exists() {
         return Err(anyhow::anyhow!("File not found: {}", file_path.display()));
@@ -175,10 +226,15 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
 
     let parse_ms = parse_start.elapsed().as_secs_f64() * 1000.0;
 
+    let actual = match &args.against {
+        Some(report_path) => load_actual_result(report_path, file_path)?,
+        None => None,
+    };
+
     if !parse_result.diagnostics.is_empty() {
         eprintln!();
         eprintln!("PARSE DIAGNOSTICS");
-        eprintln!("=================");
+        eprintln!("═════════════════");
         eprintln!("File: {}", file_path.display());
         eprintln!("Recovered sections: {}", parse_result.recovered_sections);
         eprintln!("Failed sections: {}", parse_result.failed_sections);
@@ -199,6 +255,7 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
                 plan,
                 optimization_trace,
                 bench_resolved: bench_resolved_options(&doc),
+                actual: actual.clone(),
             };
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
@@ -207,7 +264,9 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
             let mut all_optimizations: Vec<optimizer::OptimizationHint> = Vec::new();
 
             for (doc_idx, d) in doc.iter_chain().enumerate() {
-                let workflow = Workflow::from_document_with_analysis(d);
+                // detached: from_document_with_analysis is chain-aware internally too
+                let single = d.detached();
+                let workflow = Workflow::from_document_with_analysis(&single);
                 let plan = ExecutionPlan::from_document(d);
 
                 let mut extractions: Vec<(String, String)> = Vec::new();
@@ -239,6 +298,7 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
             let output = MultiDocExplainJson {
                 documents,
                 optimization_trace: all_optimizations,
+                actual,
             };
             println!("{}", serde_json::to_string_pretty(&output)?);
         }
@@ -249,14 +309,30 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
         if total_docs > 1 {
             println!();
             println!("MULTI-DOCUMENT EXECUTION PLAN");
-            println!("==============================");
+            println!("══════════════════════════════");
             println!("File: {}", file_path.display());
             println!("Documents: {}", total_docs);
+            println!();
+            println!("FLOW");
+            println!("────");
+            for (doc_idx, d) in doc.iter_chain().enumerate() {
+                let endpoint = d.get_endpoint().unwrap_or_else(|| "unknown".to_string());
+                println!(
+                    "  {}. {} [{}]",
+                    doc_idx + 1,
+                    endpoint,
+                    doc_expectation_kind(d)
+                );
+            }
+            println!();
+            println!("MERMAID");
+            println!("───────");
+            print_mermaid_sequence(&doc);
             println!();
         } else {
             println!();
             println!("EXECUTION PLAN");
-            println!("==============");
+            println!("══════════════");
             println!();
         }
 
@@ -267,7 +343,7 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
                     && let SectionContent::Meta(m) = &section.content
                 {
                     println!("META");
-                    println!("----");
+                    println!("────");
                     if !m.tags.is_empty() {
                         println!("  tags: {:?}", m.tags);
                     }
@@ -289,7 +365,7 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
         // Collect all optimizer hints
         let mut all_optimizations: Vec<optimizer::OptimizationHint> = Vec::new();
         for d in doc.iter_chain() {
-            let workflow = Workflow::from_document_with_analysis(d);
+            let workflow = Workflow::from_document_with_analysis(&d.detached());
             all_optimizations.extend(optimization_hints_from_workflow(&workflow));
         }
 
@@ -299,7 +375,7 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
         } else {
             for hint in &all_optimizations {
                 println!(
-                    "  - [{}] line {}: {} -> {}",
+                    "  • [{}] line {}: {} -> {}",
                     hint.rule_id, hint.line, hint.before, hint.after
                 );
             }
@@ -310,34 +386,165 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
         println!("VALIDATION:");
         let mut all_valid = true;
         for d in doc.iter_chain() {
-            let workflow = Workflow::from_document_with_analysis(d);
+            let workflow = Workflow::from_document_with_analysis(&d.detached());
             if !validation_passed_from_workflow(&workflow) {
                 if let Some(crate::execution::WorkflowEvent::ValidationResult { errors, .. }) =
                     workflow.validation_results().first().copied()
                 {
                     for e in errors {
-                        println!("  FAILED: {}", e);
+                        println!("  {} {}", crate::report::style::fail_icon(), e);
                     }
                 }
                 all_valid = false;
             }
         }
         if all_valid {
-            println!("  OK - All documents structurally valid.");
+            println!(
+                "  {} All documents structurally valid.",
+                crate::report::style::pass_icon()
+            );
         }
         println!();
 
         println!("TIMING:");
         println!("  Parse:      {:.3}ms", parse_ms);
+
+        if let Some(report_path) = &args.against {
+            println!();
+            print_actual_execution(&actual, report_path, file_path);
+        }
     }
 
     Ok(())
 }
 
+/// Print the `--against` post-hoc section: what actually happened on the last
+/// matching `run --log-format json` entry, per-assertion pass/fail + timing,
+/// with the slowest assertion flagged.
+fn print_actual_execution(
+    actual: &Option<serde_json::Value>,
+    report_path: &Path,
+    file_path: &Path,
+) {
+    println!("ACTUAL EXECUTION (--against {}):", report_path.display());
+
+    let Some(result) = actual else {
+        println!(
+            "  No matching result found in report for {}",
+            file_path.display()
+        );
+        println!();
+        return;
+    };
+
+    let status = result.get("status").and_then(|s| s.as_str()).unwrap_or("?");
+    let styled_status = match status {
+        "Pass" => crate::report::style::pass_style()
+            .apply_to(status)
+            .to_string(),
+        "Fail" => crate::report::style::fail_style()
+            .apply_to(status)
+            .to_string(),
+        _ => status.to_string(),
+    };
+    println!("  Status: {styled_status}");
+
+    let assertions = result
+        .get("assertions")
+        .and_then(|a| a.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    if assertions.is_empty() {
+        println!("  Assertions: (none recorded)");
+        println!();
+        return;
+    }
+
+    let slowest_ms = assertions
+        .iter()
+        .filter_map(|a| a.get("elapsed_ms").and_then(|v| v.as_u64()))
+        .max()
+        .unwrap_or(0);
+
+    println!("  Assertions:");
+    for a in &assertions {
+        let line = a.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+        let passed = a.get("passed").and_then(|v| v.as_bool()).unwrap_or(false);
+        let elapsed_ms = a.get("elapsed_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+        let expr = a.get("expression").and_then(|v| v.as_str()).unwrap_or("");
+        let verdict = if passed {
+            format!(
+                "{} {}",
+                crate::report::style::pass_icon(),
+                crate::report::style::pass_style().apply_to("PASS")
+            )
+        } else {
+            format!(
+                "{} {}",
+                crate::report::style::fail_icon(),
+                crate::report::style::fail_style().apply_to("FAIL")
+            )
+        };
+        let marker = if elapsed_ms == slowest_ms && slowest_ms > 0 {
+            format!(
+                "  {}",
+                crate::report::style::warn_style().apply_to("<- slowest")
+            )
+        } else {
+            String::new()
+        };
+        println!(
+            "    line {line}: {verdict}  ({})  {expr}{marker}",
+            crate::report::style::duration_flagged(elapsed_ms, 500)
+        );
+        if !passed && let Some(msg) = a.get("message").and_then(|v| v.as_str()) {
+            println!("      {msg}");
+        }
+    }
+    println!();
+}
+
+/// Short expectation-kind label for the multi-document FLOW summary — same
+/// distinction `print_doc_scenario`'s detailed dump makes (RESPONSE vs
+/// ERROR vs bare ASSERTS vs nothing), just condensed to one word.
+fn doc_expectation_kind(doc: &parser::GctfDocument) -> &'static str {
+    if doc.first_section(SectionType::Error).is_some() {
+        "error"
+    } else if doc.first_section(SectionType::Response).is_some() {
+        "response"
+    } else if doc.first_section(SectionType::Asserts).is_some() {
+        "asserts"
+    } else {
+        "none"
+    }
+}
+
+/// Emit a fenced ```mermaid sequenceDiagram``` block for a multi-document
+/// chain — plain text, no rendering dependency; GitHub/VitePress render it
+/// natively when this output is pasted into a markdown file.
+fn print_mermaid_sequence(doc: &parser::GctfDocument) {
+    println!("```mermaid");
+    println!("sequenceDiagram");
+    println!("    participant Client");
+    println!("    participant Server");
+    for (doc_idx, d) in doc.iter_chain().enumerate() {
+        let endpoint = d.get_endpoint().unwrap_or_else(|| "unknown".to_string());
+        println!("    Client->>Server: {}. {}", doc_idx + 1, endpoint);
+        match doc_expectation_kind(d) {
+            "error" => println!("    Server--xClient: error"),
+            "response" => println!("    Server-->>Client: response"),
+            "asserts" => println!("    Server-->>Client: response (ASSERTS)"),
+            _ => {}
+        }
+    }
+    println!("```");
+}
+
 fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
     let endpoint = doc.get_endpoint().unwrap_or_else(|| "unknown".to_string());
     println!("SCENARIO {}: {}", doc_idx, endpoint);
-    println!("  {}", "-".repeat(60));
+    println!("  {}", "─".repeat(60));
 
     if let Some(addr) = doc.get_address(None) {
         println!("  → Connect: {}", addr);
@@ -479,7 +686,7 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
         }
     }
 
-    let extractions: Vec<_> = doc
+    let mut extractions: Vec<_> = doc
         .sections
         .iter()
         .filter(|s| s.section_type == SectionType::Extract)
@@ -491,6 +698,7 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
             _ => Vec::new(),
         })
         .collect();
+    extractions.sort_by(|a, b| a.0.cmp(&b.0));
 
     if !extractions.is_empty() {
         println!("  ↓ Extract:");
@@ -499,14 +707,15 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
         }
     }
 
-    let workflow = Workflow::from_document_with_analysis(doc);
+    let workflow = Workflow::from_document_with_analysis(&doc.detached());
     for event in &workflow.events {
         if let crate::execution::WorkflowEvent::Assert {
             count, line_range, ..
         } = event
         {
             println!(
-                "  ✓ {} assertion(s) at lines {}-{}",
+                "  {} {} assertion(s) at lines {}-{}",
+                crate::report::style::pass_icon(),
                 count,
                 line_range.0 + 1,
                 line_range.1 + 1
@@ -518,12 +727,12 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
         } = event
             && (!type_mismatches.is_empty() || !unknown_plugins.is_empty())
         {
-            println!("  ⚠ Semantic issues:");
+            println!("  {} Semantic issues:", crate::report::style::warn_icon());
             for m in type_mismatches {
-                println!("    - {}", m.message);
+                println!("    • {}", m.message);
             }
             for u in unknown_plugins {
-                println!("    - {}", u.message);
+                println!("    • {}", u.message);
             }
         }
     }
@@ -552,7 +761,7 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
             && let SectionContent::Meta(m) = &section.content
         {
             println!("META");
-            println!("----");
+            println!("────");
             if let Some(name) = &m.name {
                 println!("  name: {}", name);
             }
@@ -579,7 +788,7 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
         if !section.attributes.is_empty() {
             if !has_attrs {
                 println!("ATTRIBUTES");
-                println!("----------");
+                println!("──────────");
                 has_attrs = true;
             }
             print!("  [{}] ", section.section_type.as_str());
@@ -599,7 +808,7 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
     }
 
     println!("CONNECTION");
-    println!("----------");
+    println!("──────────");
     if let Some(addr) = doc.get_address(None) {
         println!("  Address: {}", addr);
     } else {
@@ -631,7 +840,7 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
     println!();
 
     println!("TARGET ENDPOINT");
-    println!("---------------");
+    println!("───────────────");
     if let Some(endpoint) = doc.get_endpoint() {
         println!("  Endpoint: {}", endpoint);
         if let Some((pkg, svc, method)) = doc.parse_endpoint() {
@@ -647,7 +856,7 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
     let workflow = Workflow::from_document_with_analysis(doc);
 
     println!("EXECUTION WORKFLOW");
-    println!("------------------");
+    println!("──────────────────");
 
     if let Some(headers) = doc.get_request_headers() {
         println!();
@@ -932,12 +1141,25 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
                 }
                 step += 1;
             }
+            SectionType::Dataset => {
+                println!();
+                println!(
+                    "Step {}: DATASET [lines {}-{}]",
+                    step,
+                    section.start_line + 1,
+                    section.end_line + 1
+                );
+                if let SectionContent::Rows(rows) = &section.content {
+                    println!("  {} row(s)", rows.len());
+                }
+                step += 1;
+            }
         }
     }
 
     println!();
     println!("EXECUTION SUMMARY");
-    println!("-----------------");
+    println!("─────────────────");
     println!("  RPC Mode: {}", workflow.rpc_mode_name());
     if workflow.has_streaming() {
         println!("  Streaming: enabled");
@@ -1025,7 +1247,7 @@ fn print_type_optimization_hints(doc: &GctfDocument, file_path: &Path) {
                 if !hints_printed {
                     println!();
                     println!("TYPE OPTIMIZATION HINTS");
-                    println!("------------------------");
+                    println!("────────────────────────");
                     hints_printed = true;
                 }
 
@@ -1034,9 +1256,9 @@ fn print_type_optimization_hints(doc: &GctfDocument, file_path: &Path) {
                 println!(
                     "  {} {name_display}: consider `indexed_by: {}: {}` (inferred from {} samples, {}% confidence)",
                     if stats.confidence >= 0.9 {
-                        "✓"
+                        crate::report::style::pass_icon().to_string()
                     } else {
-                        "⚠"
+                        crate::report::style::warn_icon().to_string()
                     },
                     key_col,
                     suggested,
@@ -1129,18 +1351,18 @@ fn print_source_hints(doc: &GctfDocument, file_path: &Path) {
         if !hints_printed {
             println!();
             println!("SOURCE INDEX ANALYSIS");
-            println!("---------------------");
+            println!("─────────────────────");
             hints_printed = true;
         }
 
         let status = if idx_corrupted {
-            "✗ corrupted"
+            format!("{} corrupted", crate::report::style::fail_icon())
         } else if idx_fresh {
-            "✓ fresh"
+            format!("{} fresh", crate::report::style::pass_icon())
         } else if idx_exists {
-            "⚠ stale"
+            format!("{} stale", crate::report::style::warn_icon())
         } else {
-            "✗ missing"
+            format!("{} missing", crate::report::style::fail_icon())
         };
 
         let cmd_hint = if idx_corrupted {
@@ -1158,5 +1380,77 @@ fn print_source_hints(doc: &GctfDocument, file_path: &Path) {
             "  → Run `grpctestify index {}` to build/update indexes",
             file_path.display()
         );
+    }
+}
+
+#[cfg(test)]
+mod against_tests {
+    use super::*;
+
+    fn write_report(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+        let path = dir.join("report.json");
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn load_actual_result_matches_exact_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = write_report(
+            dir.path(),
+            r#"{"results":[{"name":"tests/foo.gctf","status":"Pass","assertions":[]}]}"#,
+        );
+
+        let result = load_actual_result(&report, Path::new("tests/foo.gctf"))
+            .unwrap()
+            .expect("expected a match");
+        assert_eq!(result["status"], "Pass");
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn load_actual_result_falls_back_to_file_name_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        // Report was generated from a different working directory, so the
+        // stored name's path prefix differs from what `explain` was given.
+        let report = write_report(
+            dir.path(),
+            r#"{"results":[{"name":"/ci/workspace/tests/foo.gctf","status":"Fail","assertions":[]}]}"#,
+        );
+
+        let result = load_actual_result(&report, Path::new("tests/foo.gctf"))
+            .unwrap()
+            .expect("expected a suffix match");
+        assert_eq!(result["status"], "Fail");
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn load_actual_result_returns_none_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = write_report(
+            dir.path(),
+            r#"{"results":[{"name":"tests/other.gctf","status":"Pass","assertions":[]}]}"#,
+        );
+
+        let result = load_actual_result(&report, Path::new("tests/foo.gctf")).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn load_actual_result_errors_on_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = write_report(dir.path(), "not json");
+
+        assert!(load_actual_result(&report, Path::new("tests/foo.gctf")).is_err());
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn load_actual_result_errors_on_missing_file() {
+        let missing = Path::new("/nonexistent/report-does-not-exist.json");
+        assert!(load_actual_result(missing, Path::new("tests/foo.gctf")).is_err());
     }
 }

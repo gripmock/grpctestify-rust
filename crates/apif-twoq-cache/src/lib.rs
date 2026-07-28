@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 

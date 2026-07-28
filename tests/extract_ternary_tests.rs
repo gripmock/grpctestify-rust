@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // Tests for ternary operator in EXTRACT section
 
 use grpctestify::parser::{parse_gctf_from_str, ternary::ternary_to_jq};

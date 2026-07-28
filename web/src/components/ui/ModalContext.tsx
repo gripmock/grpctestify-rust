@@ -28,6 +28,7 @@ export function useModal(): ModalApi {
 
 export function ModalProvider({ children }: { children: ReactNode }) {
   const [modal, setModal] = useState<ModalConfig | null>(null);
+  const [promptValue, setPromptValue] = useState('');
   const resolveRef = useRef<((value: any) => void) | null>(null);
 
   const api: ModalApi = {
@@ -41,6 +42,7 @@ export function ModalProvider({ children }: { children: ReactNode }) {
     }),
     prompt: (title, message, defaultValue) => new Promise(resolve => {
       resolveRef.current = resolve;
+      setPromptValue(defaultValue || '');
       setModal({ type: 'prompt', title, message, defaultValue, confirmText: 'Save', cancelText: 'Cancel' });
     }),
   };
@@ -66,7 +68,8 @@ export function ModalProvider({ children }: { children: ReactNode }) {
   const handleConfirm = useCallback(() => {
     if (modal?.type === 'confirm') close(true);
     else if (modal?.type === 'alert') close(undefined);
-  }, [modal?.type, close]);
+    else if (modal?.type === 'prompt') close(promptValue);
+  }, [modal?.type, close, promptValue]);
 
   const overlayRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -111,7 +114,8 @@ export function ModalProvider({ children }: { children: ReactNode }) {
               )}
               {modal.type === 'prompt' && (
                 <PromptInput
-                  defaultValue={modal.defaultValue || ''}
+                  value={promptValue}
+                  onChange={setPromptValue}
                   onSubmit={v => close(v)}
                   onCancel={() => close(null)}
                 />
@@ -143,7 +147,7 @@ export function ModalProvider({ children }: { children: ReactNode }) {
   );
 }
 
-function PromptInput({ defaultValue, onSubmit, onCancel }: { defaultValue: string; onSubmit: (v: string) => void; onCancel: () => void }) {
+function PromptInput({ value, onChange, onSubmit, onCancel }: { value: string; onChange: (v: string) => void; onSubmit: (v: string) => void; onCancel: () => void }) {
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (ref.current) {
@@ -152,9 +156,9 @@ function PromptInput({ defaultValue, onSubmit, onCancel }: { defaultValue: strin
     }
   }, []);
   return (
-    <input ref={ref} defaultValue={defaultValue}
+    <input ref={ref} value={value} onChange={e => onChange(e.target.value)}
       onKeyDown={e => {
-        if (e.key === 'Enter') onSubmit(ref.current?.value ?? '');
+        if (e.key === 'Enter') onSubmit(value);
         if (e.key === 'Escape') onCancel();
       }}
       style={{

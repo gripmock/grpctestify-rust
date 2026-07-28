@@ -37,6 +37,7 @@ export default defineConfig({
           text: 'Getting Started',
           items: [
             { text: 'Overview', link: '/guides/' },
+            { text: 'Why grpctestify', link: '/guides/why' },
             { text: 'Installation', link: '/guides/getting-started/installation' },
             { text: 'First Test', link: '/guides/getting-started/first-test' },
             { text: 'Basic Concepts', link: '/guides/getting-started/basic-concepts' },
@@ -48,12 +49,18 @@ export default defineConfig({
           items: [
             { text: 'Test Files', link: '/guides/reference/api/test-files' },
             { text: 'Assertions', link: '/guides/reference/api/assertions' },
-            { text: 'Plugin System', link: '/guides/plugins/' }
+            { text: 'Plugin System', link: '/guides/plugins/' },
+            { text: 'Custom Assertion Plugins', link: '/guides/plugins/custom-scripts' },
+            { text: 'Installing From a Git Host', link: '/guides/plugins/installing' },
+            { text: 'Reporter Plugins', link: '/guides/plugins/reporters' },
+            { text: 'Script Stdlib', link: '/guides/plugins/stdlib' }
           ]
         },
         {
           text: 'Features',
           items: [
+            { text: 'Streaming', link: '/guides/features/streaming' },
+            { text: 'TLS and mTLS', link: '/guides/features/tls' },
             { text: 'Data Sources', link: '/guides/bench-sources' },
             { text: 'Query', link: '/guides/query' },
             { text: 'Playground', link: '/guides/playground' },
@@ -65,7 +72,9 @@ export default defineConfig({
           text: 'CLI Reference',
           items: [
             { text: 'Command Line', link: '/guides/reference/api/command-line' },
-            { text: 'Report Formats', link: '/guides/reference/api/report-formats' }
+            { text: 'Output Forms', link: '/guides/reference/api/output-forms' },
+            { text: 'Report Formats', link: '/guides/reference/api/report-formats' },
+            { text: 'Coverage', link: '/guides/reference/api/coverage' }
           ]
         },
         {
@@ -86,6 +95,7 @@ export default defineConfig({
             { text: 'PROTO', link: '/guides/reference/sections/proto' },
             { text: 'OPTIONS', link: '/guides/reference/sections/options' },
             { text: 'BENCH', link: '/guides/reference/sections/bench' },
+            { text: 'DATASET', link: '/guides/reference/sections/dataset' },
             { text: 'Attributes', link: '/guides/reference/sections/attributes' }
           ]
         }

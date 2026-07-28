@@ -2,6 +2,7 @@ pub mod assertions;
 pub mod builder;
 pub mod content_parser;
 pub mod core;
+pub mod deprecations;
 pub mod document_splitter;
 pub mod error_recovery;
 pub mod json_mod;
@@ -14,16 +15,20 @@ pub mod validator;
 pub use apif_ast::{assertion_ast, ast, gctf_tokenizer, tokenizer};
 
 pub use apif_ast::{
-    AssertionExpr, BinaryOp, Expr, FileMeta, GctfAttribute, GctfDocument, InlineOptions, Literal,
-    Section, SectionContent, SectionHeader, SectionType, Span, Token, TokenKind,
-    assertion_to_string, parse_assertion, remove_redundant_parens, tokenize_assertion,
+    AssertionExpr, BinaryOp, DEPRECATED_KEBAB_CASE_KEYS, Expr, FileMeta, GctfAttribute,
+    GctfDocument, InlineOptions, Literal, OrderedStringMap, Section, SectionContent, SectionHeader,
+    SectionSpan, SectionType, Span, Token, TokenKind, assertion_to_string, canonical_key_spelling,
+    line_start_byte_offsets, parse_assertion, remove_redundant_parens, tokenize_assertion,
     tokenize_gctf, tokenize_inline_options, tokenize_kv_line,
 };
 pub use builder::GctfDocumentBuilder;
-pub use content_parser::{build_section, parse_inline_options, parse_section_content};
+pub use content_parser::{
+    build_section, parse_inline_options, parse_section_content, register_extra_inline_option_keys,
+};
 pub use core::{
     ParseDiagnostics, parse_gctf, parse_gctf_from_str, parse_gctf_with_diagnostics, serialize_gctf,
 };
+pub use deprecations::detect_deprecations;
 pub use document_splitter::split_sections_by_boundary;
 pub use error_recovery::{ErrorRecoveryResult, parse_content_with_recovery, parse_with_recovery};
 pub use ternary::{process_extract_value, ternary_to_jq};

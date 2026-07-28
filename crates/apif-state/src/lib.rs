@@ -2,7 +2,7 @@ pub mod metrics;
 pub mod result;
 
 pub use metrics::ExecutionMetrics;
-pub use result::{TestMeta, TestResult};
+pub use result::{AssertionRecord, CapturedExchange, ConfigSummary, TestMeta, TestResult};
 
 use serde::Serialize;
 
@@ -47,6 +47,7 @@ impl TestResults {
             self.metrics.total_rpc_ms += duration;
             self.metrics.rpc_calls += 1;
         }
+        self.metrics.sum_test_ms += result.duration_ms;
         self.results.push(result.clone());
         self.total += 1;
         match result.status {
@@ -111,6 +112,29 @@ mod tests {
     }
 
     #[test]
+    fn sum_test_ms_accumulates_per_test_walls_not_parallel_wall() {
+        let mut r = TestResults::new();
+        // Three tests, each 30ms wall / 10ms gRPC.
+        r.add(TestResult::pass("a.gctf", 30, Some(10)));
+        r.add(TestResult::pass("b.gctf", 30, Some(10)));
+        r.add(TestResult::fail("c.gctf", "x".into(), 30, Some(10)));
+
+        // sum of per-test walls (independent of how parallel the run was).
+        assert_eq!(r.metrics().sum_test_ms, 90);
+        assert_eq!(r.metrics().total_rpc_ms, 30);
+        // True average = 90/3 = 30ms; overhead = 90 - 30 = 60ms — both derive
+        // from per-test sums, not the parallel wall-clock.
+        let avg = r.metrics().sum_test_ms as f64 / r.total() as f64;
+        assert_eq!(avg, 30.0);
+        assert_eq!(
+            r.metrics()
+                .sum_test_ms
+                .saturating_sub(r.metrics().total_rpc_ms),
+            60
+        );
+    }
+
+    #[test]
     fn test_test_results_add_fail() {
         let mut r = TestResults::new();
         r.add(TestResult::fail("t.gctf", "err".into(), 100, None));
@@ -131,6 +155,12 @@ mod tests {
             error_message: None,
             execution_time: 0,
             meta: TestMeta::default(),
+            assertions: Vec::new(),
+            exchange: None,
+            retried: false,
+            document_durations_ms: Vec::new(),
+            row_params: Vec::new(),
+            config_summary: ConfigSummary::default(),
         });
         assert_eq!(r.total(), 1);
         assert_eq!(r.skipped(), 1);

@@ -1,6 +1,6 @@
 [package]
 name = "apif-plugins"
-version = "0.2.0"
+version = "0.2.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -20,5 +20,14 @@ email_address = { workspace = true }
 url = { workspace = true }
 chrono = { workspace = true }
 jsonschema = { workspace = true }
+rhai = { version = "1", features = ["sync", "serde", "metadata"] }
+tracing = { workspace = true }
+serde_yaml_ng = { workspace = true }
+sha2 = { workspace = true }
+semver = { workspace = true }
 
 [dev-dependencies]
+tempfile = "3.27"
+
+[lints]
+workspace = true

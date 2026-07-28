@@ -5,7 +5,7 @@ use crate::assert::{AssertionEngine, JsonComparator, get_json_diff};
 use crate::grpc::{GrpcClient, GrpcClientConfig};
 use crate::optimizer;
 use crate::parser::ast::{SectionContent, SectionType};
-use crate::plugins::{AssertionTiming, PluginManager};
+use crate::plugins::AssertionTiming;
 use crate::report::CoverageCollector;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -20,7 +20,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 /// Global plugin registry used by all assertion engines.
 static PLUGIN_REGISTRY: LazyLock<Arc<dyn apif_assert::registry::PluginRegistry>> =
-    LazyLock::new(|| Arc::new(PluginManager::new()));
+    LazyLock::new(|| Arc::new(crate::execution::plugin_dir::build_plugin_manager()));
 
 /// Execution plan for inspect workflow visualization
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,7 +55,7 @@ pub struct TargetInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeadersInfo {
     pub count: usize,
-    pub headers: HashMap<String, String>,
+    pub headers: crate::parser::OrderedStringMap,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,7 +99,7 @@ pub struct AssertionInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractionInfo {
     pub index: usize,
-    pub variables: HashMap<String, String>,
+    pub variables: crate::parser::OrderedStringMap,
     pub line_start: usize,
     pub line_end: usize,
     pub response_index: Option<usize>,
@@ -150,6 +150,9 @@ struct AssertionContext<'a> {
     timing: Option<&'a AssertionTiming>,
     /// EXTRACT-bound variables, so `$name` references in ASSERTS resolve.
     variables: &'a HashMap<String, Value>,
+    /// Wire protocol that produced this response (`"grpc"`/`"grpc-web"`/
+    /// `"connectrpc"`) — forwarded to assertion plugins via `PluginContext`.
+    protocol: &'static str,
 }
 
 impl ExecutionPlan {
@@ -231,7 +234,7 @@ impl ExecutionPlan {
             .map(|(i, section)| {
                 let (content, content_type) = match &section.content {
                     SectionContent::Json(j) => (j.clone(), "json"),
-                    SectionContent::JsonLines(_) => (Value::Array(vec![]), "json-lines"),
+                    SectionContent::JsonLines(vals) => (Value::Array(vals.clone()), "json-lines"),
                     SectionContent::Empty => (Value::Object(serde_json::Map::new()), "empty"),
                     _ => (Value::Null, "unknown"),
                 };
@@ -333,7 +336,7 @@ impl ExecutionPlan {
                 let variables = if let SectionContent::Extract(vars) = &section.content {
                     vars.clone()
                 } else {
-                    HashMap::new()
+                    crate::parser::OrderedStringMap::new()
                 };
                 ExtractionInfo {
                     index: i + 1,
@@ -428,9 +431,31 @@ fn protocol_display(protocol: crate::grpc::WireProtocol) -> &'static str {
     }
 }
 
+/// Canonical machine-readable protocol string — the same form
+/// `OPTIONS.protocol:` accepts (`WireProtocol::from_str`) — forwarded to
+/// assertion plugins via `PluginContext::protocol`, distinct from
+/// [`protocol_display`]'s human-facing form.
+fn protocol_str(protocol: crate::grpc::WireProtocol) -> &'static str {
+    match protocol {
+        crate::grpc::WireProtocol::Grpc => "grpc",
+        crate::grpc::WireProtocol::GrpcWeb => "grpc-web",
+        crate::grpc::WireProtocol::ConnectRpc => "connectrpc",
+    }
+}
+
 /// Infer RPC mode from GCTF section structure (without proto descriptor)
 pub(crate) fn infer_rpc_mode_for_section_types(document: &GctfDocument) -> RpcModeInfo {
-    let request_count = document.sections_by_type(SectionType::Request).len();
+    // A single JsonLines REQUEST section sends N messages on one stream, same
+    // as N separate REQUEST sections — count messages, not sections, so
+    // client/bidi-streaming inference works either way.
+    let request_count: usize = document
+        .sections_by_type(SectionType::Request)
+        .iter()
+        .map(|s| match &s.content {
+            SectionContent::JsonLines(values) => values.len(),
+            _ => 1,
+        })
+        .sum();
     let response_sections = document.sections_by_type(SectionType::Response);
     let has_json_lines = response_sections
         .iter()
@@ -575,6 +600,9 @@ pub struct TestExecutionResult {
     pub call_duration_ms: Option<u64>,
     pub captured_response: Option<crate::grpc::GrpcResponse>,
     pub meta: crate::state::TestMeta,
+    /// What this test declared (sections, TLS, DATASET rows, PROTO files) —
+    /// see [`apif_state::ConfigSummary`].
+    pub config_summary: apif_state::ConfigSummary,
     /// Set only when `status` is `Fail`; classifies the failure for retry logic.
     pub failure_kind: Option<FailureKind>,
     /// Numeric gRPC status code observed for the call, when one is available.
@@ -582,6 +610,18 @@ pub struct TestExecutionResult {
     /// returned a gRPC status, and `None` when the request never produced a
     /// gRPC status (e.g. a pure assertion/config failure).
     pub grpc_status: Option<u32>,
+    /// Per-assertion outcome + timing, in source order. Empty for pre-flight
+    /// failures (e.g. bad OPTIONS) that never reach assertion evaluation.
+    pub assertions: Vec<apif_state::AssertionRecord>,
+    /// `true` when at least one REQUEST needed more than one attempt to
+    /// succeed — a Pass with `retried = true` is flaky, not a clean pass.
+    pub retried: bool,
+    /// Real wall-clock duration of each document in the chain, in source
+    /// order — only populated on the whole-chain result [`ChainAccumulator`]
+    /// produces (per-document results have their own duration in
+    /// `call_duration_ms` instead). Lets reporters give each document its
+    /// actual timing instead of splitting the total evenly.
+    pub document_durations_ms: Vec<u64>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -624,8 +664,12 @@ impl TestExecutionResult {
             call_duration_ms,
             captured_response: None,
             meta: crate::state::TestMeta::default(),
+            config_summary: apif_state::ConfigSummary::default(),
             failure_kind: None,
             grpc_status: None,
+            assertions: Vec::new(),
+            retried: false,
+            document_durations_ms: Vec::new(),
         }
     }
 
@@ -637,13 +681,22 @@ impl TestExecutionResult {
             call_duration_ms,
             captured_response: None,
             meta: crate::state::TestMeta::default(),
+            config_summary: apif_state::ConfigSummary::default(),
             failure_kind: Some(FailureKind::Assertion),
             grpc_status: None,
+            assertions: Vec::new(),
+            retried: false,
+            document_durations_ms: Vec::new(),
         }
     }
 
     pub fn with_failure_kind(mut self, kind: FailureKind) -> Self {
         self.failure_kind = Some(kind);
+        self
+    }
+
+    pub fn with_retried(mut self, retried: bool) -> Self {
+        self.retried = retried;
         self
     }
 
@@ -661,6 +714,79 @@ impl TestExecutionResult {
         self.meta = meta;
         self
     }
+
+    pub fn with_config_summary(mut self, config_summary: apif_state::ConfigSummary) -> Self {
+        self.config_summary = config_summary;
+        self
+    }
+
+    pub fn with_assertions(mut self, assertions: Vec<apif_state::AssertionRecord>) -> Self {
+        self.assertions = assertions;
+        self
+    }
+}
+
+/// Folds a multi-document chain's per-document [`TestExecutionResult`]s into
+/// one aggregate. Shared by `run_test_with_variables` and
+/// `run_test_capturing_vars`, which differ only in whether they also return
+/// the final variable map.
+#[derive(Default)]
+struct ChainAccumulator {
+    status: Option<TestExecutionStatus>,
+    failure_kind: Option<FailureKind>,
+    grpc_status: Option<u32>,
+    total_duration_ms: f64,
+    assertions: Vec<apif_state::AssertionRecord>,
+    /// Last document's captured response wins — write mode/exchange capture
+    /// always target a single physical file, so only the final call's
+    /// response (the one that matters for snapshotting) is kept.
+    captured_response: Option<crate::grpc::GrpcResponse>,
+    /// `true` once any document in the chain retried — sticky across the
+    /// whole chain, since one flaky request makes the overall test flaky.
+    retried: bool,
+    /// Each absorbed document's own wall-clock duration, in chain order —
+    /// including the failing document's, when the chain stops early.
+    document_durations_ms: Vec<u64>,
+}
+
+impl ChainAccumulator {
+    /// Fold one document's result in. Returns `true` when the chain should
+    /// stop (this document failed — fail-fast).
+    fn absorb(&mut self, mut result: TestExecutionResult) -> bool {
+        if let Some(dur) = result.call_duration_ms {
+            self.total_duration_ms += dur as f64;
+        }
+        self.document_durations_ms
+            .push(result.call_duration_ms.unwrap_or(0));
+        self.grpc_status = result.grpc_status;
+        self.retried |= result.retried;
+        self.assertions.append(&mut result.assertions);
+        if result.captured_response.is_some() {
+            self.captured_response = result.captured_response.take();
+        }
+
+        if matches!(result.status, TestExecutionStatus::Fail(_)) {
+            self.failure_kind = result.failure_kind;
+            self.status = Some(result.status);
+            return true;
+        }
+        false
+    }
+
+    fn into_result(self) -> TestExecutionResult {
+        TestExecutionResult {
+            status: self.status.unwrap_or(TestExecutionStatus::Pass),
+            call_duration_ms: Some(self.total_duration_ms as u64),
+            captured_response: self.captured_response,
+            meta: crate::state::TestMeta::default(),
+            config_summary: apif_state::ConfigSummary::default(),
+            failure_kind: self.failure_kind,
+            grpc_status: self.grpc_status,
+            assertions: self.assertions,
+            retried: self.retried,
+            document_durations_ms: self.document_durations_ms,
+        }
+    }
 }
 
 pub struct TestRunner {
@@ -673,6 +799,10 @@ pub struct TestRunner {
     /// Client-side connection pool slot. Threaded into `GrpcClientConfig` so the
     /// transport channel cache keys by it — distinct ids open distinct channels.
     connection_id: u64,
+    /// When true, capture headers/trailers/response messages even outside
+    /// write mode, so reports (e.g. Allure attachments) can show what actually
+    /// happened. Off by default: skips the extra buffering unless requested.
+    capture_exchange: bool,
     assertion_engine: AssertionEngine,
     coverage_collector: Option<Arc<CoverageCollector>>,
     request_handler: RequestHandler,
@@ -745,6 +875,7 @@ impl TestRunner {
             verbose,
             protocol_override: None,
             connection_id: 0,
+            capture_exchange: false,
             assertion_engine: AssertionEngine::with_registry(PLUGIN_REGISTRY.clone()),
             coverage_collector: coverage_collector.clone(),
             request_handler: RequestHandler::new(no_assert, verbose, coverage_collector.clone()),
@@ -756,6 +887,14 @@ impl TestRunner {
     /// Set protocol override. When set, this takes priority over the GCTF file's OPTIONS.protocol.
     pub fn with_protocol(mut self, protocol: crate::grpc::WireProtocol) -> Self {
         self.protocol_override = Some(protocol);
+        self
+    }
+
+    /// Ask the runner to capture headers/trailers/response messages for every
+    /// test, not just in write mode, so reports can show what actually
+    /// happened. Capped internally — see [`apif_state::CapturedExchange`].
+    pub fn with_capture_exchange(mut self, capture: bool) -> Self {
+        self.capture_exchange = capture;
         self
     }
 
@@ -780,33 +919,16 @@ impl TestRunner {
         initial_variables: HashMap<String, Value>,
     ) -> Result<TestExecutionResult> {
         let mut variables = initial_variables;
-        let mut overall_status = TestExecutionStatus::Pass;
-        let mut overall_failure_kind = None;
-        let mut overall_grpc_status = None;
-        let mut total_duration_ms = 0.0;
+        let mut acc = ChainAccumulator::default();
 
         for doc in document.iter_chain() {
             let result = self.run_one(doc, &mut variables).await?;
-            if let Some(dur) = result.call_duration_ms {
-                total_duration_ms += dur as f64;
-            }
-            overall_grpc_status = result.grpc_status;
-
-            if let TestExecutionStatus::Fail(msg) = &result.status {
-                overall_status = TestExecutionStatus::Fail(msg.clone());
-                overall_failure_kind = result.failure_kind;
+            if acc.absorb(result) {
                 break;
             }
         }
 
-        Ok(TestExecutionResult {
-            status: overall_status,
-            call_duration_ms: Some(total_duration_ms as u64),
-            captured_response: None,
-            meta: crate::state::TestMeta::default(),
-            failure_kind: overall_failure_kind,
-            grpc_status: overall_grpc_status,
-        })
+        Ok(acc.into_result())
     }
 
     /// Run a test document chain like [`run_test_with_variables`], but also
@@ -819,36 +941,16 @@ impl TestRunner {
         document: &GctfDocument,
     ) -> Result<(TestExecutionResult, HashMap<String, Value>)> {
         let mut variables: HashMap<String, Value> = HashMap::new();
-        let mut overall_status = TestExecutionStatus::Pass;
-        let mut overall_failure_kind = None;
-        let mut overall_grpc_status = None;
-        let mut total_duration_ms = 0.0;
+        let mut acc = ChainAccumulator::default();
 
         for doc in document.iter_chain() {
             let result = self.run_one(doc, &mut variables).await?;
-            if let Some(dur) = result.call_duration_ms {
-                total_duration_ms += dur as f64;
-            }
-            overall_grpc_status = result.grpc_status;
-
-            if let TestExecutionStatus::Fail(msg) = &result.status {
-                overall_status = TestExecutionStatus::Fail(msg.clone());
-                overall_failure_kind = result.failure_kind;
+            if acc.absorb(result) {
                 break;
             }
         }
 
-        Ok((
-            TestExecutionResult {
-                status: overall_status,
-                call_duration_ms: Some(total_duration_ms as u64),
-                captured_response: None,
-                meta: crate::state::TestMeta::default(),
-                failure_kind: overall_failure_kind,
-                grpc_status: overall_grpc_status,
-            },
-            variables,
-        ))
+        Ok((acc.into_result(), variables))
     }
 
     /// Run a single document, sharing variables with the chain.
@@ -956,6 +1058,11 @@ impl TestRunner {
                     substituted.insert(key, new_val);
                 }
                 if !unresolved.is_empty() {
+                    tracing::debug!(
+                        "unresolved placeholder(s) in REQUEST_HEADERS: {:?} (known variables: {:?})",
+                        unresolved,
+                        variables.keys().collect::<Vec<_>>()
+                    );
                     return Ok(TestExecutionResult::fail(
                         format!(
                             "Unresolved variable placeholder(s) in REQUEST_HEADERS: {}",
@@ -995,6 +1102,19 @@ impl TestRunner {
 
         let client_protocol = client_config.protocol;
         let client_address = client_config.address.clone();
+        tracing::debug!(
+            "dialing {} ({:?}, service={}, timeout={}s, tls={}, proto_source={})",
+            client_address,
+            client_protocol,
+            full_service,
+            client_config.timeout_seconds,
+            client_config.tls_config.is_some(),
+            if client_config.proto_config.is_some() {
+                "explicit"
+            } else {
+                "reflection"
+            }
+        );
         let client = GrpcClient::new(client_config).await?;
 
         // Get input/output message types for field coverage tracking
@@ -1062,11 +1182,16 @@ impl TestRunner {
         let mut captured_headers: HashMap<String, String> = HashMap::new();
         let mut captured_trailers: HashMap<String, String> = HashMap::new();
         let mut failure_reasons: Vec<String> = Vec::new();
+        let mut assertion_records: Vec<apif_state::AssertionRecord> = Vec::new();
         let mut assertion_timing = AssertionScopeTimingState::default();
         // Transport-level failures (connection refused, stream startup errors,
         // stream read timeouts, ...) must never be masked in write mode and
         // must never trigger a snapshot rewrite.
         let mut transport_failure = false;
+        // Set when any REQUEST's retry loop needed more than one attempt to
+        // succeed — surfaced on the result so a test that only passed after a
+        // retry can be flagged flaky instead of looking like a clean pass.
+        let mut retry_occurred = false;
         // Numeric gRPC status observed on this call (from a returned GrpcError),
         // surfaced on the result so bench can bucket by real status code.
         let mut grpc_status: Option<u32> = None;
@@ -1095,7 +1220,7 @@ impl TestRunner {
 
         let mut skip_next_section = false;
 
-        let mut captured_response = if effective_write_mode {
+        let mut captured_response = if effective_write_mode || self.capture_exchange {
             Some(crate::grpc::GrpcResponse::new())
         } else {
             None
@@ -1173,7 +1298,7 @@ impl TestRunner {
             }
 
             let repeat_count = get_repeat().unwrap_or(1);
-            for repeat_iter in 0..repeat_count {
+            'repeat_iters: for repeat_iter in 0..repeat_count {
                 if repeat_count > 1 {
                     eprintln!(
                         "   [repeat] section at line {} — iteration {}/{}",
@@ -1185,13 +1310,23 @@ impl TestRunner {
 
                 match section.section_type {
                     SectionType::Request => {
-                        let request_value = match &section.content {
-                            SectionContent::Json(req_json) => {
-                                let mut req = req_json.clone();
-                                self.substitute_variables(&mut req, variables);
+                        // A JsonLines REQUEST sends one message per value, in
+                        // order, on the same stream — the client/bidi-streaming
+                        // symmetric counterpart to RESPONSE's JsonLines (one
+                        // expected value per streamed message received).
+                        let request_values: Vec<Value> = match &section.content {
+                            SectionContent::Json(req_json) => vec![req_json.clone()],
+                            SectionContent::JsonLines(values) => values.clone(),
+                            SectionContent::Empty => vec![Value::Object(serde_json::Map::new())],
+                            _ => continue,
+                        };
+
+                        for mut request_value in request_values {
+                            if !matches!(section.content, SectionContent::Empty) {
+                                self.substitute_variables(&mut request_value, variables);
                                 let mut unresolved = Vec::new();
                                 runner_helpers::collect_unresolved_placeholders(
-                                    &req,
+                                    &request_value,
                                     variables,
                                     &mut unresolved,
                                 );
@@ -1210,85 +1345,92 @@ impl TestRunner {
                                     )
                                     .with_failure_kind(FailureKind::Assertion));
                                 }
-                                req
                             }
-                            SectionContent::Empty => Value::Object(serde_json::Map::new()),
-                            _ => continue,
-                        };
 
-                        if let (Some(collector), Some(msg_type)) =
-                            (&self.coverage_collector, &input_message_type)
-                        {
-                            collector.record_fields_from_json(msg_type, &request_value);
-                        }
+                            if let (Some(collector), Some(msg_type)) =
+                                (&self.coverage_collector, &input_message_type)
+                            {
+                                collector.record_fields_from_json(msg_type, &request_value);
+                            }
 
-                        let Some(tx_ref) = tx.as_mut() else {
-                            failure_reasons.push(format!(
-                                "Failed to send request at line {}: request stream already closed",
-                                section.start_line
-                            ));
-                            break;
-                        };
+                            let Some(tx_ref) = tx.as_mut() else {
+                                failure_reasons.push(format!(
+                                    "Failed to send request at line {}: request stream already closed",
+                                    section.start_line
+                                ));
+                                break 'repeat_iters;
+                            };
 
-                        let section_timeout = get_timeout();
-                        let effective_timeout =
-                            section_timeout.unwrap_or(effective_timeout_seconds);
-                        let max_retries = get_retry().unwrap_or(0);
-                        let mut attempt = 0;
+                            let section_timeout = get_timeout();
+                            let effective_timeout =
+                                section_timeout.unwrap_or(effective_timeout_seconds);
+                            let max_retries = get_retry().unwrap_or(0);
+                            let mut attempt = 0;
 
-                        let send_with_timeout = || async {
-                            if effective_timeout > 0 {
-                                let send_fut = self.request_handler.send_request(
-                                    tx_ref,
-                                    request_value.clone(),
-                                    section.start_line,
-                                    None,
-                                );
-                                match tokio::time::timeout(
-                                    std::time::Duration::from_secs(effective_timeout),
-                                    send_fut,
-                                )
-                                .await
-                                {
-                                    Ok(r) => r,
-                                    Err(_) => RequestSendResult {
-                                        success: false,
-                                        error_message: Some(format!(
-                                            "Request timed out after {}s (section timeout)",
-                                            effective_timeout
-                                        )),
-                                    },
-                                }
-                            } else {
-                                self.request_handler
-                                    .send_request(
+                            let send_with_timeout = || async {
+                                if effective_timeout > 0 {
+                                    let send_fut = self.request_handler.send_request(
                                         tx_ref,
                                         request_value.clone(),
                                         section.start_line,
                                         None,
+                                    );
+                                    match tokio::time::timeout(
+                                        std::time::Duration::from_secs(effective_timeout),
+                                        send_fut,
                                     )
                                     .await
-                            }
-                        };
+                                    {
+                                        Ok(r) => r,
+                                        Err(_) => RequestSendResult {
+                                            success: false,
+                                            error_message: Some(format!(
+                                                "Request timed out after {}s (section timeout)",
+                                                effective_timeout
+                                            )),
+                                        },
+                                    }
+                                } else {
+                                    self.request_handler
+                                        .send_request(
+                                            tx_ref,
+                                            request_value.clone(),
+                                            section.start_line,
+                                            None,
+                                        )
+                                        .await
+                                }
+                            };
 
-                        let result = loop {
-                            if attempt > 0 {
-                                tokio::time::sleep(std::time::Duration::from_millis(
-                                    100 * attempt as u64,
-                                ))
-                                .await;
+                            let result = loop {
+                                if attempt > 0 {
+                                    tokio::time::sleep(std::time::Duration::from_millis(
+                                        100 * attempt as u64,
+                                    ))
+                                    .await;
+                                }
+                                let r = send_with_timeout().await;
+                                if r.success || attempt >= max_retries {
+                                    if r.success && attempt > 0 {
+                                        retry_occurred = true;
+                                    }
+                                    break r;
+                                }
+                                tracing::debug!(
+                                    "retry {}/{} at line {}: {:?}",
+                                    attempt + 1,
+                                    max_retries,
+                                    section.start_line,
+                                    r.error_message
+                                );
+                                attempt += 1;
+                            };
+                            if !result.success
+                                && let Some(error) = result.error_message
+                            {
+                                failure_reasons.push(error);
+                                transport_failure = true;
                             }
-                            let r = send_with_timeout().await;
-                            if r.success || attempt >= max_retries {
-                                break r;
-                            }
-                            attempt += 1;
-                        };
-                        if !result.success
-                            && let Some(error) = result.error_message
-                        {
-                            failure_reasons.push(error);
-                            transport_failure = true;
                         }
                     }
                     SectionType::Response => {
@@ -1563,6 +1705,7 @@ impl TestRunner {
                                         lines,
                                         msg,
                                         &mut failure_reasons,
+                                        &mut assertion_records,
                                         format!(
                                             "(attached to RESPONSE at line {})",
                                             section.start_line
@@ -1573,6 +1716,7 @@ impl TestRunner {
                                             trailers: &captured_trailers,
                                             timing: scope_timing.as_ref(),
                                             variables: &*variables,
+                                            protocol: protocol_str(client_protocol),
                                         },
                                     );
                                 }
@@ -1603,6 +1747,7 @@ impl TestRunner {
                                         lines,
                                         error_value,
                                         &mut failure_reasons,
+                                        &mut assertion_records,
                                         format!("after ERROR at line {}", section.start_line),
                                         section.start_line,
                                         AssertionContext {
@@ -1610,6 +1755,7 @@ impl TestRunner {
                                             trailers: &captured_trailers,
                                             timing: last_error_timing.as_ref(),
                                             variables: &*variables,
+                                            protocol: protocol_str(client_protocol),
                                         },
                                     );
                                 } else if let Some(error_message) = &last_error_message {
@@ -1618,6 +1764,7 @@ impl TestRunner {
                                         lines,
                                         &error_value,
                                         &mut failure_reasons,
+                                        &mut assertion_records,
                                         format!("after ERROR at line {}", section.start_line),
                                         section.start_line,
                                         AssertionContext {
@@ -1625,6 +1772,7 @@ impl TestRunner {
                                             trailers: &captured_trailers,
                                             timing: last_error_timing.as_ref(),
                                             variables: &*variables,
+                                            protocol: protocol_str(client_protocol),
                                         },
                                     );
                                 }
@@ -1675,6 +1823,9 @@ impl TestRunner {
                                     assertion_timing.finish_scope(scope_start_ms, scope_end_ms, 1);
 
                                 last_message = Some(msg.clone());
+                                if let Some(resp) = &mut captured_response {
+                                    resp.messages.push(msg.clone());
+                                }
 
                                 let should_format_message =
                                     tracing::enabled!(tracing::Level::DEBUG) || effective_no_assert;
@@ -1701,6 +1852,7 @@ impl TestRunner {
                                         lines,
                                         &msg,
                                         &mut failure_reasons,
+                                        &mut assertion_records,
                                         format!("at line {}", section.start_line),
                                         section.start_line,
                                         AssertionContext {
@@ -1708,11 +1860,16 @@ impl TestRunner {
                                             trailers: &captured_trailers,
                                             timing: scope_timing.as_ref(),
                                             variables: &*variables,
+                                            protocol: protocol_str(client_protocol),
                                         },
                                     );
                                 }
                             }
                             Some(Ok(crate::grpc::client::StreamItem::Trailers(t))) => {
+                                if let Some(resp) = &mut captured_response {
+                                    resp.trailers
+                                        .extend(t.iter().map(|(k, v)| (k.clone(), v.clone())));
+                                }
                                 captured_trailers.extend(t);
                                 // Trailers arrive at end-of-stream. A standalone ASSERTS
                                 // positioned here is asserting on trailers/status rather
@@ -1728,6 +1885,7 @@ impl TestRunner {
                                         lines,
                                         &target,
                                         &mut failure_reasons,
+                                        &mut assertion_records,
                                         format!("(trailers) at line {}", section.start_line),
                                         section.start_line,
                                         AssertionContext {
@@ -1735,6 +1893,7 @@ impl TestRunner {
                                             trailers: &captured_trailers,
                                             timing: None,
                                             variables: &*variables,
+                                            protocol: protocol_str(client_protocol),
                                         },
                                     );
                                 }
@@ -1749,6 +1908,9 @@ impl TestRunner {
                                     assertion_timing.finish_scope(scope_start_ms, scope_end_ms, 1);
 
                                 last_error_message = Some(status.message().to_string());
+                                if let Some(resp) = &mut captured_response {
+                                    resp.error = Some(status.message().to_string());
+                                }
                                 let error_json =
                                     super::error_handler::ErrorHandler::status_to_json(&status);
                                 last_error_json = Some(error_json.clone());
@@ -1760,6 +1922,7 @@ impl TestRunner {
                                         lines,
                                         &error_json,
                                         &mut failure_reasons,
+                                        &mut assertion_records,
                                         format!("after ERROR at line {}", section.start_line),
                                         section.start_line,
                                         AssertionContext {
@@ -1767,6 +1930,7 @@ impl TestRunner {
                                             trailers: &captured_trailers,
                                             timing: last_error_timing.as_ref(),
                                             variables: &*variables,
+                                            protocol: protocol_str(client_protocol),
                                         },
                                     );
                                 } else {
@@ -1792,6 +1956,9 @@ impl TestRunner {
                                     match self.assertion_engine.query(query, msg) {
                                         Ok(results) => {
                                             if let Some(val) = results.first() {
+                                                tracing::trace!(
+                                                    "extract: {key} = {query} -> {val:?}"
+                                                );
                                                 variables.insert(key.clone(), val.clone());
                                             } else {
                                                 failure_reasons.push(format!(
@@ -1997,6 +2164,7 @@ impl TestRunner {
                                                     lines,
                                                     target,
                                                     &mut failure_reasons,
+                                                    &mut assertion_records,
                                                     format!(
                                                         "(attached to ERROR at line {})",
                                                         section.start_line
@@ -2007,6 +2175,7 @@ impl TestRunner {
                                                         trailers: &captured_trailers,
                                                         timing: last_error_timing.as_ref(),
                                                         variables: &*variables,
+                                                        protocol: protocol_str(client_protocol),
                                                     },
                                                 );
                                             }
@@ -2165,6 +2334,7 @@ impl TestRunner {
                                             lines,
                                             &error_json,
                                             &mut failure_reasons,
+                                            &mut assertion_records,
                                             format!(
                                                 "(attached to ERROR at line {})",
                                                 section.start_line
@@ -2175,6 +2345,7 @@ impl TestRunner {
                                                 trailers: &captured_trailers,
                                                 timing: last_error_timing.as_ref(),
                                                 variables: &*variables,
+                                                protocol: protocol_str(client_protocol),
                                             },
                                         );
                                         skip_next_section = true;
@@ -2288,6 +2459,15 @@ impl TestRunner {
             }
         }
 
+        // Tag this document's assertions with its endpoint so multi-document
+        // chains group per endpoint in verbose reports.
+        let endpoint_label = format!("{}/{}", full_service, method);
+        for rec in &mut assertion_records {
+            if rec.endpoint.is_none() {
+                rec.endpoint = Some(endpoint_label.clone());
+            }
+        }
+
         let grpc_duration = start_time.elapsed().as_millis() as u64;
 
         if !failure_reasons.is_empty() {
@@ -2301,7 +2481,9 @@ impl TestRunner {
             {
                 return Ok(TestExecutionResult::pass(Some(grpc_duration))
                     .with_response(resp)
-                    .with_grpc_status(grpc_status.unwrap_or(0)));
+                    .with_grpc_status(grpc_status.unwrap_or(0))
+                    .with_assertions(assertion_records)
+                    .with_retried(retry_occurred));
             }
 
             let kind = if transport_failure {
@@ -2313,18 +2495,25 @@ impl TestRunner {
                 format!("Validation failed:\n  - {}", failure_reasons.join("\n  - ")),
                 Some(grpc_duration),
             )
-            .with_failure_kind(kind);
+            .with_failure_kind(kind)
+            .with_assertions(assertion_records)
+            .with_retried(retry_occurred);
             // Only surface a gRPC status for transport failures (the real code
             // the server/transport returned). A pure assertion failure reached
             // no defined gRPC status, so it stays `None`.
             if transport_failure && let Some(code) = grpc_status {
                 result = result.with_grpc_status(code);
             }
+            if let Some(resp) = captured_response {
+                result = result.with_response(resp);
+            }
             return Ok(result);
         }
 
         let mut result = TestExecutionResult::pass(Some(grpc_duration))
-            .with_grpc_status(grpc_status.unwrap_or(0));
+            .with_grpc_status(grpc_status.unwrap_or(0))
+            .with_assertions(assertion_records)
+            .with_retried(retry_occurred);
         if !transport_failure && let Some(resp) = captured_response {
             result = result.with_response(resp);
         }
@@ -2378,11 +2567,13 @@ impl TestRunner {
         }
     }
 
+    #[expect(clippy::too_many_arguments)]
     fn run_assertions(
         &self,
         lines: &[String],
         target_value: &Value,
         failure_reasons: &mut Vec<String>,
+        assertion_records: &mut Vec<apif_state::AssertionRecord>,
         context: String,
         start_line: usize,
         assertion_context: AssertionContext<'_>,
@@ -2414,11 +2605,13 @@ impl TestRunner {
             start_line,
             assertion_context.timing,
             assertion_context.variables,
+            assertion_context.protocol,
         );
 
         if !result.passed {
             failure_reasons.extend(result.failure_messages);
         }
+        assertion_records.extend(result.records);
     }
 
     /// Format JSON comparison diffs and append to failure_reasons.
@@ -2472,11 +2665,6 @@ impl TestRunner {
         }
         if effective_no_assert {
             println!("--- RESPONSE (Raw) ---\n{}", pretty);
-        } else if verbose {
-            println!(
-                "[{}@{}] 🔍 gRPC response received: '{}'",
-                protocol, addr, pretty
-            );
         }
     }
 
@@ -2601,7 +2789,7 @@ impl TestRunner {
                         }
                     }
                 }
-                SectionType::Bench | SectionType::Meta => {}
+                SectionType::Bench | SectionType::Meta | SectionType::Dataset => {}
             }
         }
 
@@ -2663,7 +2851,136 @@ mod tests {
 
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
+    // Regression: `run_test_with_variables`/`run_test_capturing_vars` used to
+    // hardcode `captured_response: None` on the aggregate, discarding every
+    // per-document response — so `--write` snapshot mode never rewrote files
+    // with the real captured response for the happy path. `ChainAccumulator`
+    // carries the last document's response through.
+    // A single JsonLines REQUEST section sending 3 messages must infer the
+    // same ClientStreaming mode as 3 separate REQUEST sections would — the
+    // inference must count messages, not sections, or `rpc_mode` (which
+    // drives the actual wire streaming type for non-gRPC protocols) silently
+    // misclassifies a JsonLines request as unary.
     #[test]
+    fn infer_rpc_mode_counts_jsonlines_request_messages_not_sections() {
+        let content = r#"--- ENDPOINT ---
+chat.ChatService/SendMessages
+
+--- REQUEST ---
+{ "text": "one" }
+{ "text": "two" }
+{ "text": "three" }
+
+--- RESPONSE ---
+{ "count": 3 }
+"#;
+        let doc = crate::parser::parse_gctf_from_str(content, "test.gctf").expect("valid document");
+        assert_eq!(
+            infer_rpc_mode_for_section_types(&doc),
+            RpcModeInfo::ClientStreaming
+        );
+    }
+
+    #[test]
+    fn chain_accumulator_carries_last_captured_response_through() {
+        let mut acc = ChainAccumulator::default();
+
+        let first =
+            TestExecutionResult::pass(Some(10)).with_response(crate::grpc::GrpcResponse::new());
+        assert!(!acc.absorb(first));
+
+        let mut second_response = crate::grpc::GrpcResponse::new();
+        second_response.messages.push(json!({"ok": true}));
+        let second = TestExecutionResult::pass(Some(20)).with_response(second_response);
+        assert!(!acc.absorb(second));
+
+        let result = acc.into_result();
+        assert_eq!(result.call_duration_ms, Some(30));
+        let resp = result
+            .captured_response
+            .expect("last document's response must survive chain aggregation");
+        assert_eq!(resp.messages, vec![json!({"ok": true})]);
+    }
+
+    #[test]
+    fn chain_accumulator_stops_on_first_failure_and_keeps_its_response() {
+        let mut acc = ChainAccumulator::default();
+
+        let mut failing_response = crate::grpc::GrpcResponse::new();
+        failing_response.error = Some("boom".to_string());
+        let failing = TestExecutionResult::fail("assertion mismatch".to_string(), Some(5))
+            .with_response(failing_response);
+        assert!(acc.absorb(failing), "a Fail result must stop the chain");
+
+        let result = acc.into_result();
+        assert!(
+            matches!(result.status, TestExecutionStatus::Fail(ref m) if m == "assertion mismatch")
+        );
+        assert_eq!(
+            result.captured_response.and_then(|r| r.error),
+            Some("boom".to_string())
+        );
+    }
+
+    #[test]
+    fn chain_accumulator_aggregates_assertions_across_documents() {
+        let mut acc = ChainAccumulator::default();
+
+        let record = apif_state::AssertionRecord {
+            line: 1,
+            expression: ".id == 1".to_string(),
+            passed: true,
+            elapsed_ms: 0,
+            message: None,
+            endpoint: None,
+            expected: None,
+            actual: None,
+        };
+        acc.absorb(TestExecutionResult::pass(None).with_assertions(vec![record.clone()]));
+        acc.absorb(TestExecutionResult::pass(None).with_assertions(vec![record.clone()]));
+
+        assert_eq!(acc.into_result().assertions.len(), 2);
+    }
+
+    // Regression: `retried` must be sticky across a chain — one flaky document
+    // makes the whole chain flaky, even if later documents didn't need a retry.
+    #[test]
+    fn chain_accumulator_retried_is_sticky_across_documents() {
+        let mut acc = ChainAccumulator::default();
+        acc.absorb(TestExecutionResult::pass(None).with_retried(true));
+        acc.absorb(TestExecutionResult::pass(None).with_retried(false));
+        assert!(acc.into_result().retried, "retried must stay true");
+    }
+
+    #[test]
+    fn chain_accumulator_not_retried_when_no_document_retried() {
+        let mut acc = ChainAccumulator::default();
+        acc.absorb(TestExecutionResult::pass(None).with_retried(false));
+        assert!(!acc.into_result().retried);
+    }
+
+    // Regression: each document's own duration must be collected in order, not
+    // just summed — reporters need the individual values for real step timing.
+    #[test]
+    fn chain_accumulator_collects_per_document_durations_in_order() {
+        let mut acc = ChainAccumulator::default();
+        acc.absorb(TestExecutionResult::pass(Some(50)));
+        acc.absorb(TestExecutionResult::pass(Some(30)));
+        let result = acc.into_result();
+        assert_eq!(result.document_durations_ms, vec![50, 30]);
+        // total_duration_ms (call_duration_ms) still sums, unaffected.
+        assert_eq!(result.call_duration_ms, Some(80));
+    }
+
+    #[test]
+    fn chain_accumulator_missing_duration_recorded_as_zero() {
+        let mut acc = ChainAccumulator::default();
+        acc.absorb(TestExecutionResult::pass(None));
+        assert_eq!(acc.into_result().document_durations_ms, vec![0]);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_test_runner_new() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
         assert!(!runner.dry_run);
@@ -2674,24 +2991,28 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_test_runner_with_dry_run() {
         let runner = TestRunner::new(true, 30, false, false, false, None);
         assert!(runner.dry_run);
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_test_runner_with_timeout() {
         let runner = TestRunner::new(false, 60, false, false, false, None);
         assert_eq!(runner.timeout_seconds, 60);
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_test_runner_with_no_assert() {
         let runner = TestRunner::new(false, 30, true, false, false, None);
         assert!(runner.no_assert);
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_test_runner_with_write_mode() {
         let runner = TestRunner::new(false, 30, false, true, false, None);
         assert!(runner.write_mode);
@@ -2715,7 +3036,7 @@ mod tests {
 
     #[test]
     fn test_parse_compression_option_from_options() {
-        let mut options = HashMap::new();
+        let mut options = crate::parser::OrderedStringMap::new();
         options.insert("compression".to_string(), "gzip".to_string());
 
         assert_eq!(
@@ -2726,7 +3047,7 @@ mod tests {
 
     #[test]
     fn test_parse_compression_option_none_from_options() {
-        let mut options = HashMap::new();
+        let mut options = crate::parser::OrderedStringMap::new();
         options.insert("compression".to_string(), "none".to_string());
 
         assert_eq!(
@@ -2742,7 +3063,7 @@ mod tests {
             std::env::set_var(crate::config::ENV_GRPCTESTIFY_COMPRESSION, "gzip");
         }
 
-        let mut options = HashMap::new();
+        let mut options = crate::parser::OrderedStringMap::new();
         options.insert("compression".to_string(), "invalid".to_string());
         assert_eq!(runner_helpers::parse_compression_option(&options), None);
 
@@ -2841,6 +3162,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_test_runner_with_verbose() {
         let runner = TestRunner::new(false, 30, false, false, true, None);
         assert!(runner.verbose);
@@ -2911,6 +3233,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_substitute_variables_exact_match_preserves_type() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
         let mut value = json!("{{ count }}");
@@ -2922,6 +3245,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_substitute_variables_interpolation_single_pass() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
         let mut value = json!("id={{id}}, user={{ user }}, ok={{ok}}");
@@ -2935,6 +3259,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_substitute_variables_keeps_unknown_placeholder() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
         let mut value = json!("hello {{known}} and {{unknown}}");
@@ -2947,7 +3272,7 @@ mod tests {
 
     #[test]
     fn test_expected_values_for_response_section() {
-        use crate::parser::ast::{InlineOptions, Section, SectionContent};
+        use crate::parser::ast::{InlineOptions, Section, SectionContent, SectionSpan};
 
         let section = Section {
             section_type: crate::parser::ast::SectionType::Response,
@@ -2957,6 +3282,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         };
 
         let values = TestRunner::expected_values_for_response_section(&section);
@@ -2966,7 +3292,7 @@ mod tests {
 
     #[test]
     fn test_expected_values_for_json_lines() {
-        use crate::parser::ast::{InlineOptions, Section, SectionContent};
+        use crate::parser::ast::{InlineOptions, Section, SectionContent, SectionSpan};
 
         let section = Section {
             section_type: crate::parser::ast::SectionType::Response,
@@ -2979,6 +3305,7 @@ mod tests {
             start_line: 1,
             end_line: 3,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         };
 
         let values = TestRunner::expected_values_for_response_section(&section);
@@ -2987,7 +3314,9 @@ mod tests {
 
     #[test]
     fn test_expected_values_for_other_section() {
-        use crate::parser::ast::{InlineOptions, Section, SectionContent, SectionType};
+        use crate::parser::ast::{
+            InlineOptions, Section, SectionContent, SectionSpan, SectionType,
+        };
 
         // The function returns values for any Json content, not just Response sections
         // This is expected behavior - it extracts Json values regardless of section type
@@ -2999,6 +3328,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         };
 
         let values = TestRunner::expected_values_for_response_section(&section);
@@ -3071,7 +3401,9 @@ mod tests {
 
     #[test]
     fn test_has_required_followup_asserts_for_error_requires_adjacent_asserts() {
-        use crate::parser::ast::{InlineOptions, Section, SectionContent, SectionType};
+        use crate::parser::ast::{
+            InlineOptions, Section, SectionContent, SectionSpan, SectionType,
+        };
 
         let error = Section {
             section_type: SectionType::Error,
@@ -3084,6 +3416,7 @@ mod tests {
             start_line: 12,
             end_line: 12,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         };
         let sections = vec![error.clone()];
         let mut failures = Vec::new();
@@ -3098,7 +3431,9 @@ mod tests {
 
     #[test]
     fn test_has_required_followup_asserts_for_error_accepts_adjacent_asserts() {
-        use crate::parser::ast::{InlineOptions, Section, SectionContent, SectionType};
+        use crate::parser::ast::{
+            InlineOptions, Section, SectionContent, SectionSpan, SectionType,
+        };
 
         let error = Section {
             section_type: SectionType::Error,
@@ -3111,6 +3446,7 @@ mod tests {
             start_line: 20,
             end_line: 20,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         };
         let asserts = Section {
             section_type: SectionType::Asserts,
@@ -3120,6 +3456,7 @@ mod tests {
             start_line: 21,
             end_line: 21,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         };
         let sections = vec![error.clone(), asserts];
         let mut failures = Vec::new();
@@ -3132,6 +3469,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_error_assertions_evaluate_against_error_json_object() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
         let target = json!({
@@ -3150,6 +3488,7 @@ mod tests {
             ".details[0][\"@type\"] == \"type.googleapis.com/google.rpc.ErrorInfo\"".to_string(),
         ];
         let mut failures = Vec::new();
+        let mut assertion_records = Vec::new();
         let headers: HashMap<String, String> = HashMap::new();
         let trailers: HashMap<String, String> = HashMap::new();
 
@@ -3157,6 +3496,7 @@ mod tests {
             &lines,
             &target,
             &mut failures,
+            &mut assertion_records,
             "(attached to ERROR at line 1)".to_string(),
             1,
             AssertionContext {
@@ -3164,13 +3504,17 @@ mod tests {
                 trailers: &trailers,
                 timing: None,
                 variables: &HashMap::new(),
+                protocol: "grpc",
             },
         );
 
         assert!(failures.is_empty(), "unexpected failures: {failures:?}");
+        assert_eq!(assertion_records.len(), 3);
+        assert!(assertion_records.iter().all(|r| r.passed));
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)]
     async fn run_test_capturing_vars_returns_result_and_map() {
         // Dry-run short-circuits before any network call, so this exercises the
         // additive method's plumbing (result + variable map) without a server.

@@ -7,7 +7,6 @@ use crate::gctf_tokenizer;
 use apif_diagnostics::{DiagnosticCode, DiagnosticCollection, Range};
 use std::path::Path;
 
-/// Result of error recovery parsing
 pub struct ErrorRecoveryResult {
     pub document: GctfDocument,
     pub diagnostics: DiagnosticCollection,
@@ -16,10 +15,29 @@ pub struct ErrorRecoveryResult {
 }
 
 /// Parse GCTF file with error recovery.
-/// Supports multiple documents via document chain.
+/// Supports multiple documents via document chain. An unreadable file (missing,
+/// permission denied, non-UTF8) is not silently treated as empty — it surfaces
+/// as an error diagnostic on the (otherwise empty) result, same as any other
+/// recovered-from parse failure in this module.
 pub fn parse_with_recovery(file_path: &Path) -> ErrorRecoveryResult {
-    let content = std::fs::read_to_string(file_path).unwrap_or_default();
-    parse_content_with_recovery(&content, file_path.to_string_lossy().as_ref())
+    let file_path_str = file_path.to_string_lossy();
+    match std::fs::read_to_string(file_path) {
+        Ok(content) => parse_content_with_recovery(&content, file_path_str.as_ref()),
+        Err(e) => {
+            let mut diagnostics = DiagnosticCollection::new();
+            diagnostics.error(
+                DiagnosticCode::InvalidSectionContent,
+                format!("Failed to read file {}: {}", file_path.display(), e),
+                Range::at_line(0),
+            );
+            ErrorRecoveryResult {
+                document: GctfDocument::new(file_path_str.to_string()),
+                diagnostics,
+                recovered_sections: 0,
+                failed_sections: 0,
+            }
+        }
+    }
 }
 
 /// Parse GCTF content string with error recovery.
@@ -62,40 +80,142 @@ fn build_doc_from_sections(sections: &[Section], file_path: &str) -> GctfDocumen
             source: None,
             mtime: None,
             parsed_at: 0,
-            ..Default::default()
         },
         next_document: None,
     }
 }
 
-/// Parse a single document (no `--- NEW ---` splitting)
+/// A section being accumulated while walking the token stream.
+struct PendingSection {
+    section_type: SectionType,
+    inline_options: crate::ast::InlineOptions,
+    /// Source line of this section's `--- X ---` header.
+    header_line: usize,
+    /// Raw content lines (Content/Comment/Blank tokens), excluding `#[attr]`
+    /// lines (those are diverted to the next section's attributes, same as the
+    /// strict path).
+    content_lines: Vec<String>,
+    /// Source line of the last content line added — the inclusive `end_line`,
+    /// matching this module's long-standing convention (the strict path uses
+    /// an exclusive bound instead; the two still differ by design, see the
+    /// span note in `finalize_section`).
+    last_line: usize,
+    attributes: Vec<crate::ast::GctfAttribute>,
+}
+
+/// Parse a single document (no `--- NEW ---` splitting).
+///
+/// Consumes the shared `gctf_tokenizer` token stream — the same one the strict
+/// `core.rs` path uses — instead of hand-rolling raw line scanning, so this
+/// module no longer reads raw `.gctf` text directly (the sole remaining raw
+/// scan, detecting a miscased `--- endpoint ---` header, lives in the
+/// tokenizer via `scan_miscased_section_header_name`). Recovery behavior is
+/// preserved: nothing hard-fails, every malformed input becomes a diagnostic.
 fn parse_single_with_recovery(content: &str, file_path: &str) -> ErrorRecoveryResult {
     let mut diagnostics = DiagnosticCollection::new();
     let mut sections = Vec::new();
     let mut recovered_sections = 0;
     let failed_sections = 0;
 
-    let lines: Vec<&str> = content.lines().collect();
-    let mut current_line = 0;
+    let tokens = gctf_tokenizer::tokenize_gctf(content);
+    let line_offsets = crate::ast::line_start_byte_offsets(content);
 
+    // Uniform deprecation detection (HEADERS alias, kebab OPTIONS keys, kebab
+    // attributes) from the one shared token-level detector — the same source
+    // the strict `check` path uses, so every command reports identically.
+    for diag in crate::deprecations::detect_deprecations(&tokens) {
+        diagnostics.push(diag);
+    }
+
+    let mut current: Option<PendingSection> = None;
     let mut pending_attributes: Vec<crate::ast::GctfAttribute> = Vec::new();
 
-    while current_line < lines.len() {
-        match parse_section(
-            &lines,
-            current_line,
-            &mut diagnostics,
-            &mut pending_attributes,
-        ) {
-            Ok((section, end_line)) => {
-                sections.push(section);
-                recovered_sections += 1;
-                current_line = end_line;
+    for token in &tokens {
+        match &token.kind {
+            gctf_tokenizer::GctfTokenKind::SectionHeader { name, raw_options } => {
+                if let Some(pending) = current.take() {
+                    finalize_section(
+                        pending,
+                        content,
+                        &line_offsets,
+                        &mut sections,
+                        &mut diagnostics,
+                    );
+                    recovered_sections += 1;
+                }
+
+                match SectionType::from_keyword(name) {
+                    Some(section_type) => {
+                        // (HEADERS-alias deprecation is reported once, up front,
+                        // by the shared `detect_deprecations` pass above.)
+                        let inline_options = resolve_inline_options(
+                            section_type,
+                            raw_options,
+                            token.line,
+                            &mut diagnostics,
+                        );
+                        current = Some(PendingSection {
+                            section_type,
+                            inline_options,
+                            header_line: token.line,
+                            content_lines: Vec::new(),
+                            last_line: token.line,
+                            attributes: std::mem::take(&mut pending_attributes),
+                        });
+                    }
+                    None => {
+                        // Uppercase-but-unknown section (e.g. `--- FOOBAR ---`).
+                        // Pending attributes are left intact to attach to the
+                        // next real section, matching the old behavior.
+                        warn_unknown_section(name, token.line, &mut diagnostics);
+                    }
+                }
             }
-            Err(end_line) => {
-                current_line = end_line;
+            gctf_tokenizer::GctfTokenKind::AttributeBlock(attr_content) => {
+                match crate::content_parser::parse_attribute(attr_content) {
+                    Some(attr) => pending_attributes.push(attr),
+                    None => diagnostics.warning(
+                        DiagnosticCode::InvalidSyntax,
+                        format!("Malformed attribute: #[{}]", attr_content),
+                        Range::at_line(token.line),
+                    ),
+                }
+            }
+            gctf_tokenizer::GctfTokenKind::Comment(text)
+            | gctf_tokenizer::GctfTokenKind::Content(text) => {
+                if let Some(pending) = current.as_mut() {
+                    pending.content_lines.push(text.clone());
+                    pending.last_line = token.line;
+                } else if matches!(token.kind, gctf_tokenizer::GctfTokenKind::Content(_)) {
+                    // Floating (not inside any section) content line that is
+                    // actually a miscased/invalid section-header shape — give
+                    // the same "did you mean 'ENDPOINT'?" diagnostic the strict
+                    // uppercase-only tokenizer can't. A comment or genuine
+                    // content line here is silently dropped, as before.
+                    if let Some(raw_name) = gctf_tokenizer::scan_miscased_section_header_name(text)
+                    {
+                        warn_unknown_section(&raw_name, token.line, &mut diagnostics);
+                    }
+                }
+            }
+            gctf_tokenizer::GctfTokenKind::Blank => {
+                if let Some(pending) = current.as_mut() {
+                    pending.content_lines.push(String::new());
+                    pending.last_line = token.line;
+                }
             }
         }
+    }
+
+    if let Some(pending) = current.take() {
+        finalize_section(
+            pending,
+            content,
+            &line_offsets,
+            &mut sections,
+            &mut diagnostics,
+        );
+        recovered_sections += 1;
     }
 
     let document = GctfDocument {
@@ -105,7 +225,6 @@ fn parse_single_with_recovery(content: &str, file_path: &str) -> ErrorRecoveryRe
             source: Some(content.to_string()),
             mtime: None,
             parsed_at: 0,
-            ..Default::default()
         },
         next_document: None,
     };
@@ -118,147 +237,88 @@ fn parse_single_with_recovery(content: &str, file_path: &str) -> ErrorRecoveryRe
     }
 }
 
-/// Parse a single section from lines
-fn parse_section(
-    lines: &[&str],
-    start_line: usize,
+/// Turn an accumulated `PendingSection` into a `Section`, parsing its content
+/// with recovery and computing its span.
+fn finalize_section(
+    pending: PendingSection,
+    content: &str,
+    line_offsets: &[usize],
+    sections: &mut Vec<Section>,
     diagnostics: &mut DiagnosticCollection,
-    pending_attributes: &mut Vec<crate::ast::GctfAttribute>,
-) -> Result<(Section, usize), usize> {
-    let line = lines.get(start_line).copied().unwrap_or("");
-    let trimmed = line.trim();
+) {
+    let content_start = pending.header_line + 1;
+    let content_result = parse_section_content(
+        &pending.content_lines,
+        content_start,
+        pending.section_type,
+        diagnostics,
+    );
 
-    if trimmed.is_empty() || trimmed.starts_with("//") {
-        return Err(start_line + 1);
-    }
+    // `end_line` is the inclusive last-content-line index (this module's
+    // convention); the span wants a half-open bound, hence `+ 1`.
+    let end_line = pending.last_line;
+    let span = crate::ast::SectionSpan::from_line_range(
+        line_offsets,
+        pending.header_line,
+        end_line + 1,
+        content.len(),
+    );
 
-    if trimmed.starts_with("#[") && trimmed.ends_with(']') {
-        let inner = &trimmed[2..trimmed.len() - 1];
-        if let Some(attr) = crate::content_parser::parse_attribute(inner) {
-            pending_attributes.push(attr);
-        }
-        return Err(start_line + 1);
-    }
-
-    if !trimmed.starts_with("---") {
-        return Err(start_line + 1);
-    }
-
-    let (section_type, inline_options) =
-        match parse_section_header(trimmed, start_line, diagnostics) {
-            Some(t) => t,
-            None => return Err(start_line + 1),
-        };
-
-    let content_start = start_line + 1;
-    let (content, content_end) = extract_section_content(lines, content_start, section_type);
-
-    let content_result = parse_section_content(&content, content_start, section_type, diagnostics);
-
-    let section = Section {
-        section_type,
+    sections.push(Section {
+        section_type: pending.section_type,
         content: content_result,
-        inline_options,
-        raw_content: content.join("\n"),
-        start_line,
-        end_line: content_end,
-        attributes: std::mem::take(pending_attributes),
-    };
-
-    Ok((section, content_end + 1))
+        inline_options: pending.inline_options,
+        raw_content: pending.content_lines.join("\n"),
+        start_line: pending.header_line,
+        end_line,
+        attributes: pending.attributes,
+        span,
+    });
 }
 
-/// Parse section header like "--- ENDPOINT ---"
-fn parse_section_header(
-    line: &str,
+/// Resolve a header's inline options, recovering (diagnostic + default) on any
+/// problem instead of failing — mirrors the strict path's option parsing but
+/// never propagates an error.
+fn resolve_inline_options(
+    section_type: SectionType,
+    raw_options: &str,
     line_num: usize,
     diagnostics: &mut DiagnosticCollection,
-) -> Option<(SectionType, crate::ast::InlineOptions)> {
-    let without_delimiters = line.trim_start_matches('-').trim_end_matches('-').trim();
-
-    let (section_name, inline_opts_str) = without_delimiters
-        .split_once(' ')
-        .map_or((without_delimiters, ""), |(name, opts)| (name, opts));
-    let section_name = section_name.trim();
-    let inline_opts_str = inline_opts_str.trim();
-
-    let section_type = match section_name.to_uppercase().as_str() {
-        "ADDRESS" => SectionType::Address,
-        "ENDPOINT" => SectionType::Endpoint,
-        "REQUEST" => SectionType::Request,
-        "RESPONSE" => SectionType::Response,
-        "ERROR" => SectionType::Error,
-        "EXTRACT" => SectionType::Extract,
-        "ASSERTS" => SectionType::Asserts,
-        "REQUEST_HEADERS" => SectionType::RequestHeaders,
-        "HEADERS" => {
-            diagnostics.warning(
-                DiagnosticCode::DeprecatedSymbol,
-                "HEADERS is deprecated, use REQUEST_HEADERS".to_string(),
-                Range::at_line(line_num),
-            );
-            SectionType::RequestHeaders
-        }
-        "TLS" => SectionType::Tls,
-        "PROTO" => SectionType::Proto,
-        "OPTIONS" => SectionType::Options,
-        "META" => SectionType::Meta,
-        "BENCH" => SectionType::Bench,
-        _ => {
-            diagnostics.warning(
-                DiagnosticCode::UnknownSectionType,
-                format!("Unknown section type: {}", section_name),
-                Range::at_line(line_num),
-            );
-            return None;
-        }
-    };
-
-    let has_opts = !inline_opts_str.is_empty();
-    let inline_options = if has_opts && section_type.supports_inline_options() {
-        match crate::content_parser::parse_inline_options(inline_opts_str) {
+) -> crate::ast::InlineOptions {
+    let has_opts = !raw_options.is_empty();
+    if has_opts && section_type.supports_inline_options() {
+        match crate::content_parser::parse_inline_options(raw_options) {
             Ok(opts) => opts,
             Err(_) => {
-                parse_inline_options_diagnostic(inline_opts_str, line_num, diagnostics);
+                parse_inline_options_diagnostic(raw_options, line_num, diagnostics);
                 Default::default()
             }
         }
     } else {
         if has_opts {
-            parse_inline_options_diagnostic(inline_opts_str, line_num, diagnostics);
+            parse_inline_options_diagnostic(raw_options, line_num, diagnostics);
         }
         Default::default()
-    };
-
-    Some((section_type, inline_options))
+    }
 }
 
-/// Extract content lines for a section
-fn extract_section_content(
-    lines: &[&str],
-    start: usize,
-    _section_type: SectionType,
-) -> (Vec<String>, usize) {
-    let mut content = Vec::new();
-    let mut end_line = start;
-
-    for (i, line) in lines.iter().enumerate().skip(start) {
-        let trimmed = line.trim();
-
-        if trimmed.starts_with("---") && trimmed.ends_with("---") {
-            break;
-        }
-
-        // Skip attribute lines (they belong to the next section, not current)
-        if trimmed.starts_with("#[") && trimmed.ends_with(']') {
-            continue;
-        }
-
-        content.push(line.to_string());
-        end_line = i;
-    }
-
-    (content, end_line)
+/// Warn about a section name that isn't a known type. A recognizable-but-
+/// miscased name (`endpoint` → `ENDPOINT`) gets an actionable case hint; a
+/// genuinely unknown name gets a plain "unknown section type".
+fn warn_unknown_section(name: &str, line_num: usize, diagnostics: &mut DiagnosticCollection) {
+    let upper = name.to_uppercase();
+    let message = if name != upper && SectionType::from_keyword(&upper).is_some() {
+        format!(
+            "Unknown section type: '{name}' — section names are case-sensitive, did you mean '{upper}'?"
+        )
+    } else {
+        format!("Unknown section type: {name}")
+    };
+    diagnostics.warning(
+        DiagnosticCode::UnknownSectionType,
+        message,
+        Range::at_line(line_num),
+    );
 }
 
 /// Parse section content based on type
@@ -282,29 +342,52 @@ fn parse_section_content(
                 match crate::json_mod::from_str(&content_str) {
                     Ok(value) => SectionContent::Json(value),
                     Err(e) => {
-                        // Add error but continue parsing
+                        // `content_str` is unmodified `content.join("\n")`, so
+                        // its line 0 is exactly file line `start_line` — the
+                        // parser's own relative line, if it reported one,
+                        // can be turned into an absolute file line by simple
+                        // addition rather than pointing at the section start
+                        // regardless of where the actual error is.
+                        let line = e
+                            .downcast_ref::<crate::json_mod::JsonParseError>()
+                            .and_then(|err| err.line)
+                            .map(|relative_line| start_line + relative_line)
+                            .unwrap_or(start_line);
                         diagnostics.error(
                             DiagnosticCode::JsonParseError,
                             format!("Failed to parse JSON: {}", e),
-                            Range::at_line(start_line),
+                            Range::at_line(line),
                         );
-                        // Return as-is to allow further processing
-                        SectionContent::Json(serde_json::Value::String(content_str))
+                        // Never smuggle the unparsed raw text as a JSON string
+                        // value — a consumer that doesn't check diagnostics
+                        // would otherwise treat garbage text as a real payload
+                        // (e.g. send it literally as a gRPC request body).
+                        SectionContent::Empty
                     }
                 }
             }
         }
         SectionType::Extract => {
-            let mut extractions = std::collections::HashMap::new();
+            let mut extractions = crate::ast::OrderedStringMap::new();
             for (i, line) in content.iter().enumerate() {
                 let trimmed = line.trim();
-                if trimmed.is_empty() || trimmed.starts_with('#') {
+                if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
                     continue;
                 }
 
-                if let Some(eq_pos) = trimmed.find('=') {
-                    let name = trimmed[..eq_pos].trim().to_string();
-                    let query = trimmed[eq_pos + 1..].trim().to_string();
+                // Recognition (not just splitting) goes through the shared
+                // tokenizer, same as the strict path's `content_parser.rs` —
+                // this file used to hand-roll its own `.find('=')` here.
+                if let Some((name, query)) = gctf_tokenizer::tokenize_extract_line(line) {
+                    if extractions.contains_key(&name) {
+                        diagnostics.warning(
+                            DiagnosticCode::DuplicateKey,
+                            format!(
+                                "Duplicate EXTRACT variable '{name}' — only the last assignment is kept"
+                            ),
+                            Range::at_line(start_line + i),
+                        );
+                    }
                     extractions.insert(name, query);
                 } else {
                     diagnostics.warning(
@@ -328,16 +411,28 @@ fn parse_section_content(
         | SectionType::Proto
         | SectionType::Options
         | SectionType::Bench => {
-            let mut key_values = std::collections::HashMap::new();
+            let mut key_values = crate::ast::OrderedStringMap::new();
             for (i, line) in content.iter().enumerate() {
                 let trimmed = line.trim();
-                if trimmed.is_empty() || trimmed.starts_with('#') {
+                if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
                     continue;
                 }
 
-                if let Some(colon_pos) = trimmed.find(':') {
-                    let key = trimmed[..colon_pos].trim().to_string();
-                    let value = trimmed[colon_pos + 1..].trim().to_string();
+                // Recognition (not just splitting) goes through the shared
+                // tokenizer, same as the strict path's `content_parser.rs` —
+                // this file used to hand-roll its own `.find(':')` here.
+                if let Some((key, value)) = gctf_tokenizer::tokenize_kv_line(line) {
+                    // BENCH excluded: a continuation line for `sources:`'s
+                    // nested YAML list isn't a real re-declaration of the
+                    // key, and this lenient loop (unlike `parse_bench_section`
+                    // in `content_parser.rs`) doesn't distinguish the two.
+                    if section_type != SectionType::Bench && key_values.contains_key(&key) {
+                        diagnostics.warning(
+                            DiagnosticCode::DuplicateKey,
+                            format!("Duplicate key '{key}' — only the last value is kept"),
+                            Range::at_line(start_line + i),
+                        );
+                    }
                     key_values.insert(key, value);
                 } else {
                     diagnostics.warning(
@@ -350,18 +445,30 @@ fn parse_section_content(
             SectionContent::KeyValues(key_values)
         }
         SectionType::Meta => {
-            // Use tokenizer to strip GCTF comment lines before parsing YAML
-            let raw = content.join("\n");
-            let tokens = gctf_tokenizer::tokenize_gctf(&raw);
-            let yaml_lines: Vec<String> = content
-                .iter()
-                .zip(tokens.iter())
-                .filter(|(_, t)| !matches!(t.kind, gctf_tokenizer::GctfTokenKind::Comment(_)))
-                .map(|(l, _)| l.clone())
-                .collect();
-            let cleaned = yaml_lines.join("\n");
-            let meta = serde_yaml_ng::from_str::<FileMeta>(&cleaned).unwrap_or_default();
+            // Strip GCTF comment lines before parsing YAML — shared with the
+            // strict path so both accept the same comment styles.
+            let cleaned = gctf_tokenizer::strip_gctf_comment_lines(&content.join("\n"));
+            let meta = match serde_yaml_ng::from_str::<FileMeta>(&cleaned) {
+                Ok(meta) => meta,
+                Err(e) => {
+                    diagnostics.error(
+                        DiagnosticCode::InvalidSectionContent,
+                        format!("Invalid META: {e}"),
+                        Range::at_line(start_line),
+                    );
+                    FileMeta::default()
+                }
+            };
             SectionContent::Meta(meta)
+        }
+        SectionType::Dataset => {
+            // Same comment-stripping approach as META — this module recovers
+            // from malformed content for live editing, it never hard-fails
+            // the way `content_parser::parse_section_content` does.
+            let cleaned = gctf_tokenizer::strip_gctf_comment_lines(&content.join("\n"));
+            let rows: Vec<serde_json::Value> =
+                serde_yaml_ng::from_str(&cleaned).unwrap_or_default();
+            SectionContent::Rows(rows)
         }
     }
 }
@@ -398,6 +505,7 @@ fn parse_inline_options_diagnostic(
                     }
                 }
                 "redact" => {}
+                _ if crate::content_parser::is_extra_inline_option_key(key) => {}
                 _ => {
                     diagnostics.hint(
                         DiagnosticCode::InvalidFieldValue,
@@ -413,6 +521,145 @@ fn parse_inline_options_diagnostic(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_parse_with_recovery_unreadable_file_yields_error_diagnostic() {
+        // §3.5: a missing/unreadable file must not silently become an empty
+        // document with zero diagnostics — it carries an IO-error diagnostic.
+        let result = parse_with_recovery(Path::new("/no/such/path/definitely-missing-4f3a.gctf"));
+        assert!(result.document.sections.is_empty());
+        assert!(result.diagnostics.has_errors());
+        assert!(
+            result
+                .diagnostics
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("Failed to read file")),
+            "{:?}",
+            result.diagnostics.diagnostics
+        );
+    }
+
+    #[test]
+    fn test_parse_with_recovery_invalid_json_yields_empty_content_not_raw_text() {
+        // §3.6: an invalid JSON body becomes `SectionContent::Empty` (plus a
+        // diagnostic), never the raw unparsed text smuggled as a JSON string
+        // — a consumer ignoring diagnostics must not receive garbage as a
+        // real payload.
+        let content = "--- ENDPOINT ---\nsvc/Method\n\n--- REQUEST ---\n{not valid json\n";
+        let result = parse_content_with_recovery(content, "test.gctf");
+        let request = result
+            .document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Request)
+            .expect("REQUEST section recovered");
+        assert!(
+            matches!(request.content, SectionContent::Empty),
+            "invalid JSON must yield Empty, got {:?}",
+            request.content
+        );
+        assert!(result.diagnostics.has_errors());
+    }
+
+    #[test]
+    fn test_parse_with_recovery_malformed_attribute_warns() {
+        // §3.4 lenient counterpart: a malformed `#[]` attribute emits a
+        // warning instead of being silently dropped.
+        let content = "--- ENDPOINT ---\nsvc/Method\n#[]\n--- REQUEST ---\n{}\n";
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert!(
+            result
+                .diagnostics
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("Malformed attribute")),
+            "{:?}",
+            result.diagnostics.diagnostics
+        );
+    }
+
+    #[test]
+    fn test_parse_with_recovery_malformed_meta_yields_diagnostic() {
+        // §3.1 lenient counterpart: malformed META YAML emits an error
+        // diagnostic (and recovers with a default FileMeta), never silent.
+        let content = "--- META ---\nname: [unterminated\n\n--- ENDPOINT ---\nsvc/Method\n\n--- REQUEST ---\n{}\n";
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert!(
+            result
+                .diagnostics
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("Invalid META")),
+            "{:?}",
+            result.diagnostics.diagnostics
+        );
+    }
+
+    #[test]
+    fn test_lenient_section_span_slices_back_to_the_sections_own_source_text() {
+        let content = "--- ENDPOINT ---\nservice/Method\n\n--- REQUEST ---\n{\"key\": \"value\"}\n\n--- RESPONSE ---\n{\"result\": \"ok\"}\n";
+        let result = parse_single_with_recovery(content, "test.gctf");
+        let request = result
+            .document
+            .sections
+            .iter()
+            .find(|s| s.section_type == crate::ast::SectionType::Request)
+            .expect("REQUEST section recovered");
+
+        let sliced = &content[request.span.start_byte..request.span.end_byte];
+        assert_eq!(sliced, "--- REQUEST ---\n{\"key\": \"value\"}\n\n");
+        assert_eq!(request.span.start_line, request.start_line);
+        // Unlike the strict path, this module's `Section.end_line` is the
+        // *inclusive* last content line — `span.end_line` is the correct
+        // half-open bound (`end_line + 1`), so they're off by one here by
+        // design, not a bug.
+        assert_eq!(request.span.end_line, request.end_line + 1);
+    }
+
+    #[test]
+    fn test_token_based_recovery_attaches_attributes_and_preserves_content() {
+        // After the token-stream rewrite, `#[attr]` blocks between sections
+        // must still attach to the *following* section (not the preceding one)
+        // and must not leak into any section's content — the same behavior the
+        // old hand-rolled `extract_section_content` produced.
+        let content = r#"--- ENDPOINT ---
+svc/Method
+
+#[timeout(5)]
+#[retry(2)]
+--- REQUEST ---
+{"a": 1}
+
+--- RESPONSE ---
+{"b": 2}
+"#;
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert_eq!(result.recovered_sections, 3);
+
+        let endpoint = result
+            .document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Endpoint)
+            .expect("ENDPOINT section");
+        // The attributes belong to REQUEST, not ENDPOINT.
+        assert!(endpoint.attributes.is_empty());
+
+        let request = result
+            .document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Request)
+            .expect("REQUEST section");
+        assert_eq!(request.attributes.len(), 2);
+        assert_eq!(request.attributes[0].name, "timeout");
+        assert_eq!(request.attributes[1].name, "retry");
+        // Attribute lines never leak into the section's raw content.
+        assert!(!request.raw_content.contains("#["));
+        assert!(request.raw_content.contains("{\"a\": 1}"));
+    }
 
     #[test]
     fn test_parse_with_recovery_valid_file() {
@@ -455,6 +702,36 @@ service/Method
     }
 
     #[test]
+    fn test_parse_with_recovery_invalid_json_points_at_the_actual_line() {
+        // Line 5 (0-based) is where the malformed token actually is, not
+        // line 4 (the REQUEST section's own start) — a JSON parse error used
+        // to always report the section start regardless of where inside a
+        // multi-line body the real problem was.
+        let content = r#"--- ENDPOINT ---
+service/Method
+
+--- REQUEST ---
+{
+  "key": invalid_token
+}
+
+--- RESPONSE ---
+{"result": "ok"}
+"#;
+
+        let result = parse_content_with_recovery(content, "test.gctf");
+
+        assert!(result.diagnostics.has_errors());
+        let json_error = result
+            .diagnostics
+            .diagnostics
+            .iter()
+            .find(|d| d.code == DiagnosticCode::JsonParseError)
+            .expect("a JSON parse error diagnostic");
+        assert_eq!(json_error.range.start.line, 5);
+    }
+
+    #[test]
     fn test_parse_with_recovery_multiple_errors() {
         let content = r#"--- ENDPOINT ---
 service/Method
@@ -493,6 +770,68 @@ content
 
         // Should skip unknown section
         assert!(result.diagnostics.has_warnings());
+    }
+
+    #[test]
+    fn test_parse_with_recovery_lowercase_section_name_rejected_like_strict_path() {
+        // Decided: section names are case-sensitive everywhere, not just in
+        // the strict path — `check`/`fmt` never recognized `--- endpoint ---`
+        // (`gctf_tokenizer::is_section_name_char` is uppercase-only), and
+        // this lenient path used to silently case-fold and accept it, so the
+        // exact same file behaved differently depending on which command
+        // touched it. Now both agree: lowercase is rejected, not recovered.
+        let content = r#"--- endpoint ---
+svc/Method
+
+--- request ---
+{}
+
+--- response ---
+{}
+"#;
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert_eq!(
+            result.recovered_sections, 0,
+            "lowercase section names must not recover as any SectionType"
+        );
+        assert!(
+            !result
+                .document
+                .sections
+                .iter()
+                .any(|s| s.section_type == SectionType::Endpoint),
+        );
+        assert!(
+            result
+                .diagnostics
+                .diagnostics
+                .iter()
+                .filter(|d| d.message.contains("did you mean 'ENDPOINT'"))
+                .count()
+                == 1,
+            "expected a case-mismatch hint for the recognizable-but-miscased name: {:?}",
+            result.diagnostics.diagnostics
+        );
+    }
+
+    #[test]
+    fn test_parse_with_recovery_unknown_section_name_not_double_warned() {
+        // A genuinely unknown section (not just miscased) must get exactly
+        // one diagnostic, not both "should be uppercase" and "unknown
+        // section type" for the same line.
+        let content = "--- garbage ---\nfoo\n";
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert_eq!(
+            result.diagnostics.diagnostics.len(),
+            1,
+            "{:?}",
+            result.diagnostics.diagnostics
+        );
+        assert!(
+            result.diagnostics.diagnostics[0]
+                .message
+                .contains("Unknown section type")
+        );
     }
 
     #[test]
@@ -655,6 +994,106 @@ svc/Method
         } else {
             panic!("expected key-values content");
         }
+    }
+
+    #[test]
+    fn test_parse_with_recovery_duplicate_options_key_warns_and_last_wins() {
+        let content = r#"--- OPTIONS ---
+timeout: 30
+timeout: 60
+
+--- ENDPOINT ---
+svc/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert!(result.diagnostics.has_warnings());
+        assert!(
+            result
+                .diagnostics
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("Duplicate key 'timeout'")),
+            "{:?}",
+            result.diagnostics.diagnostics
+        );
+        let opts = result
+            .document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Options)
+            .unwrap();
+        if let SectionContent::KeyValues(kvs) = &opts.content {
+            assert_eq!(kvs.get("timeout"), Some(&"60".to_string()));
+        } else {
+            panic!("expected key-values content");
+        }
+    }
+
+    #[test]
+    fn test_parse_with_recovery_duplicate_extract_variable_warns() {
+        let content = r#"--- ENDPOINT ---
+svc/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+
+--- EXTRACT ---
+total = .a
+total = .b
+"#;
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert!(result.diagnostics.has_warnings());
+        assert!(
+            result
+                .diagnostics
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("Duplicate EXTRACT variable 'total'")),
+            "{:?}",
+            result.diagnostics.diagnostics
+        );
+    }
+
+    #[test]
+    fn test_parse_with_recovery_bench_continuation_line_not_flagged_as_duplicate() {
+        // `sources:`'s nested YAML list uses indented continuation lines,
+        // not repeated top-level keys — must not warn.
+        let content = r#"--- BENCH ---
+mode: fixed
+sources:
+  - name: a
+    file: a.csv
+  - name: b
+    file: b.csv
+
+--- ENDPOINT ---
+svc/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+"#;
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert!(
+            !result
+                .diagnostics
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("Duplicate key")),
+            "{:?}",
+            result.diagnostics.diagnostics
+        );
     }
 
     #[test]
@@ -845,5 +1284,54 @@ svc/Method
         let result = parse_content_with_recovery(content, "test.gctf");
         assert!(result.diagnostics.has_warnings());
         assert_eq!(result.recovered_sections, 4);
+    }
+
+    #[test]
+    fn test_parse_with_recovery_kv_and_extract_recognize_slash_comments() {
+        // Regression: this file used to hand-roll `.find(':')`/`.find('=')`
+        // for KV/EXTRACT lines, only skipping `#`-comments — a `//` comment
+        // (the tokenizer-recognized form `content_parser.rs`'s strict path
+        // already handles via `tokenize_kv_line`/`tokenize_extract_line`)
+        // fell through to "Invalid syntax" instead of being silently
+        // skipped. Now shares those same tokenizer functions.
+        let content = r#"--- OPTIONS ---
+// a real comment, not a key
+timeout: 30
+
+--- ENDPOINT ---
+svc/Method
+
+--- REQUEST ---
+{}
+
+--- RESPONSE ---
+{}
+
+--- EXTRACT ---
+// another comment
+status = .status
+"#;
+        let result = parse_content_with_recovery(content, "test.gctf");
+        assert!(
+            !result
+                .diagnostics
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("Invalid")),
+            "{:?}",
+            result.diagnostics.diagnostics
+        );
+        let options = result
+            .document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Options)
+            .unwrap();
+        if let SectionContent::KeyValues(kv) = &options.content {
+            assert_eq!(kv.len(), 1);
+            assert_eq!(kv.get("timeout"), Some(&"30".to_string()));
+        } else {
+            panic!("expected KeyValues");
+        }
     }
 }

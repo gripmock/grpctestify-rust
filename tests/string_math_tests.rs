@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // String & Math operations tests via JQ expressions
 
 use grpctestify::parser::ternary::process_extract_value;

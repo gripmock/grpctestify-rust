@@ -38,6 +38,7 @@ $name contains "hello"
 ## Rules
 
 - Multiple extraction rules are allowed
+- The same variable name can't be assigned twice — a parse error
 - Keep rule names short and descriptive
 - Use `$name` to reference extracted variables in `ASSERTS`
 - Use `"{{name}}"` for template substitution in JSON payloads

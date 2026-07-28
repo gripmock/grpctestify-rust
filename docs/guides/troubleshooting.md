@@ -38,15 +38,10 @@ grpctestify inspect test.gctf --format json
 grpctestify explain test.gctf
 ```
 
-Runtime precedence quick map:
+If behavior differs between `run` and `bench`, check the precedence model — they resolve settings in opposite directions:
 
 - `run`: section attributes > `OPTIONS` > CLI runtime baseline/defaults
 - `bench`: CLI bench flags > `BENCH` section > bench defaults
-
-If behavior differs between `run` and `bench`, verify you are reading the correct precedence model:
-
-- `run`: `section attributes > OPTIONS > CLI runtime baseline/defaults`
-- `bench`: `CLI bench flags > BENCH section > bench defaults`
 
 ## Test file problems
 
@@ -117,6 +112,41 @@ grpctestify inspect test.gctf --format json
 grpctestify explain test.gctf
 ```
 
+## Log levels
+
+grpctestify uses standard levels (from quietest to loudest): `error`, `warn`,
+`info`, `debug`, `trace`. Default is `warn` — only real problems are printed.
+
+- `--verbose` / `-v` raises visibility to `info` (progress detail, still no
+  gRPC/internal noise).
+- For a bug report, or when something behaves unexpectedly and you want the
+  full picture (dial attempts, TLS/channel setup, descriptor/reflection
+  resolution, retries, per-assertion pass/fail, variable
+  extraction/interpolation, plugin loading, bench data sources), set:
+
+  ```bash
+  RUST_LOG=trace grpctestify run tests/ 2> debug.log
+  ```
+
+  `RUST_LOG=debug` is the same idea, one notch quieter (skips the most
+  chatty per-assertion/wire-level trace lines). Both cover every internal
+  crate in one shot — no need to name individual modules.
+- Logs always go to **stderr**, never stdout — commands like `gen` that
+  print their real output (a generated `.gctf`) to stdout for piping stay
+  clean regardless of verbosity, so redirecting stdout to a file is always
+  safe even with `RUST_LOG=trace` on.
+- `RUST_LOG=grpctestify=debug` (crate-scoped) only covers the top-level
+  CLI's own logs, not the `apif-*` library crates underneath — prefer the
+  bare `RUST_LOG=debug`/`=trace` form above unless you specifically want to
+  exclude them.
+
+Rhai plugin/reporter scripts (`@custom.rhai` assertions, `.rhai` reporters)
+have their own leveled logging via `log_debug()`/`log_info()`/`log_warn()`/
+`log_error()` — these route through the same mechanism above (respecting
+`--verbose`/`RUST_LOG`), unlike Rhai's raw `print()`/`debug()` which always
+write straight to stdout/stderr regardless of level. See
+[Script Stdlib](plugins/stdlib) for the full list.
+
 ## Environment variables
 
 - `GRPCTESTIFY_ADDRESS`
@@ -152,9 +182,10 @@ or incorrect assertion expressions.
 
 ### Can I test streaming endpoints?
 
-Yes. gRPC Testify supports unary, server streaming, client streaming,
-and bidirectional streaming. Use inline options on `ENDPOINT`
-(e.g., `--- ENDPOINT --- with_stream`).
+Yes — unary, server streaming, client streaming, and bidirectional. The
+streaming mode comes from the method's proto definition; in the test file
+you just write multiple `REQUEST` sections (client streaming) or multiple
+`RESPONSE` sections (server streaming). See [Streaming](features/streaming).
 
 ### How do benchmark sources work?
 

@@ -1,7 +1,6 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
-/// File utilities for cross-platform operations
 pub struct FileUtils;
 
 impl FileUtils {
@@ -13,6 +12,7 @@ impl FileUtils {
             .git_global(true)
             .git_ignore(true)
             .git_exclude(true)
+            .sort_by_file_path(|a, b| a.cmp(b))
             .build();
         for entry in walker.flatten() {
             let p = entry.path();
@@ -42,7 +42,11 @@ impl FileUtils {
                 let mut rng = StdRng::from_rng(&mut rand::rng());
                 files.shuffle(&mut rng);
             }
-            _ => {}
+            // "path" (the CLI default) and anything unrecognized: sort
+            // lexically by full path — `collect_test_files`'s `ignore::Walk`
+            // otherwise yields raw filesystem directory order, which is not
+            // guaranteed stable across runs/platforms.
+            _ => files.sort(),
         }
     }
 
@@ -191,11 +195,23 @@ mod tests {
     }
 
     #[test]
-    fn test_sort_files_unsupported() {
+    fn test_sort_files_path_is_deterministic_not_a_no_op() {
+        // Regression: the "path" arm (the CLI's default `--sort` value) used
+        // to fall through to a no-op `_ => {}`, silently trusting whatever
+        // order `collect_test_files`'s `ignore::Walk` happened to yield —
+        // unsorted filesystem directory order, which flips run-to-run.
+        let mut files = vec![PathBuf::from("b.gctf"), PathBuf::from("a.gctf")];
+        FileUtils::sort_files(&mut files, "path");
+        assert_eq!(files[0].file_name().unwrap(), "a.gctf");
+        assert_eq!(files[1].file_name().unwrap(), "b.gctf");
+    }
+
+    #[test]
+    fn test_sort_files_unsupported_falls_back_to_path_sort() {
         let mut files = vec![PathBuf::from("b.gctf"), PathBuf::from("a.gctf")];
         FileUtils::sort_files(&mut files, "unsupported");
-        // Should stay in original order
-        assert_eq!(files[0].file_name().unwrap(), "b.gctf");
+        assert_eq!(files[0].file_name().unwrap(), "a.gctf");
+        assert_eq!(files[1].file_name().unwrap(), "b.gctf");
     }
 
     #[test]

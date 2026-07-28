@@ -1,0 +1,14 @@
+# Normalize line endings to LF everywhere. Without this, Windows checkouts
+# (core.autocrlf) rewrite committed LF text — including golden test fixtures
+# under tests/golden/ — to CRLF, breaking byte-exact golden comparisons.
+* text=auto eol=lf
+
+*.ico binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary

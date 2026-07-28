@@ -18,7 +18,9 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
-fn cached_regex(pattern: &str) -> std::result::Result<Rc<Regex>, String> {
+/// `pub(crate)` so `rhai_stdlib::regex_match` shares this cache instead of
+/// keeping a second, independent one.
+pub(crate) fn cached_regex(pattern: &str) -> std::result::Result<Rc<Regex>, String> {
     if let Some(cached) = REGEX_CACHE.with(|cache| cache.borrow().get(pattern).cloned()) {
         return cached;
     }

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // LSP variable definition integration tests
 
 use grpctestify::lsp::variable_definition::{

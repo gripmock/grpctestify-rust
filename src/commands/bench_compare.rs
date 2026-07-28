@@ -1,4 +1,3 @@
-// bench compare — diff two bench JSON reports and gate on performance regressions.
 //
 // The reports are parsed as schema-tolerant `serde_json::Value` so this command
 // stays decoupled from the exact `BenchReport` struct. It reads the stable,
@@ -312,44 +311,72 @@ fn fmt_pct(row: &MetricRow) -> String {
     }
 }
 
+/// The verdict cell: an icon + label, colored (green improved, red regressed,
+/// dim neutral pass) and right-padded to a fixed *visible* width. Padding is
+/// applied to the plain text before styling so the ANSI escapes don't skew the
+/// column alignment; color/TTY/NO_COLOR gating comes from `console` via the
+/// `apif-report::style` helpers.
+fn styled_verdict(verdict: Verdict) -> String {
+    use crate::report::style::{PASS_ICON, dim_style, fail_style, pass_style};
+    let (cell, style) = match verdict {
+        Verdict::Improved => (format!("{PASS_ICON} IMPROVED"), pass_style()),
+        Verdict::Regressed => ("✗ REGRESSED".to_string(), fail_style()),
+        Verdict::Pass => ("PASS".to_string(), dim_style()),
+    };
+    style.apply_to(format!("{cell:>12}")).to_string()
+}
+
 fn render_console(agg: &[MetricRow], endpoints: &[MetricRow], pass: bool) -> String {
+    use crate::report::style::{fail_style, header, pass_style, rule};
     use std::fmt::Write;
+
+    // Total visible width of the "{:<20} {:>16} {:>16} {:>14} {:>12}" layout.
+    const WIDTH: usize = 82;
     let mut out = String::new();
-    let _ = writeln!(out, "Benchmark comparison (baseline -> current)\n");
+    let _ = writeln!(
+        out,
+        "{}\n",
+        header("Benchmark comparison (baseline → current)")
+    );
     let _ = writeln!(
         out,
         "{:<20} {:>16} {:>16} {:>14} {:>12}",
         "METRIC", "BASELINE", "CURRENT", "DELTA", "VERDICT"
     );
+    let _ = writeln!(out, "{}", rule('─', WIDTH));
     let render = |out: &mut String, r: &MetricRow| {
+        // The verdict cell is styled+pre-padded, so it's appended after the
+        // width-formatted numeric columns rather than through `{:>12}`.
         let _ = writeln!(
             out,
-            "{:<20} {:>16} {:>16} {:>14} {:>12}",
+            "{:<20} {:>16} {:>16} {:>14} {}",
             r.name,
             fmt_value(&r.name, r.baseline),
             fmt_value(&r.name, r.current),
             fmt_pct(r),
-            r.verdict.label()
+            styled_verdict(r.verdict)
         );
     };
     for r in agg {
         render(&mut out, r);
     }
     if !endpoints.is_empty() {
-        let _ = writeln!(out, "\nPer-endpoint p99:");
+        let _ = writeln!(out, "\n{}", header("Per-endpoint p99:"));
         for r in endpoints {
             render(&mut out, r);
         }
     }
-    let _ = writeln!(
-        out,
-        "\n{}",
-        if pass {
-            "PASS: no regressions beyond thresholds"
-        } else {
-            "FAIL: one or more metrics regressed beyond thresholds"
-        }
-    );
+    let _ = writeln!(out, "{}", rule('─', WIDTH));
+    let summary = if pass {
+        pass_style()
+            .apply_to("PASS: no regressions beyond thresholds")
+            .to_string()
+    } else {
+        fail_style()
+            .apply_to("FAIL: one or more metrics regressed beyond thresholds")
+            .to_string()
+    };
+    let _ = writeln!(out, "{summary}");
     out
 }
 
@@ -438,6 +465,39 @@ mod tests {
             max_error_rate_regression: 1.0,
             min_throughput: 5.0,
         }
+    }
+
+    #[test]
+    fn render_console_shows_verdict_icons_and_styled_summary() {
+        // Tests run non-TTY, so `console` emits no ANSI — assert on the plain
+        // text the design-language rendering produces (icons + labels + a
+        // header/rule frame + the pass/fail summary line).
+        let rows = vec![
+            MetricRow {
+                name: "throughput_rps".to_string(),
+                baseline: 100.0,
+                current: 120.0,
+                abs_delta: 20.0,
+                pct_delta: 20.0,
+                threshold: 5.0,
+                verdict: Verdict::Improved,
+            },
+            MetricRow {
+                name: "latency_p99".to_string(),
+                baseline: 100.0,
+                current: 150.0,
+                abs_delta: 50.0,
+                pct_delta: 50.0,
+                threshold: 10.0,
+                verdict: Verdict::Regressed,
+            },
+        ];
+        let out = render_console(&rows, &[], false);
+        assert!(out.contains("Benchmark comparison"));
+        assert!(out.contains("VERDICT"));
+        assert!(out.contains("✓ IMPROVED"));
+        assert!(out.contains("✗ REGRESSED"));
+        assert!(out.contains("FAIL: one or more metrics regressed"));
     }
 
     #[test]

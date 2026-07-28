@@ -332,10 +332,13 @@ pub fn build_app(state: Arc<PlayState>) -> Router {
             post(api::save_collection_structured),
         )
         .route("/api/call", post(api::execute_call))
+        .route("/api/run", post(api::execute_test))
+        .route("/api/diagnostics", post(api::get_diagnostics))
         .route("/api/reflect", post(api::reflect_server))
         .route("/api/import-grpcurl", post(api::import_grpcurl))
         .route("/api/grpcurl", post(api::generate_grpcurl))
         .route("/api/schema-fill", post(api::schema_fill))
+        .route("/api/proto-source", post(api::proto_source))
         .route("/api/proto-upload", post(api::proto_upload))
         .route("/api/proto-files", get(api::proto_files))
         .route("/api/dir/{*path}", post(api::create_directory))
@@ -461,22 +464,29 @@ pub async fn start_play_server(host: &str, port: u16, dir: PathBuf) -> Result<()
         format!("{}:{}", host, port)
     };
     let version = env!("CARGO_PKG_VERSION");
+    println!();
     println!(
-        "{bold}grpctestify play v{version}{reset} — http://localhost:{port}",
+        "🎨 {bold}grpctestify play{reset} v{version}",
         bold = ansi!(ANSI_BOLD),
         version = version,
+        reset = ansi!(ANSI_RESET),
+    );
+    println!(
+        "   {dim}➜{reset}  http://localhost:{port}",
+        dim = ansi!(ANSI_BOLD),
         reset = ansi!(ANSI_RESET),
         port = port
     );
     if let Some(ref root) = project_root {
-        println!("  project  {root}", root = root.display());
+        println!("   project  {root}", root = root.display());
         if let Ok(envs) = project::list_env_files(root)
             && !envs.is_empty()
         {
-            println!("  envs     {envs}", envs = envs.join(", "));
+            println!("   envs     {envs}", envs = envs.join(", "));
         }
     }
-    println!("  dirs     {dir}", dir = collections_dir_display);
+    println!("   dirs     {dir}", dir = collections_dir_display);
+    println!();
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;

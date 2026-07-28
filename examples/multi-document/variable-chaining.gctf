@@ -91,4 +91,3 @@ api.ItemService/ListItems
 
 --- ASSERTS ---
 @len(.items) == 0
-.has_more == false

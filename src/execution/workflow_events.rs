@@ -1,4 +1,3 @@
-// Workflow events - semantic execution flow from ExecutionPlan
 // Supports: N requests, N responses, multiple backends, interleaved streaming
 
 use crate::optimizer;

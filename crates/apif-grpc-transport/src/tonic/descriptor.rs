@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
 #![allow(clippy::collapsible_if)]
 use super::channel::create_channel;
 use crate::config::GrpcClientConfig;
@@ -32,6 +33,7 @@ pub async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<Descripto
     {
         let cache = DESCRIPTOR_CACHE.read().await;
         if let Some(pool) = cache.get(&cache_key) {
+            tracing::debug!("descriptors: reusing cached pool for {}", config.address);
             return Ok(pool.clone());
         }
     }
@@ -39,15 +41,27 @@ pub async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<Descripto
     {
         let cache = DESCRIPTOR_CACHE.read().await;
         if let Some(pool) = cache.get(&cache_key) {
+            tracing::debug!("descriptors: reusing cached pool for {}", config.address);
             return Ok(pool.clone());
         }
     }
     let pool = match &config.proto_config {
         Some(cfg) if cfg.descriptor.is_some() => {
-            load_from_descriptor_file(cfg.descriptor.as_ref().unwrap())?
+            let path = cfg.descriptor.as_ref().unwrap();
+            tracing::debug!("descriptors: loading from descriptor file {path}");
+            load_from_descriptor_file(path)?
         }
-        Some(cfg) if !cfg.files.is_empty() => load_from_proto_files(&cfg.files, &cfg.import_paths)?,
-        _ => load_via_reflection(config).await?,
+        Some(cfg) if !cfg.files.is_empty() => {
+            tracing::debug!("descriptors: loading from proto files {:?}", cfg.files);
+            load_from_proto_files(&cfg.files, &cfg.import_paths)?
+        }
+        _ => {
+            tracing::debug!(
+                "descriptors: loading via reflection from {}",
+                config.address
+            );
+            load_via_reflection(config).await?
+        }
     };
     let pool_arc = Arc::new(pool);
     DESCRIPTOR_CACHE
@@ -104,36 +118,41 @@ fn load_from_proto_files(files: &[String], import_paths: &[String]) -> Result<De
     Ok(pool)
 }
 
-async fn load_via_reflection(config: &GrpcClientConfig) -> Result<DescriptorPool> {
-    let channel = create_channel(config).await?;
-    let mut client = ServerReflectionClient::new(channel);
-    let mut services = Vec::new();
-    let mut files_to_process = Vec::new();
-
-    if let Some(target) = &config.target_service {
-        files_to_process.push(target.clone());
-    } else {
-        let req = ServerReflectionRequest {
-            host: config.address.clone(),
-            message_request: Some(MessageRequest::ListServices("".to_string())),
-        };
-        let mut stream = client
-            .server_reflection_info(Request::new(futures::stream::iter(vec![req])))
-            .await?
-            .into_inner();
-        if let Some(Ok(msg)) = stream.next().await
-            && let Some(tonic_reflection::pb::v1::server_reflection_response::MessageResponse::ListServicesResponse(resp)) = msg.message_response {
-                services = resp.service;
-        }
-        for s in services {
+async fn list_services(
+    client: &mut ServerReflectionClient<tonic::transport::Channel>,
+    host: &str,
+) -> Vec<String> {
+    let req = ServerReflectionRequest {
+        host: host.to_string(),
+        message_request: Some(MessageRequest::ListServices("".to_string())),
+    };
+    let Ok(stream) = client
+        .server_reflection_info(Request::new(futures::stream::iter(vec![req])))
+        .await
+    else {
+        return Vec::new();
+    };
+    let mut stream = stream.into_inner();
+    let mut out = Vec::new();
+    if let Some(Ok(msg)) = stream.next().await
+        && let Some(tonic_reflection::pb::v1::server_reflection_response::MessageResponse::ListServicesResponse(resp)) = msg.message_response {
+        for s in resp.service {
             if s.name != "grpc.reflection.v1alpha.ServerReflection"
                 && s.name != "grpc.reflection.v1.ServerReflection"
             {
-                files_to_process.push(s.name);
+                out.push(s.name);
             }
         }
     }
+    out
+}
 
+async fn fetch_descriptors(
+    client: &mut ServerReflectionClient<tonic::transport::Channel>,
+    host: &str,
+    seed: Vec<String>,
+) -> HashMap<String, FileDescriptorProto> {
+    let mut files_to_process = seed;
     let mut fd_bytes = HashMap::new();
     let mut processed = HashSet::new();
     while let Some(sym) = files_to_process.pop() {
@@ -142,12 +161,12 @@ async fn load_via_reflection(config: &GrpcClientConfig) -> Result<DescriptorPool
         }
         let req = if sym.ends_with(".proto") {
             ServerReflectionRequest {
-                host: config.address.clone(),
+                host: host.to_string(),
                 message_request: Some(MessageRequest::FileByFilename(sym.clone())),
             }
         } else {
             ServerReflectionRequest {
-                host: config.address.clone(),
+                host: host.to_string(),
                 message_request: Some(MessageRequest::FileContainingSymbol(sym.clone())),
             }
         };
@@ -173,6 +192,37 @@ async fn load_via_reflection(config: &GrpcClientConfig) -> Result<DescriptorPool
             }
         }
     }
+    fd_bytes
+}
+
+async fn load_via_reflection(config: &GrpcClientConfig) -> Result<DescriptorPool> {
+    let channel = create_channel(config).await?;
+    let mut client = ServerReflectionClient::new(channel);
+    let host = config.address.clone();
+
+    let seed = if let Some(target) = &config.target_service {
+        vec![target.clone()]
+    } else {
+        list_services(&mut client, &host).await
+    };
+    tracing::trace!("reflection: seed services {:?}", seed);
+
+    let mut fd_bytes = fetch_descriptors(&mut client, &host, seed).await;
+
+    // Fallback: some servers (e.g. gripmock) don't answer
+    // FileContainingSymbol for a targeted service but do answer ListServices.
+    // If the targeted fetch came back empty, retry over the full service list.
+    if fd_bytes.is_empty() && config.target_service.is_some() {
+        let all = list_services(&mut client, &host).await;
+        tracing::debug!(
+            "reflection: targeted fetch for {:?} was empty, falling back to full service list {:?}",
+            config.target_service,
+            all
+        );
+        if !all.is_empty() {
+            fd_bytes = fetch_descriptors(&mut client, &host, all).await;
+        }
+    }
 
     let mut files: Vec<_> = fd_bytes.into_values().collect();
     files.sort_by(|a, b| a.name.cmp(&b.name));
@@ -185,6 +235,7 @@ async fn load_via_reflection(config: &GrpcClientConfig) -> Result<DescriptorPool
         }
     }
 
+    tracing::debug!("reflection: fetched {} file descriptor(s)", files.len());
     let set = prost_types::FileDescriptorSet { file: files };
     if set.file.is_empty() {
         return Err(anyhow!("No descriptors loaded via reflection"));

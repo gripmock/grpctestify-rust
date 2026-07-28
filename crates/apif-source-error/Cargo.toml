@@ -8,3 +8,6 @@ repository.workspace = true
 readme.workspace = true
 rust-version.workspace = true
 description = "Typed errors for CSV/TSV/NDJSON data sources"
+
+[lints]
+workspace = true

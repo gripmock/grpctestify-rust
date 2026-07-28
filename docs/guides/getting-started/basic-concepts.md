@@ -33,8 +33,7 @@ package.Service/Method
 - `REQUEST_HEADERS` - request metadata
 - `TLS` - TLS/mTLS parameters
 - `PROTO` - descriptor/reflection configuration
-- `OPTIONS` - parsed, validated, and used for per-test runtime overrides
-  (`timeout`, `retry`, `retry_delay`, `no_retry`, `compression`)
+- `OPTIONS` - per-test runtime overrides (`timeout`, `retry`, `retry_delay`, `no_retry`, `compression`)
 
 Use [Section Reference](../reference/sections/) for exact syntax and section rules.
 
@@ -42,7 +41,7 @@ Use [Section Reference](../reference/sections/) for exact syntax and section rul
 
 - `META` is optional, but only one is allowed and it must be first
 - `ENDPOINT` is required
-- At least one validation block is required: `RESPONSE`, `ERROR`, or `ASSERTS`
+- At least one verification block is required: `RESPONSE`, `ERROR`, or `ASSERTS`
 - `RESPONSE` and `ERROR` cannot be used in the same test file
 - `ADDRESS` can be omitted if `GRPCTESTIFY_ADDRESS` is set
 

@@ -10,21 +10,40 @@ export function defaultAddressFor(protocol: WireProtocol): string {
   }
 }
 
+/** True when `address` is still the untouched default for `protocol` — the
+ * signal `setProtocol` uses to decide whether to carry a manual override
+ * forward instead of overwriting it with the new protocol's default. */
+export function isAddressAtDefault(address: string, protocol: WireProtocol): boolean {
+  return address === defaultAddressFor(protocol);
+}
+
 export interface RequestConfig {
   endpoint: string;
   headers: Record<string, string>;
   bodies: string[];
 }
 
+export interface RunAssertionResult {
+  line: number;
+  expression: string;
+  passed: boolean;
+  elapsed_ms: number;
+  message: string | null;
+  expected: string | null;
+  actual: string | null;
+}
+
 export interface CallResult {
   status: 'ok' | 'error' | 'pending';
   statusCode: number | null;
-  
+
   messages: unknown[];
   headers: Record<string, string>;
   trailers: Record<string, string>;
   error: string | null;
   durationMs: number | null;
+  /** Set only when this result came from `/api/run` (full .gctf ASSERTS/EXTRACT run), not a raw `/api/call`. */
+  assertions?: RunAssertionResult[];
 }
 
 export interface HistoryEntry {
@@ -66,6 +85,26 @@ export interface ServiceInfo {
   methods: MethodInfo[];
 }
 
+export interface ReflectionMethod {
+  name: string;
+  fullName: string;
+  service: string;
+  clientStreaming: boolean;
+  serverStreaming: boolean;
+}
+
+/** Response contract for `POST /api/reflect` (see `ReflectResponse` in src/serve/api.rs). */
+export interface ReflectResponse {
+  services?: ServiceInfo[];
+  error?: string | null;
+}
+
+/** Response contract for `POST /api/proto-source` (see `ProtoSourceResponse` in src/serve/api.rs). */
+export interface ProtoSourceResponse {
+  source?: string | null;
+  error?: string | null;
+}
+
 
 export interface CollectionParsed {
   endpoint: string;
@@ -85,15 +124,20 @@ export interface CollectionParsed {
 }
 
 export type RequestTab = 'body' | 'headers' | 'env';
-export type GctfTab = 'request' | 'asserts' | 'extracts' | 'meta' | 'proto';
-export type ResponseTab = 'response' | 'headers';
+export type GctfTab = 'request' | 'raw' | 'asserts' | 'extracts' | 'meta' | 'proto';
+export type ResponseTab = 'response' | 'headers' | 'assertions';
 
 export interface Environment {
   name: string;
   address?: string;
   variables: Record<string, string>;
-  
+
   mutedVariables?: string[];
+  tls?: boolean;
+  tlsCa?: string;
+  tlsCert?: string;
+  tlsKey?: string;
+  tlsInsecure?: boolean;
 }
 
 export const ENVS_KEY = 'grpctestify-envs';
@@ -107,6 +151,9 @@ export interface ClientSettings {
   protocol: WireProtocol;
   tls: boolean;
   tlsInsecure: boolean;
+  tlsCa: string;
+  tlsCert: string;
+  tlsKey: string;
   requestTimeoutMs: number;
 }
 
@@ -161,6 +208,23 @@ export interface Tab {
   collectionPath: string | null;
   collectionParsed: CollectionParsed | null;
   collectionOriginal: CollectionParsed | null;
+  /** Full raw `.gctf` text, loaded lazily when the "Raw" tab is opened. */
+  rawContent: string | null;
+  rawOriginal: string | null;
+}
+
+
+export interface GctfDiagnosticPosition {
+  line: number;
+  character: number;
+}
+
+export interface GctfDiagnostic {
+  range: { start: GctfDiagnosticPosition; end: GctfDiagnosticPosition };
+  severity?: number;
+  message: string;
+  code?: string | number;
+  source?: string;
 }
 
 
@@ -184,6 +248,9 @@ export interface PlayStore {
   protocol: WireProtocol;
   tls: boolean;
   tlsInsecure: boolean;
+  tlsCa: string;
+  tlsCert: string;
+  tlsKey: string;
   environment: Record<string, string>;
   collections: CollectionItem[];
 
@@ -199,6 +266,8 @@ export interface PlayStore {
   
   selectedCollection: string | null;
   collectionParsed: CollectionParsed | null;
+  rawContent: string | null;
+  rawOriginal: string | null;
   request: RequestConfig;
   requestTab: RequestTab;
   gctfTab: GctfTab;
@@ -210,7 +279,7 @@ export interface PlayStore {
   version: string;
   sessionId: string;
   theme: 'light' | 'dark';
-  reflectionMethods: { name: string; fullName: string; service: string }[];
+  reflectionMethods: ReflectionMethod[];
   reflectStatus: 'idle' | 'loading' | 'ok' | 'error';
   reflectError: string | null;
   serverHealthy: boolean;
@@ -219,12 +288,17 @@ export interface PlayStore {
   activeEnvironment: string | null;
   sidebarVisible: boolean;
   showHotkeyHelp: boolean;
+  runStatus: 'idle' | 'running';
+  runMode: 'execute' | 'run';
 
   requestTimeoutMs: number;
   setAddress: (v: string) => void;
   setProtocol: (v: WireProtocol) => void;
   setTls: (v: boolean) => void;
   setTlsInsecure: (v: boolean) => void;
+  setTlsCa: (v: string) => void;
+  setTlsCert: (v: string) => void;
+  setTlsKey: (v: string) => void;
   setRequestTimeoutMs: (v: number) => void;
   setEndpoint: (v: string) => void;
   setRequestBody: (idx: number, v: string) => void;
@@ -241,12 +315,19 @@ export interface PlayStore {
   setTheme: (v: 'light' | 'dark') => void;
   getGrpcurlCommand: () => Promise<string>;
   loadCollection: (path: string) => Promise<void>;
+  hydrateStaleTabs: () => Promise<void>;
   newWorkspace: () => void;
   saveWorkspace: () => Promise<void>;
   saveWorkspaceAs: (name: string) => Promise<void>;
   execute: () => Promise<void>;
+  runTest: () => Promise<void>;
+  setRunMode: (v: 'execute' | 'run') => void;
+  loadRawContent: () => Promise<void>;
+  setRawContent: (v: string) => void;
+  saveRawContent: () => Promise<void>;
+  fetchDiagnostics: (content: string) => Promise<GctfDiagnostic[]>;
   loadStartupInfo: () => Promise<void>;
-  setReflectionMethods: (v: { name: string; fullName: string; service: string }[]) => void;
+  setReflectionMethods: (v: ReflectionMethod[]) => void;
   reflect: () => Promise<void>;
   checkHealth: () => Promise<void>;
   setActiveEnvironment: (name: string | null) => void;

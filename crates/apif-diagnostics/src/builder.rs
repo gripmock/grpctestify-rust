@@ -2,7 +2,6 @@
 
 use super::types::*;
 
-/// Builder for creating diagnostics with fluent API
 pub struct DiagnosticBuilder {
     code: DiagnosticCode,
     severity: DiagnosticSeverity,
@@ -133,7 +132,6 @@ impl DiagnosticBuilder {
     }
 }
 
-/// Common diagnostic helpers for GCTF files
 pub struct GctfDiagnostics;
 
 impl GctfDiagnostics {

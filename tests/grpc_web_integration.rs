@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 #![cfg(feature = "test-servers")]
 
 use std::sync::Arc;

@@ -1,11 +1,10 @@
 // Builder utilities for constructing .gctf documents programmatically.
 
-use std::collections::HashMap;
-
 use serde_json::Value;
 
 use apif_ast::{
-    DocumentMetadata, FileMeta, GctfDocument, InlineOptions, Section, SectionContent, SectionType,
+    DocumentMetadata, FileMeta, GctfDocument, InlineOptions, OrderedStringMap, Section,
+    SectionContent, SectionSpan, SectionType,
 };
 
 #[derive(Debug, Clone)]
@@ -40,7 +39,8 @@ impl GctfDocumentBuilder {
         self
     }
 
-    pub fn request_headers(mut self, headers: HashMap<String, String>) -> Self {
+    pub fn request_headers(mut self, headers: impl IntoIterator<Item = (String, String)>) -> Self {
+        let headers: OrderedStringMap = headers.into_iter().collect();
         if !headers.is_empty() {
             self.push_section(
                 SectionType::RequestHeaders,
@@ -65,21 +65,24 @@ impl GctfDocumentBuilder {
         self
     }
 
-    pub fn tls(mut self, tls: HashMap<String, String>) -> Self {
+    pub fn tls(mut self, tls: impl IntoIterator<Item = (String, String)>) -> Self {
+        let tls: OrderedStringMap = tls.into_iter().collect();
         if !tls.is_empty() {
             self.push_section(SectionType::Tls, SectionContent::KeyValues(tls));
         }
         self
     }
 
-    pub fn options(mut self, options: HashMap<String, String>) -> Self {
+    pub fn options(mut self, options: impl IntoIterator<Item = (String, String)>) -> Self {
+        let options: OrderedStringMap = options.into_iter().collect();
         if !options.is_empty() {
             self.push_section(SectionType::Options, SectionContent::KeyValues(options));
         }
         self
     }
 
-    pub fn proto(mut self, proto: HashMap<String, String>) -> Self {
+    pub fn proto(mut self, proto: impl IntoIterator<Item = (String, String)>) -> Self {
+        let proto: OrderedStringMap = proto.into_iter().collect();
         if !proto.is_empty() {
             self.push_section(SectionType::Proto, SectionContent::KeyValues(proto));
         }
@@ -101,7 +104,6 @@ impl GctfDocumentBuilder {
                 source: None,
                 mtime: None,
                 parsed_at: apif_cfg_runtime::now_timestamp(),
-                ..Default::default()
             },
             next_document: None,
         }
@@ -121,6 +123,9 @@ impl GctfDocumentBuilder {
             start_line: 0,
             end_line: 0,
             attributes: Vec::new(),
+            // Synthetic, programmatically-built section — no real source
+            // text to derive a span from.
+            span: SectionSpan::default(),
         });
     }
 }
@@ -154,9 +159,9 @@ mod tests {
         let output = GctfDocumentBuilder::new()
             .address("localhost:4770")
             .endpoint("svc/method")
-            .request_headers(HashMap::new())
-            .options(HashMap::new())
-            .proto(HashMap::new())
+            .request_headers(OrderedStringMap::new())
+            .options(OrderedStringMap::new())
+            .proto(OrderedStringMap::new())
             .request(json!({}))
             .render();
 

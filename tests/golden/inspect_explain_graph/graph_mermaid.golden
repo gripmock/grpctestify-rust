@@ -1,0 +1,9 @@
+=== STDOUT ===
+```mermaid
+flowchart TD
+  subgraph s0["<TMPDIR>"]
+    n0["chain.gctf (Check → Watch)"]
+  end
+```
+
+=== STDERR ===

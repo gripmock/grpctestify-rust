@@ -1,0 +1,80 @@
+=== STDOUT ===
+{
+  "file": "<TMPDIR>/chain.gctf",
+  "parse_time_ms": 0,
+  "validation_time_ms": 0,
+  "ast": {
+    "sections": [
+      {
+        "section_type": "ENDPOINT",
+        "start_line": 0,
+        "end_line": 2,
+        "content_kind": "single"
+      },
+      {
+        "section_type": "REQUEST",
+        "start_line": 3,
+        "end_line": 5,
+        "content_kind": "json"
+      },
+      {
+        "section_type": "RESPONSE",
+        "start_line": 6,
+        "end_line": 8,
+        "content_kind": "json"
+      },
+      {
+        "section_type": "ASSERTS",
+        "start_line": 9,
+        "end_line": 11,
+        "content_kind": "assertions"
+      },
+      {
+        "section_type": "ENDPOINT",
+        "start_line": 12,
+        "end_line": 14,
+        "content_kind": "single"
+      },
+      {
+        "section_type": "REQUEST",
+        "start_line": 15,
+        "end_line": 17,
+        "content_kind": "json"
+      },
+      {
+        "section_type": "ERROR",
+        "start_line": 18,
+        "end_line": 19,
+        "content_kind": "json"
+      }
+    ]
+  },
+  "diagnostics": [],
+  "semantic_diagnostics": [],
+  "optimization_hints": [],
+  "inferred_rpc_mode": "Unary",
+  "effective_runtime": {
+    "timeout_seconds": {
+      "value": 30,
+      "source": "cli_defaults"
+    },
+    "retry": {
+      "value": 0,
+      "source": "cli_defaults"
+    },
+    "retry_delay_seconds": {
+      "value": 1.0,
+      "source": "cli_defaults"
+    },
+    "no_retry": {
+      "value": false,
+      "source": "cli_defaults"
+    },
+    "compression": {
+      "value": "none",
+      "source": "cli_defaults"
+    }
+  }
+}
+
+=== STDERR ===

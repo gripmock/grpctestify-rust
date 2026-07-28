@@ -1,5 +1,3 @@
-// Test validation logic
-
 #[cfg(test)]
 use crate::execution::TestExecutionResult;
 #[cfg(test)]
@@ -99,7 +97,7 @@ impl TestValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::ast::{GctfDocument, Section, SectionContent, SectionType};
+    use crate::parser::ast::{GctfDocument, Section, SectionContent, SectionSpan, SectionType};
     use serde_json::json;
 
     fn create_test_document() -> GctfDocument {
@@ -114,6 +112,7 @@ mod tests {
                     start_line: 1,
                     end_line: 2,
                     attributes: Vec::new(),
+                    span: SectionSpan::default(),
                 },
                 Section {
                     section_type: SectionType::Request,
@@ -123,13 +122,13 @@ mod tests {
                     start_line: 3,
                     end_line: 5,
                     attributes: Vec::new(),
+                    span: SectionSpan::default(),
                 },
             ],
             metadata: crate::parser::ast::DocumentMetadata {
                 source: None,
                 mtime: None,
                 parsed_at: 0,
-                ..Default::default()
             },
             next_document: None,
         }
@@ -173,6 +172,7 @@ mod tests {
             start_line: 6,
             end_line: 8,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Error,
@@ -182,6 +182,7 @@ mod tests {
             start_line: 9,
             end_line: 11,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         let result = TestValidator::validate(&doc);
         assert!(result.is_err());

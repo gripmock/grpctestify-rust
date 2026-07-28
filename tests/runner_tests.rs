@@ -1,7 +1,9 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 use grpctestify::execution::runner::{TestExecutionStatus, TestRunner};
 use grpctestify::grpc::GrpcResponse;
 use grpctestify::parser::ast::{
-    DocumentMetadata, GctfDocument, InlineOptions, Section, SectionContent, SectionType,
+    DocumentMetadata, GctfDocument, InlineOptions, Section, SectionContent, SectionSpan,
+    SectionType,
 };
 use serde_json::json;
 
@@ -13,7 +15,6 @@ fn create_empty_doc() -> GctfDocument {
             source: None,
             mtime: None,
             parsed_at: 0,
-            ..Default::default()
         },
         next_document: None,
     }
@@ -28,6 +29,7 @@ fn create_response_section(expected: serde_json::Value, options: InlineOptions) 
         start_line: 0,
         end_line: 0,
         attributes: Vec::new(),
+        span: SectionSpan::default(),
     }
 }
 
@@ -60,6 +62,7 @@ fn create_asserts_section(assertions: Vec<String>) -> Section {
         start_line: 0,
         end_line: 0,
         attributes: Vec::new(),
+        span: SectionSpan::default(),
     }
 }
 
@@ -347,8 +350,7 @@ fn test_validate_response_unordered_arrays_fail() {
 }
 
 fn create_extract_section(extractions: Vec<(String, String)>) -> Section {
-    use std::collections::HashMap;
-    let mut map = HashMap::new();
+    let mut map = grpctestify::parser::OrderedStringMap::new();
     for (k, v) in extractions {
         map.insert(k, v);
     }
@@ -360,6 +362,7 @@ fn create_extract_section(extractions: Vec<(String, String)>) -> Section {
         start_line: 0,
         end_line: 0,
         attributes: Vec::new(),
+        span: SectionSpan::default(),
     }
 }
 

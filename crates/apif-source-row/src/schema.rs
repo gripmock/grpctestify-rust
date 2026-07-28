@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -183,7 +184,7 @@ fn bounded_edit_distance(a: &str, b: &str, max: usize) -> Option<usize> {
     if dist <= max { Some(dist) } else { None }
 }
 
-pub fn bench_value<'a>(bench: &'a HashMap<String, String>, key: &str) -> Option<&'a String> {
+pub fn bench_value<'a>(bench: &'a apif_ast::OrderedStringMap, key: &str) -> Option<&'a String> {
     if let Some(v) = bench.get(key) {
         return Some(v);
     }
@@ -390,7 +391,7 @@ mod tests {
 
     #[test]
     fn bench_value_uses_canonical_keys_only() {
-        let mut bench = HashMap::new();
+        let mut bench = apif_ast::OrderedStringMap::new();
         bench.insert("load_schedule".to_string(), "step".to_string());
         bench.insert("progress_interval".to_string(), "2s".to_string());
 

@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
 //! Assertion plugins — built-in functions for gRPC test assertions.
 //!
 //! Plugins extend the assertion engine with custom validation logic.
@@ -126,7 +127,6 @@ pub fn plugin_signature_map() -> HashMap<String, PluginSignature> {
 pub static PLUGIN_SIGNATURES: LazyLock<HashMap<String, PluginSignature>> =
     LazyLock::new(plugin_signature_map);
 
-/// Manager to register and retrieve plugins
 pub struct PluginManager {
     plugins: RwLock<HashMap<String, Arc<dyn Plugin>>>,
 }
@@ -305,6 +305,7 @@ impl apif_assert::registry::PluginApi for PluginApiWrapper {
             headers: context.headers,
             trailers: context.trailers,
             timing: context.timing,
+            protocol: context.protocol,
         };
         let result = self.0.execute(args, &ctx)?;
         match result {
@@ -497,6 +498,7 @@ mod tests {
                     headers: None,
                     trailers: None,
                     timing: None,
+                    protocol: None,
                 },
             )
             .unwrap();

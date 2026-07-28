@@ -167,7 +167,9 @@ mod tests {
             return;
         }
         let mut doc = crate::parser::GctfDocument::new("test.gctf".to_string());
-        use crate::parser::ast::{InlineOptions, Section, SectionContent, SectionType};
+        use crate::parser::ast::{
+            InlineOptions, Section, SectionContent, SectionSpan, SectionType,
+        };
         use serde_json::json;
 
         doc.sections.push(Section {
@@ -178,6 +180,7 @@ mod tests {
             start_line: 1,
             end_line: 1,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -187,6 +190,7 @@ mod tests {
             start_line: 2,
             end_line: 3,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         });
 
         let response = crate::grpc::GrpcResponse {

@@ -1,6 +1,12 @@
 # Plugin System
 
-Built-in assertion plugins available in `ASSERTS`.
+Built-in assertion plugins available in `ASSERTS`. For writing your own — drop a `.rhai` file into
+`~/.grpctestify/plugins` or `./.grpctestify/plugins`, no flag needed — see:
+
+- [Custom assertion plugins](custom-scripts) — `.rhai` scripts, one file can define many, naming/arity/`private fn`/sandboxing
+- [Installing from a git host](installing) — `grpctestify plugins install github.com/owner/repo`, versioning, lockfile
+- [Reporter plugins](reporters) — `on_test_start`/`on_test_end`/`on_suite_end` hooks
+- [Script stdlib](stdlib) — the native helpers (`log_*`, `is_uuid`, `regex_match`, ...) every script gets for free
 
 ## Validation plugins
 
@@ -76,5 +82,9 @@ Extract parts from typed values:
 
 ## Related
 
+- [Custom assertion plugins](custom-scripts)
+- [Installing from a git host](installing)
+- [Reporter plugins](reporters)
+- [Script stdlib](stdlib)
 - [Assertion Reference](../reference/api/assertions)
 - [ASSERTS section](../reference/sections/asserts)

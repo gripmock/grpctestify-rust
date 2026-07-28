@@ -11,7 +11,6 @@ pub fn build_folding_ranges(content: &str) -> Vec<FoldingRange> {
     let mut ranges: Vec<FoldingRange> = Vec::new();
 
     if let Ok(head) = parser::parse_gctf_from_str(content, "temp.gctf") {
-        // Document-level folding
         for (doc_idx, d) in head.iter_chain().enumerate() {
             if let (Some(first), Some(last)) = (d.sections.first(), d.sections.last()) {
                 // start_line is the 0-based header line; end_line is a line
@@ -40,7 +39,6 @@ pub fn build_folding_ranges(content: &str) -> Vec<FoldingRange> {
             }
         }
 
-        // Section-level folding
         for d in head.iter_chain() {
             for section in &d.sections {
                 if section.end_line > section.start_line {

@@ -1,8 +1,9 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // Tests for report generators - public API only
 
 use grpctestify::report::ConsoleMode;
 use grpctestify::report::{Reporter, console::ConsoleReporter, json::JsonReporter};
-use grpctestify::state::{TestMeta, TestResult, TestResults, TestStatus};
+use grpctestify::state::{ConfigSummary, TestMeta, TestResult, TestResults, TestStatus};
 
 #[test]
 fn test_progress_mode_from_str_dots() {
@@ -99,6 +100,12 @@ fn test_junit_reporter_skipped_test() {
         error_message: Some("Skipped due to condition".to_string()),
         execution_time: chrono::Utc::now().timestamp(),
         meta: grpctestify::state::TestMeta::default(),
+        assertions: Vec::new(),
+        exchange: None,
+        retried: false,
+        document_durations_ms: Vec::new(),
+        row_params: Vec::new(),
+        config_summary: ConfigSummary::default(),
     };
     results.add(skip_result);
 
@@ -127,6 +134,12 @@ fn test_json_reporter_on_suite_end() {
         error_message: None,
         execution_time: chrono::Utc::now().timestamp(),
         meta: TestMeta::default(),
+        assertions: Vec::new(),
+        exchange: None,
+        retried: false,
+        document_durations_ms: Vec::new(),
+        row_params: Vec::new(),
+        config_summary: ConfigSummary::default(),
     };
     results.add(pass_result);
 
@@ -192,6 +205,12 @@ fn test_json_reporter_round_trip() {
         error_message: None,
         execution_time: 1700000000,
         meta: TestMeta::default(),
+        assertions: Vec::new(),
+        exchange: None,
+        retried: false,
+        document_durations_ms: Vec::new(),
+        row_params: Vec::new(),
+        config_summary: ConfigSummary::default(),
     });
     results.add(TestResult {
         name: "test_b.gctf".to_string(),
@@ -201,6 +220,12 @@ fn test_json_reporter_round_trip() {
         error_message: Some("Expected 200, got 500".to_string()),
         execution_time: 1700000001,
         meta: TestMeta::default(),
+        assertions: Vec::new(),
+        exchange: None,
+        retried: false,
+        document_durations_ms: Vec::new(),
+        row_params: Vec::new(),
+        config_summary: ConfigSummary::default(),
     });
 
     // Act
@@ -234,6 +259,12 @@ fn test_console_reporter_verbose_mode() {
         error_message: None,
         execution_time: chrono::Utc::now().timestamp(),
         meta: TestMeta::default(),
+        assertions: Vec::new(),
+        exchange: None,
+        retried: false,
+        document_durations_ms: Vec::new(),
+        row_params: Vec::new(),
+        config_summary: ConfigSummary::default(),
     };
     reporter.on_test_end("test_verbose.gctf", &result);
 }
@@ -258,6 +289,12 @@ fn test_console_reporter_dots_mode() {
         error_message: None,
         execution_time: chrono::Utc::now().timestamp(),
         meta: TestMeta::default(),
+        assertions: Vec::new(),
+        exchange: None,
+        retried: false,
+        document_durations_ms: Vec::new(),
+        row_params: Vec::new(),
+        config_summary: ConfigSummary::default(),
     };
     let fail1 = TestResult::fail("test2.gctf", "error".to_string(), 20, None);
     reporter.on_test_end("test1.gctf", &pass1);
@@ -275,8 +312,7 @@ fn test_console_reporter_print_summary() {
     };
     let reporter = ConsoleReporter::new(ConsoleMode::Verbose, 3, env_info);
 
-    // Act: Should not panic
-    reporter.print_summary(
+    let out = reporter.render_summary(
         3,
         2,
         1,
@@ -285,6 +321,8 @@ fn test_console_reporter_print_summary() {
         &["test_fail.gctf (20ms)\n      Error: assertion failed".to_string()],
         &grpctestify::state::ExecutionMetrics::default(),
     );
+    assert!(out.contains("FAILED"));
+    assert!(out.contains("test_fail.gctf"));
 }
 
 #[test]
@@ -307,6 +345,12 @@ fn test_console_reporter_print_slowest_tests() {
             error_message: None,
             execution_time: chrono::Utc::now().timestamp(),
             meta: TestMeta::default(),
+            assertions: Vec::new(),
+            exchange: None,
+            retried: false,
+            document_durations_ms: Vec::new(),
+            row_params: Vec::new(),
+            config_summary: ConfigSummary::default(),
         },
         TestResult {
             name: "slow.gctf".to_string(),
@@ -316,11 +360,17 @@ fn test_console_reporter_print_slowest_tests() {
             error_message: None,
             execution_time: chrono::Utc::now().timestamp(),
             meta: TestMeta::default(),
+            assertions: Vec::new(),
+            exchange: None,
+            retried: false,
+            document_durations_ms: Vec::new(),
+            row_params: Vec::new(),
+            config_summary: ConfigSummary::default(),
         },
     ];
 
-    // Act: Should not panic
-    reporter.print_slowest_tests(&results, 2);
+    let out = reporter.render_slowest_tests(&results, 2);
+    assert!(out.contains("slow.gctf"));
 }
 
 #[test]
@@ -385,6 +435,7 @@ fn test_coverage_file() {
             total: 5,
         }),
         fields: None,
+        methods: Vec::new(),
     };
     assert_eq!(file.uri, "grpc://test.Service");
     assert_eq!(file.functions.as_ref().unwrap().covered, 2);
@@ -396,6 +447,7 @@ fn test_message_field_coverage() {
         message_type: "User".to_string(),
         covered_fields: vec!["name".to_string(), "email".to_string()],
         total_fields: 3,
+        missing_fields: vec!["age".to_string()],
     };
     assert_eq!(msg.message_type, "User");
     assert_eq!(msg.covered_fields.len(), 2);
@@ -427,6 +479,12 @@ fn test_junit_reporter_tags_in_properties() {
         error_message: None,
         execution_time: 1700000000,
         meta,
+        assertions: Vec::new(),
+        exchange: None,
+        retried: false,
+        document_durations_ms: Vec::new(),
+        row_params: Vec::new(),
+        config_summary: ConfigSummary::default(),
     });
 
     let result = reporter.on_suite_end(&results);
@@ -459,6 +517,12 @@ fn test_json_reporter_includes_meta() {
         error_message: None,
         execution_time: 1700000000,
         meta,
+        assertions: Vec::new(),
+        exchange: None,
+        retried: false,
+        document_durations_ms: Vec::new(),
+        row_params: Vec::new(),
+        config_summary: ConfigSummary::default(),
     });
 
     let result = reporter.on_suite_end(&results);

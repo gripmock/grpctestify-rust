@@ -14,7 +14,7 @@ fn use_vendored_protoc() -> Result<(), Box<dyn std::error::Error>> {
 fn compile_main_protos() -> Result<(), Box<dyn std::error::Error>> {
     use_vendored_protoc()?;
 
-    let out_dir = std::path::PathBuf::from(env::var("OUT_DIR").unwrap());
+    let out_dir = std::path::PathBuf::from(env::var("OUT_DIR")?);
     tonic_prost_build::configure()
         .file_descriptor_set_path(out_dir.join("helloworld_descriptor.bin"))
         .compile_protos(&["tests/server/helloworld.proto"], &["tests/server"])?;
@@ -37,7 +37,7 @@ fn compile_test_server_protos() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let out_dir = std::path::PathBuf::from(env::var("OUT_DIR").unwrap());
+    let out_dir = std::path::PathBuf::from(env::var("OUT_DIR")?);
 
     let proto_files = std::fs::read_dir(test_proto_dir)?
         .filter_map(|e| e.ok())

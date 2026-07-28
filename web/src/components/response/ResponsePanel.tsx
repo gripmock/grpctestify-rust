@@ -66,7 +66,7 @@ export function ResponsePanel() {
       {response && response.status !== 'pending' && (
         <>
           <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: 8 }}>
-            {(['response', 'headers'] as const).map(tab => (
+            {(response.assertions ? (['response', 'assertions', 'headers'] as const) : (['response', 'headers'] as const)).map(tab => (
               <button key={tab} onClick={() => setResponseTab(tab)} style={{
                 padding: '5px 12px', fontSize: 11, cursor: 'pointer', border: 'none', background: 'none',
                 transition: 'color 0.15s',
@@ -74,7 +74,9 @@ export function ResponsePanel() {
                 fontWeight: responseTab === tab ? 600 : 400,
                 borderBottom: responseTab === tab ? '2px solid var(--accent)' : '2px solid transparent',
               }}>
-                {tab === 'response' ? `Response${isStreaming ? ` (${msgCount})` : ''}` : 'Headers'}
+                {tab === 'response' ? `Response${isStreaming ? ` (${msgCount})` : ''}`
+                  : tab === 'assertions' ? `Assertions (${response.assertions!.filter(a => a.passed).length}/${response.assertions!.length})`
+                  : 'Headers'}
               </button>
             ))}
           </div>
@@ -136,6 +138,35 @@ export function ResponsePanel() {
                   />
                 </div>
               )}
+            </div>
+          )}
+
+          {responseTab === 'assertions' && response.assertions && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {response.assertions.length === 0 && (
+                <div style={{ padding: 12, fontSize: 12, color: 'var(--text-muted)' }}>No ASSERTS in this file</div>
+              )}
+              {response.assertions.map((a, i) => (
+                <div key={i} style={{
+                  border: `1px solid ${a.passed ? 'var(--border)' : colors.error}40`,
+                  borderRadius: 6, padding: '6px 10px',
+                  background: a.passed ? 'transparent' : `${colors.error}0c`,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {a.passed ? <Check size={13} color={colors.success} /> : <X size={13} color={colors.error} />}
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>L{a.line}</span>
+                    <span style={{ fontSize: 12.5, fontFamily: 'monospace', flex: 1 }}>{a.expression}</span>
+                    <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{a.elapsed_ms}ms</span>
+                  </div>
+                  {!a.passed && (a.expected != null || a.actual != null || a.message) && (
+                    <div style={{ marginTop: 4, fontSize: 11, fontFamily: 'monospace', color: colors.error, paddingLeft: 19 }}>
+                      {a.message && <div>{a.message}</div>}
+                      {a.expected != null && <div>expected: {a.expected}</div>}
+                      {a.actual != null && <div>actual: {a.actual}</div>}
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           )}
 

@@ -58,17 +58,57 @@ fn cached_regex(pattern: &str) -> std::result::Result<Rc<Regex>, String> {
     compiled
 }
 
+/// Everything the recursive AST walk needs, bundled so adding a field (like
+/// `protocol`) doesn't mean touching every one of the ~25 recursive call
+/// sites across `evaluate_ast`/`eval_value`/`eval_atom`/
+/// `eval_plugin_as_assertion` — they all just pass `ctx` through unchanged.
+pub(crate) struct EvalCtx<'a> {
+    pub response: &'a Value,
+    pub headers: Option<&'a HashMap<String, String>>,
+    pub trailers: Option<&'a HashMap<String, String>>,
+    pub timing: Option<&'a AssertionTiming>,
+    pub variables: &'a HashMap<String, Value>,
+    /// Wire protocol that produced `response` (`"grpc"`/`"grpc-web"`/
+    /// `"connectrpc"`) — forwarded to `PluginContext` for plugins that care.
+    pub protocol: Option<&'a str>,
+}
+
+impl<'a> EvalCtx<'a> {
+    pub fn new(response: &'a Value, variables: &'a HashMap<String, Value>) -> Self {
+        Self {
+            response,
+            headers: None,
+            trailers: None,
+            timing: None,
+            variables,
+            protocol: None,
+        }
+    }
+    pub fn with_headers(mut self, headers: Option<&'a HashMap<String, String>>) -> Self {
+        self.headers = headers;
+        self
+    }
+    pub fn with_trailers(mut self, trailers: Option<&'a HashMap<String, String>>) -> Self {
+        self.trailers = trailers;
+        self
+    }
+    pub fn with_timing(mut self, timing: Option<&'a AssertionTiming>) -> Self {
+        self.timing = timing;
+        self
+    }
+    pub fn with_protocol(mut self, protocol: Option<&'a str>) -> Self {
+        self.protocol = protocol;
+        self
+    }
+}
+
 /// Evaluate an assertion expression.
 /// Returns `Ok(Some(result))` when the AST engine handled the expression,
 /// `Ok(None)` when the expression should fall through to the JQ evaluator.
-pub fn evaluate_assertion(
+pub(crate) fn evaluate_assertion(
     registry: &dyn PluginRegistry,
     assertion: &str,
-    response: &Value,
-    headers: Option<&HashMap<String, String>>,
-    trailers: Option<&HashMap<String, String>>,
-    timing: Option<&AssertionTiming>,
-    variables: &HashMap<String, Value>,
+    ctx: &EvalCtx,
 ) -> Result<Option<AssertionResult>> {
     let trimmed = assertion.trim();
     if trimmed.is_empty() {
@@ -78,39 +118,30 @@ pub fn evaluate_assertion(
     let ast = parse_assertion(trimmed);
     match &ast {
         AssertionExpr::Raw(_) => Ok(None),
-        _ => evaluate_ast(
-            registry, &ast, response, headers, trailers, timing, variables,
-        )
-        .map(Some),
+        _ => evaluate_ast(registry, &ast, ctx).map(Some),
     }
 }
 
 fn evaluate_ast(
     pm: &dyn PluginRegistry,
     expr: &AssertionExpr,
-    response: &Value,
-    headers: Option<&HashMap<String, String>>,
-    trailers: Option<&HashMap<String, String>>,
-    timing: Option<&AssertionTiming>,
-    variables: &HashMap<String, Value>,
+    ctx: &EvalCtx,
 ) -> Result<AssertionResult> {
     match expr {
         AssertionExpr::Not(inner) => {
-            let r = evaluate_ast(pm, inner, response, headers, trailers, timing, variables)?;
+            let r = evaluate_ast(pm, inner, ctx)?;
             Ok(negate(r))
         }
-        AssertionExpr::NotNot(inner) => {
-            evaluate_ast(pm, inner, response, headers, trailers, timing, variables)
-        }
+        AssertionExpr::NotNot(inner) => evaluate_ast(pm, inner, ctx),
         AssertionExpr::And { left, right } => {
-            let lr = evaluate_ast(pm, left, response, headers, trailers, timing, variables)?;
+            let lr = evaluate_ast(pm, left, ctx)?;
             if !is_pass(&lr) {
                 return Ok(AssertionResult::fail(format!(
                     "Left of 'and' failed: {}",
                     fmt_result_short(&lr)
                 )));
             }
-            let rr = evaluate_ast(pm, right, response, headers, trailers, timing, variables)?;
+            let rr = evaluate_ast(pm, right, ctx)?;
             if !is_pass(&rr) {
                 return Ok(AssertionResult::fail(format!(
                     "Right of 'and' failed: {}",
@@ -120,11 +151,11 @@ fn evaluate_ast(
             Ok(AssertionResult::Pass)
         }
         AssertionExpr::Or { left, right } => {
-            let lr = evaluate_ast(pm, left, response, headers, trailers, timing, variables)?;
+            let lr = evaluate_ast(pm, left, ctx)?;
             if is_pass(&lr) {
                 return Ok(AssertionResult::Pass);
             }
-            let rr = evaluate_ast(pm, right, response, headers, trailers, timing, variables)?;
+            let rr = evaluate_ast(pm, right, ctx)?;
             if is_pass(&rr) {
                 return Ok(AssertionResult::Pass);
             }
@@ -135,8 +166,8 @@ fn evaluate_ast(
             )))
         }
         AssertionExpr::Xor { left, right } => {
-            let lr = evaluate_ast(pm, left, response, headers, trailers, timing, variables)?;
-            let rr = evaluate_ast(pm, right, response, headers, trailers, timing, variables)?;
+            let lr = evaluate_ast(pm, left, ctx)?;
+            let rr = evaluate_ast(pm, right, ctx)?;
             let lp = is_pass(&lr);
             let rp = is_pass(&rr);
             if lp != rp {
@@ -149,57 +180,34 @@ fn evaluate_ast(
             }
         }
         AssertionExpr::Binary { op, left, right } => {
-            let lhs = match eval_value(pm, left, response, headers, trailers, timing, variables) {
+            let lhs = match eval_value(pm, left, ctx) {
                 Ok(v) => v,
                 Err(e) => return Ok(AssertionResult::Error(e)),
             };
-            let rhs = match eval_value(pm, right, response, headers, trailers, timing, variables) {
+            let rhs = match eval_value(pm, right, ctx) {
                 Ok(v) => v,
                 Err(e) => return Ok(AssertionResult::Error(e)),
             };
             compare(lhs, op, rhs, left, right)
         }
-        AssertionExpr::Paren(inner) => {
-            evaluate_ast(pm, inner, response, headers, trailers, timing, variables)
-        }
+        AssertionExpr::Paren(inner) => evaluate_ast(pm, inner, ctx),
         AssertionExpr::IfThenElse {
             condition,
             then_branch,
             else_branch,
         } => {
-            let cond = evaluate_ast(
-                pm, condition, response, headers, trailers, timing, variables,
-            )?;
+            let cond = evaluate_ast(pm, condition, ctx)?;
             if is_pass(&cond) {
-                evaluate_ast(
-                    pm,
-                    then_branch,
-                    response,
-                    headers,
-                    trailers,
-                    timing,
-                    variables,
-                )
+                evaluate_ast(pm, then_branch, ctx)
             } else {
-                evaluate_ast(
-                    pm,
-                    else_branch,
-                    response,
-                    headers,
-                    trailers,
-                    timing,
-                    variables,
-                )
+                evaluate_ast(pm, else_branch, ctx)
             }
         }
         AssertionExpr::Atom(_) => {
             if let AssertionExpr::Atom(Expr::PluginCall { name, args }) = expr {
-                eval_plugin_as_assertion(
-                    pm, name, args, response, headers, trailers, timing, variables,
-                )
+                eval_plugin_as_assertion(pm, name, args, ctx)
             } else {
-                let val = match eval_value(pm, expr, response, headers, trailers, timing, variables)
-                {
+                let val = match eval_value(pm, expr, ctx) {
                     Ok(v) => v,
                     Err(e) => return Ok(AssertionResult::Error(e)),
                 };
@@ -217,50 +225,110 @@ fn evaluate_ast(
     }
 }
 
-/// Validate a value against a type annotation.
-/// Returns `Value::Null` if the value doesn't match the expected type,
-/// otherwise returns the value unchanged.
+/// Validate (and for `number`/`uint`, coerce) a value against a type
+/// annotation. Returns `Value::Null` if the value doesn't match, otherwise
+/// the value to use for the rest of the assertion.
+///
+/// `number`/`uint` parse a numeric-looking JSON *string* into a real
+/// `Value::Number` — protobuf's own JSON mapping encodes `int64`/`uint64`
+/// fields as strings (avoids precision loss), so `.big_id:number > 100`
+/// would otherwise silently compare a string to a number and always fail.
 fn validate_type_cast(val: &Value, type_name: &str) -> Value {
-    let valid = match type_name {
-        "bool" => val.is_boolean(),
-        "uint" => val.as_u64().is_some(),
-        "number" => val.is_number(),
-        "string" | "uuid" | "email" | "url" | "ip" => val.is_string(),
-        "time" | "timestamp" | "duration" => val.is_string() || val.is_number(),
-        "json" => val.is_object() || val.is_array(),
-        "yaml" => val.is_string(),
-        _ => true,
-    };
-    if valid { val.clone() } else { Value::Null }
+    match type_name {
+        "bool" => bool_or_null(val),
+        "uint" => uint_or_null(val),
+        "number" => number_or_null(val),
+        "string" | "uuid" | "email" | "url" | "ip" => string_or_null(val),
+        "time" | "timestamp" | "duration" => {
+            if val.is_string() || val.is_number() {
+                val.clone()
+            } else {
+                Value::Null
+            }
+        }
+        "json" => {
+            if val.is_object() || val.is_array() {
+                val.clone()
+            } else {
+                Value::Null
+            }
+        }
+        "yaml" => string_or_null(val),
+        _ => val.clone(),
+    }
 }
 
-#[expect(clippy::too_many_arguments)]
+fn bool_or_null(val: &Value) -> Value {
+    if val.is_boolean() {
+        val.clone()
+    } else {
+        Value::Null
+    }
+}
+
+fn string_or_null(val: &Value) -> Value {
+    if val.is_string() {
+        val.clone()
+    } else {
+        Value::Null
+    }
+}
+
+fn number_or_null(val: &Value) -> Value {
+    if val.is_number() {
+        return val.clone();
+    }
+    let Value::String(s) = val else {
+        return Value::Null;
+    };
+    if let Ok(i) = s.parse::<i64>() {
+        return Value::Number(i.into());
+    }
+    if let Ok(u) = s.parse::<u64>() {
+        return Value::Number(u.into());
+    }
+    s.parse::<f64>()
+        .ok()
+        .and_then(serde_json::Number::from_f64)
+        .map(Value::Number)
+        .unwrap_or(Value::Null)
+}
+
+fn uint_or_null(val: &Value) -> Value {
+    if val.as_u64().is_some() {
+        return val.clone();
+    }
+    let Value::String(s) = val else {
+        return Value::Null;
+    };
+    s.parse::<u64>()
+        .map(|u| Value::Number(u.into()))
+        .unwrap_or(Value::Null)
+}
+
 fn eval_plugin_as_assertion(
     pm: &dyn PluginRegistry,
     name: &str,
     args: &[AssertionExpr],
-    response: &Value,
-    headers: Option<&HashMap<String, String>>,
-    trailers: Option<&HashMap<String, String>>,
-    timing: Option<&AssertionTiming>,
-    variables: &HashMap<String, Value>,
+    ctx: &EvalCtx,
 ) -> Result<AssertionResult> {
     let func_name = format!("@{}", name);
     let resolved_name = normalize_plugin_name(&func_name);
     if let Some(plugin) = pm.get_plugin(resolved_name) {
-        let ctx = PluginContext::new(response)
-            .with_headers(headers)
-            .with_trailers(trailers)
-            .with_timing(timing);
+        let plugin_ctx = PluginContext::new(ctx.response)
+            .with_headers(ctx.headers)
+            .with_trailers(ctx.trailers)
+            .with_timing(ctx.timing)
+            .with_protocol(ctx.protocol);
         let arg_values: Vec<Value> = match args
             .iter()
-            .map(|a| eval_value(pm, a, response, headers, trailers, timing, variables))
+            .map(|a| eval_value(pm, a, ctx))
             .collect::<std::result::Result<_, _>>()
         {
             Ok(values) => values,
             Err(e) => return Ok(AssertionResult::Error(e)),
         };
-        match plugin.execute(&arg_values, &ctx) {
+        match plugin.execute(&arg_values, &plugin_ctx) {
             Ok(PluginResult::Assertion(res)) => Ok(res),
             Ok(PluginResult::Value(val)) => {
                 if is_truthy(&val) {
@@ -279,53 +347,39 @@ fn eval_plugin_as_assertion(
     }
 }
 
-fn eval_value(
-    pm: &dyn PluginRegistry,
-    expr: &AssertionExpr,
-    response: &Value,
-    headers: Option<&HashMap<String, String>>,
-    trailers: Option<&HashMap<String, String>>,
-    timing: Option<&AssertionTiming>,
-    variables: &HashMap<String, Value>,
-) -> ValueResult {
+fn eval_value(pm: &dyn PluginRegistry, expr: &AssertionExpr, ctx: &EvalCtx) -> ValueResult {
     match expr {
-        AssertionExpr::Atom(atom) => {
-            eval_atom(pm, atom, response, headers, trailers, timing, variables)
-        }
-        AssertionExpr::Paren(inner) => {
-            eval_value(pm, inner, response, headers, trailers, timing, variables)
-        }
+        AssertionExpr::Atom(atom) => eval_atom(pm, atom, ctx),
+        AssertionExpr::Paren(inner) => eval_value(pm, inner, ctx),
         AssertionExpr::Not(inner) => {
-            let v = eval_value(pm, inner, response, headers, trailers, timing, variables)?;
+            let v = eval_value(pm, inner, ctx)?;
             Ok(Value::Bool(!is_truthy(&v)))
         }
-        AssertionExpr::NotNot(inner) => {
-            eval_value(pm, inner, response, headers, trailers, timing, variables)
-        }
+        AssertionExpr::NotNot(inner) => eval_value(pm, inner, ctx),
         AssertionExpr::And { left, right } => {
-            let lv = eval_value(pm, left, response, headers, trailers, timing, variables)?;
+            let lv = eval_value(pm, left, ctx)?;
             if !is_truthy(&lv) {
                 return Ok(Value::Bool(false));
             }
-            let rv = eval_value(pm, right, response, headers, trailers, timing, variables)?;
+            let rv = eval_value(pm, right, ctx)?;
             Ok(Value::Bool(is_truthy(&rv)))
         }
         AssertionExpr::Or { left, right } => {
-            let lv = eval_value(pm, left, response, headers, trailers, timing, variables)?;
+            let lv = eval_value(pm, left, ctx)?;
             if is_truthy(&lv) {
                 return Ok(Value::Bool(true));
             }
-            let rv = eval_value(pm, right, response, headers, trailers, timing, variables)?;
+            let rv = eval_value(pm, right, ctx)?;
             Ok(Value::Bool(is_truthy(&rv)))
         }
         AssertionExpr::Xor { left, right } => {
-            let lv = eval_value(pm, left, response, headers, trailers, timing, variables)?;
-            let rv = eval_value(pm, right, response, headers, trailers, timing, variables)?;
+            let lv = eval_value(pm, left, ctx)?;
+            let rv = eval_value(pm, right, ctx)?;
             Ok(Value::Bool(is_truthy(&lv) != is_truthy(&rv)))
         }
         AssertionExpr::Binary { op, left, right } => {
-            let lhs = eval_value(pm, left, response, headers, trailers, timing, variables)?;
-            let rhs = eval_value(pm, right, response, headers, trailers, timing, variables)?;
+            let lhs = eval_value(pm, left, ctx)?;
+            let rhs = eval_value(pm, right, ctx)?;
             Ok(eval_binary_value(lhs, op, rhs))
         }
         AssertionExpr::IfThenElse {
@@ -333,59 +387,34 @@ fn eval_value(
             then_branch,
             else_branch,
         } => {
-            let cv = eval_value(
-                pm, condition, response, headers, trailers, timing, variables,
-            )?;
+            let cv = eval_value(pm, condition, ctx)?;
             if is_truthy(&cv) {
-                eval_value(
-                    pm,
-                    then_branch,
-                    response,
-                    headers,
-                    trailers,
-                    timing,
-                    variables,
-                )
+                eval_value(pm, then_branch, ctx)
             } else {
-                eval_value(
-                    pm,
-                    else_branch,
-                    response,
-                    headers,
-                    trailers,
-                    timing,
-                    variables,
-                )
+                eval_value(pm, else_branch, ctx)
             }
         }
-        AssertionExpr::Raw(s) => Ok(resolve_path(s, response)),
+        AssertionExpr::Raw(s) => Ok(resolve_path(s, ctx.response)),
     }
 }
 
-fn eval_atom(
-    pm: &dyn PluginRegistry,
-    atom: &Expr,
-    response: &Value,
-    headers: Option<&HashMap<String, String>>,
-    trailers: Option<&HashMap<String, String>>,
-    timing: Option<&AssertionTiming>,
-    variables: &HashMap<String, Value>,
-) -> ValueResult {
+fn eval_atom(pm: &dyn PluginRegistry, atom: &Expr, ctx: &EvalCtx) -> ValueResult {
     match atom {
-        Expr::JqPath(p) => Ok(resolve_path(p, response)),
+        Expr::JqPath(p) => Ok(resolve_path(p, ctx.response)),
         Expr::PluginCall { name, args } => {
             let func_name = format!("@{}", name);
             let resolved_name = normalize_plugin_name(&func_name);
             if let Some(plugin) = pm.get_plugin(resolved_name) {
-                let ctx = PluginContext::new(response)
-                    .with_headers(headers)
-                    .with_trailers(trailers)
-                    .with_timing(timing);
+                let plugin_ctx = PluginContext::new(ctx.response)
+                    .with_headers(ctx.headers)
+                    .with_trailers(ctx.trailers)
+                    .with_timing(ctx.timing)
+                    .with_protocol(ctx.protocol);
                 let arg_values: Vec<Value> = args
                     .iter()
-                    .map(|a| eval_value(pm, a, response, headers, trailers, timing, variables))
+                    .map(|a| eval_value(pm, a, ctx))
                     .collect::<std::result::Result<_, _>>()?;
-                match plugin.execute(&arg_values, &ctx) {
+                match plugin.execute(&arg_values, &plugin_ctx) {
                     Ok(PluginResult::Value(v)) => Ok(v),
                     Ok(PluginResult::Assertion(AssertionResult::Pass)) => Ok(Value::Bool(true)),
                     Ok(PluginResult::Assertion(AssertionResult::Fail { .. })) => {
@@ -417,7 +446,7 @@ fn eval_atom(
             Literal::Str(s) => Value::String(s.clone()),
             Literal::Null => Value::Null,
         }),
-        Expr::Variable(name) => match variables.get(name.as_str()) {
+        Expr::Variable(name) => match ctx.variables.get(name.as_str()) {
             // `$name` resolves to the JSON value bound by a prior EXTRACT.
             Some(v) => Ok(v.clone()),
             None => Err(format!("Undefined variable: ${}", name)),
@@ -425,7 +454,7 @@ fn eval_atom(
         Expr::RegExp { pattern, flags } => Ok(Value::String(regex_with_flags(pattern, flags))),
         Expr::Json(s) | Expr::Yaml(s) => Ok(serde_json::from_str(s).unwrap_or(Value::Null)),
         Expr::As(inner, type_name) => {
-            let val = eval_atom(pm, inner, response, headers, trailers, timing, variables)?;
+            let val = eval_atom(pm, inner, ctx)?;
             Ok(validate_type_cast(&val, type_name))
         }
     }
@@ -594,7 +623,8 @@ mod tests {
     }
 
     fn eval(pm: &dyn PluginRegistry, expr: &str, response: &Value) -> AssertionResult {
-        evaluate_assertion(pm, expr, response, None, None, None, &HashMap::new())
+        let empty = HashMap::new();
+        evaluate_assertion(pm, expr, &EvalCtx::new(response, &empty))
             .unwrap()
             .unwrap_or(AssertionResult::Error("AST returned None".into()))
     }
@@ -605,7 +635,7 @@ mod tests {
         response: &Value,
         variables: &HashMap<String, Value>,
     ) -> AssertionResult {
-        evaluate_assertion(pm, expr, response, None, None, None, variables)
+        evaluate_assertion(pm, expr, &EvalCtx::new(response, variables))
             .unwrap()
             .unwrap_or(AssertionResult::Error("AST returned None".into()))
     }
@@ -618,6 +648,18 @@ mod tests {
             &json!({"status": "success"}),
         );
         assert!(matches!(r, AssertionResult::Pass));
+    }
+
+    #[test]
+    fn test_number_type_annotation_coerces_int64_string_field() {
+        // int64 protobuf fields serialize as JSON strings; `:number` must
+        // still let numeric comparisons work against them.
+        let r = eval(
+            &pm(),
+            ".big_id:number > 100",
+            &json!({"big_id": "123456789012345"}),
+        );
+        assert!(matches!(r, AssertionResult::Pass), "{r:?}");
     }
 
     #[test]
@@ -671,16 +713,9 @@ mod tests {
     #[test]
     fn test_jq_fallback_via_raw() {
         let p = pm();
-        let r = evaluate_assertion(
-            &p,
-            ".tags | length",
-            &json!({"tags": [1, 2, 3]}),
-            None,
-            None,
-            None,
-            &HashMap::new(),
-        )
-        .unwrap();
+        let response = json!({"tags": [1, 2, 3]});
+        let empty = HashMap::new();
+        let r = evaluate_assertion(&p, ".tags | length", &EvalCtx::new(&response, &empty)).unwrap();
         assert!(
             r.is_none(),
             "JQ pipe should return None to trigger JQ fallback"
@@ -795,6 +830,21 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_type_cast_coerces_numeric_strings() {
+        // int64/uint64 protobuf fields are JSON-encoded as strings.
+        assert_eq!(
+            validate_type_cast(&json!("123456789012345"), "number"),
+            json!(123456789012345i64)
+        );
+        assert_eq!(validate_type_cast(&json!("42"), "uint"), json!(42u64));
+        assert_eq!(validate_type_cast(&json!("2.5"), "number"), json!(2.5));
+        assert_eq!(validate_type_cast(&json!("-5"), "number"), json!(-5));
+        assert_eq!(validate_type_cast(&json!("-5"), "uint"), Value::Null);
+        assert_eq!(validate_type_cast(&json!("hello"), "number"), Value::Null);
+        assert_eq!(validate_type_cast(&json!("hello"), "uint"), Value::Null);
+    }
+
+    #[test]
     fn test_normalize_plugin_name_assert() {
         assert_eq!(normalize_plugin_name("@uuid"), "uuid");
         assert_eq!(normalize_plugin_name("uuid"), "uuid");
@@ -835,16 +885,13 @@ mod tests {
     #[test]
     fn test_eval_atom_literal() {
         let pm = crate::registry::NoopPluginRegistry;
-        let ctx = &json!({});
+        let response = json!({});
+        let empty = HashMap::new();
         use apif_ast::assertion_ast::{Expr, Literal};
         let result = eval_atom(
             &pm,
             &Expr::Literal(Literal::Number("42".into())),
-            ctx,
-            None,
-            None,
-            None,
-            &HashMap::new(),
+            &EvalCtx::new(&response, &empty),
         )
         .unwrap();
         assert_eq!(result, json!(42));
@@ -872,7 +919,8 @@ mod tests {
             })),
         };
         let response = json!({"name": "test"});
-        let r = evaluate_ast(&pm(), &expr, &response, None, None, None, &HashMap::new()).unwrap();
+        let empty = HashMap::new();
+        let r = evaluate_ast(&pm(), &expr, &EvalCtx::new(&response, &empty)).unwrap();
         assert!(matches!(r, AssertionResult::Pass), "got: {:?}", r);
 
         // Without the flag the same pattern must fail
@@ -884,7 +932,7 @@ mod tests {
                 flags: String::new(),
             })),
         };
-        let r = evaluate_ast(&pm(), &expr, &response, None, None, None, &HashMap::new()).unwrap();
+        let r = evaluate_ast(&pm(), &expr, &EvalCtx::new(&response, &empty)).unwrap();
         assert!(matches!(r, AssertionResult::Fail { .. }), "got: {:?}", r);
     }
 

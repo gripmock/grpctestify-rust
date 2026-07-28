@@ -1,21 +1,23 @@
-// Commands module - handles CLI command execution
-
 use crate::diagnostics::{Diagnostic, DiagnosticSeverity};
+use crate::grpc::TlsConfig;
 use anyhow::Result;
 
 pub mod bench;
 pub mod bench_compare;
 pub mod call;
 pub mod check;
+pub mod docs;
 pub mod explain;
 pub mod fmt;
 pub mod gen_grpcurl;
+pub mod graph;
 pub mod grpcurl;
 pub mod health;
 pub mod index_cmd;
 pub mod inspect;
 pub mod list;
 pub mod lsp;
+pub mod plugins;
 pub mod query_cmd;
 pub mod reflect;
 pub mod run;
@@ -25,20 +27,44 @@ pub mod serve;
 pub use bench::handle_bench;
 pub use call::handle_call;
 pub use check::handle_check;
+pub use docs::handle_docs;
 pub use explain::handle_explain;
 pub use fmt::handle_fmt;
 pub use gen_grpcurl::handle_gen;
+pub use graph::handle_graph;
 pub use grpcurl::{GrpcurlOutput, build_grpcurl_command, handle_grpcurl};
 pub use health::handle_health;
 pub use index_cmd::handle_index;
 pub use inspect::handle_inspect;
 pub use list::handle_list;
 pub use lsp::handle_lsp;
+pub use plugins::{
+    handle_plugins_install, handle_plugins_list, handle_plugins_remove, handle_plugins_update,
+};
 pub use query_cmd::handle_query;
 pub use reflect::handle_reflect;
 pub use run::run_tests;
 pub use scaffold::handle_scaffold;
 pub use serve::handle_play;
+
+/// Build a `TlsConfig` from resolved CLI cert paths — the field-construction
+/// step shared by every command's own `resolve_tls_config`, which otherwise
+/// each decide independently whether TLS applies at all (that decision's
+/// default/flag surface genuinely differs per command, so it stays local).
+pub fn tls_config_from_flags(
+    ca_cert_path: Option<String>,
+    client_cert_path: Option<String>,
+    client_key_path: Option<String>,
+    insecure_skip_verify: bool,
+) -> TlsConfig {
+    TlsConfig {
+        ca_cert_path,
+        client_cert_path,
+        client_key_path,
+        server_name: None,
+        insecure_skip_verify,
+    }
+}
 
 /// Print diagnostic to stderr
 pub fn print_diagnostic(diagnostic: &Diagnostic) {

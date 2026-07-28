@@ -62,6 +62,26 @@ fn parse_protocol(s: Option<&str>) -> crate::grpc::WireProtocol {
     s.and_then(|s| s.parse().ok()).unwrap_or_default()
 }
 
+/// TLS config from a playground request's `tls`/`tls_ca`/`tls_cert`/`tls_key`/
+/// `tls_insecure` fields — shared by every endpoint that dials a target
+/// (reflect, schema fill, call/test execution).
+fn tls_config_from_request(
+    tls: Option<bool>,
+    tls_ca: &Option<String>,
+    tls_cert: &Option<String>,
+    tls_key: &Option<String>,
+    tls_insecure: Option<bool>,
+) -> Option<crate::grpc::TlsConfig> {
+    tls.unwrap_or(false).then(|| {
+        crate::commands::tls_config_from_flags(
+            tls_ca.clone(),
+            tls_cert.clone(),
+            tls_key.clone(),
+            tls_insecure.unwrap_or(true),
+        )
+    })
+}
+
 /// Resolve a relative path across all collections dirs. Returns first match.
 /// Defense in depth: the canonicalized result must stay inside the
 /// canonicalized collections dir (catches anything reject_traversal missed
@@ -89,6 +109,11 @@ pub struct ReflectRequest {
     pub address: String,
     pub tls: Option<bool>,
     pub tls_insecure: Option<bool>,
+    /// mTLS: paths to CA cert / client cert / client key, mirroring
+    /// `reflect --tls-ca`/`--tls-cert`/`--tls-key`.
+    pub tls_ca: Option<String>,
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
     /// Optional: collection path to load PROTO config from
     pub collection_path: Option<String>,
     /// Wire protocol: "grpc" (default), "grpc-web", "connectrpc"
@@ -118,6 +143,9 @@ pub struct SchemaFillRequest {
     pub endpoint: String,
     pub tls: Option<bool>,
     pub tls_insecure: Option<bool>,
+    pub tls_ca: Option<String>,
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
     pub collection_path: Option<String>,
     /// Wire protocol: "grpc" (default), "grpc-web", "connectrpc"
     pub protocol: Option<String>,
@@ -153,18 +181,18 @@ pub struct CollectionItem {
 pub struct CollectionParsed {
     pub endpoint: String,
     pub address: String,
-    pub headers: std::collections::HashMap<String, String>,
+    pub headers: crate::parser::OrderedStringMap,
     pub bodies: Vec<String>,
     pub asserts: Vec<String>,
-    pub extracts: std::collections::HashMap<String, String>,
+    pub extracts: crate::parser::OrderedStringMap,
     pub meta_name: Option<String>,
     pub meta_tags: Vec<String>,
     pub meta_owner: Option<String>,
     pub meta_summary: Option<String>,
-    pub tls: std::collections::HashMap<String, String>,
-    pub options: std::collections::HashMap<String, String>,
-    pub bench: std::collections::HashMap<String, String>,
-    pub proto: std::collections::HashMap<String, String>,
+    pub tls: crate::parser::OrderedStringMap,
+    pub options: crate::parser::OrderedStringMap,
+    pub bench: crate::parser::OrderedStringMap,
+    pub proto: crate::parser::OrderedStringMap,
 }
 
 fn parse_collection(doc: &crate::parser::GctfDocument) -> CollectionParsed {
@@ -190,7 +218,7 @@ fn parse_collection(doc: &crate::parser::GctfDocument) -> CollectionParsed {
             })
     };
 
-    let get_kv = |t: SectionType| -> std::collections::HashMap<String, String> {
+    let get_kv = |t: SectionType| -> crate::parser::OrderedStringMap {
         doc.sections
             .iter()
             .find(|s| s.section_type == t)
@@ -239,7 +267,7 @@ fn parse_collection(doc: &crate::parser::GctfDocument) -> CollectionParsed {
         })
         .collect();
 
-    let extracts: std::collections::HashMap<String, String> = doc
+    let extracts: crate::parser::OrderedStringMap = doc
         .sections
         .iter()
         .filter(|s| s.section_type == SectionType::Extract)
@@ -250,7 +278,7 @@ fn parse_collection(doc: &crate::parser::GctfDocument) -> CollectionParsed {
                 _ => None,
             }
         })
-        .fold(std::collections::HashMap::new(), |mut acc, m| {
+        .fold(crate::parser::OrderedStringMap::new(), |mut acc, m| {
             acc.extend(m);
             acc
         });
@@ -340,6 +368,9 @@ pub struct CallRequest {
     pub headers: Option<std::collections::HashMap<String, String>>,
     pub tls: Option<bool>,
     pub tls_insecure: Option<bool>,
+    pub tls_ca: Option<String>,
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
     pub address: Option<String>,
     pub protocol: Option<String>,
     pub environment: Option<std::collections::HashMap<String, String>>,
@@ -527,6 +558,25 @@ pub async fn save_collection(
     Ok(Json(()))
 }
 
+#[derive(Deserialize)]
+pub struct DiagnosticsRequest {
+    pub content: String,
+    pub file_name: Option<String>,
+}
+
+/// POST /api/diagnostics — run the same parse/validation/semantic/optimizer/
+/// sources/unused-variable passes the LSP uses, against unsaved editor
+/// content. No file I/O, no `collection_path` needed.
+pub async fn get_diagnostics(
+    Json(req): Json<DiagnosticsRequest>,
+) -> Json<Vec<tower_lsp::lsp_types::Diagnostic>> {
+    let file_name = req.file_name.as_deref().unwrap_or("playground.gctf");
+    Json(crate::lsp::handlers::collect_all_diagnostics(
+        &req.content,
+        file_name,
+    ))
+}
+
 /// POST /api/save-structured — save structured request data, backend builds .gctf
 pub async fn save_collection_structured(
     State(state): State<Arc<PlayState>>,
@@ -661,17 +711,13 @@ pub async fn reflect_server(
     State(state): State<Arc<PlayState>>,
     Json(req): Json<ReflectRequest>,
 ) -> Json<ReflectResponse> {
-    let tls_config = if req.tls.unwrap_or(false) {
-        Some(crate::grpc::TlsConfig {
-            ca_cert_path: None,
-            client_cert_path: None,
-            client_key_path: None,
-            server_name: None,
-            insecure_skip_verify: req.tls_insecure.unwrap_or(true),
-        })
-    } else {
-        None
-    };
+    let tls_config = tls_config_from_request(
+        req.tls,
+        &req.tls_ca,
+        &req.tls_cert,
+        &req.tls_key,
+        req.tls_insecure,
+    );
 
     let proto_config = if let Some(ref coll_path) = req.collection_path {
         if reject_traversal(coll_path).is_err() {
@@ -804,40 +850,35 @@ pub struct SchemaFillResponse {
     pub error: Option<String>,
 }
 
-pub async fn schema_fill(
-    State(state): State<Arc<PlayState>>,
-    Json(req): Json<SchemaFillRequest>,
-) -> Json<SchemaFillResponse> {
-    let parts: Vec<&str> = req.endpoint.split('/').collect();
-    if parts.len() != 2 {
-        return Json(SchemaFillResponse {
-            schema: None,
-            error: Some("Invalid endpoint format".into()),
-        });
-    }
-    let (full_service, method_name) = (parts[0], parts[1]);
+async fn resolve_endpoint_descriptors(
+    state: &PlayState,
+    req: &SchemaFillRequest,
+) -> Result<
+    (
+        prost_reflect::ServiceDescriptor,
+        prost_reflect::MethodDescriptor,
+    ),
+    String,
+> {
+    let (full_service, method_name) = req
+        .endpoint
+        .split_once('/')
+        .ok_or_else(|| "Invalid endpoint format".to_string())?;
 
-    let tls_config = if req.tls.unwrap_or(false) {
-        Some(crate::grpc::TlsConfig {
-            ca_cert_path: None,
-            client_cert_path: None,
-            client_key_path: None,
-            server_name: None,
-            insecure_skip_verify: req.tls_insecure.unwrap_or(true),
-        })
-    } else {
-        None
-    };
+    let tls_config = tls_config_from_request(
+        req.tls,
+        &req.tls_ca,
+        &req.tls_cert,
+        &req.tls_key,
+        req.tls_insecure,
+    );
 
     let proto_config = if let Some(ref coll_path) = req.collection_path {
         if reject_traversal(coll_path).is_err() {
-            return Json(SchemaFillResponse {
-                schema: None,
-                error: Some("Invalid collection_path".into()),
-            });
+            return Err("Invalid collection_path".to_string());
         }
         let file_path =
-            resolve_file(&state, coll_path).unwrap_or_else(|| primary_dir(&state).join(coll_path));
+            resolve_file(state, coll_path).unwrap_or_else(|| primary_dir(state).join(coll_path));
         if file_path.exists() {
             let parse_result = crate::parser::parse_with_recovery(&file_path);
             crate::execution::runner_helpers::build_proto_config(&parse_result.document, &file_path)
@@ -848,7 +889,6 @@ pub async fn schema_fill(
         None
     };
 
-    // Create a temporary gRPC client to load descriptors
     let grpc_config = crate::grpc::GrpcClientConfig {
         address: req.address.clone(),
         timeout_seconds: 10,
@@ -862,46 +902,100 @@ pub async fn schema_fill(
         version: env!("CARGO_PKG_VERSION").to_string(),
     };
 
-    let client = match crate::grpc::GrpcClient::new(grpc_config).await {
-        Ok(c) => c,
-        Err(e) => {
-            return Json(SchemaFillResponse {
-                schema: None,
-                error: Some(format!("Failed to load descriptors: {}", e)),
-            });
-        }
-    };
+    let client = crate::grpc::GrpcClient::new(grpc_config)
+        .await
+        .map_err(|e| format!("Failed to load descriptors: {}", e))?;
 
-    let pool = client.descriptor_pool();
-    let svc = match pool.get_service_by_name(full_service) {
-        Some(s) => s,
-        None => {
-            return Json(SchemaFillResponse {
-                schema: None,
-                error: Some(format!("Service '{}' not found", full_service)),
-            });
-        }
-    };
-    let method = match svc.methods().find(|m| m.name() == method_name) {
-        Some(m) => m,
-        None => {
-            return Json(SchemaFillResponse {
-                schema: None,
-                error: Some(format!(
-                    "Method '{}' not found in '{}'",
-                    method_name, full_service
-                )),
-            });
-        }
-    };
+    let svc = client
+        .descriptor_pool()
+        .get_service_by_name(full_service)
+        .ok_or_else(|| format!("Service '{}' not found", full_service))?;
+    let method = svc
+        .methods()
+        .find(|m| m.name() == method_name)
+        .ok_or_else(|| format!("Method '{}' not found in '{}'", method_name, full_service))?;
 
-    let input_desc = method.input();
-    let template = generate_json_template(&input_desc);
+    Ok((svc, method))
+}
 
-    Json(SchemaFillResponse {
-        schema: Some(template),
-        error: None,
-    })
+pub async fn schema_fill(
+    State(state): State<Arc<PlayState>>,
+    Json(req): Json<SchemaFillRequest>,
+) -> Json<SchemaFillResponse> {
+    match resolve_endpoint_descriptors(&state, &req).await {
+        Ok((_, method)) => Json(SchemaFillResponse {
+            schema: Some(generate_json_template(&method.input())),
+            error: None,
+        }),
+        Err(e) => Json(SchemaFillResponse {
+            schema: None,
+            error: Some(e),
+        }),
+    }
+}
+
+#[derive(Serialize)]
+pub struct ProtoSourceResponse {
+    pub source: Option<String>,
+    pub error: Option<String>,
+}
+
+pub async fn proto_source(
+    State(state): State<Arc<PlayState>>,
+    Json(req): Json<SchemaFillRequest>,
+) -> Json<ProtoSourceResponse> {
+    match resolve_endpoint_descriptors(&state, &req).await {
+        Ok((svc, _)) => Json(ProtoSourceResponse {
+            source: Some(render_service_schema(&svc)),
+            error: None,
+        }),
+        Err(e) => Json(ProtoSourceResponse {
+            source: None,
+            error: Some(e),
+        }),
+    }
+}
+
+fn render_service_schema(svc: &prost_reflect::ServiceDescriptor) -> String {
+    let mut out = format!("service {} {{\n", svc.full_name());
+    for m in svc.methods() {
+        let stream_in = if m.is_client_streaming() {
+            "stream "
+        } else {
+            ""
+        };
+        let stream_out = if m.is_server_streaming() {
+            "stream "
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "  rpc {}({}{}) returns ({}{});\n",
+            m.name(),
+            stream_in,
+            m.input().name(),
+            stream_out,
+            m.output().name()
+        ));
+    }
+    out.push_str("}\n");
+
+    let mut seen = Vec::new();
+    for m in svc.methods() {
+        for desc in [m.input(), m.output()] {
+            let full_name = desc.full_name().to_string();
+            if seen.contains(&full_name) {
+                continue;
+            }
+            seen.push(full_name);
+            out.push_str(&format!("\nmessage {} {{\n", desc.name()));
+            let mut tree = String::new();
+            crate::commands::reflect::describe_message_tree(&desc, 1, &mut Vec::new(), &mut tree);
+            out.push_str(&console::strip_ansi_codes(&tree));
+            out.push_str("}\n");
+        }
+    }
+    out
 }
 
 /// Generate a fake value for a given field name + type.
@@ -1090,6 +1184,27 @@ pub async fn generate_grpcurl(Json(req): Json<CallRequest>) -> Json<GrpcurlRespo
         .with_file_path("<convert>")
         .endpoint(&req.endpoint);
 
+    if let Some(address) = &req.address {
+        builder = builder.address(address);
+    }
+
+    if req.tls.unwrap_or(false) {
+        let mut tls: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        if let Some(ca) = &req.tls_ca {
+            tls.insert("ca_cert".to_string(), ca.clone());
+        }
+        if let Some(cert) = &req.tls_cert {
+            tls.insert("client_cert".to_string(), cert.clone());
+        }
+        if let Some(key) = &req.tls_key {
+            tls.insert("client_key".to_string(), key.clone());
+        }
+        if req.tls_insecure.unwrap_or(true) {
+            tls.insert("insecure".to_string(), "true".to_string());
+        }
+        builder = builder.tls(tls);
+    }
+
     for msg in &messages {
         builder = builder.request(msg.clone());
     }
@@ -1150,51 +1265,50 @@ pub async fn execute_call(
         return Err((StatusCode::BAD_REQUEST, "No request messages".to_string()));
     }
 
-    let tls_config = if req.tls.unwrap_or(false) {
-        Some(crate::grpc::TlsConfig {
-            ca_cert_path: None,
-            client_cert_path: None,
-            client_key_path: None,
-            server_name: None,
-            insecure_skip_verify: req.tls_insecure.unwrap_or(true),
-        })
-    } else {
-        None
-    };
+    let tls_config = tls_config_from_request(
+        req.tls,
+        &req.tls_ca,
+        &req.tls_cert,
+        &req.tls_key,
+        req.tls_insecure,
+    );
 
-    let proto_config = if let Some(ref coll_path) = req.collection_path {
+    type FileConfig = (Option<crate::grpc::ProtoConfig>, Option<String>);
+    let (proto_config, file_address) = if let Some(ref coll_path) = req.collection_path {
         if reject_traversal(coll_path).is_err() {
             return Err((StatusCode::NOT_FOUND, "Invalid collection_path".to_string()));
         }
         let state = state.clone();
         let path = coll_path.clone();
-        let result = tokio::task::spawn_blocking(
-            move || -> Result<Option<crate::grpc::ProtoConfig>, (StatusCode, String)> {
+        let result =
+            tokio::task::spawn_blocking(move || -> Result<FileConfig, (StatusCode, String)> {
                 let file_path =
                     resolve_file(&state, &path).unwrap_or_else(|| primary_dir(&state).join(&path));
                 if file_path.exists() {
                     let parse_result = crate::parser::parse_with_recovery(&file_path);
-                    Ok(crate::execution::runner_helpers::build_proto_config(
-                        &parse_result.document,
-                        &file_path,
+                    Ok((
+                        crate::execution::runner_helpers::build_proto_config(
+                            &parse_result.document,
+                            &file_path,
+                        ),
+                        parse_result.document.get_address(None),
                     ))
                 } else {
-                    Ok(None)
+                    Ok((None, None))
                 }
-            },
-        )
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            })
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         result?
     } else {
-        None
+        (None, None)
     };
 
     let protocol = parse_protocol(req.protocol.as_deref());
 
-    let address = req
-        .address
-        .clone()
+    // File ADDRESS wins over client state, matching /api/run's trust model.
+    let address = file_address
+        .or(req.address.clone())
         .unwrap_or_else(|| crate::grpc::default_address_for(protocol).to_string());
 
     let env_ref = req.environment.as_ref();
@@ -1301,6 +1415,124 @@ pub async fn execute_call(
         headers: resp_headers,
         trailers: response_trailers,
         error: response_error,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct RunTestRequest {
+    pub collection_path: String,
+    /// Session ID for project history auto-save.
+    pub session_id: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct RunAssertionResult {
+    pub line: usize,
+    pub expression: String,
+    pub passed: bool,
+    pub elapsed_ms: u64,
+    pub message: Option<String>,
+    pub expected: Option<String>,
+    pub actual: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct RunTestResponse {
+    pub success: bool,
+    pub error: Option<String>,
+    pub call_duration_ms: Option<u64>,
+    pub assertions: Vec<RunAssertionResult>,
+    pub response_messages: Vec<serde_json::Value>,
+    pub headers: HashMap<String, String>,
+    pub trailers: HashMap<String, String>,
+}
+
+/// Runs a saved `.gctf` file through the same [`crate::execution::runner::TestRunner`]
+/// `run` uses — ASSERTS/EXTRACT/multi-doc chain included — instead of the
+/// single-RPC [`execute_call`], so the playground and the CLI never
+/// disagree about whether a test passes.
+pub async fn execute_test(
+    State(state): State<Arc<PlayState>>,
+    Json(req): Json<RunTestRequest>,
+) -> Result<Json<RunTestResponse>, (StatusCode, String)> {
+    reject_traversal(&req.collection_path)?;
+    let file_path = resolve_file(&state, &req.collection_path)
+        .ok_or((StatusCode::NOT_FOUND, "File not found".to_string()))?;
+
+    let document = tokio::task::spawn_blocking(move || {
+        crate::parser::parse_with_recovery(&file_path).document
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let exec = crate::execution::runner::TestRunner::new(false, 30, false, false, false, None)
+        .with_capture_exchange(true)
+        .run_test(&document)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let (success, error) = match exec.status {
+        crate::execution::runner::TestExecutionStatus::Pass => (true, None),
+        crate::execution::runner::TestExecutionStatus::Fail(msg) => (false, Some(msg)),
+    };
+
+    let assertions: Vec<RunAssertionResult> = exec
+        .assertions
+        .into_iter()
+        .map(|a| RunAssertionResult {
+            line: a.line,
+            expression: a.expression,
+            passed: a.passed,
+            elapsed_ms: a.elapsed_ms,
+            message: a.message,
+            expected: a.expected,
+            actual: a.actual,
+        })
+        .collect();
+
+    let (response_messages, headers, trailers) = match exec.captured_response {
+        Some(r) => (r.messages, r.headers, r.trailers),
+        None => (vec![], HashMap::new(), HashMap::new()),
+    };
+
+    if let Some(sid) = req.session_id.clone()
+        && let Ok(root) = require_project(&state)
+    {
+        let entry = serde_json::json!({
+            "id": uuid::Uuid::new_v4().to_string(),
+            "timestamp": apif_cfg_runtime::now_unix_millis(),
+            "kind": "run",
+            "collection_path": req.collection_path,
+            "response": {
+                "status": if success { "ok" } else { "error" },
+                "error": error.clone(),
+                "assertions_passed": assertions.iter().filter(|a| a.passed).count(),
+                "assertions_total": assertions.len(),
+                "messages": response_messages.clone(),
+                "headers": headers.clone(),
+                "trailers": trailers.clone(),
+            },
+        });
+
+        if let Ok(line) = serde_json::to_string(&entry) {
+            let _guard = state.history_lock.lock().await;
+            let root = root.to_path_buf();
+            tokio::task::spawn_blocking(move || {
+                super::project::append_history_entry(&root, &sid, &line).ok();
+            })
+            .await
+            .ok();
+        }
+    }
+
+    Ok(Json(RunTestResponse {
+        success,
+        error,
+        call_duration_ms: exec.call_duration_ms,
+        assertions,
+        response_messages,
+        headers,
+        trailers,
     }))
 }
 
@@ -1808,6 +2040,36 @@ mod tests {
         assert!(require_gctf("foo.proto").is_err());
         assert!(require_gctf("foo.sh").is_err());
         assert!(require_gctf("gctf").is_err());
+    }
+
+    #[test]
+    fn parse_collection_preserves_source_order_of_options_and_extracts() {
+        // The playground JSON (`CollectionParsed`) must echo OPTIONS/EXTRACT in
+        // the author's source order, not a hash-randomized one — this is the
+        // serve-API side of the §2.3 ordered-storage guarantee.
+        let src = "--- ENDPOINT ---\npkg.Svc/M\n\n\
+             --- OPTIONS ---\ntimeout: 5\nretry: 2\ncompression: gzip\nno_retry: false\n\n\
+             --- REQUEST ---\n{}\n\n\
+             --- RESPONSE ---\n{}\n\n\
+             --- EXTRACT ---\nzulu = .a\nmike = .b\nalpha = .c\n";
+        let doc = crate::parser::parse_gctf_from_str(src, "order.gctf").expect("parse");
+        let parsed = parse_collection(&doc);
+        assert_eq!(
+            parsed
+                .options
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["timeout", "retry", "compression", "no_retry"],
+        );
+        assert_eq!(
+            parsed
+                .extracts
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["zulu", "mike", "alpha"],
+        );
     }
 
     #[test]

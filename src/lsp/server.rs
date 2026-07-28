@@ -11,10 +11,11 @@ use crate::config;
 use crate::grpc::client::{GrpcClient, GrpcClientConfig};
 use crate::grpc::{ProtoConfig, WireProtocol};
 use crate::lsp::handlers::{self, get_var_hover, get_variable_completions};
+use crate::lsp::proto_definition;
 use crate::lsp::variable_definition;
 use crate::parser::ast::SectionType;
 use crate::parser::{self, GctfDocument};
-use crate::plugins::{PluginManager, PluginPurity};
+use crate::plugins::PluginPurity;
 
 type DocumentMap<T> = Arc<RwLock<HashMap<String, T>>>;
 type VersionedMap<T> = Arc<RwLock<HashMap<String, (i32, T)>>>;
@@ -656,101 +657,46 @@ impl GrpctestifyLsp {
             .and_then(|p| p.to_str().map(ToOwned::to_owned))
             .unwrap_or_else(|| uri.to_string());
 
-        match parser::parse_gctf_from_str(content, &file_name) {
-            Ok(document) => {
-                // Cache the parse under the version that matches `content`
-                // (passed in atomically with it), never a re-read that a
-                // concurrent edit may have already bumped.
-                self.parsed_docs
-                    .write()
-                    .await
-                    .insert(uri.to_string(), document.clone());
-                self.parsed_doc_versions
-                    .write()
-                    .await
-                    .insert(uri.to_string(), version);
-
-                // Validate all documents in the chain
-                let mut lsp_diags: Vec<Diagnostic> = Vec::new();
-                for (doc_idx, d) in document.iter_chain().enumerate() {
-                    let doc_label = if document.is_single_document() {
-                        None
-                    } else {
-                        Some(doc_idx + 1)
-                    };
-
-                    let errors = crate::parser::validator::validate_document_diagnostics(d);
-                    for e in &errors {
-                        let mut diag = handlers::validation_error_to_diagnostic(e, content);
-                        if let Some(n) = doc_label {
-                            diag.message = format!("Document {}: {}", n, diag.message);
-                        }
-                        lsp_diags.push(diag);
-                    }
-
-                    let mut semantic_diags = handlers::collect_semantic_diagnostics(d, content);
-                    for diag in &mut semantic_diags {
-                        if let Some(n) = doc_label {
-                            diag.message = format!("Document {}: {}", n, diag.message);
-                        }
-                    }
-
-                    // Optimizer diagnostics (Safe-level rewrites)
-                    let opt_diags = handlers::collect_optimizer_diagnostics(d, content);
-
-                    // Deduplicate: suppress SEM_D001 if R001 (auto-fix) exists on same line
-                    let r001_lines: std::collections::HashSet<u32> = opt_diags
-                        .iter()
-                        .filter(|d| d.code == Some(NumberOrString::String("OPT_R001".into())))
-                        .map(|d| d.range.start.line)
-                        .collect();
-                    semantic_diags.retain(|d| {
-                        !(d.code == Some(NumberOrString::String("SEM_D001".into()))
-                            && r001_lines.contains(&d.range.start.line))
-                    });
-
-                    for diag in semantic_diags {
-                        lsp_diags.push(diag);
-                    }
-                    for diag in opt_diags {
-                        lsp_diags.push(diag);
-                    }
-
-                    // Sources diagnostics
-                    let sources_diags = handlers::collect_sources_diagnostics(d, content);
-                    for mut diag in sources_diags {
-                        if let Some(n) = doc_label {
-                            diag.message = format!("Document {}: {}", n, diag.message);
-                        }
-                        lsp_diags.push(diag);
-                    }
-                }
-
-                // Unused variable diagnostics (EXTRACT vars not used in subsequent docs)
-                for unused_var in handlers::collect_unused_variables(&document) {
-                    lsp_diags.push(handlers::unused_variable_to_diagnostic(&unused_var));
-                }
-
-                self.client
-                    .publish_diagnostics(uri.clone(), lsp_diags, None)
-                    .await;
-            }
-            Err(e) => {
-                let diag = Diagnostic::new_simple(
-                    Range::new(Position::new(0, 0), Position::new(0, 0)),
-                    format!("Parse error: {}", e),
-                );
-                self.client
-                    .publish_diagnostics(uri.clone(), vec![diag], None)
-                    .await;
-            }
+        // Cache the parse under the version that matches `content` (passed in
+        // atomically with it), never a re-read that a concurrent edit may
+        // have already bumped.
+        if let Ok(document) = parser::parse_gctf_from_str(content, &file_name) {
+            self.parsed_docs
+                .write()
+                .await
+                .insert(uri.to_string(), document);
+            self.parsed_doc_versions
+                .write()
+                .await
+                .insert(uri.to_string(), version);
         }
+
+        let lsp_diags = handlers::collect_all_diagnostics(content, &file_name);
+        self.client
+            .publish_diagnostics(uri.clone(), lsp_diags, None)
+            .await;
     }
 }
 
 #[tower_lsp::async_trait]
 impl LanguageServer for GrpctestifyLsp {
     async fn initialize(&self, _: InitializeParams) -> LspResult<InitializeResult> {
+        // Same convention-directory plugin sources `check`/`fmt`/`explain`/
+        // `inspect` register — without this, a valid `.rhai` custom plugin
+        // is flagged as an "unknown plugin" diagnostic in the editor even
+        // though `run` executes it fine. `OnceLock`-backed (see
+        // `apif_semantics`/`apif_optimizer`), so this only ever takes effect
+        // once per server process — a plugin added mid-session needs a
+        // server restart to be picked up, the same limitation the doc-tag
+        // optimizer wiring has for a one-shot CLI invocation.
+        apif_semantics::register_extra_plugin_names(crate::commands::check::rhai_plugin_names());
+        apif_optimizer::register_extra_boolean_plugins(
+            crate::commands::check::rhai_boolean_plugin_names(),
+        );
+        crate::parser::register_extra_inline_option_keys(
+            crate::plugins::rhai_plugin::load_all_inline_option_keys(),
+        );
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -995,7 +941,10 @@ impl LanguageServer for GrpctestifyLsp {
                         SectionType::Extract if !on_section_header => {
                             items.extend(handlers::get_extract_completions())
                         }
-                        SectionType::Proto | SectionType::Tls | SectionType::Options
+                        SectionType::Proto
+                        | SectionType::Tls
+                        | SectionType::Options
+                        | SectionType::Bench
                             if !on_section_header =>
                         {
                             items.extend(handlers::get_section_key_completions(
@@ -1205,7 +1154,11 @@ impl LanguageServer for GrpctestifyLsp {
                 actions.push(CodeActionOrCommand::CodeAction(action));
             }
 
-            if diagnostic.code == Some(NumberOrString::String("BENCH_UNKNOWN_KEY".to_string()))
+            if (diagnostic.code == Some(NumberOrString::String("BENCH_UNKNOWN_KEY".to_string()))
+                || diagnostic.code
+                    == Some(NumberOrString::String(
+                        "DEPRECATED_KEY_SPELLING".to_string(),
+                    )))
                 && let Some(data) = &diagnostic.data
                 && let (Some(unknown_key), Some(suggested_key)) = (
                     data.get("unknown_key").and_then(|v| v.as_str()),
@@ -1253,20 +1206,70 @@ impl LanguageServer for GrpctestifyLsp {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
 
-        let docs = self.documents.read().await;
-        let content = match docs.get(&uri.to_string()) {
-            Some(c) => c,
+        let (content, doc_version) = match self.document_snapshot(&uri).await {
+            Some(snapshot) => snapshot,
             None => return Ok(None),
         };
 
         if let Some(loc) =
-            variable_definition::find_variable_definition(content, position, uri.as_str())
+            variable_definition::find_variable_definition(&content, position, uri.as_str())
         {
-            Ok(variable_definition::variable_location_to_lsp(&loc)
-                .map(GotoDefinitionResponse::Scalar))
-        } else {
-            Ok(None)
+            return Ok(variable_definition::variable_location_to_lsp(&loc)
+                .map(GotoDefinitionResponse::Scalar));
         }
+
+        // Proto goto-definition: only meaningful on the ENDPOINT line, and
+        // only resolvable when the schema comes from local `.proto` files
+        // (`PROTO.files=` + `import_paths=`) — that's the only source that
+        // retains `SourceCodeInfo` to jump to (see `proto_definition`).
+        let Some(doc) = self
+            .get_or_parse_document(&uri, &content, doc_version)
+            .await
+        else {
+            return Ok(None);
+        };
+
+        let line0 = position.line as usize;
+        let on_endpoint_line = handlers::section_index_at_line(&doc.sections, line0)
+            .map(|idx| doc.sections[idx].section_type == SectionType::Endpoint)
+            .unwrap_or(false);
+        if !on_endpoint_line {
+            return Ok(None);
+        }
+
+        let Some(proto_config) = Self::proto_config_from_document(&doc, &uri) else {
+            return Ok(None);
+        };
+        if proto_config.files.is_empty() || proto_config.import_paths.is_empty() {
+            return Ok(None);
+        }
+        let import_paths = proto_config.import_paths.clone();
+
+        let proto = Self::protocol_from_document(&doc);
+        let address = doc
+            .get_address(
+                std::env::var(config::ENV_GRPCTESTIFY_ADDRESS)
+                    .ok()
+                    .as_deref(),
+            )
+            .unwrap_or_else(|| crate::grpc::default_address_for(proto).to_string());
+
+        let Some(client) = self
+            .create_schema_client(&address, Some(proto_config), None, proto)
+            .await
+        else {
+            return Ok(None);
+        };
+
+        let location = proto_definition::find_proto_definition(
+            &doc,
+            &content,
+            position,
+            client.descriptor_pool(),
+            &import_paths,
+        );
+
+        Ok(location.map(GotoDefinitionResponse::Scalar))
     }
 
     async fn references(&self, params: ReferenceParams) -> LspResult<Option<Vec<Location>>> {
@@ -1546,17 +1549,19 @@ struct LspPluginSignature {
 }
 
 /// Get plugin signatures for signature help.
-/// Builds from the canonical PLUGIN_SIGNATURES map and live plugin descriptions
-/// so that custom/override plugins are reflected immediately.
+/// Builds from every loaded plugin (built-ins plus convention-directory
+/// `.rhai` scripts) so a custom plugin gets the same signature help as a
+/// built-in one, including its `@param`/`@returns` doc-tags when present.
 fn get_plugin_signatures() -> std::collections::HashMap<String, LspPluginSignature> {
-    use crate::plugins::PLUGIN_SIGNATURES;
     use std::collections::HashMap;
 
     let mut signatures = HashMap::new();
-    let manager = PluginManager::new();
+    let manager = crate::execution::plugin_dir::build_plugin_manager();
 
-    for (name, signature) in PLUGIN_SIGNATURES.iter() {
+    for plugin in manager.list() {
+        let name = plugin.name();
         let normalized = name.trim_start_matches('@').to_string();
+        let signature = plugin.signature();
         let template: Vec<&str> = signature.arg_names.to_vec();
         let label = if template.is_empty() {
             format!("@{}()", normalized)
@@ -1571,15 +1576,13 @@ fn get_plugin_signatures() -> std::collections::HashMap<String, LspPluginSignatu
             PluginPurity::Impure => "impure",
         };
 
-        // Get live description from the plugin instance
-        let description = manager
-            .get(name)
-            .map(|p| p.description().to_string())
-            .unwrap_or_else(|| normalized.clone());
-
         let documentation = format!(
             "{}\n\nReturns: {} | Purity: {} | Deterministic: {} | Idempotent: {}",
-            description, return_type_name, purity, signature.deterministic, signature.idempotent
+            plugin.description(),
+            return_type_name,
+            purity,
+            signature.deterministic,
+            signature.idempotent
         );
 
         let parameters = template

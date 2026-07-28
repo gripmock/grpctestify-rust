@@ -11,6 +11,11 @@ pub struct PluginContext<'a> {
     pub headers: Option<&'a HashMap<String, String>>,
     pub trailers: Option<&'a HashMap<String, String>>,
     pub timing: Option<&'a AssertionTiming>,
+    /// Wire protocol that produced this response — `"grpc"`, `"grpc-web"`, or
+    /// `"connectrpc"` (the same canonical strings `OPTIONS.protocol:`
+    /// accepts). `None` when the caller didn't have protocol information to
+    /// give (e.g. a standalone/test evaluation with no real call behind it).
+    pub protocol: Option<&'a str>,
 }
 
 impl<'a> PluginContext<'a> {
@@ -20,6 +25,7 @@ impl<'a> PluginContext<'a> {
             headers: None,
             trailers: None,
             timing: None,
+            protocol: None,
         }
     }
     pub fn with_headers(mut self, headers: Option<&'a HashMap<String, String>>) -> Self {
@@ -32,6 +38,10 @@ impl<'a> PluginContext<'a> {
     }
     pub fn with_timing(mut self, timing: Option<&'a AssertionTiming>) -> Self {
         self.timing = timing;
+        self
+    }
+    pub fn with_protocol(mut self, protocol: Option<&'a str>) -> Self {
+        self.protocol = protocol;
         self
     }
 }

@@ -1,0 +1,71 @@
+=== STDOUT ===
+
+ANALYSIS REPORT
+═══════════════
+
+FILE: <TMPDIR>/chain.gctf
+
+PARSE PROFILING
+───────────────
+  File size:         249 bytes
+  Total lines:       20
+  Section headers:   7
+  Parse total:       <MS>ms
+    • read:          <MS>ms
+    • parse-sections:<MS>ms
+    • build-doc:     <MS>ms
+  Validation:        <MS>ms
+  Validation result: OK
+
+DOCUMENTS: 2
+
+DOCUMENT 1 [lines 1-12]
+════════════════════════════════════════════════════════
+  #   Section          Lines         Type           Raw Size
+  ---------------------------------------------------------------
+  1   ENDPOINT           1-  3        single             28 bytes
+  2   REQUEST            4-  6        json                3 bytes
+  3   RESPONSE           7-  9        json               22 bytes
+  4   ASSERTS           10- 12        assertions         21 bytes
+
+  ✓ ENDPOINT section present
+  ✓ REQUEST section present
+  ✓ RESPONSE section present
+  ✓ ASSERTS section present (custom assertions)
+
+  No variables defined or used.
+
+  Unary
+  Pattern: Single request -> Single response
+  Steps: 4
+  Assertions: 1 block(s)
+  With Asserts: 1 response/error section(s)
+
+DOCUMENT 2 [lines 13-20]
+════════════════════════════════════════════════════════
+  #   Section          Lines         Type           Raw Size
+  ---------------------------------------------------------------
+  1   ENDPOINT          13- 15        single             28 bytes
+  2   REQUEST           16- 18        json                3 bytes
+  3   ERROR             19- 20        json               11 bytes
+
+  ✓ ENDPOINT section present
+  ✓ REQUEST section present
+  ✓ ERROR section present (testing error handling)
+
+  No variables defined or used.
+
+  Unary
+  Pattern: Single request -> gRPC error response
+  Steps: 3
+
+WARNINGS & HINTS
+────────────────
+  ✓ No structural warnings or hints.
+  ✓ No structural warnings or hints.
+
+SUMMARY
+───────
+  ✓ No issues found. Test appears structurally valid.
+
+=== STDERR ===

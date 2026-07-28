@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // LSP variable go-to-definition and hover tests
 
 use grpctestify::execution::ExecutionPlan;

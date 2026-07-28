@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 use grpctestify::grpc::client::{CompressionMode, GrpcClient, GrpcClientConfig, ProtoConfig};
 use std::path::PathBuf;
 

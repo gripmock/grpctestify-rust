@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // Tests for diagnostic types and builder
 
 use grpctestify::diagnostics::*;

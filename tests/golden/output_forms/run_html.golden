@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>Test Report</title>
+<style>
+:root{--bg:#f7f8fa;--card:#ffffff;--text:#111827;--muted:#6b7280;--border:#e5e7eb;--pass:#16a34a;--fail:#dc2626;--skip:#9ca3af;--accent:#b45309;--pass-bg:rgba(22,163,74,.08);--pass-border:rgba(22,163,74,.28);--fail-bg:rgba(220,38,38,.07);--fail-border:rgba(220,38,38,.28);--radius:6px;}
+*{box-sizing:border-box;}
+html{scroll-behavior:smooth;}
+/* One typographic voice, monospace throughout — a test report is a CLI
+   tool's artifact, not a SaaS dashboard, and the same glyphs/tabular numbers
+   already used in the terminal output (✓/✗/○, aligned durations) read best
+   in the font family they were designed for. */
+body{margin:0;font-family:ui-monospace,SFMono-Regular,"SF Mono",Consolas,"Liberation Mono",Menlo,monospace;}
+
+/* Two explicit themes (light default, dark via the switch) — a checkbox +
+   sibling selector, so switching needs no JS at all. */
+#theme-toggle{display:none;}
+.page{background:var(--bg);color:var(--text);min-height:100vh;padding:40px 20px 60px;}
+#theme-toggle:checked ~ .page{--bg:#0d1117;--card:#161b22;--text:#e6edf3;--muted:#8b949e;--border:#2a3038;--accent:#f0b429;--pass-bg:rgba(63,185,80,.1);--fail-bg:rgba(248,81,73,.1);}
+.theme-switch{position:fixed;top:18px;right:20px;cursor:pointer;width:38px;height:21px;background:var(--border);border-radius:999px;display:flex;align-items:center;padding:2px;z-index:2;}
+.theme-switch::after{content:"";width:17px;height:17px;border-radius:50%;background:var(--card);box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .15s;}
+#theme-toggle:checked ~ .page .theme-switch::after{transform:translateX(17px);}
+
+.container{max-width:820px;margin:0 auto;}
+.brand{font-size:12px;color:var(--muted);margin-bottom:10px;letter-spacing:.02em;}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 20px;margin-bottom:14px;}
+h2{font-size:12.5px;font-weight:600;margin:0 0 12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;}
+h2 .count{font-weight:400;text-transform:none;letter-spacing:0;}
+
+/* Hero verdict banner — the one thing every reader needs first: did it pass?
+   Flagged with the same left-bar-plus-tint language as a failed test card
+   below, not a separate all-around-bordered "toast" style — one consistent
+   accent grammar for "this needs attention" at both the suite and test
+   level, instead of two different-looking components doing the same job. */
+.hero{display:flex;align-items:center;gap:16px;border-radius:var(--radius);padding:20px 22px;margin-bottom:14px;border-left:5px solid;}
+.hero-pass{background:var(--pass-bg);border-color:var(--pass);}
+.hero-fail{background:var(--fail-bg);border-color:var(--fail);}
+.hero-empty{background:var(--card);border-color:var(--border);}
+.hero-icon{font-size:30px;font-weight:700;line-height:1;flex-shrink:0;}
+.hero-pass .hero-icon{color:var(--pass);}
+.hero-fail .hero-icon{color:var(--fail);}
+.hero-empty .hero-icon{color:var(--muted);}
+.hero-body{flex:1;min-width:0;}
+.hero-title{font-size:17px;font-weight:700;margin-bottom:10px;}
+.hero-stats{display:flex;gap:26px;flex-wrap:wrap;}
+.hstat-value{display:block;font-size:20px;font-weight:700;font-variant-numeric:tabular-nums;}
+.hstat-value.g-pass{color:var(--pass);}
+.hstat-value.g-fail{color:var(--fail);}
+.hstat-value.g-skip{color:var(--skip);}
+.hstat-label{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;}
+.hero-ratio{display:flex;height:5px;border-radius:3px;overflow:hidden;margin-top:12px;background:var(--border);max-width:280px;}
+.hero-ratio span{display:block;height:100%;}
+.hero-jump{flex-shrink:0;font-size:12.5px;font-weight:600;color:var(--fail);border:1px solid var(--fail-border);border-radius:6px;padding:6px 12px;text-decoration:none;white-space:nowrap;}
+.hero-jump:hover{background:var(--fail-border);}
+
+table{border-collapse:collapse;width:<PCT>%;font-size:13px;}
+td,th{padding:7px 9px;text-align:left;border-bottom:1px solid var(--border);}
+th{color:var(--muted);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;}
+tr:last-child td{border-bottom:none;}
+
+/* Ranked bar lists */
+.bar-row{display:flex;align-items:center;gap:10px;margin:8px 0;}
+.bar-label{width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;}
+.bar-track{flex:1;background:var(--border);border-radius:4px;overflow:hidden;height:7px;}
+.bar-fill{height:100%;background:var(--accent);border-radius:4px;}
+.bar-value{width:60px;text-align:right;font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;}
+
+/* Collapsible section summaries (Performance, and Tests when the run is
+   fully green) — a plain <details>/<summary>, no JS. */
+.section-toggle{cursor:pointer;list-style:none;display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:2px 0;}
+.section-toggle::-webkit-details-marker{display:none;}
+.section-toggle::before{content:"›";transition:transform .15s;color:var(--muted);}
+details[open]>.section-toggle::before{transform:rotate(90deg);}
+.perf-block+.perf-block{margin-top:18px;}
+.perf-block h3{font-size:11px;font-weight:600;margin:0 0 10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;}
+
+/* Test cards — one list, failed sort first, start expanded, and carry a red
+   accent border so a failure is unmistakable even at a glance/scroll.
+   `.status-*` only colours the icon — it's also used as a bare modifier on
+   the card/row wrapper (for the border accent below), and `color` is
+   inherited, so scoping it to `.status-icon` keeps the test name and
+   duration from picking up a red/green tint they were never meant to have. */
+.status-icon.status-pass{color:var(--pass);}
+.status-icon.status-fail{color:var(--fail);}
+.status-icon.status-skip{color:var(--skip);}
+.test-card{border-bottom:1px solid var(--border);border-left:3px solid transparent;padding-left:8px;margin-left:-8px;}
+.test-card:last-child{border-bottom:none;}
+.test-card.status-fail{border-left-color:var(--fail);background:var(--fail-bg);}
+.test-card summary,.test-card-plain{list-style:none;cursor:pointer;display:flex;align-items:center;gap:9px;padding:9px 2px;}
+.test-card summary::-webkit-details-marker{display:none;}
+.test-card summary::before{content:"›";width:10px;color:var(--muted);transition:transform .15s;flex-shrink:0;}
+.test-card[open] summary::before{transform:rotate(90deg);}
+/* A card with nothing to expand renders as a plain row: no cursor, and an
+   invisible spacer the same width as the `›` arrow so its icon still lines
+   up with every expandable row's icon. */
+.test-card-plain{cursor:default;}
+.test-card-plain .row-spacer{display:inline-block;width:10px;flex-shrink:0;}
+.test-card .status-icon{width:14px;text-align:center;font-weight:700;font-size:12.5px;flex-shrink:0;}
+.test-card .test-name{flex:1;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.test-card .tag{background:var(--border);color:var(--muted);border-radius:4px;padding:1px 6px;font-size:10.5px;margin-left:6px;flex-shrink:0;}
+.test-card .test-duration{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;flex-shrink:0;}
+.test-card-body{padding:0 0 14px 23px;}
+.error-box{background:var(--fail-bg);border:1px solid var(--fail-border);color:var(--fail);border-radius:6px;padding:7px 11px;font-size:12px;margin-bottom:9px;white-space:pre-wrap;}
+.meta-line{font-size:11.5px;color:var(--muted);margin-bottom:7px;}
+.meta-key{font-weight:600;color:var(--text);margin-right:4px;}
+.assertions-table{font-size:12px;margin-bottom:4px;}
+.assertions-table td,.assertions-table th{padding:4px 7px;}
+.a-mark{width:14px;text-align:center;}
+tr.a-pass .a-mark{color:var(--pass);}
+tr.a-fail .a-mark{color:var(--fail);}
+tr.a-fail{background:var(--fail-bg);}
+tr.a-fail td{color:var(--fail);}
+.exchange{margin-top:4px;font-size:11.5px;}
+.exchange summary{cursor:pointer;color:var(--accent);padding:3px 0;list-style:none;}
+.exchange summary::-webkit-details-marker{display:none;}
+.exchange summary::before{content:"▸ ";}
+.kv-block{margin:6px 0 6px 13px;}
+.kv-title{font-size:10.5px;text-transform:uppercase;color:var(--muted);margin-bottom:2px;}
+.kv-row{font-size:11px;}
+.response-json{margin:6px 0 0 13px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:9px;font-size:11px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;}
+.table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+
+footer{color:var(--muted);font-size:11.5px;text-align:center;margin-top:10px;}
+
+/* Keyboard focus — details/summary and links are the only interactive
+   elements, and both need a visible ring since the toggle affordance is
+   otherwise just a colour/rotation change that a focus outline alone would
+   miss. */
+summary:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+#theme-toggle:focus-visible ~ .page .theme-switch{outline:2px solid var(--accent);outline-offset:2px;}
+
+@media (max-width:640px){
+  .page{padding:56px 14px 40px;}
+  .hero{flex-direction:column;align-items:stretch;gap:14px;padding:16px 16px;}
+  .hero-jump{text-align:center;}
+  .hero-stats{gap:18px;}
+  .hstat-value{font-size:18px;}
+  .card{padding:14px 14px;}
+  .bar-label{width:118px;}
+  .test-card summary,.test-card-plain{flex-wrap:wrap;row-gap:4px;}
+  .test-card .test-name{min-width:120px;}
+}
+</style>
+</head>
+<body>
+<input type="checkbox" id="theme-toggle" aria-label="Toggle dark mode">
+<div class="page">
+<label for="theme-toggle" class="theme-switch" title="Toggle dark mode"></label>
+<div class="container">
+<div class="brand">grpctestify · generated <TS></div>
+
+<div class="hero hero-fail">
+<div class="hero-icon">✗</div>
+<div class="hero-body">
+<div class="hero-title">1 of 2 tests failed</div>
+<div class="hero-stats">
+<div><span class="hstat-value g-pass">1</span><span class="hstat-label">Passed</span></div>
+<div><span class="hstat-value g-fail">1</span><span class="hstat-label">Failed</span></div>
+<div><span class="hstat-value g-skip">0</span><span class="hstat-label">Skipped</span></div>
+<div><span class="hstat-value"><MS>ms</span><span class="hstat-label">Duration</span></div>
+</div>
+<div class="hero-ratio"><span style="width:<PCT>%;background:var(--pass)"></span><span style="width:<PCT>%;background:var(--fail)"></span><span style="width:<PCT>%;background:var(--skip)"></span></div>
+</div>
+<a class="hero-jump" href="#tests">Jump to failures ↓</a>
+</div>
+
+<div class="card" id="tests">
+
+<h2>Tests <span class="count">(2)</span></h2>
+
+<details class="test-card status-fail" open>
+<summary><span class="status-icon status-fail">✗</span><span class="test-name"><TMPDIR>&#x2f;b_fail.gctf</span><span class="test-duration"><MS>ms</span></summary>
+<div class="test-card-body">
+
+<div class="meta-line"><span class="meta-key">Steps</span>#1 <MS>ms</div>
+<div class="error-box">Validation failed:
+  - Assertion failed at line 9 (assertion at line 11): Assertion failed: .status == &quot;NOT_SERVING&quot; (Values: String(&quot;SERVING&quot;) vs String(&quot;NOT_SERVING&quot;))
+  -     Expected: == String(&quot;NOT_SERVING&quot;)
+    Actual:   String(&quot;SERVING&quot;)</div>
+
+<div class="table-scroll">
+<table class="assertions-table"><tr><th></th><th>Line</th><th>Expression</th><th>Expected</th><th>Actual</th><th>Time</th><th>Endpoint</th></tr>
+<tr class="a-fail"><td class="a-mark">✗</td><td>11</td><td>.status == &quot;NOT_SERVING&quot;</td><td>== String(&quot;NOT_SERVING&quot;)</td><td>String(&quot;SERVING&quot;)</td><td><MS>ms</td><td>grpc.health.v1.Health&#x2f;Check</td></tr>
+</table>
+</div>
+
+<details class="exchange"><summary>Captured exchange</summary>
+<div class="kv-block"><div class="kv-title">Headers</div><div class="kv-row">content-type: application&#x2f;grpc</div><div class="kv-row">date: <HTTP_DATE></div></div>
+<div class="kv-block"><div class="kv-title">Trailers</div><div class="kv-row">grpc-status: 0</div></div>
+<pre class="response-json">[
+  {
+    &quot;status&quot;: &quot;SERVING&quot;
+  }
+]</pre>
+</details>
+</div>
+</details>
+
+<details class="test-card status-pass">
+<summary><span class="status-icon status-pass">✓</span><span class="test-name"><TMPDIR>&#x2f;a_pass.gctf</span><span class="test-duration"><MS>ms</span></summary>
+<div class="test-card-body">
+
+<div class="meta-line"><span class="meta-key">Steps</span>#1 <MS>ms</div>
+
+<div class="table-scroll">
+<table class="assertions-table"><tr><th></th><th>Line</th><th>Expression</th><th>Expected</th><th>Actual</th><th>Time</th><th>Endpoint</th></tr>
+<tr class="a-pass"><td class="a-mark">✓</td><td>11</td><td>.status == &quot;SERVING&quot;</td><td></td><td></td><td><MS>ms</td><td>grpc.health.v1.Health&#x2f;Check</td></tr>
+</table>
+</div>
+
+<details class="exchange"><summary>Captured exchange</summary>
+<div class="kv-block"><div class="kv-title">Headers</div><div class="kv-row">content-type: application&#x2f;grpc</div><div class="kv-row">date: <HTTP_DATE></div></div>
+<div class="kv-block"><div class="kv-title">Trailers</div><div class="kv-row">grpc-status: 0</div></div>
+<pre class="response-json">[
+  {
+    &quot;status&quot;: &quot;SERVING&quot;
+  }
+]</pre>
+</details>
+</div>
+</details>
+
+</div>
+
+<div class="card">
+<details>
+<summary class="section-toggle">Performance</summary>
+<div class="perf-block">
+<h3>Slowest Tests</h3>
+<div class="bar-row" title=".status == &quot;NOT_SERVING&quot;"><div class="bar-label"><TMPDIR>&#x2f;b_fail.gctf:11</div><div class="bar-track"><div class="bar-fill" style="width:<PCT>%"></div></div><div class="bar-value"><MS>ms</div></div>
+<div class="bar-row" title=".status == &quot;SERVING&quot;"><div class="bar-label"><TMPDIR>&#x2f;a_pass.gctf:11</div><div class="bar-track"><div class="bar-fill" style="width:<PCT>%"></div></div><div class="bar-value"><MS>ms</div></div>
+</div>
+<div class="perf-block">
+<h3>Slowest Assertions</h3>
+<div class="bar-row" title="<TMPDIR>&#x2f;a_pass.gctf: <MS>ms"><div class="bar-label"><TMPDIR>&#x2f;a_pass.gctf</div><div class="bar-track"><div class="bar-fill" style="width:<PCT>%"></div></div><div class="bar-value"><MS>ms</div></div>
+<div class="bar-row" title="<TMPDIR>&#x2f;b_fail.gctf: <MS>ms"><div class="bar-label"><TMPDIR>&#x2f;b_fail.gctf</div><div class="bar-track"><div class="bar-fill" style="width:<PCT>%"></div></div><div class="bar-value"><MS>ms</div></div>
+</div>
+</details>
+</div>
+
+<footer>Generated by grpctestify · <TS></footer>
+</div>
+</div>
+</body>
+</html>

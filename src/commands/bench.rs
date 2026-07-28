@@ -1,4 +1,4 @@
-// Bench command - run benchmark tests with load generation
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
 
 use crate::bench::schema::bench_value;
 use crate::cli::args::BenchArgs;
@@ -22,6 +22,16 @@ use tracing::{info, warn};
 /// Latency percentiles no longer use this — they come from the bounded
 /// [`LatencyHistogram`] — so this only bounds the memory of the raw detail log.
 const MAX_LATENCY_SAMPLES: usize = 100_000;
+
+/// Parse a BENCH numeric value tolerating digit separators (`1_000_000`),
+/// falling back to `default` on a non-numeric value. Gives BENCH numeric keys
+/// the same digit-separator support JSON/YAML/ASSERTS numbers already have
+/// (gctf-parser-hardening §4.3) and that the `load_*` f64 keys already do via
+/// their own `.replace('_', "")`; the `unwrap_or(default)` fallback semantics
+/// are unchanged for genuinely-invalid values.
+fn parse_bench_num<T: std::str::FromStr>(value: &str, default: T) -> T {
+    value.replace('_', "").parse().unwrap_or(default)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DurationStopMode {
@@ -241,15 +251,21 @@ fn parse_duration_sec(s: &str) -> Option<f64> {
     // Check longest / most-specific suffixes first: "ms" must be matched before
     // the single-char "s", otherwise "500ms" gets stripped to "500m" and fails.
     if let Some(rest) = s.strip_suffix('h') {
-        rest.parse::<f64>().ok().map(|v| v * 3600.0)
+        rest.replace('_', "")
+            .parse::<f64>()
+            .ok()
+            .map(|v| v * 3600.0)
     } else if let Some(rest) = s.strip_suffix("ms") {
-        rest.parse::<f64>().ok().map(|v| v / 1000.0)
+        rest.replace('_', "")
+            .parse::<f64>()
+            .ok()
+            .map(|v| v / 1000.0)
     } else if let Some(rest) = s.strip_suffix('s') {
-        rest.parse::<f64>().ok()
+        rest.replace('_', "").parse::<f64>().ok()
     } else if let Some(rest) = s.strip_suffix('m') {
-        rest.parse::<f64>().ok().map(|v| v * 60.0)
+        rest.replace('_', "").parse::<f64>().ok().map(|v| v * 60.0)
     } else {
-        s.parse::<f64>().ok()
+        s.replace('_', "").parse::<f64>().ok()
     }
 }
 
@@ -314,7 +330,9 @@ macro_rules! cli_config_field {
 }
 
 impl BenchConfigResolved {
-    pub fn from_bench_section(bench_section: Option<&HashMap<String, String>>) -> Result<Self> {
+    pub fn from_bench_section(
+        bench_section: Option<&crate::parser::OrderedStringMap>,
+    ) -> Result<Self> {
         let mut config = Self::default();
 
         if let Some(bench) = bench_section {
@@ -325,13 +343,13 @@ impl BenchConfigResolved {
                 config.profile = p.clone();
             }
             if let Some(c) = bench.get("concurrency") {
-                config.concurrency = c.parse().unwrap_or(1);
+                config.concurrency = parse_bench_num(c, 1);
                 config
                     .option_sources
                     .insert("concurrency".to_string(), BenchOptionSource::BenchSection);
             }
             if let Some(n) = bench.get("requests") {
-                config.requests = Some(n.parse().unwrap_or(100));
+                config.requests = Some(parse_bench_num(n, 100));
             }
             if let Some(d) = bench.get("duration") {
                 config.duration = Some(parse_duration(d)?);
@@ -352,7 +370,7 @@ impl BenchConfigResolved {
                 config.max_duration = Some(parse_duration(d)?);
             }
             if let Some(rps) = bench_value(bench, "max_rps") {
-                config.max_rps = Some(rps.parse().unwrap_or(0.0));
+                config.max_rps = Some(parse_bench_num(rps, 0.0));
             }
             if let Some(v) = bench_value(bench, "load_schedule") {
                 config.load_schedule = v.clone();
@@ -364,37 +382,37 @@ impl BenchConfigResolved {
                 config.load_profile = parse_custom_profile(v);
             }
             if let Some(v) = bench.get("load_midpoint") {
-                config.load_midpoint = v.parse::<f64>().ok();
+                config.load_midpoint = v.replace('_', "").parse::<f64>().ok();
             }
             if let Some(v) = bench.get("load_amplitude") {
-                config.load_amplitude = v.parse::<f64>().ok();
+                config.load_amplitude = v.replace('_', "").parse::<f64>().ok();
             }
             if let Some(v) = bench.get("load_frequency") {
-                config.load_frequency = v.parse::<f64>().ok();
+                config.load_frequency = v.replace('_', "").parse::<f64>().ok();
             }
             if let Some(v) = bench.get("load_spike_target") {
-                config.load_spike_target = v.parse::<f64>().ok();
+                config.load_spike_target = v.replace('_', "").parse::<f64>().ok();
             }
             if let Some(v) = bench.get("load_spike_after") {
-                config.load_spike_after = v.parse::<f64>().ok();
+                config.load_spike_after = v.replace('_', "").parse::<f64>().ok();
             }
             if let Some(v) = bench.get("load_spike_duration") {
-                config.load_spike_duration = v.parse::<f64>().ok();
+                config.load_spike_duration = v.replace('_', "").parse::<f64>().ok();
             }
             if let Some(v) = bench_value(bench, "load_start") {
-                config.load_start = v.parse::<f64>().ok();
+                config.load_start = v.replace('_', "").parse::<f64>().ok();
                 config
                     .option_sources
                     .insert("load_start".to_string(), BenchOptionSource::BenchSection);
             }
             if let Some(v) = bench_value(bench, "load_step") {
-                config.load_step = v.parse::<f64>().ok();
+                config.load_step = v.replace('_', "").parse::<f64>().ok();
                 config
                     .option_sources
                     .insert("load_step".to_string(), BenchOptionSource::BenchSection);
             }
             if let Some(v) = bench_value(bench, "load_end") {
-                config.load_end = v.parse::<f64>().ok();
+                config.load_end = v.replace('_', "").parse::<f64>().ok();
                 config
                     .option_sources
                     .insert("load_end".to_string(), BenchOptionSource::BenchSection);
@@ -414,7 +432,7 @@ impl BenchConfigResolved {
                 );
             }
             if let Some(v) = bench.get("connections") {
-                config.connections = v.parse().unwrap_or(1);
+                config.connections = parse_bench_num(v, 1);
             }
             if let Some(v) = bench_value(bench, "connect_timeout") {
                 config.connect_timeout = parse_duration(v)?;
@@ -423,7 +441,7 @@ impl BenchConfigResolved {
                 config.keepalive = Some(parse_duration(v)?);
             }
             if let Some(v) = bench.get("cpus") {
-                config.cpus = Some(v.parse().unwrap_or(1));
+                config.cpus = Some(parse_bench_num(v, 1));
             }
             if let Some(v) = bench.get("name") {
                 config.name = Some(v.clone());
@@ -441,7 +459,7 @@ impl BenchConfigResolved {
                 config.sample_rate = sr.parse().unwrap_or(1.0);
             }
             if let Some(v) = bench_value(bench, "skip_first") {
-                config.skip_first = v.parse().unwrap_or(0);
+                config.skip_first = parse_bench_num(v, 0);
             }
             if let Some(v) = bench_value(bench, "count_errors_in_latency") {
                 config.count_errors_in_latency = v == "true" || v == "1";
@@ -464,7 +482,7 @@ impl BenchConfigResolved {
             }
 
             for (key, value) in bench {
-                if let Some(metric) = key.strip_prefix("threshold.") {
+                if let Some(metric) = key.strip_prefix("thresholds.") {
                     config.thresholds.insert(metric.to_string(), value.clone());
                 }
             }
@@ -498,7 +516,7 @@ impl BenchConfigResolved {
     /// Merge CLI args -> BENCH section -> defaults (precedence: CLI > BENCH > defaults)
     pub fn from_cli_and_bench(
         cli: &BenchArgs,
-        bench_section: Option<&HashMap<String, String>>,
+        bench_section: Option<&crate::parser::OrderedStringMap>,
     ) -> Result<Self> {
         let defaults = Self::default();
         let mut config = defaults;
@@ -512,13 +530,13 @@ impl BenchConfigResolved {
                 config.profile = p.clone();
             }
             if let Some(c) = bench.get("concurrency") {
-                config.concurrency = c.parse().unwrap_or(1);
+                config.concurrency = parse_bench_num(c, 1);
                 config
                     .option_sources
                     .insert("concurrency".to_string(), BenchOptionSource::BenchSection);
             }
             if let Some(n) = bench.get("requests") {
-                config.requests = Some(n.parse().unwrap_or(100));
+                config.requests = Some(parse_bench_num(n, 100));
             }
             if let Some(d) = bench.get("duration") {
                 config.duration = Some(parse_duration(d)?);
@@ -539,7 +557,7 @@ impl BenchConfigResolved {
                 config.max_duration = Some(parse_duration(d)?);
             }
             if let Some(rps) = bench_value(bench, "max_rps") {
-                config.max_rps = Some(rps.parse().unwrap_or(0.0));
+                config.max_rps = Some(parse_bench_num(rps, 0.0));
             }
             if let Some(v) = bench_value(bench, "load_schedule") {
                 config.load_schedule = v.clone();
@@ -551,37 +569,37 @@ impl BenchConfigResolved {
                 config.load_profile = parse_custom_profile(v);
             }
             if let Some(v) = bench.get("load_midpoint") {
-                config.load_midpoint = v.parse::<f64>().ok();
+                config.load_midpoint = v.replace('_', "").parse::<f64>().ok();
             }
             if let Some(v) = bench.get("load_amplitude") {
-                config.load_amplitude = v.parse::<f64>().ok();
+                config.load_amplitude = v.replace('_', "").parse::<f64>().ok();
             }
             if let Some(v) = bench.get("load_frequency") {
-                config.load_frequency = v.parse::<f64>().ok();
+                config.load_frequency = v.replace('_', "").parse::<f64>().ok();
             }
             if let Some(v) = bench.get("load_spike_target") {
-                config.load_spike_target = v.parse::<f64>().ok();
+                config.load_spike_target = v.replace('_', "").parse::<f64>().ok();
             }
             if let Some(v) = bench.get("load_spike_after") {
-                config.load_spike_after = v.parse::<f64>().ok();
+                config.load_spike_after = v.replace('_', "").parse::<f64>().ok();
             }
             if let Some(v) = bench.get("load_spike_duration") {
-                config.load_spike_duration = v.parse::<f64>().ok();
+                config.load_spike_duration = v.replace('_', "").parse::<f64>().ok();
             }
             if let Some(v) = bench_value(bench, "load_start") {
-                config.load_start = v.parse::<f64>().ok();
+                config.load_start = v.replace('_', "").parse::<f64>().ok();
                 config
                     .option_sources
                     .insert("load_start".to_string(), BenchOptionSource::BenchSection);
             }
             if let Some(v) = bench_value(bench, "load_step") {
-                config.load_step = v.parse::<f64>().ok();
+                config.load_step = v.replace('_', "").parse::<f64>().ok();
                 config
                     .option_sources
                     .insert("load_step".to_string(), BenchOptionSource::BenchSection);
             }
             if let Some(v) = bench_value(bench, "load_end") {
-                config.load_end = v.parse::<f64>().ok();
+                config.load_end = v.replace('_', "").parse::<f64>().ok();
                 config
                     .option_sources
                     .insert("load_end".to_string(), BenchOptionSource::BenchSection);
@@ -601,7 +619,7 @@ impl BenchConfigResolved {
                 );
             }
             if let Some(v) = bench.get("connections") {
-                config.connections = v.parse().unwrap_or(1);
+                config.connections = parse_bench_num(v, 1);
             }
             if let Some(v) = bench_value(bench, "connect_timeout") {
                 config.connect_timeout = parse_duration(v)?;
@@ -610,7 +628,7 @@ impl BenchConfigResolved {
                 config.keepalive = Some(parse_duration(v)?);
             }
             if let Some(v) = bench.get("cpus") {
-                config.cpus = Some(v.parse().unwrap_or(1));
+                config.cpus = Some(parse_bench_num(v, 1));
             }
             if let Some(v) = bench.get("name") {
                 config.name = Some(v.clone());
@@ -628,7 +646,7 @@ impl BenchConfigResolved {
                 config.sample_rate = sr.parse().unwrap_or(1.0);
             }
             if let Some(v) = bench_value(bench, "skip_first") {
-                config.skip_first = v.parse().unwrap_or(0);
+                config.skip_first = parse_bench_num(v, 0);
             }
             if let Some(v) = bench_value(bench, "count_errors_in_latency") {
                 config.count_errors_in_latency = v == "true" || v == "1";
@@ -650,9 +668,9 @@ impl BenchConfigResolved {
                 config.cache_ttl = Some(parse_duration(ttl)?);
             }
 
-            // Collect thresholds (keys starting with "threshold.")
+            // Collect thresholds (keys starting with "thresholds.")
             for (key, value) in bench {
-                if let Some(metric) = key.strip_prefix("threshold.") {
+                if let Some(metric) = key.strip_prefix("thresholds.") {
                     config.thresholds.insert(metric.to_string(), value.clone());
                 }
             }
@@ -809,7 +827,7 @@ fn parse_latency_percentiles(s: &str) -> Vec<String> {
 }
 
 /// Extract BENCH section content from document
-fn extract_bench_section(doc: &GctfDocument) -> Option<HashMap<String, String>> {
+fn extract_bench_section(doc: &GctfDocument) -> Option<crate::parser::OrderedStringMap> {
     for section in &doc.sections {
         if section.section_type == SectionType::Bench
             && let SectionContent::KeyValues(kv) = &section.content
@@ -834,12 +852,12 @@ fn apply_profile_defaults(config: &mut BenchConfigResolved, profile_name: &str) 
         match key.as_str() {
             "mode" => config.mode = value,
             "concurrency" => {
-                if let Ok(v) = value.parse::<u32>() {
+                if let Ok(v) = value.replace('_', "").parse::<u32>() {
                     config.concurrency = v;
                 }
             }
             "requests" => {
-                if let Ok(v) = value.parse::<u64>() {
+                if let Ok(v) = value.replace('_', "").parse::<u64>() {
                     config.requests = Some(v);
                 }
             }
@@ -850,17 +868,17 @@ fn apply_profile_defaults(config: &mut BenchConfigResolved, profile_name: &str) 
             }
             "load_schedule" => config.load_schedule = value,
             "load_start" => {
-                if let Ok(v) = value.parse::<f64>() {
+                if let Ok(v) = value.replace('_', "").parse::<f64>() {
                     config.load_start = Some(v);
                 }
             }
             "load_step" => {
-                if let Ok(v) = value.parse::<f64>() {
+                if let Ok(v) = value.replace('_', "").parse::<f64>() {
                     config.load_step = Some(v);
                 }
             }
             "load_end" => {
-                if let Ok(v) = value.parse::<f64>() {
+                if let Ok(v) = value.replace('_', "").parse::<f64>() {
                     config.load_end = Some(v);
                 }
             }
@@ -870,17 +888,17 @@ fn apply_profile_defaults(config: &mut BenchConfigResolved, profile_name: &str) 
                 }
             }
             "load_spike_target" => {
-                if let Ok(v) = value.parse::<f64>() {
+                if let Ok(v) = value.replace('_', "").parse::<f64>() {
                     config.load_spike_target = Some(v);
                 }
             }
             "load_spike_after" => {
-                if let Ok(v) = value.parse::<f64>() {
+                if let Ok(v) = value.replace('_', "").parse::<f64>() {
                     config.load_spike_after = Some(v);
                 }
             }
             "load_spike_duration" => {
-                if let Ok(v) = value.parse::<f64>() {
+                if let Ok(v) = value.replace('_', "").parse::<f64>() {
                     config.load_spike_duration = Some(v);
                 }
             }
@@ -1162,7 +1180,7 @@ impl BenchMetrics {
         for token in requested {
             let t = token.trim_ascii();
             if let Some(stripped) = t.strip_prefix('p')
-                && let Ok(pct) = stripped.trim_ascii().parse::<f64>()
+                && let Ok(pct) = stripped.trim_ascii().replace('_', "").parse::<f64>()
             {
                 result.push(BenchPercentile {
                     percentile: pct,
@@ -1170,7 +1188,8 @@ impl BenchMetrics {
                 });
             }
         }
-        result.sort_by(|a, b| a.percentile.partial_cmp(&b.percentile).unwrap());
+        // total_cmp, not partial_cmp().unwrap(): a config percentile can be NaN.
+        result.sort_by(|a, b| a.percentile.total_cmp(&b.percentile));
         result
     }
 
@@ -2347,7 +2366,7 @@ fn parse_threshold_number(rhs: &str) -> Option<f64> {
     } else {
         v
     };
-    num.trim().parse::<f64>().ok()
+    num.trim().replace('_', "").parse::<f64>().ok()
 }
 
 fn invert_op(op: &str) -> &str {
@@ -2409,7 +2428,7 @@ fn resolve_metric_value(metrics: &BenchMetrics, key: &str) -> Option<f64> {
         return Some((metrics.errors as f64 / metrics.count as f64) * 100.0);
     }
     if let Some(inner) = parse_percentile_key(&k)
-        && let Ok(pct) = inner.parse::<f64>()
+        && let Ok(pct) = inner.replace('_', "").parse::<f64>()
     {
         if k.starts_with("latency_ms.") {
             return Some(metrics.compute_percentile(pct) as f64 / 1_000_000.0);
@@ -2679,7 +2698,6 @@ pub fn validate_bench_config(doc: &crate::parser::GctfDocument) -> Result<()> {
     Ok(())
 }
 
-/// Main bench command handler
 /// Canonicalize the `--log-format` value. `ndjson` (the value advertised in the
 /// flag help) is an alias for the per-response JSON Lines format `detail-json`.
 fn canonical_bench_format(fmt: &str) -> &str {
@@ -2727,9 +2745,14 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
     // Direct call mode: create temp .gctf from --call / --data flags
     let synthetic_path = if let Some(endpoint) = &args.call {
         let body = args.data.as_deref().unwrap_or("{}");
-        let content = format!(
-            "--- ADDRESS ---\n<env:GRPCTESTIFY_ADDRESS>\n--- ENDPOINT ---\n{endpoint}\n--- REQUEST ---\n{body}\n"
-        );
+        // No ADDRESS section — `$GRPCTESTIFY_ADDRESS` fallback (same as every
+        // other command) applies when it's absent. `<env:GRPCTESTIFY_ADDRESS>`
+        // is not a real placeholder syntax anything resolves; it's a
+        // display-only label used elsewhere (`ExecutionPlan::from_document`'s
+        // `ConnectionInfo.source`, for `inspect`/`explain` output) — writing
+        // it here as a literal `ADDRESS` value made every direct-call bench
+        // fail immediately with an invalid-URI error, 100% of the time.
+        let content = format!("--- ENDPOINT ---\n{endpoint}\n--- REQUEST ---\n{body}\n");
         let dir = std::env::temp_dir().join("grpctestify-bench");
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!(
@@ -2779,16 +2802,28 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
         eprintln!("  Requests: {}", n);
     }
     if let Some(d) = config.duration {
-        eprintln!("  Duration: {:?}", d);
+        eprintln!(
+            "  Duration: {}",
+            crate::report::style::format_duration_ms(d.as_millis() as u64)
+        );
     }
     if let Some(d) = config.ramp_up {
-        eprintln!("  Ramp-up: {:?}", d);
+        eprintln!(
+            "  Ramp-up: {}",
+            crate::report::style::format_duration_ms(d.as_millis() as u64)
+        );
     }
     if let Some(d) = config.warmup {
-        eprintln!("  Warmup: {:?}", d);
+        eprintln!(
+            "  Warmup: {}",
+            crate::report::style::format_duration_ms(d.as_millis() as u64)
+        );
     }
     if let Some(d) = config.max_duration {
-        eprintln!("  Max duration: {:?}", d);
+        eprintln!(
+            "  Max duration: {}",
+            crate::report::style::format_duration_ms(d.as_millis() as u64)
+        );
     }
     if let Some(rps) = config.max_rps {
         eprintln!("  Max RPS: {}", rps);
@@ -2804,15 +2839,27 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
         eprintln!("  Load end: {}", v);
     }
     if let Some(v) = config.load_step_duration {
-        eprintln!("  Load step duration: {:?}", v);
+        eprintln!(
+            "  Load step duration: {}",
+            crate::report::style::format_duration_ms(v.as_millis() as u64)
+        );
     }
     if let Some(v) = config.load_max_duration {
-        eprintln!("  Load max duration: {:?}", v);
+        eprintln!(
+            "  Load max duration: {}",
+            crate::report::style::format_duration_ms(v.as_millis() as u64)
+        );
     }
     eprintln!("  Connections: {}", config.connections);
-    eprintln!("  Connect timeout: {:?}", config.connect_timeout);
+    eprintln!(
+        "  Connect timeout: {}",
+        crate::report::style::format_duration_ms(config.connect_timeout.as_millis() as u64)
+    );
     if let Some(k) = config.keepalive {
-        eprintln!("  Keepalive: {:?}", k);
+        eprintln!(
+            "  Keepalive: {}",
+            crate::report::style::format_duration_ms(k.as_millis() as u64)
+        );
     }
     if let Some(cpus) = config.cpus {
         eprintln!("  CPUs: {}", cpus);
@@ -2847,15 +2894,83 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
 
     let report = run_benchmark(&test_paths, &config, &args.exclude).await?;
 
-    // Allure benchmark attachment
+    // Allure output: the raw report as a standalone file, plus the shared
+    // allure-results contract so a benchmark run shows up in the same Allure
+    // dashboard as `run`'s test results.
     if let Some(allure_dir) = &args.allure_output_dir {
+        use crate::report::Reporter;
+        use crate::state::{TestResult, TestResults};
+
         std::fs::create_dir_all(allure_dir)?;
+
+        // Keep the full, un-lossy report as a standalone file (there is no
+        // generic file-attachment API on the Allure reporter — it only
+        // attaches per-test request/response exchanges — so the raw data
+        // lives alongside the results contract rather than inside it).
         let bench_json = serde_json::to_string_pretty(&report)?;
-        let attachment_file = allure_dir.join("benchmark-report.json");
-        std::fs::write(&attachment_file, &bench_json)?;
+        std::fs::write(allure_dir.join("benchmark-report.json"), &bench_json)?;
+
+        // One synthetic TestResult per benchmarked endpoint (or a single
+        // "benchmark" result when the report has no per-endpoint breakdown),
+        // driven through the standard on_test_end×N + on_suite_end sequence.
+        // A synthetic latency stands in for the (untracked) per-endpoint
+        // duration; pass/fail follows the same rule as the run's exit code
+        // (any errors, or a failed threshold, is a fail).
+        fn bench_result(
+            name: &str,
+            count: u64,
+            errors: u64,
+            dur_ns: u64,
+            thresholds_ok: bool,
+        ) -> TestResult {
+            let dur_ms = dur_ns / 1_000_000;
+            if count > 0 && errors == 0 && thresholds_ok {
+                TestResult::pass(name.to_string(), dur_ms, Some(dur_ms))
+            } else if !thresholds_ok {
+                TestResult::fail(
+                    name.to_string(),
+                    format!("{errors}/{count} errors; one or more thresholds failed"),
+                    dur_ms,
+                    Some(dur_ms),
+                )
+            } else {
+                TestResult::fail(
+                    name.to_string(),
+                    format!("{errors}/{count} request(s) failed"),
+                    dur_ms,
+                    Some(dur_ms),
+                )
+            }
+        }
+
+        let thresholds_ok = report.thresholds_passed();
+        let entries: Vec<(String, u64, u64, u64)> = if report.per_endpoint.is_empty() {
+            vec![(
+                "benchmark".to_string(),
+                report.summary.count,
+                report.summary.errors,
+                report.summary.total_ns,
+            )]
+        } else {
+            report
+                .per_endpoint
+                .iter()
+                .map(|ep| (ep.endpoint.clone(), ep.count, ep.errors, ep.latency_p50))
+                .collect()
+        };
+
+        let reporter = crate::report::AllureReporter::new(allure_dir.clone());
+        let mut results = TestResults::new();
+        for (name, count, errors, dur_ns) in &entries {
+            let tr = bench_result(name, *count, *errors, *dur_ns, thresholds_ok);
+            reporter.on_test_end(name, &tr);
+            results.add(tr);
+        }
+        reporter.on_suite_end(&results)?;
+
         eprintln!(
-            "Allure benchmark attachment written to: {}",
-            attachment_file.display()
+            "Allure benchmark results written to: {}",
+            allure_dir.display()
         );
     }
 
@@ -2953,6 +3068,19 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
         }
     }
 
+    // Zero successes out of one-or-more attempted requests means the run
+    // measured nothing — almost certainly a broken target/config (wrong
+    // endpoint, server down, every call hitting the same error), not a real
+    // result. This must fail even with no `BENCH.thresholds` configured:
+    // `thresholds_passed()` is vacuously `true` when there are no
+    // thresholds to check, which previously let a 100%-error run exit 0.
+    if report.summary.count > 0 && report.summary.ok == 0 {
+        anyhow::bail!(
+            "Benchmark measured nothing — all {} request(s) failed (target likely misconfigured or unreachable)",
+            report.summary.count
+        );
+    }
+
     if !report.thresholds_passed() {
         anyhow::bail!("Benchmark thresholds failed");
     }
@@ -2963,6 +3091,31 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_bench_num_accepts_digit_separators() {
+        assert_eq!(parse_bench_num::<usize>("1_000", 1), 1000);
+        assert_eq!(parse_bench_num::<u64>("1_000_000", 100), 1_000_000);
+        assert_eq!(parse_bench_num::<f64>("10_000", 0.0), 10_000.0);
+        // Plain values still parse; genuinely-invalid ones fall back.
+        assert_eq!(parse_bench_num::<usize>("42", 1), 42);
+        assert_eq!(parse_bench_num::<usize>("nope", 7), 7);
+    }
+
+    // Regression: BENCH.sources: is nested YAML, not a flat key. The generic
+    // key-value tokenizer used to split every raw line on its own (even
+    // indented continuation lines), so `sources` parsed to an empty string
+    // and the actual list items landed under bogus keys like `"- name"`.
+    #[test]
+    fn test_bench_sources_survives_real_parsing() {
+        let src = "--- BENCH ---\nmode: fixed\nsources:\n  - name: users\n    file: data/users.csv\n  - name: orders\n    file: data/orders.csv\n\n--- ENDPOINT ---\npkg.Svc/Method\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n";
+        let doc = crate::parser::parse_gctf_from_str(src, "test.gctf").unwrap();
+        let bench = extract_bench_section(&doc).expect("BENCH section");
+        let config = BenchConfigResolved::from_bench_section(Some(&bench)).unwrap();
+        assert_eq!(config.sources.len(), 2, "sources: {:?}", config.sources);
+        assert_eq!(config.sources[0].name, Some("users".to_string()));
+        assert_eq!(config.sources[1].name, Some("orders".to_string()));
+    }
 
     #[test]
     fn test_exec_model_dispatch() {
@@ -3121,6 +3274,18 @@ mod tests {
         assert!(!buckets.is_empty());
         let total: u64 = buckets.iter().map(|b| b.count).sum();
         assert_eq!(total, 5);
+    }
+
+    // A `NaN` percentile (config `"nan".parse::<f64>()` succeeds) must not
+    // panic the sort — `partial_cmp().unwrap()` used to; `total_cmp` handles it.
+    #[test]
+    fn to_percentiles_with_nan_spec_does_not_panic() {
+        let metrics = metrics_with_latencies(&[10, 20, 30, 40, 50]);
+        let requested = vec!["pnan".to_string(), "p50".to_string(), "p99".to_string()];
+        let result = metrics.to_percentiles(&requested);
+        // Does not panic; the well-formed percentiles are still present.
+        assert!(result.iter().any(|p| p.percentile == 50.0));
+        assert!(result.iter().any(|p| p.percentile == 99.0));
     }
 
     // Bug 3: `--requests` is the TOTAL budget across all docs.
@@ -3288,11 +3453,11 @@ mod tests {
 
     #[test]
     fn test_bench_config_bench_section() {
-        let mut bench_section = HashMap::new();
+        let mut bench_section = crate::parser::OrderedStringMap::new();
         bench_section.insert("profile".to_string(), "stress".to_string());
         bench_section.insert("concurrency".to_string(), "50".to_string());
         bench_section.insert("requests".to_string(), "5000".to_string());
-        bench_section.insert("threshold.latency_ms.p95".to_string(), "< 200".to_string());
+        bench_section.insert("thresholds.latency_ms.p95".to_string(), "< 200".to_string());
 
         let args = BenchArgs {
             protocol: "grpc".to_string(),
@@ -3353,7 +3518,7 @@ mod tests {
 
     #[test]
     fn test_bench_config_cli_overrides_bench_section() {
-        let mut bench_section = HashMap::new();
+        let mut bench_section = crate::parser::OrderedStringMap::new();
         bench_section.insert("profile".to_string(), "stress".to_string());
         bench_section.insert("concurrency".to_string(), "50".to_string());
 
@@ -3410,7 +3575,7 @@ mod tests {
 
     #[test]
     fn test_bench_option_sources_track_cli_bench_default() {
-        let mut bench_section = HashMap::new();
+        let mut bench_section = crate::parser::OrderedStringMap::new();
         bench_section.insert("concurrency".to_string(), "20".to_string());
         bench_section.insert("load_schedule".to_string(), "step".to_string());
 
@@ -3477,7 +3642,7 @@ mod tests {
 
     #[test]
     fn test_bench_config_from_bench_section_tracks_sources() {
-        let mut bench_section = HashMap::new();
+        let mut bench_section = crate::parser::OrderedStringMap::new();
         bench_section.insert("concurrency".to_string(), "7".to_string());
         bench_section.insert("load_schedule".to_string(), "step".to_string());
         bench_section.insert("progress_interval".to_string(), "2s".to_string());
@@ -4019,7 +4184,7 @@ mod tests {
     // count_errors_in_latency / skip_first are also settable via the BENCH section.
     #[test]
     fn test_bench_section_parses_skip_first_and_count_errors() {
-        let mut bench_section = HashMap::new();
+        let mut bench_section = crate::parser::OrderedStringMap::new();
         bench_section.insert("skip_first".to_string(), "7".to_string());
         bench_section.insert("count_errors_in_latency".to_string(), "true".to_string());
         let config = BenchConfigResolved::from_bench_section(Some(&bench_section)).unwrap();

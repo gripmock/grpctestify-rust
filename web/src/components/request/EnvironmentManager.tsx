@@ -112,6 +112,11 @@ export function EnvironmentManager({ onClose }: Props) {
   const [editMuted, setEditMuted] = useState<Set<string>>(new Set());
   const [editSecretKeys, setEditSecretKeys] = useState<Set<string>>(new Set());
   const [showSecretValues, setShowSecretValues] = useState(false);
+  const [editTls, setEditTls] = useState<boolean | undefined>(undefined);
+  const [editTlsCa, setEditTlsCa] = useState('');
+  const [editTlsCert, setEditTlsCert] = useState('');
+  const [editTlsKey, setEditTlsKey] = useState('');
+  const [editTlsInsecure, setEditTlsInsecure] = useState(true);
 
   
   const [selectedEnv, setSelectedEnv] = useState<string | null>(null);
@@ -140,21 +145,46 @@ export function EnvironmentManager({ onClose }: Props) {
     setEditMuted(new Set(env.mutedVariables || []));
     setEditSecretKeys(new Set(vars.filter(([, v]) => !v).map(([k]) => k)));
     setShowSecretValues(false);
+    setEditTls(env.tls);
+    setEditTlsCa(env.tlsCa || '');
+    setEditTlsCert(env.tlsCert || '');
+    setEditTlsKey(env.tlsKey || '');
+    setEditTlsInsecure(env.tlsInsecure ?? true);
   };
 
   const openNew = () => {
     setView({ kind: 'new' });
     setEditName(''); setEditVars([['', '']]);
     setEditMuted(new Set()); setEditSecretKeys(new Set()); setShowSecretValues(false);
+    setEditTls(undefined); setEditTlsCa(''); setEditTlsCert(''); setEditTlsKey(''); setEditTlsInsecure(true);
   };
 
-  
+
+  const nameConflict = (() => {
+    const name = editName.trim();
+    if (!name) return false;
+    const original = view.kind === 'edit' ? view.name : null;
+    return name !== original && environments.some(e => e.name === name);
+  })();
+
   const saveEdit = () => {
-    if (!editName.trim()) return;
+    if (!editName.trim() || nameConflict) return;
     const vars = Object.fromEntries(editVars.filter(([k]) => k.trim()));
     const muted = [...editMuted].filter(k => k in vars);
-    const env: Environment = { name: editName.trim(), variables: vars };
+    const orig = view.kind === 'edit' ? environments.find(e => e.name === view.name) : undefined;
+    const env: Environment = { ...orig, name: editName.trim(), variables: vars };
+    delete env.mutedVariables;
     if (muted.length > 0) env.mutedVariables = muted;
+    delete env.tls; delete env.tlsCa; delete env.tlsCert; delete env.tlsKey; delete env.tlsInsecure;
+    if (editTls !== undefined) {
+      env.tls = editTls;
+      if (editTls) {
+        if (editTlsCa.trim()) env.tlsCa = editTlsCa.trim();
+        if (editTlsCert.trim()) env.tlsCert = editTlsCert.trim();
+        if (editTlsKey.trim()) env.tlsKey = editTlsKey.trim();
+        env.tlsInsecure = editTlsInsecure;
+      }
+    }
     if (view.kind === 'new') addEnvironment(env);
     else if (view.kind === 'edit') updateEnvironment(view.name, env);
     setView({ kind: 'list' });
@@ -250,7 +280,12 @@ export function EnvironmentManager({ onClose }: Props) {
               <div style={{ marginBottom: 8 }}>
                 <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 3 }}>Name</div>
                 <input value={editName} onChange={e => setEditName(e.target.value)} placeholder="my-environment"
-                  style={{ width: '100%', padding: '6px 8px', fontSize: 13, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none', boxSizing: 'border-box', fontFamily: 'monospace' }} />
+                  style={{ width: '100%', padding: '6px 8px', fontSize: 13, borderRadius: 5, border: `1px solid ${nameConflict ? colors.error : 'var(--border)'}`, background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none', boxSizing: 'border-box', fontFamily: 'monospace' }} />
+                {nameConflict && (
+                  <div style={{ fontSize: 11, color: colors.error, marginTop: 3 }}>
+                    An environment named “{editName.trim()}” already exists.
+                  </div>
+                )}
               </div>
 
               <div style={{
@@ -304,6 +339,39 @@ export function EnvironmentManager({ onClose }: Props) {
                 })}
               </div>
 
+              <div style={{
+                padding: 8, borderRadius: 6, border: '1px solid var(--border)', marginBottom: 10,
+                background: 'var(--bg-primary)',
+              }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <Lock size={12} /> TLS
+                </div>
+                <select
+                  value={editTls === undefined ? 'global' : editTls ? 'on' : 'off'}
+                  onChange={e => setEditTls(e.target.value === 'global' ? undefined : e.target.value === 'on')}
+                  style={{ width: '100%', padding: '5px 8px', fontSize: 12, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', marginBottom: 6 }}>
+                  <option value="global">Use global TLS settings</option>
+                  <option value="on">TLS on for this environment</option>
+                  <option value="off">TLS off for this environment</option>
+                </select>
+                {editTls && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {([
+                      ['CA certificate path', editTlsCa, setEditTlsCa],
+                      ['Client certificate path', editTlsCert, setEditTlsCert],
+                      ['Client key path', editTlsKey, setEditTlsKey],
+                    ] as const).map(([label, value, setter]) => (
+                      <input key={label} value={value} onChange={e => setter(e.target.value)} placeholder={label}
+                        style={{ width: '100%', padding: '5px 8px', fontSize: 12, borderRadius: 5, border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none', boxSizing: 'border-box', fontFamily: 'monospace' }} />
+                    ))}
+                    <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 5 }}>
+                      <input type="checkbox" checked={editTlsInsecure} onChange={e => setEditTlsInsecure(e.target.checked)} />
+                      Skip certificate verification (insecure)
+                    </label>
+                  </div>
+                )}
+              </div>
+
               {editMuted.size > 0 && (
                 <div style={{ fontSize: 10, color: colors.warning, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
                   <Info size={10} /> {editMuted.size} variable{editMuted.size > 1 ? 's' : ''} muted — excluded from <code style={{ background: `${colors.warning}12`, padding: '0 3px', borderRadius: 2, fontSize: 10 }}>{'{{KEY}}'}</code> substitution
@@ -311,7 +379,7 @@ export function EnvironmentManager({ onClose }: Props) {
               )}
 
               <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
-                <button onClick={saveEdit} disabled={!editName.trim()} style={{ ...btn('primary'), fontSize: 12, opacity: editName.trim() ? 1 : 0.5 }}>
+                <button onClick={saveEdit} disabled={!editName.trim() || nameConflict} style={{ ...btn('primary'), fontSize: 12, opacity: editName.trim() && !nameConflict ? 1 : 0.5 }}>
                   <Check size={12} /> {view.kind === 'new' ? 'Create Environment' : 'Save Changes'}
                 </button>
                 <button onClick={() => setView({ kind: 'list' })} style={{ ...btn(), fontSize: 12 }}>Cancel</button>

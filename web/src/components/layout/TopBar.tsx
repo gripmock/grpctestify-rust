@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { useStore } from '../../lib/store';
 import { btn, colors, css } from '../../lib/theme';
-import { FlaskConical, Sun, Moon, Shield, ShieldOff, RefreshCw, Loader2, Check, X, Settings, FolderGit2, ChevronDown } from 'lucide-react';
+import { FlaskConical, Sun, Moon, Shield, ShieldOff, RefreshCw, Loader2, Check, X, Settings, FolderGit2, ChevronDown, KeyRound } from 'lucide-react';
 import { EnvironmentManager } from '../request/EnvironmentManager';
 
 export function TopBar() {
@@ -13,6 +13,12 @@ export function TopBar() {
   const setTls = useStore(s => s.setTls);
   const tlsInsecure = useStore(s => s.tlsInsecure);
   const setTlsInsecure = useStore(s => s.setTlsInsecure);
+  const tlsCa = useStore(s => s.tlsCa);
+  const setTlsCa = useStore(s => s.setTlsCa);
+  const tlsCert = useStore(s => s.tlsCert);
+  const setTlsCert = useStore(s => s.setTlsCert);
+  const tlsKey = useStore(s => s.tlsKey);
+  const setTlsKey = useStore(s => s.setTlsKey);
   const requestTimeoutMs = useStore(s => s.requestTimeoutMs);
   const setRequestTimeoutMs = useStore(s => s.setRequestTimeoutMs);
   const theme = useStore(s => s.theme);
@@ -28,7 +34,9 @@ export function TopBar() {
   const projectRoot = useStore(s => s.projectRoot);
   const [showEnvManager, setShowEnvManager] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [showTlsSettings, setShowTlsSettings] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const tlsSettingsRef = useRef<HTMLDivElement>(null);
 
   const activeEnv = environments.find(e => e.name === activeEnvironment);
 
@@ -48,6 +56,9 @@ export function TopBar() {
     const handler = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setShowDropdown(false);
+      }
+      if (tlsSettingsRef.current && !tlsSettingsRef.current.contains(e.target as Node)) {
+        setShowTlsSettings(false);
       }
     };
     document.addEventListener('mousedown', handler);
@@ -245,6 +256,47 @@ export function TopBar() {
           <input type="checkbox" checked={tlsInsecure} onChange={e => setTlsInsecure(e.target.checked)} style={{ accentColor: colors.accent }} />
           insecure
         </label>
+      )}
+
+      {tls && (
+        <div ref={tlsSettingsRef} style={{ position: 'relative' }}>
+          <button onClick={() => setShowTlsSettings(v => !v)} title="Client certificate (mTLS) settings"
+            style={{ ...btn('ghost', 'sm'), color: (tlsCa || tlsCert || tlsKey) ? colors.accent : 'var(--text-muted)' }}
+          >
+            <KeyRound size={13} />
+          </button>
+
+          {showTlsSettings && (
+            <div style={{
+              position: 'absolute', top: '100%', right: 0, zIndex: 100,
+              width: 260, marginTop: 2, padding: 10,
+              background: 'var(--bg-primary)', border: '1px solid var(--border)',
+              borderRadius: 6, boxShadow: '0 4px 16px rgba(0,0,0,0.2)',
+              display: 'flex', flexDirection: 'column', gap: 6,
+            }}>
+              <span style={{ fontSize: 11, fontWeight: 600 }}>Client certificate (mTLS)</span>
+              <label style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                CA cert path
+                <input value={tlsCa} onChange={e => setTlsCa(e.target.value)} placeholder="/path/to/ca.pem"
+                  style={{ ...css.mono, display: 'block', width: '100%', marginTop: 2, padding: '4px 6px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)', outline: 'none', boxSizing: 'border-box' }}
+                />
+              </label>
+              <label style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                Client cert path
+                <input value={tlsCert} onChange={e => setTlsCert(e.target.value)} placeholder="/path/to/client.pem"
+                  style={{ ...css.mono, display: 'block', width: '100%', marginTop: 2, padding: '4px 6px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)', outline: 'none', boxSizing: 'border-box' }}
+                />
+              </label>
+              <label style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                Client key path
+                <input value={tlsKey} onChange={e => setTlsKey(e.target.value)} placeholder="/path/to/client-key.pem"
+                  style={{ ...css.mono, display: 'block', width: '100%', marginTop: 2, padding: '4px 6px', fontSize: 11, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)', outline: 'none', boxSizing: 'border-box' }}
+                />
+              </label>
+              <span style={{ fontSize: 9, color: 'var(--text-muted)' }}>Paths resolved on the server, not uploaded from the browser.</span>
+            </div>
+          )}
+        </div>
       )}
 
       <button onClick={reflect} disabled={reflectStatus === 'loading' || !address}

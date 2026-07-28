@@ -1,6 +1,6 @@
 [package]
 name = "apif-execution"
-version = "0.2.1"
+version = "0.2.2"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -25,12 +25,12 @@ apif-utils = { path = "../apif-utils", version = "0.2.0" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
-tokio-stream = { workspace = true }
 futures = "0.3"
 async-trait = "0.1"
-tracing = { workspace = true }
 prost = { workspace = true }
-prost-reflect = { workspace = true }
 prost-types = { workspace = true }
 tonic = { workspace = true, features = ["transport"] }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

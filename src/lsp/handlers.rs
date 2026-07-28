@@ -15,7 +15,7 @@ use crate::bench::schema::{
 use crate::config;
 use crate::optimizer;
 use crate::parser::{self, ast::SectionType};
-use crate::plugins::{PluginManager, PluginPurity};
+use crate::plugins::PluginPurity;
 
 /// Get hover documentation for a section type
 pub fn get_section_hover(section_type: &SectionType) -> Option<String> {
@@ -33,6 +33,7 @@ pub fn get_section_hover(section_type: &SectionType) -> Option<String> {
         SectionType::Asserts => Some("**ASSERTS**\n\nAssertion expressions.\n\nOperators: `==`, `!=`, `>`, `<`, `>=`, `<=`, `contains`, `matches`, `startsWith`, `endsWith`\nValidators: `@is_uuid`, `@is_email`, `@is_ip`, `@is_url`, `@is_timestamp`, `@is_base64`, `@is_json`\nState: `@is_empty`, `@has_value`, `@len`\nScope: `@scope.index`, `@scope.message_count`\nTiming: `@elapsed_ms`, `@total_elapsed_ms`\nMetadata: `@header`, `@has_header`, `@trailer`, `@has_trailer`, `@env`\nType methods: `@url.*`, `@email.*`, `@ip.version`, `@uuid.version`, `@json.key`\nJQ: `select`, `length`, `startswith`".to_string()),
         SectionType::Meta => Some("**META**\n\nFile-level metadata (YAML).\n\nMust be first section in file.\n\nOnly 0 or 1 per file.".to_string()),
         SectionType::Bench => Some(bench_hover_doc()),
+        SectionType::Dataset => Some("**DATASET**\n\nInline data-driven test rows (YAML list of objects).\n\nEach row's fields become `{{dataset.field}}` template variables, expanding this file into one test case per row — the same mechanism as `run --data`, but self-contained in the file.\n\nMutually exclusive with `--data`. Only 0 or 1 per file.".to_string()),
     }
 }
 
@@ -69,6 +70,7 @@ pub fn get_section_completions() -> Vec<CompletionItem> {
         "BENCH",
         "EXTRACT",
         "ASSERTS",
+        "DATASET",
     ]
     .into_iter()
     .map(|s| CompletionItem {
@@ -124,7 +126,7 @@ pub fn get_assertion_completions() -> Vec<CompletionItem> {
     })
     .collect();
 
-    let mut plugins = PluginManager::new().list();
+    let mut plugins = crate::execution::plugin_dir::build_plugin_manager().list();
     plugins.sort_by(|a, b| a.name().cmp(b.name()));
 
     for plugin in plugins {
@@ -163,7 +165,6 @@ pub fn get_assertion_completions() -> Vec<CompletionItem> {
 /// Get completions for EXTRACT JQ functions
 pub fn get_extract_completions() -> Vec<CompletionItem> {
     vec![
-        // String functions
         (
             "upper",
             CompletionItemKind::FUNCTION,
@@ -182,7 +183,6 @@ pub fn get_extract_completions() -> Vec<CompletionItem> {
             CompletionItemKind::FUNCTION,
             "Global substitution",
         ),
-        // Numeric functions
         ("avg", CompletionItemKind::FUNCTION, "Average of array"),
         ("min", CompletionItemKind::FUNCTION, "Minimum value"),
         ("max", CompletionItemKind::FUNCTION, "Maximum value"),
@@ -192,7 +192,6 @@ pub fn get_extract_completions() -> Vec<CompletionItem> {
             CompletionItemKind::FUNCTION,
             "Length of array/string",
         ),
-        // Array functions
         (
             "[.[] | select(.active)]",
             CompletionItemKind::SNIPPET,
@@ -211,11 +210,9 @@ pub fn get_extract_completions() -> Vec<CompletionItem> {
             CompletionItemKind::FUNCTION,
             "Group by field",
         ),
-        // Object functions
         ("keys", CompletionItemKind::FUNCTION, "Get keys"),
         ("values", CompletionItemKind::FUNCTION, "Get values"),
         ("del(.field)", CompletionItemKind::FUNCTION, "Delete field"),
-        // Type conversion
         (
             "tostring",
             CompletionItemKind::FUNCTION,
@@ -227,7 +224,6 @@ pub fn get_extract_completions() -> Vec<CompletionItem> {
             "Convert to number",
         ),
         ("type", CompletionItemKind::FUNCTION, "Get type"),
-        // Conditional
         (
             "if .field == \"x\" then \"y\" else \"z\" end",
             CompletionItemKind::SNIPPET,
@@ -238,7 +234,6 @@ pub fn get_extract_completions() -> Vec<CompletionItem> {
             CompletionItemKind::SNIPPET,
             "Default value",
         ),
-        // Date/Time
         (
             "fromdateiso8601",
             CompletionItemKind::FUNCTION,
@@ -254,11 +249,9 @@ pub fn get_extract_completions() -> Vec<CompletionItem> {
             CompletionItemKind::FUNCTION,
             "Format date",
         ),
-        // Encoding
         ("@base64", CompletionItemKind::FUNCTION, "Base64 encode"),
         ("@base64d", CompletionItemKind::FUNCTION, "Base64 decode"),
         ("@uri", CompletionItemKind::FUNCTION, "URI encode"),
-        // JSON
         ("tojson", CompletionItemKind::FUNCTION, "Stringify JSON"),
         ("fromjson", CompletionItemKind::FUNCTION, "Parse JSON"),
     ]
@@ -546,7 +539,7 @@ pub fn get_plugin_hover(
         return None;
     }
 
-    let manager = PluginManager::new();
+    let manager = crate::execution::plugin_dir::build_plugin_manager();
     let plugin = manager.get(plugin_name)?;
 
     let sig = plugin.signature();
@@ -601,6 +594,33 @@ pub fn get_plugin_hover(
 }
 
 /// Convert validation error to LSP diagnostic
+/// Precise LSP range for `token` on 0-based `line`, or the whole line if the
+/// token isn't found there. Byte offset → LSP UTF-16 column, so an editor
+/// underlines exactly the offending token instead of the whole line.
+fn token_range_on_line(line_text: &str, line: u32, token: &str) -> Range {
+    match line_text.find(token) {
+        Some(byte_start) => {
+            let start = crate::lsp::position::byte_to_utf16_col(line_text, byte_start) as u32;
+            let end =
+                crate::lsp::position::byte_to_utf16_col(line_text, byte_start + token.len()) as u32;
+            Range::new(Position::new(line, start), Position::new(line, end))
+        }
+        None => Range::new(
+            Position::new(line, 0),
+            Position::new(line, line_text.len() as u32),
+        ),
+    }
+}
+
+/// The quoted key name in an `Unknown OPTIONS/BENCH key '<name>' ...` (or
+/// `Duplicate key '<name>' ...`) message, for precise underlining.
+fn unknown_key_name(message: &str) -> Option<&str> {
+    let start = message.find(" key '")? + " key '".len();
+    let rest = &message[start..];
+    let end = rest.find('\'')?;
+    Some(&rest[..end])
+}
+
 pub fn validation_error_to_diagnostic(
     error: &crate::parser::validator::ValidationError,
     content: &str,
@@ -616,17 +636,21 @@ pub fn validation_error_to_diagnostic(
     // directly — subtracting 1 here shifted every diagnostic one line up and
     // underflowed for line-0 sections.
     let line_num = error.line.unwrap_or(0) as u32;
-    let line_len = content
-        .lines()
-        .nth(line_num as usize)
-        .map(|l| l.len())
-        .unwrap_or(0) as u32;
+    let line_text = content.lines().nth(line_num as usize).unwrap_or("");
+
+    // Underline just the offending key for `Unknown ... key '<name>'` /
+    // `Duplicate key '<name>'` messages (their line is precise); otherwise the
+    // whole line.
+    let range = match unknown_key_name(&error.message) {
+        Some(key) => token_range_on_line(line_text, line_num, key),
+        None => Range::new(
+            Position::new(line_num, 0),
+            Position::new(line_num, line_text.len() as u32),
+        ),
+    };
 
     let mut diagnostic = Diagnostic::new(
-        Range::new(
-            Position::new(line_num, 0),
-            Position::new(line_num, line_len),
-        ),
+        range,
         Some(severity),
         None,
         None,
@@ -637,6 +661,14 @@ pub fn validation_error_to_diagnostic(
 
     if let Some((unknown_key, suggested_key)) = parse_unknown_bench_key_hint(&error.message) {
         diagnostic.code = Some(NumberOrString::String("BENCH_UNKNOWN_KEY".to_string()));
+        diagnostic.data = Some(json!({
+            "unknown_key": unknown_key,
+            "suggested_key": suggested_key,
+        }));
+    } else if let Some((unknown_key, suggested_key)) = parse_deprecated_key_hint(&error.message) {
+        diagnostic.code = Some(NumberOrString::String(
+            "DEPRECATED_KEY_SPELLING".to_string(),
+        ));
         diagnostic.data = Some(json!({
             "unknown_key": unknown_key,
             "suggested_key": suggested_key,
@@ -660,6 +692,21 @@ fn parse_unknown_bench_key_hint(message: &str) -> Option<(String, String)> {
     let suggested = hint_tail[..hint_end].to_string();
 
     Some((unknown, suggested))
+}
+
+/// Matches `"OPTIONS.retry-delay is deprecated; prefer OPTIONS.retry_delay"`
+/// and `"Attribute #[retry-delay] is deprecated; prefer #[retry_delay]"` —
+/// both `retry-delay`/`no-retry` spellings, OPTIONS-key and attribute form.
+fn parse_deprecated_key_hint(message: &str) -> Option<(String, String)> {
+    let (lhs, rhs) = message.split_once(" is deprecated; prefer ")?;
+    let strip = |s: &str| {
+        s.trim_start_matches("OPTIONS.")
+            .trim_start_matches("Attribute #[")
+            .trim_start_matches("#[")
+            .trim_end_matches(']')
+            .to_string()
+    };
+    Some((strip(lhs), strip(rhs)))
 }
 
 /// Create code action for deprecated HEADERS section
@@ -689,13 +736,13 @@ pub fn create_bench_key_fix_action(
 ) -> Option<CodeAction> {
     let line_idx = range.start.line as usize;
     let line = content.lines().nth(line_idx)?;
-    let trimmed = line.trim_start();
-    if !trimmed.starts_with(unknown_key) {
-        return None;
-    }
-    let leading_ws = line.len().saturating_sub(trimmed.len()) as u32;
-    let start = Position::new(range.start.line, leading_ws);
-    let end = Position::new(range.start.line, leading_ws + unknown_key.len() as u32);
+    // Anywhere on the line, not just at the start: covers both a bare
+    // `key: value` line (BENCH/OPTIONS) and `#[key(...)]` attribute syntax.
+    let byte_col = line.find(unknown_key)?;
+    let start_char = line[..byte_col].chars().count() as u32;
+    let end_char = start_char + unknown_key.chars().count() as u32;
+    let start = Position::new(range.start.line, start_char);
+    let end = Position::new(range.start.line, end_char);
 
     Some(CodeAction {
         title: format!("Replace '{}' with '{}'", unknown_key, suggested_key),
@@ -914,6 +961,9 @@ fn section_contains_var_reference(section: &crate::parser::ast::Section, var_nam
         }
         // Single value sections (ADDRESS, ENDPOINT)
         parser::ast::SectionContent::Single(s) => contains_var_pattern(s, var_name),
+        parser::ast::SectionContent::Rows(rows) => {
+            rows.iter().any(|v| json_contains_var(v, var_name))
+        }
         parser::ast::SectionContent::Empty => false,
         parser::ast::SectionContent::Meta(_) => false,
     }
@@ -1123,6 +1173,136 @@ pub fn collect_sources_diagnostics(
     diagnostics
 }
 
+/// Full diagnostic pipeline (parse errors, validation, semantic, optimizer,
+/// sources, unused variables) for a `.gctf` source string — the same passes
+/// `GrpctestifyLsp::publish_diagnostics` runs, factored out so the LSP and
+/// the playground's `/api/diagnostics` endpoint never drift apart.
+pub fn collect_all_diagnostics(content: &str, file_name: &str) -> Vec<Diagnostic> {
+    let document = match parser::parse_gctf_from_str(content, file_name) {
+        Ok(d) => d,
+        Err(e) => {
+            return vec![Diagnostic::new_simple(
+                Range::new(Position::new(0, 0), Position::new(0, 0)),
+                format!("Parse error: {}", e),
+            )];
+        }
+    };
+
+    let mut diags: Vec<Diagnostic> = Vec::new();
+    for (doc_idx, d) in document.iter_chain().enumerate() {
+        let doc_label = if document.is_single_document() {
+            None
+        } else {
+            Some(doc_idx + 1)
+        };
+
+        let errors = crate::parser::validator::validate_document_diagnostics(d);
+        for e in &errors {
+            let mut diag = validation_error_to_diagnostic(e, content);
+            if let Some(n) = doc_label {
+                diag.message = format!("Document {}: {}", n, diag.message);
+            }
+            diags.push(diag);
+        }
+
+        // detached: collect_semantic_diagnostics/collect_optimizer_diagnostics are chain-aware internally too
+        let single = d.detached();
+
+        let mut semantic_diags = collect_semantic_diagnostics(&single, content);
+        for diag in &mut semantic_diags {
+            if let Some(n) = doc_label {
+                diag.message = format!("Document {}: {}", n, diag.message);
+            }
+        }
+
+        let opt_diags = collect_optimizer_diagnostics(&single, content);
+
+        let r001_lines: std::collections::HashSet<u32> = opt_diags
+            .iter()
+            .filter(|diag| diag.code == Some(NumberOrString::String("OPT_R001".into())))
+            .map(|diag| diag.range.start.line)
+            .collect();
+        semantic_diags.retain(|diag| {
+            !(diag.code == Some(NumberOrString::String("SEM_D001".into()))
+                && r001_lines.contains(&diag.range.start.line))
+        });
+
+        diags.extend(semantic_diags);
+        diags.extend(opt_diags);
+
+        let mut sources_diags = collect_sources_diagnostics(d, content);
+        for diag in &mut sources_diags {
+            if let Some(n) = doc_label {
+                diag.message = format!("Document {}: {}", n, diag.message);
+            }
+        }
+        diags.extend(sources_diags);
+    }
+
+    for unused_var in collect_unused_variables(&document) {
+        diags.push(unused_variable_to_diagnostic(&unused_var));
+    }
+
+    // Whole-file (chain-wide) deprecation warnings (HEADERS + kebab) + quick-fix
+    // data, from the single shared detector.
+    diags.extend(collect_deprecated_diagnostics(content));
+
+    diags
+}
+
+/// `check`/`inspect` already flag `--- HEADERS ---` (deprecated alias for
+/// All deprecation warnings (HEADERS alias + kebab OPTIONS keys + kebab
+/// `#[...]` attributes) from the one shared `detect_deprecations` (§7.1) — the
+/// same source `check`/`inspect`/the lenient commands use, so the editor shows
+/// byte-identical messages. Each is tagged with the code the `code_action`
+/// dispatch keys off: `DEPRECATED_SECTION` for HEADERS, `DEPRECATED_KEY_SPELLING`
+/// (+ `{unknown_key,suggested_key}` data) for kebab, so both quick-fixes still
+/// fire. Replaces the previous split between this fn and a separate
+/// header-only scan (which had drifted to a different message string).
+fn collect_deprecated_diagnostics(content: &str) -> Vec<Diagnostic> {
+    let lines: Vec<&str> = content.lines().collect();
+    parser::detect_deprecations(&parser::tokenize_gctf(content))
+        .into_iter()
+        .map(|dep| {
+            let line = dep.range.start.line as u32;
+            let line_text = lines.get(line as usize).copied().unwrap_or("");
+
+            let kebab = parse_deprecated_key_hint(&dep.message);
+            // Underline just the offending token (the kebab key, or the
+            // `HEADERS` name) rather than the whole line.
+            let highlight = kebab
+                .as_ref()
+                .map(|(unknown, _)| unknown.as_str())
+                .unwrap_or("HEADERS");
+            let range = token_range_on_line(line_text, line, highlight);
+
+            let mut diag = Diagnostic::new(
+                range,
+                Some(DiagnosticSeverity::WARNING),
+                None,
+                Some("grpctestify".to_string()),
+                dep.message.clone(),
+                None,
+                None,
+            );
+            if let Some((unknown_key, suggested_key)) = kebab {
+                diag.code = Some(NumberOrString::String(
+                    "DEPRECATED_KEY_SPELLING".to_string(),
+                ));
+                diag.data = Some(json!({
+                    "unknown_key": unknown_key,
+                    "suggested_key": suggested_key,
+                }));
+            } else {
+                // HEADERS (no `is deprecated; prefer` shape) — the quick-fix
+                // dispatch keys off this code + `message.contains("HEADERS")`.
+                diag.code = Some(NumberOrString::String("DEPRECATED_SECTION".to_string()));
+            }
+            diag
+        })
+        .collect()
+}
+
 fn find_line_with_key(key: &str, lines: &[&str], start_line: usize) -> Option<usize> {
     for (i, line) in lines.iter().enumerate().skip(start_line.saturating_sub(1)) {
         if line.contains(key) && line.contains(':') {
@@ -1181,6 +1361,59 @@ mod tests {
     use crate::optimizer::rule_ids;
 
     #[test]
+    fn deprecated_diagnostic_underlines_just_the_offending_token() {
+        // §8.3-ish: the deprecation diagnostic range covers only the kebab key
+        // (`retry-delay`), not the whole line, so an editor underlines exactly
+        // the offending token. The `retry-delay` key is at column 0 of its line.
+        let content =
+            "--- OPTIONS ---\nretry-delay: 0.5\n\n--- ENDPOINT ---\nsvc/M\n\n--- REQUEST ---\n{}\n";
+        let diags = collect_deprecated_diagnostics(content);
+        let d = diags
+            .iter()
+            .find(|d| d.message.contains("retry-delay is deprecated"))
+            .expect("kebab deprecation diagnostic");
+        assert_eq!(d.range.start.line, 1);
+        assert_eq!(d.range.start.character, 0);
+        assert_eq!(
+            d.range.end.character, 11,
+            "range must span exactly `retry-delay` (11 chars), not the whole line"
+        );
+    }
+
+    #[test]
+    fn unknown_options_key_diagnostic_underlines_just_the_key() {
+        // The unknown-key validation warning underlines exactly `dry_run` on
+        // its own line, not the whole line / section header.
+        let content =
+            "--- OPTIONS ---\ndry_run: true\n\n--- ENDPOINT ---\nsvc/M\n\n--- REQUEST ---\n{}\n";
+        let diags = collect_all_diagnostics(content, "t.gctf");
+        let d = diags
+            .iter()
+            .find(|d| d.message.contains("Unknown OPTIONS key 'dry_run'"))
+            .expect("unknown OPTIONS key diagnostic");
+        assert_eq!(d.range.start.line, 1);
+        assert_eq!(d.range.start.character, 0);
+        assert_eq!(
+            d.range.end.character, 7,
+            "range must span exactly `dry_run` (7 chars)"
+        );
+    }
+
+    #[test]
+    fn deprecated_headers_diagnostic_underlines_the_name() {
+        let content = "--- HEADERS ---\nx: 1\n\n--- ENDPOINT ---\nsvc/M\n\n--- REQUEST ---\n{}\n";
+        let diags = collect_deprecated_diagnostics(content);
+        let d = diags
+            .iter()
+            .find(|d| d.message.contains("HEADERS is deprecated"))
+            .expect("HEADERS deprecation diagnostic");
+        // `--- HEADERS ---` → "HEADERS" starts at byte/UTF-16 column 4.
+        assert_eq!(d.range.start.line, 0);
+        assert_eq!(d.range.start.character, 4);
+        assert_eq!(d.range.end.character, 11);
+    }
+
+    #[test]
     fn test_get_section_hover_all_types() {
         assert!(get_section_hover(&SectionType::Address).is_some());
         assert!(get_section_hover(&SectionType::Endpoint).is_some());
@@ -1213,12 +1446,13 @@ mod tests {
     #[test]
     fn test_get_section_completions() {
         let completions = get_section_completions();
-        assert_eq!(completions.len(), 12); // 12 section types (including BENCH)
+        assert_eq!(completions.len(), 13); // 13 section types (including BENCH, DATASET)
 
         let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"--- ADDRESS ---"));
         assert!(labels.contains(&"--- ENDPOINT ---"));
         assert!(labels.contains(&"--- REQUEST ---"));
+        assert!(labels.contains(&"--- DATASET ---"));
         assert!(labels.contains(&"--- RESPONSE ---"));
     }
 
@@ -1234,6 +1468,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_get_assertion_completions() {
         let completions = get_assertion_completions();
         assert!(completions.len() >= 15);
@@ -1353,6 +1588,43 @@ test.Service/Method
             create_bench_key_fix_action(&uri, range, "load-schdule", "load_schedule", content);
 
         assert!(action.is_none());
+    }
+
+    #[test]
+    fn test_parse_deprecated_key_hint_options_form() {
+        let (unknown, suggested) = parse_deprecated_key_hint(
+            "OPTIONS.retry-delay is deprecated; prefer OPTIONS.retry_delay",
+        )
+        .unwrap();
+        assert_eq!(unknown, "retry-delay");
+        assert_eq!(suggested, "retry_delay");
+    }
+
+    #[test]
+    fn test_parse_deprecated_key_hint_attribute_form() {
+        let (unknown, suggested) =
+            parse_deprecated_key_hint("Attribute #[no-retry] is deprecated; prefer #[no_retry]")
+                .unwrap();
+        assert_eq!(unknown, "no-retry");
+        assert_eq!(suggested, "no_retry");
+    }
+
+    #[test]
+    fn test_create_bench_key_fix_action_on_attribute_syntax() {
+        let uri = Url::parse("file:///test.gctf").unwrap();
+        let content = "#[retry-delay(0.2)]\n--- ENDPOINT ---\n";
+        let range = Range::new(Position::new(0, 0), Position::new(0, 20));
+
+        let action =
+            create_bench_key_fix_action(&uri, range, "retry-delay", "retry_delay", content)
+                .unwrap();
+
+        let edit = action.edit.unwrap();
+        let changes = edit.changes.unwrap();
+        let edits = changes.get(&uri).unwrap();
+        assert_eq!(edits[0].new_text, "retry_delay");
+        assert_eq!(edits[0].range.start, Position::new(0, 2));
+        assert_eq!(edits[0].range.end, Position::new(0, 13));
     }
 
     #[test]
@@ -1576,6 +1848,30 @@ test.Service/Method
             diagnostics[0].code,
             Some(NumberOrString::String(expected.to_string()))
         );
+    }
+
+    #[test]
+    fn test_collect_all_diagnostics_includes_optimizer_pass() {
+        let content = r#"--- ENDPOINT ---
+test.Service/Method
+
+--- ASSERTS ---
+!!@has_header("x")
+"#;
+        let expected_code = rule_ids::B017.as_str().to_string();
+        let actual = collect_all_diagnostics(content, "test.gctf");
+        assert!(
+            actual
+                .iter()
+                .any(|d| d.code == Some(NumberOrString::String(expected_code.clone()))),
+            "expected {expected_code} among {actual:?}"
+        );
+    }
+
+    #[test]
+    fn test_collect_all_diagnostics_flags_missing_sections() {
+        let diagnostics = collect_all_diagnostics("", "test.gctf");
+        assert!(!diagnostics.is_empty());
     }
 
     #[test]

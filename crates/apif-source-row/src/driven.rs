@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
 use crate::SourceRow;
 use crate::filter::{FilterCondition, matches_all as matches_filter_all};
 use crate::index::SourceIndex;
@@ -221,6 +222,7 @@ fn load_dimension_source(
         })?;
     let file = std::fs::File::open(resolved_path)
         .with_context(|| format!("failed to open dimension file: {}", resolved_path.display()))?;
+    // SAFETY: no safe std mmap API; sound while the read-only, run-owned dimension file isn't truncated/mutated concurrently.
     let mmap = unsafe { memmap2::Mmap::map(&file) }
         .with_context(|| format!("failed to mmap dimension file: {}", resolved_path.display()))?;
     Ok(DimensionSource::Indexed(Box::new(IndexedDimension {

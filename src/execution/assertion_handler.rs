@@ -1,9 +1,7 @@
-// Assertion Handler - handles assertion evaluation
-
 use crate::assert::AssertionEngine;
 #[cfg(test)]
 use crate::parser::ast::{Section, SectionContent, SectionType};
-use crate::plugins::{AssertionTiming, PluginManager};
+use crate::plugins::AssertionTiming;
 use crate::utils::section_content_line;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -15,16 +13,19 @@ use std::sync::LazyLock;
 pub struct AssertionResult {
     pub passed: bool,
     pub failure_messages: Vec<String>,
+    /// Per-assertion outcome + timing, in source order. Populated by
+    /// [`AssertionHandler::evaluate_assertions_for_section`]; empty for the
+    /// `#[cfg(test)]`-only helper methods below.
+    pub records: Vec<apif_state::AssertionRecord>,
 }
 
-/// Assertion Handler - evaluates assertions
 pub struct AssertionHandler {
     engine: AssertionEngine,
 }
 
 /// Global plugin registry for assertion evaluation.
 static PLUGIN_REGISTRY: LazyLock<Arc<dyn apif_assert::registry::PluginRegistry>> =
-    LazyLock::new(|| Arc::new(PluginManager::new()));
+    LazyLock::new(|| Arc::new(crate::execution::plugin_dir::build_plugin_manager()));
 
 impl AssertionHandler {
     /// Create new assertion handler
@@ -64,6 +65,7 @@ impl AssertionHandler {
         AssertionResult {
             passed: failure_messages.is_empty(),
             failure_messages,
+            records: Vec::new(),
         }
     }
 
@@ -95,6 +97,7 @@ impl AssertionHandler {
         AssertionResult {
             passed: failure_messages.is_empty(),
             failure_messages,
+            records: Vec::new(),
         }
     }
 
@@ -140,27 +143,51 @@ impl AssertionHandler {
         start_line: usize,
         timing: Option<&AssertionTiming>,
         variables: &HashMap<String, Value>,
+        protocol: &str,
     ) -> AssertionResult {
         let mut failure_messages = Vec::new();
 
-        let results = self.engine.evaluate_all_with_timing(
+        let evaluated = self.engine.evaluate_all_with_records(
             lines,
             target_value,
             Some(headers),
             Some(trailers),
             timing,
             variables,
+            Some(protocol),
         );
 
-        for (idx, result) in results.iter().enumerate() {
+        let mut records = Vec::with_capacity(evaluated.len());
+        for (idx, (result, elapsed_ms)) in evaluated.iter().enumerate() {
             let line_num = section_content_line(start_line, idx);
             let context = format!("{} (assertion at line {})", section_context, line_num);
             append_single_failure(result, &context, &mut failure_messages);
+
+            let (message, expected, actual) = match result {
+                crate::assert::AssertionResult::Fail {
+                    message,
+                    expected,
+                    actual,
+                } => (Some(message.clone()), expected.clone(), actual.clone()),
+                crate::assert::AssertionResult::Error(msg) => (Some(msg.clone()), None, None),
+                crate::assert::AssertionResult::Pass => (None, None, None),
+            };
+            records.push(apif_state::AssertionRecord {
+                line: line_num,
+                expression: lines[idx].clone(),
+                passed: matches!(result, crate::assert::AssertionResult::Pass),
+                elapsed_ms: *elapsed_ms,
+                message,
+                endpoint: None,
+                expected,
+                actual,
+            });
         }
 
         AssertionResult {
             passed: failure_messages.is_empty(),
             failure_messages,
+            records,
         }
     }
 }
@@ -188,9 +215,14 @@ fn append_single_failure(
     }
 }
 
-#[cfg(test)]
+// Every test here constructs an `AssertionHandler`, which lazily initializes
+// the plugin registry via `fs::metadata` on the configured plugin dirs —
+// blocked under miri isolation (`error: unsupported operation: 'statx' not
+// available`), so the whole module is fs-touching.
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
+    use crate::parser::ast::SectionSpan;
     use serde_json::json;
 
     #[test]
@@ -204,6 +236,7 @@ mod tests {
             start_line: 0,
             end_line: 0,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         }];
 
         let target = json!({"id": 123, "name": "test"});
@@ -226,6 +259,7 @@ mod tests {
             start_line: 0,
             end_line: 0,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         }];
 
         let target = json!({"id": 123, "name": "test"});
@@ -248,6 +282,7 @@ mod tests {
             start_line: 0,
             end_line: 0,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         };
 
         let other_section = Section {
@@ -258,6 +293,7 @@ mod tests {
             start_line: 0,
             end_line: 0,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         };
 
         assert!(handler.has_assertions(&asserts_section));
@@ -278,6 +314,7 @@ mod tests {
             start_line: 0,
             end_line: 0,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         };
 
         let lines = handler.get_assertion_lines(&section);
@@ -311,6 +348,7 @@ mod tests {
             start_line: 0,
             end_line: 0,
             attributes: Vec::new(),
+            span: SectionSpan::default(),
         };
 
         let target = json!({"id": 123});

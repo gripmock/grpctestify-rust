@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 pub fn generate_multi_doc_content(num_docs: usize) -> String {
     let mut out = String::new();
     for i in 0..num_docs {

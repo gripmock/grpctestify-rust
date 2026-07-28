@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useStore } from '../../lib/store';
+import { useStore, isTabDirty } from '../../lib/store';
+import type { Tab } from '../../lib/types';
 import { encodeCollectionLink } from '../../lib/deeplink';
-import { Plus, X, XCircle, FileSymlink, Pencil, Trash2, Share2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { copyToClipboard } from '../../lib/clipboard';
+import { Plus, X, XCircle, FileSymlink, Pencil, Trash2, Share2, Terminal, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useModal } from '../ui/ModalContext';
 import { useToast } from '../ui/ToastContext';
+import { colors } from '../../lib/theme';
 
 interface CtxMenu {
   x: number;
@@ -23,8 +26,33 @@ export function TabBar() {
   const removeTab = useStore(s => s.removeTab);
   const addTab = useStore(s => s.addTab);
   const setTabLabel = useStore(s => s.setTabLabel);
+  const request = useStore(s => s.request);
+  const workspaceOriginal = useStore(s => s.workspaceOriginal);
+  const rawContent = useStore(s => s.rawContent);
+  const rawOriginal = useStore(s => s.rawOriginal);
+  const getGrpcurlCommand = useStore(s => s.getGrpcurlCommand);
+  const isExecuting = useStore(s => s.response?.status) === 'pending';
   const modal = useModal();
   const toast = useToast();
+
+  const tabDirty = useCallback((tab: Tab): boolean => {
+    if (tab.id !== activeTabId) return isTabDirty(tab);
+    return isTabDirty({
+      ...tab,
+      endpoint: request.endpoint, headers: request.headers, bodies: request.bodies,
+      rawContent, rawOriginal, collectionOriginal: workspaceOriginal,
+    });
+  }, [activeTabId, request, rawContent, rawOriginal, workspaceOriginal]);
+
+  const handleCopyGrpcurl = useCallback(async () => {
+    try {
+      const cmd = await getGrpcurlCommand();
+      await copyToClipboard(cmd);
+      toast.success('grpcurl command copied!');
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to build grpcurl command');
+    }
+  }, [getGrpcurlCommand, toast]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
@@ -114,16 +142,7 @@ export function TabBar() {
 
     // Collection tab → share as /c/path
     if (tab.collectionPath) {
-      const url = `${window.location.origin}${encodeCollectionLink(tab.collectionPath)}`;
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(url);
-      } else {
-        const ta = document.createElement('textarea');
-        ta.value = url; ta.style.position = 'fixed'; ta.style.opacity = '0';
-        document.body.appendChild(ta); ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-      }
+      await copyToClipboard(`${window.location.origin}${encodeCollectionLink(tab.collectionPath)}`);
       toast.success('Collection link copied!');
       return;
     }
@@ -163,16 +182,7 @@ export function TabBar() {
       });
       if (!res.ok) { toast.error('Failed to create share'); return; }
       const data = await res.json();
-      const url = `${window.location.origin}${data.url}`;
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(url);
-      } else {
-        const ta = document.createElement('textarea');
-        ta.value = url; ta.style.position = 'fixed'; ta.style.opacity = '0';
-        document.body.appendChild(ta); ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-      }
+      await copyToClipboard(`${window.location.origin}${data.url}`);
       const expires = new Date(data.expires_at).toLocaleDateString();
       toast.success(`Link copied! Expires ${expires}`);
       setShowShareDialog(false);
@@ -199,7 +209,7 @@ export function TabBar() {
           {tabs.map(tab => {
             const isActive = tab.id === activeTabId;
             return (
-              <div key={tab.id} style={{
+              <div key={tab.id} className="tab-row" style={{
                 display: 'flex', alignItems: 'center', gap: 4,
                 padding: '5px 8px 5px 12px', fontSize: 12, cursor: 'pointer',
                 whiteSpace: 'nowrap', flexShrink: 0,
@@ -220,26 +230,36 @@ export function TabBar() {
                 }}>
                   {tab.label}
                 </span>
-                <button onClick={e => { e.stopPropagation(); removeTab(tab.id); }} style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  width: 18, height: 18, borderRadius: 3, border: 'none', background: 'none',
-                  cursor: 'pointer', color: isActive ? 'var(--accent)' : 'var(--text-muted)',
-                  opacity: 0, flexShrink: 0,
-                  transition: 'all 0.1s ease',
-                }}
-                  className="tab-close-btn"
-                  onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-tertiary)'; e.currentTarget.style.opacity = '1'; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.opacity = '0'; }}
-                >
-                  <X size={12} />
-                </button>
+                <span style={{ position: 'relative', width: 18, height: 18, flexShrink: 0 }}>
+                  {tabDirty(tab) && (
+                    <span className="tab-dirty-dot" title="Unsaved changes" style={{
+                      position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+                      width: 7, height: 7, borderRadius: '50%', background: colors.warning,
+                    }} />
+                  )}
+                  <button onClick={e => { e.stopPropagation(); removeTab(tab.id); }} style={{
+                    position: 'absolute', inset: 0,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    borderRadius: 3, border: 'none', background: 'none',
+                    cursor: 'pointer', color: isActive ? 'var(--accent)' : 'var(--text-muted)',
+                    opacity: 0,
+                    transition: 'all 0.1s ease',
+                  }}
+                    className="tab-close-btn"
+                    onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-tertiary)'; e.currentTarget.style.opacity = '1'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.opacity = '0'; }}
+                  >
+                    <X size={12} />
+                  </button>
+                </span>
               </div>
             );
           })}
 
           <style>{`
             .tab-close-btn { opacity: 0; }
-            div:has(> .tab-close-btn):hover .tab-close-btn { opacity: 1 !important; }
+            .tab-row:hover .tab-close-btn { opacity: 1 !important; }
+            .tab-row:hover .tab-dirty-dot { opacity: 0; }
             .tabs-scroll { -ms-overflow-style: none; }
             .tabs-scroll::-webkit-scrollbar { display: none; }
           `}</style>
@@ -266,6 +286,21 @@ export function TabBar() {
           </button>
         )}
       </div>
+
+      <button onClick={handleCopyGrpcurl} disabled={!request.endpoint || isExecuting} style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        width: 28, height: 28, borderRadius: 4, border: 'none', background: 'none',
+        cursor: request.endpoint && !isExecuting ? 'pointer' : 'not-allowed',
+        opacity: request.endpoint && !isExecuting ? 1 : 0.4,
+        color: 'var(--text-muted)', flexShrink: 0,
+        transition: 'all 0.1s ease',
+      }}
+        onMouseEnter={e => { if (request.endpoint) { e.currentTarget.style.background = 'var(--bg-tertiary)'; e.currentTarget.style.color = 'var(--text-primary)'; } }}
+        onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+        title="Copy as grpcurl command"
+      >
+        <Terminal size={14} />
+      </button>
 
       <button onClick={handleShare} style={{
         display: 'flex', alignItems: 'center', justifyContent: 'center',

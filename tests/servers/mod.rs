@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 // Test gRPC servers for integration testing
 
 pub mod echo;

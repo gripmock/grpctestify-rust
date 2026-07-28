@@ -1,4 +1,3 @@
-// Scaffold command - emit a ready-to-edit .gctf skeleton for a gRPC method,
 // pre-filling the REQUEST body from the request message descriptor.
 
 use anyhow::{Context, Result, bail};
@@ -127,27 +126,43 @@ fn load_from_descriptor(descriptor: &Path) -> Result<(DescriptorPool, ProtoRef)>
     Ok((pool, proto_ref))
 }
 
+/// Resolve `--plaintext`/`--tls`/`--insecure` into a `TlsConfig` (or `None`
+/// for plaintext) — pulled out of [`load_via_reflection`] so it's testable
+/// without a live server.
+fn resolve_tls_config(
+    plaintext: bool,
+    tls: bool,
+    insecure: bool,
+    address: &str,
+) -> Result<Option<TlsConfig>> {
+    if plaintext && address.starts_with("https://") {
+        bail!("--plaintext cannot be used with an https:// address");
+    }
+    if tls && plaintext {
+        bail!("--tls cannot be used with --plaintext");
+    }
+
+    Ok(if plaintext {
+        None
+    } else {
+        Some(super::tls_config_from_flags(
+            None,
+            None,
+            None,
+            // `--tls` demands verification even for a bare host:port address
+            // that would otherwise fall back to skip-verify below.
+            !tls && (insecure || !address.starts_with("https://")),
+        ))
+    })
+}
+
 async fn load_via_reflection(args: &ScaffoldArgs, service: &str) -> Result<DescriptorPool> {
     let address = args
         .address
         .clone()
         .unwrap_or_else(|| config::default_address_for(Some(&args.protocol)));
 
-    if args.plaintext && address.starts_with("https://") {
-        bail!("--plaintext cannot be used with an https:// address");
-    }
-
-    let tls_config = if args.plaintext {
-        None
-    } else {
-        Some(TlsConfig {
-            ca_cert_path: None,
-            client_cert_path: None,
-            client_key_path: None,
-            server_name: None,
-            insecure_skip_verify: args.insecure || !address.starts_with("https://"),
-        })
-    };
+    let tls_config = resolve_tls_config(args.plaintext, args.tls, args.insecure, &address)?;
 
     let config = GrpcClientConfig {
         address,
@@ -302,6 +317,58 @@ fn path_to_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tls_config_defaults_to_insecure_skip_verify_for_bare_address() {
+        let cfg = resolve_tls_config(false, false, false, "localhost:4770")
+            .unwrap()
+            .unwrap();
+        assert!(
+            cfg.insecure_skip_verify,
+            "no scheme → skip verify by default"
+        );
+    }
+
+    #[test]
+    fn tls_flag_forces_verification_even_for_bare_address() {
+        let cfg = resolve_tls_config(false, true, false, "localhost:4770")
+            .unwrap()
+            .unwrap();
+        assert!(!cfg.insecure_skip_verify, "--tls demands verification");
+    }
+
+    #[test]
+    fn plaintext_yields_no_tls_config() {
+        assert!(
+            resolve_tls_config(true, false, false, "localhost:4770")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn plaintext_with_https_address_is_rejected() {
+        let err = resolve_tls_config(true, false, false, "https://localhost:4770").unwrap_err();
+        assert!(err.to_string().contains("--plaintext"));
+    }
+
+    #[test]
+    fn tls_with_plaintext_is_rejected() {
+        let err = resolve_tls_config(true, true, false, "localhost:4770").unwrap_err();
+        assert!(err.to_string().contains("--tls"));
+    }
+
+    #[test]
+    fn https_address_defaults_to_verified() {
+        let cfg = resolve_tls_config(false, false, false, "https://localhost:4770")
+            .unwrap()
+            .unwrap();
+        assert!(
+            !cfg.insecure_skip_verify,
+            "https:// address verifies by default"
+        );
+    }
+
     use prost_types::field_descriptor_proto::{Label, Type};
     use prost_types::{
         DescriptorProto, EnumDescriptorProto, EnumValueDescriptorProto, FieldDescriptorProto,

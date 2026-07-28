@@ -8,6 +8,27 @@ use serde_json::Value;
 /// gRPC payload while keeping recursion safely shallow.
 const MAX_JSON_DEPTH: usize = 256;
 
+/// A JSON5 parse failure, carrying the parser's own 0-based line/column
+/// (relative to the parsed content) alongside the rendered message, so a
+/// caller that knows where this content starts in the file can report an
+/// absolute position instead of just the section start. Comment stripping
+/// (`tokenize_strip_comments`) preserves every newline, so this line always
+/// lines up with the caller's own line-per-line view of the same content.
+#[derive(Debug)]
+pub struct JsonParseError {
+    pub message: String,
+    pub line: Option<usize>,
+    pub column: Option<usize>,
+}
+
+impl std::fmt::Display for JsonParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for JsonParseError {}
+
 /// Parse JSON5 string into serde_json::Value
 /// Supports: comments (`//`, `#`, `/* */`), trailing commas, unquoted keys
 pub fn from_str(json_str: &str) -> Result<Value, anyhow::Error> {
@@ -19,7 +40,14 @@ pub fn from_str(json_str: &str) -> Result<Value, anyhow::Error> {
             MAX_JSON_DEPTH
         ));
     }
-    json5::from_str(&cleaned).map_err(|e| anyhow::anyhow!("Failed to parse JSON5: {}", e))
+    json5::from_str(&cleaned).map_err(|e| {
+        let position = e.position();
+        anyhow::Error::new(JsonParseError {
+            message: format!("Failed to parse JSON5: {e}"),
+            line: position.map(|p| p.line),
+            column: position.map(|p| p.column),
+        })
+    })
 }
 
 /// Tokenize JSON5 content, stripping all comments.
@@ -100,6 +128,10 @@ fn tokenize_strip_comments(input: &str) -> (String, usize) {
                     }
                 }
             }
+            // Digit-separator (`1_000_000`): the `json5` crate doesn't support
+            // these, so drop the `_` here and let it see a plain number.
+            '_' if out.chars().next_back().is_some_and(|c| c.is_ascii_digit())
+                && chars.peek().is_some_and(|c| c.is_ascii_digit()) => {}
             c => {
                 match c {
                     '{' | '[' => {
@@ -145,6 +177,21 @@ mod tests {
             key: "value",
         }"#;
         let expected = json!({"key": "value"});
+        assert_eq!(from_str(input).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_parse_json5_numeric_digit_separators() {
+        let input = r#"{
+            amount: 1_000_000,
+            price: 1_234.567_89,
+            note: "id_1_000_2 stays untouched inside a string"
+        }"#;
+        let expected = json!({
+            "amount": 1_000_000,
+            "price": 1_234.567_89,
+            "note": "id_1_000_2 stays untouched inside a string"
+        });
         assert_eq!(from_str(input).unwrap(), expected);
     }
 

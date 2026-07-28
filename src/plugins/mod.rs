@@ -4,8 +4,8 @@ pub use apif_plugins::{
     TypedPluginSignature, extract_plugin_call_name, normalize_plugin_name, plugin_signature_map,
 };
 pub use apif_plugins::{
-    email, empty, env, header_extract, ip, len, macros, regex, timestamp, timing, trailer_extract,
-    type_info, url, uuid,
+    email, empty, env, header_extract, ip, len, macros, regex, rhai_plugin, timestamp, timing,
+    trailer_extract, type_info, url, uuid,
 };
 // Plugin context types re-exported for backward compatibility
 pub use apif_plugins::{AssertionTiming, PluginContext, PluginResult};

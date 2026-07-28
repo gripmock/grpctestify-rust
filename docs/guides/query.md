@@ -41,7 +41,7 @@ Where:
 | `<` | Less | `score<50` |
 | `~glob` | Glob pattern | `name~glob"*John*"` |
 | `~re:` | Regex | `msg~re:"error\|warn"` |
-| `IN` | In list (comma-separated) | `status=active,pending` |
+| `=` with commas | In list (matches any value) | `status=active,pending` |
 
 ### Examples
 
@@ -97,9 +97,9 @@ grpctestify query -q "users id=1" users.csv -f csv
 # id,name,status
 # 1,alice,active
 
-# Line (single value per row)
+# Line (key=value pairs, space-separated, one row per line)
 grpctestify query -q "users id=1" users.csv -f line
-# 1,alice,active
+# id=1 name=alice status=active
 ```
 
 ## Interactive Shell

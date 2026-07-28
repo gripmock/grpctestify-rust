@@ -1,5 +1,3 @@
-// Run command - execute tests
-
 use anyhow::Result;
 use futures::stream::StreamExt;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -45,6 +43,15 @@ impl WorkItem {
     }
 }
 
+/// Render a row value the way a human/report would want to read it: strings
+/// unquoted, everything else via its JSON form.
+fn stringify_row_value(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
 /// Render a row's variables into a stable, human-readable identity suffix so
 /// each expanded case reports distinctly: `<file>#[row=<i> k=v k=v]`.
 fn format_row_name(file: &str, index: usize, vars: &HashMap<String, serde_json::Value>) -> String {
@@ -52,16 +59,21 @@ fn format_row_name(file: &str, index: usize, vars: &HashMap<String, serde_json::
     keys.sort();
     let fields = keys
         .iter()
-        .map(|k| {
-            let rendered = match &vars[*k] {
-                serde_json::Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            format!("{}={}", k, rendered)
-        })
+        .map(|k| format!("{}={}", k, stringify_row_value(&vars[*k])))
         .collect::<Vec<_>>()
         .join(" ");
     format!("{}#[row={} {}]", file, index, fields)
+}
+
+/// Render a row's variables as sorted (key, value) pairs — the structured
+/// form kept on the reportable `TestResult` (e.g. surfaced as Allure
+/// parameters), as opposed to `format_row_name`'s single identity string.
+fn row_params(vars: &HashMap<String, serde_json::Value>) -> Vec<(String, String)> {
+    let mut keys: Vec<&String> = vars.keys().collect();
+    keys.sort();
+    keys.into_iter()
+        .map(|k| (k.clone(), stringify_row_value(&vars[k])))
+        .collect()
 }
 
 /// Read every row of a `--data` source into template variables.
@@ -183,7 +195,96 @@ fn expand_templates_over_data(
     items
 }
 
-fn extract_test_meta(doc: &parser::ast::GctfDocument) -> TestMeta {
+/// A DATASET row must be a JSON object; its fields become `dataset.<field>`
+/// template variables — the same `<source>.<column>` namespacing `--data`
+/// uses, just with the fixed source name `dataset` since a DATASET section
+/// has no external file to name it after.
+fn dataset_row_vars(row: &serde_json::Value) -> HashMap<String, serde_json::Value> {
+    match row {
+        serde_json::Value::Object(fields) => fields
+            .iter()
+            .map(|(k, v)| (format!("dataset.{k}"), v.clone()))
+            .collect(),
+        // `parse_section_content` already rejects non-object rows at parse
+        // time (a DATASET can't even be constructed this way) — this arm
+        // only matters for the error-recovery parser, which is lenient by
+        // design and may hand back an as-yet-unvalidated row.
+        _ => HashMap::new(),
+    }
+}
+
+/// Split `files` into (files without a DATASET section, DATASET-bearing file
+/// paths, work items already expanded from those files' own rows).
+///
+/// A DATASET section makes its file self-contained — no `--data` needed —
+/// expanding through the identical [`WorkItem::Row`] mechanism `--data`
+/// uses, just sourced from the document's own `--- DATASET ---` rows
+/// instead of an external file.
+fn expand_dataset_files(
+    files: Vec<PathBuf>,
+    write: bool,
+) -> (Vec<PathBuf>, Vec<PathBuf>, Vec<WorkItem>) {
+    let mut plain = Vec::new();
+    let mut dataset_files = Vec::new();
+    let mut items = Vec::new();
+
+    for file in files {
+        let doc = match parser::parse_gctf(&file) {
+            Ok(d) => d,
+            // Let the normal file path surface the parse error once.
+            Err(_) => {
+                plain.push(file);
+                continue;
+            }
+        };
+        let Some(section) = doc.first_section(SectionType::Dataset) else {
+            plain.push(file);
+            continue;
+        };
+        let SectionContent::Rows(rows) = &section.content else {
+            plain.push(file);
+            continue;
+        };
+        let rows = rows.clone();
+
+        let file_str = file.to_string_lossy().to_string();
+        dataset_files.push(file.clone());
+
+        // Same rationale as `--data`: a DATASET run parameterizes into N
+        // cases, so `--write`'s "snapshot the response back into the file"
+        // has no single target to write to.
+        if write {
+            items.push(WorkItem::Error {
+                name: file_str,
+                message: "--write is not supported with a DATASET section (parameterized) run"
+                    .to_string(),
+            });
+            continue;
+        }
+        if rows.is_empty() {
+            items.push(WorkItem::Error {
+                name: file_str,
+                message: "DATASET section has zero rows".to_string(),
+            });
+            continue;
+        }
+
+        let doc = Arc::new(doc);
+        for (i, row) in rows.iter().enumerate() {
+            let vars = dataset_row_vars(row);
+            let name = format_row_name(&file_str, i, &vars);
+            items.push(WorkItem::Row {
+                doc: doc.clone(),
+                vars,
+                name,
+            });
+        }
+    }
+
+    (plain, dataset_files, items)
+}
+
+pub(crate) fn extract_test_meta(doc: &parser::ast::GctfDocument) -> TestMeta {
     let mut meta = doc
         .sections
         .iter()
@@ -316,9 +417,9 @@ fn should_retry_result(result: &execution::TestExecutionResult) -> bool {
 /// runs once after, always. They live in the normal `.gctf` glob, so they are
 /// split out of the test set here rather than executed as ordinary tests.
 #[derive(Debug, Default)]
-struct DirFixtures {
-    setup: Option<PathBuf>,
-    teardown: Option<PathBuf>,
+pub(crate) struct DirFixtures {
+    pub(crate) setup: Option<PathBuf>,
+    pub(crate) teardown: Option<PathBuf>,
 }
 
 /// Split collected `.gctf` files into ordinary tests and per-directory fixtures.
@@ -326,7 +427,9 @@ struct DirFixtures {
 /// `_setup.gctf`/`_teardown.gctf` are pulled out of the test set entirely and
 /// grouped by their parent directory (exact-directory scope: a dir's fixtures
 /// apply only to tests in that same dir, never to nested subdirectories).
-fn partition_fixtures(files: Vec<PathBuf>) -> (Vec<PathBuf>, HashMap<PathBuf, DirFixtures>) {
+pub(crate) fn partition_fixtures(
+    files: Vec<PathBuf>,
+) -> (Vec<PathBuf>, HashMap<PathBuf, DirFixtures>) {
     let mut tests = Vec::new();
     let mut fixtures: HashMap<PathBuf, DirFixtures> = HashMap::new();
     for file in files {
@@ -415,7 +518,50 @@ async fn run_fixture(
     (passed, vars, result)
 }
 
+/// Decide whether to buffer the captured request/response exchange for this
+/// run: an explicit `--capture-exchange`, verbose console, or a selected file
+/// format that renders it (only once `--log-output` makes that format active).
+fn should_capture_exchange(
+    explicit: bool,
+    verbose_console: bool,
+    format_uses_exchange: bool,
+    has_log_output: bool,
+) -> bool {
+    explicit || verbose_console || (format_uses_exchange && has_log_output)
+}
+
+/// Resolve the output path for one `--log-format` entry.
+///
+/// A single requested format keeps the exact `--log-output` path the user
+/// gave (a file, or a directory for allure). When several formats are
+/// requested from one run, `base` becomes a directory holding one
+/// `<format>.<ext>` file per format instead (allure gets its own
+/// `allure/` subdirectory, since it already writes many files).
+fn report_output_path(base: &Path, format: crate::cli::LogFormat, multiple: bool) -> PathBuf {
+    if !multiple {
+        return base.to_path_buf();
+    }
+    let file_name = match format {
+        crate::cli::LogFormat::Json => "json.json",
+        crate::cli::LogFormat::Yaml => "yaml.yaml",
+        crate::cli::LogFormat::JUnit => "junit.xml",
+        crate::cli::LogFormat::Html => "html.html",
+        crate::cli::LogFormat::Allure => "allure",
+        crate::cli::LogFormat::Console => "console",
+    };
+    base.join(file_name)
+}
+
 pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
+    // Unlike the boolean-plugin/unknown-plugin registries (which `run` never
+    // needs — it executes against a real `PluginManager`, not a static
+    // snapshot), `parse_inline_options` runs unconditionally for every
+    // command including this one, so a `.rhai`-declared inline-option key
+    // must be registered here too or a valid file hard-fails to parse.
+    crate::parser::register_extra_inline_option_keys(
+        crate::plugins::rhai_plugin::load_all_inline_option_keys(),
+    );
+
     // Defensive clamp: buffer_unordered(0) never polls and deadlocks the run.
     let parallel_jobs = cli.parallel_jobs().max(1);
     info!("Parallel jobs: {}", parallel_jobs);
@@ -442,6 +588,30 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
     // are pulled out of the normal test set before any tag filtering so they are
     // never executed as ordinary tests.
     let (mut test_files, fixtures) = partition_fixtures(collected);
+
+    // `_setup.gctf`/`_teardown.gctf` are deliberately NOT filtered here —
+    // they must still run for any directory that keeps a selected test,
+    // regardless of whether the fixture file itself changed.
+    if args.only_changed {
+        match crate::only_changed::changed_files(
+            &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            &args.since,
+            &test_files,
+        ) {
+            Ok(changed) => {
+                let before = test_files.len();
+                test_files.retain(|f| changed.contains(f));
+                info!(
+                    "--only-changed: {} of {before} test file(s) changed since '{}'",
+                    test_files.len(),
+                    args.since
+                );
+            }
+            Err(e) => {
+                warn!("--only-changed: {e:#} — running all files instead");
+            }
+        }
+    }
 
     let has_meta_filters = !args.tags.is_empty() || !args.skip_tags.is_empty();
 
@@ -471,10 +641,14 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
     if test_files.is_empty() {
         // An empty (or fully filtered) test set is almost always a mistake
         // (typo in path or --tags); exit non-zero so CI cannot silently pass.
-        warn!("No test files found");
+        // Printed directly to stderr (not via `warn!`, which this binary
+        // routes to stdout) so the message survives even with tracing
+        // filtered down, and scripts checking stderr for warnings see it.
+        use crate::report::style::{warn_icon, warn_style};
         eprintln!(
-            "⚠️  WARN [{}]: No test files found (paths or tag filters matched nothing)",
-            chrono::Local::now().format("%H:%M:%S")
+            "{} {}",
+            warn_icon(),
+            warn_style().apply_to("No test files found (paths or tag filters matched nothing)")
         );
         std::process::exit(1);
     }
@@ -495,45 +669,60 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
         .map(|fx| usize::from(fx.setup.is_some()) + usize::from(fx.teardown.is_some()))
         .sum();
 
+    // A DATASET section makes its file self-contained (its own row source) —
+    // split those off first so `--data` only ever applies to plain files,
+    // and reject combining the two rather than silently guessing which row
+    // source wins for a file that somehow had both.
+    let (test_files, dataset_files, dataset_work_items) =
+        expand_dataset_files(test_files, args.write);
+    if args.data.is_some() && !dataset_files.is_empty() {
+        anyhow::bail!(
+            "--data cannot be combined with a DATASET section (found in: {}) — pick one row source per run",
+            dataset_files
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
     // With --data, expand each template file into one work item per data row.
     // Without it, files pass through 1:1. META filtering already ran above (per
     // file), so every row of a template inherits its file's tags.
-    let work_items: Vec<WorkItem> = match &args.data {
+    let mut work_items: Vec<WorkItem> = match &args.data {
         Some(data) => {
             expand_templates_over_data(test_files, data, args.data_format.as_deref(), args.write)
         }
         None => test_files.into_iter().map(WorkItem::File).collect(),
     };
+    work_items.extend(dataset_work_items);
     let total_work = work_items.len();
     let total_reported = total_work + fixture_count;
 
     if args.stream {
         // Silent mode - streaming output only
-    } else if total_work == 1 {
-        println!(
-            "ℹ️  INFO [{}]: Running 1 test sequentially...",
-            chrono::Local::now().format("%H:%M:%S")
-        );
-    } else if parallel_jobs <= 1 {
-        println!(
-            "ℹ️  INFO [{}]: Running {} test(s) sequentially...",
-            chrono::Local::now().format("%H:%M:%S"),
-            total_work
-        );
     } else {
+        let noun = if total_work == 1 { "test" } else { "tests" };
+        let workers = if total_work > 1 && parallel_jobs > 1 {
+            report::style::dim_style()
+                .apply_to(format!(" · {parallel_jobs} workers"))
+                .to_string()
+        } else {
+            String::new()
+        };
         println!(
-            "ℹ️  INFO [{}]: Running {} test(s) in parallel (jobs: {})...",
-            chrono::Local::now().format("%H:%M:%S"),
-            total_work,
-            parallel_jobs
+            "{} {total_work} {noun}{workers}",
+            report::style::bold_style().apply_to("Running")
         );
     }
 
     let mut reporters: Vec<Box<dyn report::Reporter>> = Vec::new();
 
+    let target_address = std::env::var(config::ENV_GRPCTESTIFY_ADDRESS)
+        .unwrap_or_else(|_| config::default_address());
+
     let env_info = report::console::EnvironmentInfo {
-        address: std::env::var(config::ENV_GRPCTESTIFY_ADDRESS)
-            .unwrap_or_else(|_| config::default_address()),
+        address: target_address.clone(),
         parallel_jobs,
         sort_mode: args.sort.clone(),
         dry_run: args.dry_run,
@@ -555,28 +744,49 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
         )));
     }
 
-    if let Some(format) = cli.log_format_mode() {
+    let requested_formats = cli.log_format_modes();
+    if !requested_formats.is_empty() {
         if let Some(output_path) = &args.log_output {
-            match format {
-                crate::cli::LogFormat::Json => {
-                    reporters.push(Box::new(report::JsonReporter::new(output_path.clone())));
+            let multiple = requested_formats.len() > 1;
+            if multiple && let Err(e) = std::fs::create_dir_all(output_path) {
+                warn!(
+                    "Failed to create --log-output directory {}: {e}",
+                    output_path.display()
+                );
+            }
+
+            for format in &requested_formats {
+                let path = report_output_path(output_path, *format, multiple);
+                match format {
+                    crate::cli::LogFormat::Json => {
+                        reporters.push(Box::new(report::JsonReporter::new(path)));
+                    }
+                    crate::cli::LogFormat::JUnit => {
+                        reporters.push(Box::new(report::JunitReporter::new(path)));
+                    }
+                    crate::cli::LogFormat::Allure => {
+                        reporters.push(Box::new(
+                            report::AllureReporter::new(path).with_address(target_address.clone()),
+                        ));
+                    }
+                    crate::cli::LogFormat::Yaml => {
+                        reporters.push(Box::new(report::YamlReporter::new(path)));
+                    }
+                    crate::cli::LogFormat::Html => {
+                        reporters.push(Box::new(report::HtmlReporter::new(path)));
+                    }
+                    crate::cli::LogFormat::Console => {}
                 }
-                crate::cli::LogFormat::JUnit => {
-                    reporters.push(Box::new(report::JunitReporter::new(output_path.clone())));
-                }
-                crate::cli::LogFormat::Allure => {
-                    reporters.push(Box::new(report::AllureReporter::new(output_path.clone())));
-                }
-                crate::cli::LogFormat::Yaml => {
-                    reporters.push(Box::new(report::YamlReporter::new(output_path.clone())));
-                }
-                _ => {}
             }
         } else {
             warn!(
                 "--log-format specified but --log-output is missing. File report will be skipped."
             );
         }
+    }
+
+    for reporter in report::load_all_configured_reporters() {
+        reporters.push(reporter);
     }
 
     let mut test_results = TestResults::new();
@@ -586,6 +796,29 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
     } else {
         None
     };
+
+    // Capture the real request/response exchange whenever a reporter can render
+    // it: verbose console (show actual response on failure), a file format
+    // that serialises/attaches it — Allure (attachment), JSON/YAML (serialised),
+    // HTML (detail), JUnit (system-out) — or the user explicitly asked to via
+    // --capture-exchange. Console-only runs otherwise skip the buffering.
+    let verbose_console = matches!(cli.progress_mode(), crate::cli::args::ProgressMode::Verbose);
+    let format_uses_exchange = cli.log_format_modes().iter().any(|f| {
+        matches!(
+            f,
+            crate::cli::LogFormat::Allure
+                | crate::cli::LogFormat::Json
+                | crate::cli::LogFormat::Yaml
+                | crate::cli::LogFormat::Html
+                | crate::cli::LogFormat::JUnit
+        )
+    });
+    let capture_exchange = should_capture_exchange(
+        args.capture_exchange,
+        verbose_console,
+        format_uses_exchange,
+        args.log_output.is_some(),
+    );
 
     let start_time = std::time::Instant::now();
     let runner = Arc::new(
@@ -597,7 +830,8 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
             cli.verbose,
             coverage_collector.clone(),
         )
-        .with_protocol(args.protocol.parse().unwrap_or_default()),
+        .with_protocol(args.protocol.parse().unwrap_or_default())
+        .with_capture_exchange(capture_exchange),
     );
 
     let reporters: Arc<Vec<Box<dyn report::Reporter>>> = Arc::new(reporters);
@@ -683,6 +917,10 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
                                 }
                             }
                             WorkItem::Row { doc, vars, name } => {
+                                // Captured before `vars` is merged/consumed below, so
+                                // the report can show which row produced this case
+                                // (e.g. as Allure parameters) independent of execution.
+                                let params = row_params(&vars);
                                 // Fixtures + `--data`: setup vars seed the row, but
                                 // row vars win on key conflicts (row identity is
                                 // explicit and must not be overwritten by a fixture).
@@ -698,13 +936,15 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
                                 )
                                 .await
                                 {
-                                    Ok(res) => execution_result_to_test_result(name, res),
+                                    Ok(res) => execution_result_to_test_result(name, res)
+                                        .with_row_params(params),
                                     Err(e) => TestResult::fail(
                                         name,
                                         format!("Execution error: {}", e),
                                         0,
                                         None,
-                                    ),
+                                    )
+                                    .with_row_params(params),
                                 }
                             }
                             WorkItem::Error { name, message } => {
@@ -757,6 +997,8 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
         if args.is_json_coverage() {
             let report = collector.generate_json_report();
             println!("{}", serde_json::to_string_pretty(&report)?);
+        } else if args.is_html_coverage() {
+            println!("{}", collector.generate_html_report());
         } else {
             let report = collector.generate_text_report();
             if !args.stream {
@@ -780,12 +1022,29 @@ fn execution_result_to_test_result(
 ) -> TestResult {
     let call_duration = res.call_duration_ms;
     let meta = res.meta;
+    let config_summary = res.config_summary;
+    let assertions = res.assertions;
+    let retried = res.retried;
+    let document_durations_ms = res.document_durations_ms;
+    let exchange = res.captured_response.map(|resp| {
+        crate::state::CapturedExchange::capture(resp.headers, resp.trailers, resp.messages)
+    });
     match res.status {
         execution::TestExecutionStatus::Pass => {
             TestResult::pass_with_meta(name, 0, call_duration, meta)
+                .with_assertions(assertions)
+                .with_exchange(exchange)
+                .with_retried(retried)
+                .with_document_durations(document_durations_ms)
+                .with_config_summary(config_summary)
         }
         execution::TestExecutionStatus::Fail(msg) => {
             TestResult::fail_with_meta(name, msg, 0, call_duration, meta)
+                .with_assertions(assertions)
+                .with_exchange(exchange)
+                .with_retried(retried)
+                .with_document_durations(document_durations_ms)
+                .with_config_summary(config_summary)
         }
     }
 }
@@ -804,11 +1063,13 @@ async fn run_template_row(
     no_retry: bool,
 ) -> Result<execution::TestExecutionResult> {
     let test_meta = extract_test_meta(doc);
+    let config_summary = apif_state::ConfigSummary::from_document(doc);
 
     if let Err(e) = parser::validate_document_chain(doc) {
         return Ok(
             execution::TestExecutionResult::fail(format!("Validation error: {}", e), None)
-                .with_meta(test_meta),
+                .with_meta(test_meta)
+                .with_config_summary(config_summary),
         );
     }
 
@@ -827,7 +1088,8 @@ async fn run_template_row(
                 format!("Validation error: {}", e),
                 None,
             )
-            .with_meta(test_meta));
+            .with_meta(test_meta)
+            .with_config_summary(config_summary));
         }
     };
 
@@ -854,7 +1116,9 @@ async fn run_template_row(
         }
     };
 
-    Ok(result.with_meta(test_meta))
+    Ok(result
+        .with_meta(test_meta)
+        .with_config_summary(config_summary))
 }
 
 async fn run_single_test(
@@ -877,11 +1141,13 @@ async fn run_single_test(
 
     // Extract META for reports
     let test_meta = extract_test_meta(&doc);
+    let config_summary = apif_state::ConfigSummary::from_document(&doc);
 
     if let Err(e) = parser::validate_document_chain(&doc) {
         return Ok(
             execution::TestExecutionResult::fail(format!("Validation error: {}", e), None)
-                .with_meta(test_meta),
+                .with_meta(test_meta)
+                .with_config_summary(config_summary),
         );
     }
 
@@ -900,7 +1166,8 @@ async fn run_single_test(
                 format!("Validation error: {}", e),
                 None,
             )
-            .with_meta(test_meta));
+            .with_meta(test_meta)
+            .with_config_summary(config_summary));
         }
     };
 
@@ -940,16 +1207,62 @@ async fn run_single_test(
             format!("Failed to update test file: {}", e),
             result.call_duration_ms,
         )
-        .with_meta(test_meta));
+        .with_meta(test_meta)
+        .with_config_summary(config_summary));
     }
 
-    Ok(result.with_meta(test_meta))
+    Ok(result
+        .with_meta(test_meta)
+        .with_config_summary(config_summary))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::ast::{GctfAttribute, GctfDocument, Section, SectionContent, SectionType};
+    use crate::parser::ast::{
+        GctfAttribute, GctfDocument, Section, SectionContent, SectionSpan, SectionType,
+    };
+
+    #[test]
+    fn should_capture_exchange_explicit_flag_forces_it() {
+        // No verbose, no report format, no --log-output — would otherwise be
+        // false, but the explicit flag must still force capture on.
+        assert!(should_capture_exchange(true, false, false, false));
+    }
+
+    #[test]
+    fn should_capture_exchange_default_paths_unchanged() {
+        assert!(!should_capture_exchange(false, false, false, false));
+        assert!(should_capture_exchange(false, true, false, false));
+        assert!(!should_capture_exchange(false, false, true, false));
+        assert!(should_capture_exchange(false, false, true, true));
+    }
+
+    #[test]
+    fn report_output_path_single_format_keeps_exact_path() {
+        let base = PathBuf::from("report.xml");
+        assert_eq!(
+            report_output_path(&base, crate::cli::LogFormat::JUnit, false),
+            base
+        );
+    }
+
+    #[test]
+    fn report_output_path_multiple_formats_join_under_base() {
+        let base = PathBuf::from("out");
+        assert_eq!(
+            report_output_path(&base, crate::cli::LogFormat::JUnit, true),
+            base.join("junit.xml")
+        );
+        assert_eq!(
+            report_output_path(&base, crate::cli::LogFormat::Html, true),
+            base.join("html.html")
+        );
+        assert_eq!(
+            report_output_path(&base, crate::cli::LogFormat::Allure, true),
+            base.join("allure")
+        );
+    }
 
     #[test]
     fn retry_only_on_retryable_transport_status() {
@@ -1042,6 +1355,7 @@ mod tests {
             start_line: 1,
             end_line: 5,
             attributes: vec![],
+            span: SectionSpan::default(),
         });
 
         let meta = extract_test_meta(&doc);
@@ -1062,6 +1376,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: vec![GctfAttribute::new("tag", "smoke,integration")],
+            span: SectionSpan::default(),
         });
 
         let meta = extract_test_meta(&doc);
@@ -1086,6 +1401,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: vec![],
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -1095,6 +1411,7 @@ mod tests {
             start_line: 3,
             end_line: 4,
             attributes: vec![GctfAttribute::new("tag", "integration")],
+            span: SectionSpan::default(),
         });
 
         let meta = extract_test_meta(&doc);
@@ -1112,6 +1429,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: vec![GctfAttribute::new("owner", "team-b")],
+            span: SectionSpan::default(),
         });
 
         let meta = extract_test_meta(&doc);
@@ -1129,6 +1447,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: vec![GctfAttribute::new("summary", "quick test")],
+            span: SectionSpan::default(),
         });
 
         let meta = extract_test_meta(&doc);
@@ -1146,6 +1465,7 @@ mod tests {
             start_line: 1,
             end_line: 2,
             attributes: vec![GctfAttribute::new("tag", "smoke")],
+            span: SectionSpan::default(),
         });
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -1155,6 +1475,7 @@ mod tests {
             start_line: 3,
             end_line: 4,
             attributes: vec![GctfAttribute::new("tag", "smoke")],
+            span: SectionSpan::default(),
         });
 
         let meta = extract_test_meta(&doc);
@@ -1253,6 +1574,87 @@ mod tests {
         match &items[0] {
             WorkItem::Error { message, .. } => assert!(message.contains("zero rows")),
             _ => panic!("expected zero-row failure"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const DATASET_GCTF: &str = "--- ENDPOINT ---\nsvc.Svc/Call\n\n--- DATASET ---\n- id: '1'\n  name: Ada\n- id: '2'\n  name: Grace\n\n--- REQUEST ---\n{ \"id\": \"{{dataset.id}}\" }\n\n--- RESPONSE ---\n{ \"name\": \"{{dataset.name}}\" }\n";
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn expand_dataset_files_yields_one_row_per_entry() {
+        let dir = std::env::temp_dir().join("gctf_run_dataset_expand_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let gctf = dir.join("template.gctf");
+        std::fs::write(&gctf, DATASET_GCTF).unwrap();
+
+        let (plain, dataset_files, items) = expand_dataset_files(vec![gctf.clone()], false);
+        assert!(plain.is_empty());
+        assert_eq!(dataset_files, vec![gctf]);
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().all(|it| matches!(it, WorkItem::Row { .. })));
+
+        let ada = items
+            .iter()
+            .find_map(|it| match it {
+                WorkItem::Row { vars, name, .. } if name.contains("dataset.id=1") => {
+                    let _ = name;
+                    Some(vars)
+                }
+                _ => None,
+            })
+            .expect("row for id=1");
+        assert_eq!(ada.get("dataset.name"), Some(&serde_json::json!("Ada")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn expand_dataset_files_passes_through_files_without_a_dataset_section() {
+        let (plain, dataset_files, items) =
+            expand_dataset_files(vec![PathBuf::from("plain.gctf")], false);
+        assert_eq!(plain, vec![PathBuf::from("plain.gctf")]);
+        assert!(dataset_files.is_empty());
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn expand_dataset_files_rejects_write() {
+        let dir = std::env::temp_dir().join("gctf_run_dataset_write_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let gctf = dir.join("template.gctf");
+        std::fs::write(&gctf, DATASET_GCTF).unwrap();
+
+        let (_, _, items) = expand_dataset_files(vec![gctf], true);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            WorkItem::Error { message, .. } => assert!(message.contains("--write")),
+            _ => panic!("expected --write rejection"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn expand_dataset_files_rejects_zero_rows() {
+        let dir = std::env::temp_dir().join("gctf_run_dataset_empty_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let gctf = dir.join("template.gctf");
+        let content = "--- ENDPOINT ---\nsvc.Svc/Call\n\n--- DATASET ---\n[]\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n";
+        std::fs::write(&gctf, content).unwrap();
+
+        let (_, _, items) = expand_dataset_files(vec![gctf], false);
+        assert_eq!(items.len(), 1);
+        match &items[0] {
+            WorkItem::Error { message, .. } => assert!(message.contains("zero rows")),
+            _ => panic!("expected zero-rows rejection"),
         }
 
         let _ = std::fs::remove_dir_all(&dir);
