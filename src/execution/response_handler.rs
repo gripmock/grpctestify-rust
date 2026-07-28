@@ -326,7 +326,10 @@ impl ResponseHandler {
     }
 }
 
-#[cfg(test)]
+// Most tests here construct a `ResponseHandler`, which forces this file's own
+// `PLUGIN_REGISTRY` lazy static (`build_plugin_manager()` → `fs::metadata` on
+// configured plugin dirs) — blocked under miri isolation.
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
     use serde_json::json;

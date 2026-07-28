@@ -215,7 +215,11 @@ fn append_single_failure(
     }
 }
 
-#[cfg(test)]
+// Every test here constructs an `AssertionHandler`, which lazily initializes
+// the plugin registry via `fs::metadata` on the configured plugin dirs —
+// blocked under miri isolation (`error: unsupported operation: 'statx' not
+// available`), so the whole module is fs-touching.
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
     use serde_json::json;

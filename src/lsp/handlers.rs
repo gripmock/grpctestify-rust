@@ -1468,6 +1468,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_get_assertion_completions() {
         let completions = get_assertion_completions();
         assert!(completions.len() >= 15);

@@ -2980,6 +2980,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_test_runner_new() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
         assert!(!runner.dry_run);
@@ -2990,24 +2991,28 @@ chat.ChatService/SendMessages
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_test_runner_with_dry_run() {
         let runner = TestRunner::new(true, 30, false, false, false, None);
         assert!(runner.dry_run);
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_test_runner_with_timeout() {
         let runner = TestRunner::new(false, 60, false, false, false, None);
         assert_eq!(runner.timeout_seconds, 60);
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_test_runner_with_no_assert() {
         let runner = TestRunner::new(false, 30, true, false, false, None);
         assert!(runner.no_assert);
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_test_runner_with_write_mode() {
         let runner = TestRunner::new(false, 30, false, true, false, None);
         assert!(runner.write_mode);
@@ -3157,6 +3162,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_test_runner_with_verbose() {
         let runner = TestRunner::new(false, 30, false, false, true, None);
         assert!(runner.verbose);
@@ -3227,6 +3233,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_substitute_variables_exact_match_preserves_type() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
         let mut value = json!("{{ count }}");
@@ -3238,6 +3245,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_substitute_variables_interpolation_single_pass() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
         let mut value = json!("id={{id}}, user={{ user }}, ok={{ok}}");
@@ -3251,6 +3259,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_substitute_variables_keeps_unknown_placeholder() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
         let mut value = json!("hello {{known}} and {{unknown}}");
@@ -3460,6 +3469,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_error_assertions_evaluate_against_error_json_object() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
         let target = json!({
@@ -3504,6 +3514,7 @@ chat.ChatService/SendMessages
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)]
     async fn run_test_capturing_vars_returns_result_and_map() {
         // Dry-run short-circuits before any network call, so this exercises the
         // additive method's plumbing (result + variable map) without a server.

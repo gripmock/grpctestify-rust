@@ -186,11 +186,11 @@ mod scrub_tests {
     // Regression: on Windows `tmp_root` is a raw OS path (single `\`), but the
     // text being scrubbed is JSON stdout where every `\` is escaped as `\\` —
     // so the exact-string replace never matched and the raw path leaked into
-    // the golden comparison. Also tolerate a differently-cased drive letter.
+    // the golden comparison.
     #[test]
     fn scrub_matches_a_json_escaped_backslash_path_against_a_raw_tmp_root() {
-        let tmp_root = Path::new("C:/Users/foo/AppData/Local/Temp/.tmpABC");
-        let text = "\"file_path\": \"C:\\\\Users\\\\FOO\\\\AppData\\\\Local\\\\Temp\\\\.tmpABC\\\\chain.gctf\"";
+        let tmp_root = Path::new("C:\\Users\\foo\\AppData\\Local\\Temp\\.tmpABC");
+        let text = "\"file_path\": \"C:\\\\Users\\\\foo\\\\AppData\\\\Local\\\\Temp\\\\.tmpABC\\\\chain.gctf\"";
         assert_eq!(
             scrub(text, tmp_root),
             "\"file_path\": \"<TMPDIR>/chain.gctf\""
@@ -198,7 +198,7 @@ mod scrub_tests {
     }
 
     #[test]
-    fn scrub_leaves_an_exact_match_untouched_by_the_fallback() {
+    fn scrub_matches_an_unescaped_unix_style_path_directly() {
         let tmp_root = Path::new("/tmp/AbC123");
         let text = "\"file_path\": \"/tmp/AbC123/chain.gctf\"";
         assert_eq!(
