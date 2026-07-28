@@ -1,6 +1,6 @@
 use crate::assert::AssertionEngine;
 #[cfg(test)]
-use crate::parser::ast::{Section, SectionContent, SectionSpan, SectionType};
+use crate::parser::ast::{Section, SectionContent, SectionType};
 use crate::plugins::AssertionTiming;
 use crate::utils::section_content_line;
 use serde_json::Value;
@@ -222,6 +222,7 @@ fn append_single_failure(
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
+    use crate::parser::ast::SectionSpan;
     use serde_json::json;
 
     #[test]

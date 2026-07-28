@@ -79,6 +79,20 @@ fn scrub(text: &str, tmp_root: &Path) -> String {
     // The html reporter percent-encodes path separators as HTML entities.
     s = s.replace(&tmp_root_str.replace('/', "&#x2f;"), "<TMPDIR>");
 
+    // `tmp_root` is a raw OS path (single `\` on Windows), but JSON report
+    // bodies (allure, json) escape every `\` as `\\` — the exact-match
+    // replace above never matches there. Try the JSON-escaped form too.
+    let json_escaped = tmp_root_str.replace('\\', "\\\\");
+    if json_escaped != tmp_root_str {
+        s = s.replace(&json_escaped, "<TMPDIR>");
+    }
+    // Whichever form matched, the separator joining `<TMPDIR>` to the
+    // filename wasn't part of `tmp_root` itself — normalize it (single `\`,
+    // or JSON-escaped-doubled `\\`) to the golden files' Unix-style
+    // `<TMPDIR>/...`.
+    s = s.replace("<TMPDIR>\\\\", "<TMPDIR>/");
+    s = s.replace("<TMPDIR>\\", "<TMPDIR>/");
+
     let http_date =
         regex::Regex::new(r"[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT").unwrap();
     s = http_date.replace_all(&s, "<HTTP_DATE>").into_owned();
