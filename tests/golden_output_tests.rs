@@ -87,11 +87,17 @@ fn scrub(text: &str, tmp_root: &Path) -> String {
         s = s.replace(&json_escaped, "<TMPDIR>");
     }
     // Whichever form matched, the separator joining `<TMPDIR>` to the
-    // filename wasn't part of `tmp_root` itself — normalize it (single `\`,
-    // or JSON-escaped-doubled `\\`) to the golden files' Unix-style
-    // `<TMPDIR>/...`.
-    s = s.replace("<TMPDIR>\\\\", "<TMPDIR>/");
-    s = s.replace("<TMPDIR>\\", "<TMPDIR>/");
+    // filename wasn't part of `tmp_root` itself, so it survives untouched:
+    // single `\` (Windows, non-JSON reports — the html reporter's own
+    // percent-encoding only ever targets a real `/`, never `\`) or
+    // JSON-escaped-doubled `\\` (Windows, json/allure). Normalize it to
+    // whatever separator style the rest of this same report already uses —
+    // `&#x2f;` if this is html output (detectable from its own unrelated,
+    // platform-independent escaping, e.g. `Health&#x2f;Check`), else plain
+    // `/` — so it matches the Unix-generated golden either way.
+    let target_sep = if s.contains("&#x2f;") { "&#x2f;" } else { "/" };
+    s = s.replace("<TMPDIR>\\\\", &format!("<TMPDIR>{target_sep}"));
+    s = s.replace("<TMPDIR>\\", &format!("<TMPDIR>{target_sep}"));
 
     let http_date =
         regex::Regex::new(r"[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT").unwrap();
@@ -491,6 +497,49 @@ async fn exit_code_is_zero_on_an_all_passing_suite_for_every_form() {
             "--log-format {format} must exit 0 on an all-passing suite\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[cfg(test)]
+mod scrub_tests {
+    use super::*;
+
+    // Regression: on Windows `tmp_root` is a raw OS path (single `\`), but
+    // json/allure report bodies escape every `\` as `\\` — the exact-string
+    // replace never matched and the raw path leaked into the golden
+    // comparison.
+    #[test]
+    fn scrub_matches_a_json_escaped_backslash_path_against_a_raw_tmp_root() {
+        let tmp_root = Path::new("C:\\Users\\foo\\AppData\\Local\\Temp\\.tmpABC");
+        let text = "\"fullName\": \"C:\\\\Users\\\\foo\\\\AppData\\\\Local\\\\Temp\\\\.tmpABC\\\\a_pass.gctf\"";
+        assert_eq!(
+            scrub(text, tmp_root),
+            "\"fullName\": \"<TMPDIR>/a_pass.gctf\""
+        );
+    }
+
+    // Regression: the html reporter percent-encodes a real `/` as `&#x2f;`
+    // but never touches `\` (Windows-only), so on Windows the join separator
+    // between `<TMPDIR>` and the filename survives as a literal `\` even
+    // though the Unix-generated golden always carries the escaped form.
+    #[test]
+    fn scrub_normalizes_a_raw_backslash_join_to_html_escaped_slash_in_html_output() {
+        let tmp_root = Path::new("C:\\Users\\foo\\AppData\\Local\\Temp\\.tmpABC");
+        let text = "<span class=\"test-name\">C:\\Users\\foo\\AppData\\Local\\Temp\\.tmpABC\\a_pass.gctf</span> grpc.health.v1.Health&#x2f;Check";
+        assert_eq!(
+            scrub(text, tmp_root),
+            "<span class=\"test-name\"><TMPDIR>&#x2f;a_pass.gctf</span> grpc.health.v1.Health&#x2f;Check"
+        );
+    }
+
+    #[test]
+    fn scrub_matches_an_unescaped_unix_style_path_directly() {
+        let tmp_root = Path::new("/tmp/AbC123");
+        let text = "\"fullName\": \"/tmp/AbC123/a_pass.gctf\"";
+        assert_eq!(
+            scrub(text, tmp_root),
+            "\"fullName\": \"<TMPDIR>/a_pass.gctf\""
         );
     }
 }
