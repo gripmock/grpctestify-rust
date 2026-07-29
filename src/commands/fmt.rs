@@ -886,30 +886,6 @@ fn apply_optimizer_rewrites(
     rewritten
 }
 
-/// Write `content` to `path` atomically: write to a temp file in the same
-/// directory, then rename it over the target. A crash mid-write can therefore
-/// never leave a user's `.gctf` file truncated or half-written.
-fn write_atomic(path: &std::path::Path, content: &str) -> std::io::Result<()> {
-    let parent = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => std::path::Path::new("."),
-    };
-    // The old `.<file>.<pid>.tmp` was pre-creatable by anyone who can write the
-    // directory, and `fs::write` follows a symlink planted there.
-    let existing_mode = crate::utils::file::file_mode(path);
-    let mut tmp = tempfile::Builder::new()
-        .prefix(".grpctestify-")
-        .suffix(".tmp")
-        .tempfile_in(parent)?;
-    use std::io::Write;
-    tmp.write_all(content.as_bytes())?;
-    tmp.flush()?;
-    tmp.persist(path).map_err(|e| e.error)?;
-    // The temp file is 0600; formatting must not strip others' read access.
-    crate::utils::file::restore_mode(path, existing_mode);
-    Ok(())
-}
-
 pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
     let level = cli.optimize_level(optimizer::OptimizeLevel::Safe);
     let mut files = Vec::new();
@@ -1060,7 +1036,7 @@ pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
 
         if args.write {
             if changed {
-                if let Err(e) = write_atomic(&file, &formatted) {
+                if let Err(e) = crate::utils::file::write_atomic(&file, &formatted) {
                     error!("Failed to write {}: {}", file.display(), e);
                     has_error = true;
                 } else {
@@ -1134,7 +1110,8 @@ fn print_fmt_summary(write: bool, total: usize, written: usize, needing: usize) 
 
 #[cfg(test)]
 mod tests {
-    use super::{format_gctf_content, write_atomic};
+    use super::format_gctf_content;
+    use crate::utils::file::write_atomic;
 
     fn to_crlf(input: &str) -> String {
         input.replace('\n', "\r\n")

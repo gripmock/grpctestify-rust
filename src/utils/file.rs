@@ -137,7 +137,7 @@ pub(crate) fn restore_mode(_path: &Path, _mode: Option<u32>) {}
 
 /// Writes `content` to a temp file in the same directory, then atomically
 /// renames it over `path` so a crash mid-write cannot corrupt the file.
-fn write_atomic(path: &Path, content: &str) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
     let parent = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
@@ -152,7 +152,14 @@ fn write_atomic(path: &Path, content: &str) -> Result<()> {
     use std::io::Write;
     tmp.write_all(content.as_bytes())?;
     tmp.flush()?;
-    tmp.persist(path).map_err(|e| e.error)?;
+    // Close the handle before renaming: Windows refuses to move a file that is
+    // still open, which is what `persist` does.
+    let (file, tmp_path) = tmp.keep().map_err(|e| e.error)?;
+    drop(file);
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
     restore_mode(path, existing_mode);
     Ok(())
 }
