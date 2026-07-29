@@ -136,7 +136,7 @@ so cloning someone else's project would otherwise be enough to execute their cod
 
 The first time a script is about to run, grpctestify shows its path and sha256 and asks once:
 
-```
+```text
 grpctestify wants to execute a script plugin:
   ./.grpctestify/plugins/my_checks.rhai
   sha256 9f2c...
