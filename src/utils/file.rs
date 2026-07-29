@@ -239,7 +239,7 @@ mod tests {
         let content =
             "--- ENDPOINT ---\nService/Method\n\n--- RESPONSE ---\n{\"result\": \"old\"}\n";
         std::fs::write(temp_file.path(), content).unwrap();
-        assert!(update_test_file(temp_file.path(), &doc, &response).is_ok());
+        update_test_file(temp_file.path(), &doc, &response).expect("update_test_file failed");
         let updated = std::fs::read_to_string(temp_file.path()).unwrap();
         assert!(updated.contains("\"result\": \"new\""));
     }
@@ -261,7 +261,7 @@ mod tests {
             messages: vec![serde_json::json!({"result": "new"})],
             error: None,
         };
-        assert!(update_test_file(temp_file.path(), &doc, &response).is_ok());
+        update_test_file(temp_file.path(), &doc, &response).expect("update_test_file failed");
         let updated = std::fs::read_to_string(temp_file.path()).unwrap();
         assert!(updated.contains("\"result\": \"new\""));
     }
@@ -282,7 +282,7 @@ mod tests {
             messages: vec![serde_json::json!({"status": "ok"})],
             error: None,
         };
-        assert!(update_test_file(temp_file.path(), &doc, &response).is_ok());
+        update_test_file(temp_file.path(), &doc, &response).expect("update_test_file failed");
     }
 
     #[cfg_attr(miri, ignore)]
@@ -305,7 +305,7 @@ mod tests {
             ],
             error: None,
         };
-        assert!(update_test_file(temp_file.path(), &doc, &response).is_ok());
+        update_test_file(temp_file.path(), &doc, &response).expect("update_test_file failed");
         let updated = std::fs::read_to_string(temp_file.path()).unwrap();
         // Both streamed messages must survive the rewrite, not just the first.
         assert!(updated.contains("\"index\": 10"), "updated: {updated}");
@@ -329,7 +329,7 @@ mod tests {
             messages: vec![],
             error: None,
         };
-        assert!(update_test_file(temp_file.path(), &doc, &response).is_ok());
+        update_test_file(temp_file.path(), &doc, &response).expect("update_test_file failed");
         let updated = std::fs::read_to_string(temp_file.path()).unwrap();
         assert!(
             updated.contains("\"result\": \"old\""),

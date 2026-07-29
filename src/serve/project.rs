@@ -310,6 +310,7 @@ mod tests {
     use super::*;
 
     // Regression: these ids went straight into a file name.
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn client_supplied_ids_cannot_escape_their_directory() {
         let dir = tempfile::tempdir().unwrap();
