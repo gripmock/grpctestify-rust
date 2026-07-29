@@ -97,17 +97,33 @@ pub struct RhaiPlugin {
     /// accepted as an inline-option key on a section header (e.g.
     /// `--- RESPONSE my_check=5 ---`). See [`load_all_inline_option_keys`].
     inline_option: bool,
+    /// Resolved on first execution, not at load, so `check` never asks.
+    path: std::path::PathBuf,
+    digest: Arc<str>,
+    trusted: Arc<std::sync::OnceLock<bool>>,
 }
 
 impl RhaiPlugin {
+    fn is_trusted(&self) -> bool {
+        *self
+            .trusted
+            .get_or_init(|| crate::trust::is_trusted(&self.path, &self.digest))
+    }
+
     /// Compile a `.rhai` file and return one [`RhaiPlugin`] per public
     /// top-level function (excluding reporter hooks). Empty (not an error)
     /// when the file defines no public functions — it might be a
     /// reporter-only script. Fails only if the file doesn't parse.
     pub fn load_all(path: &Path) -> Result<Vec<Self>> {
         let engine = crate::rhai_stdlib::build_engine();
+        // Hash what we compile, so the recorded digest is what actually runs.
+        let source = std::fs::read(path)
+            .with_context(|| format!("failed to read plugin script: {}", path.display()))?;
+        let digest = crate::marketplace::sha256_hex(&source);
+        let source = String::from_utf8(source)
+            .with_context(|| format!("plugin script is not UTF-8: {}", path.display()))?;
         let ast = engine
-            .compile_file(path.to_path_buf())
+            .compile(&source)
             .with_context(|| format!("failed to compile plugin script: {}", path.display()))?;
 
         let engine = Arc::new(engine);
@@ -115,6 +131,8 @@ impl RhaiPlugin {
 
         let mut seen = std::collections::HashSet::new();
         let mut plugins = Vec::new();
+        let trusted: Arc<std::sync::OnceLock<bool>> = Arc::new(std::sync::OnceLock::new());
+        let digest: Arc<str> = Arc::from(digest.as_str());
 
         for f in ast.iter_functions() {
             if f.access != FnAccess::Public || RESERVED_FN_NAMES.contains(&f.name) {
@@ -142,6 +160,9 @@ impl RhaiPlugin {
                 return_type: doc.return_type,
                 pure: doc.pure,
                 inline_option: doc.inline_option,
+                path: path.to_path_buf(),
+                digest: digest.clone(),
+                trusted: trusted.clone(),
             });
         }
 
@@ -286,6 +307,13 @@ impl Plugin for RhaiPlugin {
     }
 
     fn execute(&self, args: &[Value], _context: &PluginContext) -> Result<PluginResult> {
+        if !self.is_trusted() {
+            anyhow::bail!(
+                "@{}: refusing to execute untrusted plugin script {}",
+                self.name,
+                self.path.display()
+            );
+        }
         let rhai_args: Vec<Dynamic> = args
             .iter()
             .map(rhai::serde::to_dynamic)
@@ -430,10 +458,16 @@ fn non_empty_env(var: &str) -> Option<String> {
 /// overridable. Never created by this crate — only read if it already
 /// exists.
 pub fn user_plugin_dir() -> Option<std::path::PathBuf> {
+    Some(user_state_dir()?.join("plugins"))
+}
+
+/// `<home>/.grpctestify`. Separate from [`user_plugin_dir`] so the trust store
+/// still resolves on a machine where `plugins/` was never created.
+pub fn user_state_dir() -> Option<std::path::PathBuf> {
     let home = non_empty_env("GRPCTESTIFY_HOME")
         .map(std::path::PathBuf::from)
         .or_else(home_dir)?;
-    Some(home.join(".grpctestify").join("plugins"))
+    Some(home.join(".grpctestify"))
 }
 
 /// `<cwd>/.grpctestify/plugins` — the project-local settings directory, the
@@ -528,6 +562,15 @@ fn load_all_configured_plugins_typed() -> Vec<RhaiPlugin> {
 
 #[cfg(test)]
 mod tests {
+    /// `load_all` + pre-approve, so a temp script doesn't hit `crate::trust`.
+    fn load_trusted(path: &std::path::Path) -> anyhow::Result<Vec<super::RhaiPlugin>> {
+        let plugins = super::RhaiPlugin::load_all(path)?;
+        for p in &plugins {
+            let _ = p.trusted.set(true);
+        }
+        Ok(plugins)
+    }
+
     use super::*;
 
     #[cfg(not(miri))]
@@ -558,7 +601,7 @@ mod tests {
     fn loads_and_evaluates_a_boolean_check() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_script(dir.path(), "is_even.rhai", "fn is_even(x) { x % 2 == 0 }");
-        let plugins = RhaiPlugin::load_all(&path).unwrap();
+        let plugins = load_trusted(&path).unwrap();
         assert_eq!(plugins.len(), 1);
         let plugin = &plugins[0];
         assert_eq!(plugin.name(), "is_even");
@@ -581,7 +624,7 @@ mod tests {
     fn non_boolean_return_becomes_a_value_result() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_script(dir.path(), "double.rhai", "fn double(x) { x * 2 }");
-        let plugins = RhaiPlugin::load_all(&path).unwrap();
+        let plugins = load_trusted(&path).unwrap();
         let plugin = &plugins[0];
 
         let result = plugin.execute(&[Value::Number(21.into())], &ctx()).unwrap();
@@ -600,7 +643,7 @@ mod tests {
             "in_range.rhai",
             "fn in_range(value, min, max) { value >= min && value <= max }",
         );
-        let plugins = RhaiPlugin::load_all(&path).unwrap();
+        let plugins = load_trusted(&path).unwrap();
         let plugin = &plugins[0];
         assert_eq!(plugin.signature().arg_names, &["value", "min", "max"]);
 
@@ -629,7 +672,7 @@ mod tests {
             "flexible.rhai",
             "fn flexible(x) { x > 0 }\nfn flexible(x, y) { x > y }",
         );
-        let plugins = RhaiPlugin::load_all(&path).unwrap();
+        let plugins = load_trusted(&path).unwrap();
         assert_eq!(
             plugins.len(),
             1,
@@ -657,7 +700,7 @@ mod tests {
     fn arity_mismatch_is_a_clear_error() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_script(dir.path(), "one_arg.rhai", "fn one_arg(x) { x > 0 }");
-        let plugins = RhaiPlugin::load_all(&path).unwrap();
+        let plugins = load_trusted(&path).unwrap();
         let plugin = &plugins[0];
 
         let err = plugin
@@ -671,7 +714,7 @@ mod tests {
     fn a_script_without_check_exposes_its_other_public_functions_instead() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_script(dir.path(), "no_check.rhai", "fn not_check(x) { x }");
-        let plugins = RhaiPlugin::load_all(&path).unwrap();
+        let plugins = load_trusted(&path).unwrap();
         assert_eq!(plugins.len(), 1);
         assert_eq!(plugins[0].name(), "not_check");
     }
@@ -681,7 +724,7 @@ mod tests {
     fn a_file_with_no_public_functions_yields_no_plugins() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_script(dir.path(), "empty.rhai", "private fn helper(x) { x }");
-        let plugins = RhaiPlugin::load_all(&path).unwrap();
+        let plugins = load_trusted(&path).unwrap();
         assert!(plugins.is_empty());
     }
 
@@ -690,7 +733,7 @@ mod tests {
     fn rejects_a_script_that_fails_to_parse() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_script(dir.path(), "syntax_error.rhai", "fn check(x) { {{{ ");
-        assert!(RhaiPlugin::load_all(&path).is_err());
+        assert!(load_trusted(&path).is_err());
     }
 
     #[test]
@@ -706,7 +749,7 @@ mod tests {
             private fn helper() { 1 }
             "#,
         );
-        let plugins = RhaiPlugin::load_all(&path).unwrap();
+        let plugins = load_trusted(&path).unwrap();
         assert_eq!(plugins.len(), 2);
         assert_eq!(find(&plugins, "is_even").name(), "is_even");
         assert_eq!(find(&plugins, "in_range").name(), "in_range");
@@ -719,7 +762,14 @@ mod tests {
         write_script(dir.path(), "a_first.rhai", "fn conflict_fn(x) { true }");
         write_script(dir.path(), "b_second.rhai", "fn conflict_fn(x) { false }");
 
-        let plugins = load_rhai_plugins(dir.path());
+        let typed = load_rhai_plugins_typed(dir.path());
+        for p in &typed {
+            let _ = p.trusted.set(true);
+        }
+        let plugins: Vec<std::sync::Arc<dyn Plugin>> = typed
+            .into_iter()
+            .map(|p| std::sync::Arc::new(p) as std::sync::Arc<dyn Plugin>)
+            .collect();
         assert_eq!(plugins.len(), 1, "only the first definition should win");
         // "a_first.rhai" sorts before "b_second.rhai" — its `conflict_fn`
         // (always true) must be the one that survived.
@@ -741,7 +791,7 @@ mod tests {
             "reporter_only.rhai",
             "fn on_test_end(name, result) { print(name); }",
         );
-        let plugins = RhaiPlugin::load_all(&path).unwrap();
+        let plugins = load_trusted(&path).unwrap();
         assert!(plugins.is_empty());
     }
 
@@ -754,7 +804,7 @@ mod tests {
             "documented.rhai",
             "/// Checks that a value is a positive number.\nfn check(x) { x > 0 }",
         );
-        let plugins = RhaiPlugin::load_all(&path).unwrap();
+        let plugins = load_trusted(&path).unwrap();
         assert_eq!(
             plugins[0].description(),
             "Checks that a value is a positive number."
@@ -770,7 +820,7 @@ mod tests {
             "undocumented.rhai",
             "fn undocumented(x) { x > 0 }",
         );
-        let plugins = RhaiPlugin::load_all(&path).unwrap();
+        let plugins = load_trusted(&path).unwrap();
         assert_eq!(plugins[0].description(), DEFAULT_DESCRIPTION);
     }
 
@@ -788,7 +838,7 @@ mod tests {
              /// @returns bool\n\
              fn in_range(value, min, max) { value >= min && value <= max }",
         );
-        let plugins = RhaiPlugin::load_all(&path).unwrap();
+        let plugins = load_trusted(&path).unwrap();
         let sig = plugins[0].signature();
         assert_eq!(
             sig.arg_types.iter().map(|t| t.expected).collect::<Vec<_>>(),
@@ -810,7 +860,7 @@ mod tests {
             "is_even.rhai",
             "/// @pure\nfn is_even(x) { x % 2 == 0 }",
         );
-        let plugins = RhaiPlugin::load_all(&path).unwrap();
+        let plugins = load_trusted(&path).unwrap();
         let sig = plugins[0].signature();
         assert_eq!(sig.purity, PluginPurity::Pure);
         assert!(sig.deterministic);
@@ -827,7 +877,7 @@ mod tests {
             "is_even.rhai",
             "/// @param x: number\n/// @returns bool\nfn is_even(x) { x % 2 == 0 }",
         );
-        let plugins = RhaiPlugin::load_all(&path).unwrap();
+        let plugins = load_trusted(&path).unwrap();
         let sig = plugins[0].signature();
         // Type tags and @pure are independent — no @pure means still Impure,
         // regardless of how precisely the types are declared.
@@ -846,7 +896,7 @@ mod tests {
             "mixed.rhai",
             "/// @param a: string\nfn mixed(a, b) { true }",
         );
-        let plugins = RhaiPlugin::load_all(&path).unwrap();
+        let plugins = load_trusted(&path).unwrap();
         let sig = plugins[0].signature();
         assert_eq!(
             sig.arg_types.iter().map(|t| t.expected).collect::<Vec<_>>(),
@@ -863,7 +913,7 @@ mod tests {
             "weird.rhai",
             "/// @returns nonsense_type\nfn weird(x) { true }",
         );
-        let plugins = RhaiPlugin::load_all(&path).unwrap();
+        let plugins = load_trusted(&path).unwrap();
         assert_eq!(plugins[0].signature().return_type, TypeInfo::Any);
     }
 

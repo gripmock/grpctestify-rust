@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
 use anyhow::Result;
 use apif_grpc_transport::client::GrpcClient as _;
 use futures::stream::{Stream, StreamExt};

@@ -40,6 +40,9 @@ fn on_suite_end(results) {
 - A script can define both assertion-plugin functions and a reporter hook, or just one — detection is
   per-function, not per-file-location. See [Custom assertion plugins](custom-scripts).
 - A throwing/erroring hook is logged and skipped; it does not abort the run.
+- A reporter script is confirmed before it runs, exactly like an assertion plugin — Rhai evaluates its
+  top level on the first hook call, so the same one-time hash approval applies. See
+  [Trusting a script](custom-scripts#trusting-a-script).
 
 ## Related
 

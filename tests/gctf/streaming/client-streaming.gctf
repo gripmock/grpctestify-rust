@@ -8,10 +8,12 @@ echo.EchoService/Repeat
 {
   "message": "Hello"
 }
+
 --- REQUEST ---
 {
   "message": "World"
 }
+
 --- REQUEST ---
 {
   "message": "Test"

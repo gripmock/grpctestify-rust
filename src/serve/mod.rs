@@ -400,10 +400,21 @@ pub async fn start_play_server(host: &str, port: u16, dir: PathBuf) -> Result<()
         if let Ok(settings) = project::load_project_settings(root)
             && let Some(ref extra) = settings.collections
         {
+            // `settings.json` ships with the repo. `resolve_file` validates a
+            // request against whichever dir it lands in, so an entry pointing
+            // outside the project makes every file under it readable.
+            let root_canon = root.canonicalize().unwrap_or_else(|_| root.clone());
             for p in extra {
                 let resolved = root.join(p);
-                if resolved.is_dir() {
-                    dirs.push(resolved);
+                if !resolved.is_dir() {
+                    continue;
+                }
+                match resolved.canonicalize() {
+                    Ok(canon) if canon.starts_with(&root_canon) => dirs.push(resolved),
+                    _ => tracing::warn!(
+                        "ignoring collections entry outside the project root: {}",
+                        resolved.display()
+                    ),
                 }
             }
         }

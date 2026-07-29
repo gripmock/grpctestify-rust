@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
 #![allow(clippy::collapsible_if)]
 use super::channel::create_channel;
 use crate::config::GrpcClientConfig;

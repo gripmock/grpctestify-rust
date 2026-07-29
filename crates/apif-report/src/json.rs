@@ -72,14 +72,14 @@ mod tests {
     fn test_json_reporter_lifecycle() {
         use crate::Reporter;
         use apif_state::TestResult;
-        let path = std::env::temp_dir().join("test_output.json");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_output.json");
         let reporter = JsonReporter::new(path.clone());
         reporter.on_test_start("test1");
         let pass = TestResult::pass("test1.gctf", 100, Some(50));
         reporter.on_test_end("test1", &pass);
         let results = apif_state::TestResults::new();
         assert!(reporter.on_suite_end(&results).is_ok());
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

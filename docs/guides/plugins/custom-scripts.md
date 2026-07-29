@@ -117,14 +117,47 @@ Untagged parameters/return default to `Any`, same as before this existed.
 
 - Pure functions only: no access to the response, headers, trailers, or the network. A script that fails to
   compile is skipped with a logged error; it does not stop the other scripts in the directory from loading.
-- Sandboxed: every script engine runs with finite limits (operation count, string/array/map size) and Rhai's
-  built-in `eval` disabled — a buggy or malicious script can't hang or OOM the `run` process, and can't
-  dynamically execute a string as more code. The limits are generous for any real validator/reporter logic.
+- Sandboxed: every script engine runs with finite limits (operation count, string/array/map size), Rhai's
+  built-in `eval` disabled, and no module resolver — a buggy or malicious script can't hang or OOM the `run`
+  process, can't dynamically execute a string as more code, and can't `import` another file. The limits are
+  generous for any real validator/reporter logic.
+- Confirmed before it runs: see [Trusting a script](#trusting-a-script) below.
 - LSP support: completion, hover, signature help, and inlay-hint type inference all know about
   convention-directory plugins, the same as built-ins. One limitation — the plugin list loads once when the
   server starts, so a script added or changed mid-session needs an editor/LSP restart to be picked up.
 - Optimizer participation is opt-in via `@pure` (see above) — without it, custom plugins are never used as
   the basis for a rewrite.
+
+## Trusting a script
+
+A script in a convention directory runs with your privileges, and Rhai evaluates a script's top-level
+statements as well as the function you called. A `.grpctestify/plugins/` directory is part of a repository,
+so cloning someone else's project would otherwise be enough to execute their code.
+
+The first time a script is about to run, grpctestify shows its path and sha256 and asks once:
+
+```text
+grpctestify wants to execute a script plugin:
+  ./.grpctestify/plugins/my_checks.rhai
+  sha256 9f2c...
+It runs with your privileges. Only allow scripts you have read.
+Execute it? [y/N]
+```
+
+Answering `y` records the hash in `~/.grpctestify/trusted_plugins.json` and later runs are silent. Editing
+the script changes its hash, so it is asked again — an approval covers the exact contents you approved, not
+the file name.
+
+`check`, `inspect` and the LSP only need the names a script defines, so they compile it without executing it
+and never ask.
+
+Non-interactive runs (CI, a pipe, an editor task) can't answer, so they refuse to execute the script and log
+why. Two environment variables settle it up front:
+
+| Variable | Effect |
+| --- | --- |
+| `GRPCTESTIFY_TRUST_PLUGINS=1` | Execute script plugins without asking. Use in CI, where the checkout is already trusted. |
+| `GRPCTESTIFY_NO_PLUGINS=1` | Never execute script plugins, even approved ones. Wins over the variable above. |
 
 ## Related
 

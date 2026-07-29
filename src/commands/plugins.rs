@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
 
 use anyhow::{Context, Result, bail};
 use apif_plugins::marketplace::{
@@ -148,6 +148,16 @@ fn install_source(source: &InstallSource, plugins_dir: &Path) -> Result<Installe
     })
 }
 
+/// Whether reading `path` would leave `root`. A symlink is rejected outright
+/// rather than resolved: a plugin repo has no legitimate reason to ship one,
+/// and `fs::read` follows it.
+fn escapes_source(path: &Path, root: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+        || !path
+            .canonicalize()
+            .is_ok_and(|resolved| resolved.starts_with(root))
+}
+
 /// Which `.rhai` files to install from a resolved `source_dir`, and the
 /// optional manifest that drove the decision. Pure filesystem logic, no git
 /// — kept separate from `install_source` so it's unit-testable with a plain
@@ -156,6 +166,20 @@ fn resolve_install_files(
     source_dir: &Path,
     source_key: &str,
 ) -> Result<(Vec<PathBuf>, Option<marketplace::PluginManifest>)> {
+    let root = source_dir
+        .canonicalize()
+        .with_context(|| format!("resolving {}", source_dir.display()))?;
+
+    // Before the manifest is even read: it too is a repo-controlled path, and
+    // a parse failure echoes part of the file back in the warning.
+    let manifest_path = source_dir.join(marketplace::MANIFEST_FILE_NAME);
+    if manifest_path.exists() && escapes_source(&manifest_path, &root) {
+        bail!(
+            "{source_key}: {} escapes the source directory",
+            marketplace::MANIFEST_FILE_NAME
+        );
+    }
+
     // Optional repo-side `grpctestify-plugin.yaml`: opt-in, so a present but
     // malformed manifest warns and falls back rather than blocking install —
     // the installing user can't fix another repo's mistake.
@@ -217,6 +241,17 @@ fn resolve_install_files(
             found
         }
     };
+
+    // Past both arms on purpose: a repo can commit `checks.rhai` as a symlink
+    // to `~/.ssh/id_rsa`, and the read below would follow it out of the clone.
+    for path in &rhai_files {
+        if escapes_source(path, &root) {
+            bail!(
+                "{source_key}: {:?} escapes the source directory",
+                path.strip_prefix(source_dir).unwrap_or(path).display()
+            );
+        }
+    }
     if rhai_files.is_empty() {
         bail!(
             "no .rhai files found in {source_key} ({})",
@@ -330,12 +365,27 @@ pub fn handle_plugins_remove(args: &PluginsRemoveArgs) -> Result<()> {
     let Some(entry) = lock.get(&args.name).cloned() else {
         bail!("{} is not installed", args.name);
     };
-    let dir = plugins_dir
-        .join("installed")
-        .join(&entry.host)
-        .join(&entry.owner)
-        .join(&entry.repo);
+    // The lockfile ships with the repo: a `host: "../../../victim"` entry
+    // turned this into `rm -rf` on an arbitrary directory.
+    let installed_root = plugins_dir.join("installed");
+    let source =
+        marketplace::parse_source(&format!("{}/{}/{}", entry.host, entry.owner, entry.repo))
+            .map_err(|e| anyhow::anyhow!("refusing to remove {}: {e}", args.name))?;
+    let dir = installed_root
+        .join(&source.host)
+        .join(&source.owner)
+        .join(&source.repo);
     if dir.exists() {
+        let (Ok(dir_canon), Ok(root_canon)) = (dir.canonicalize(), installed_root.canonicalize())
+        else {
+            bail!("refusing to remove {}: unresolvable plugin path", args.name);
+        };
+        if !dir_canon.starts_with(&root_canon) {
+            bail!(
+                "refusing to remove {}: path escapes the plugin dir",
+                args.name
+            );
+        }
         std::fs::remove_dir_all(&dir)?;
     }
     lock.remove(&args.name);
@@ -404,6 +454,59 @@ pub fn handle_plugins_update(args: &PluginsUpdateArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression: the guard sat inside the manifest arm only, so the default
+    // no-manifest scan read straight through a symlink.
+    #[cfg_attr(miri, ignore)]
+    #[cfg(unix)]
+    #[test]
+    fn resolve_install_files_rejects_a_symlink_out_of_the_source_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join("id_rsa");
+        std::fs::write(&secret, "PRIVATE KEY").unwrap();
+        let source = dir.path().join("repo");
+        std::fs::create_dir_all(&source).unwrap();
+        std::os::unix::fs::symlink(&secret, source.join("checks.rhai")).unwrap();
+
+        // No manifest: the default directory-scan arm.
+        let err = resolve_install_files(&source, "test/repo").unwrap_err();
+        assert!(
+            err.to_string().contains("escapes the source directory"),
+            "unexpected error: {err}"
+        );
+
+        // And with a manifest listing it explicitly.
+        std::fs::write(
+            source.join(marketplace::MANIFEST_FILE_NAME),
+            "name: t\nfiles:\n  - checks.rhai\n",
+        )
+        .unwrap();
+        let err = resolve_install_files(&source, "test/repo").unwrap_err();
+        assert!(
+            err.to_string().contains("escapes the source directory"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // The manifest is a repo-controlled path too, and a parse failure echoes
+    // part of the file back in the warning.
+    #[cfg_attr(miri, ignore)]
+    #[cfg(unix)]
+    #[test]
+    fn resolve_install_files_rejects_a_symlinked_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join("secret.yaml");
+        std::fs::write(&secret, "name: leaked\n").unwrap();
+        let source = dir.path().join("repo");
+        std::fs::create_dir_all(&source).unwrap();
+        std::os::unix::fs::symlink(&secret, source.join(marketplace::MANIFEST_FILE_NAME)).unwrap();
+
+        let err = resolve_install_files(&source, "test/repo").unwrap_err();
+        assert!(
+            err.to_string().contains("escapes the source directory"),
+            "unexpected error: {err}"
+        );
+    }
 
     #[cfg_attr(miri, ignore)]
     #[test]

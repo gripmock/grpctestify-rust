@@ -33,6 +33,9 @@ fn run_isolated(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
     cli_command()
         .current_dir(dir)
         .env("HOME", dir)
+        // Script plugins execute only once trusted (`apif_plugins::trust`);
+        // a non-interactive test takes the same opt-in CI uses.
+        .env("GRPCTESTIFY_TRUST_PLUGINS", "1")
         .args(args)
         .output()
         .expect("failed to run CLI")

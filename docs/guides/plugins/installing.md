@@ -51,8 +51,11 @@ dependency.
 Every install/update prints the source, resolved commit, resolved version (if any), and the full file
 list — full provenance, no silent background changes. The fetch itself is grpctestify's own network
 activity; once installed, the script runs inside the same Rhai sandbox every plugin does (no `eval`, no
-network/filesystem access, operation and size limits) — installing from an arbitrary host grants no
-capability a hand-authored script doesn't already have.
+`import`, no network/filesystem access, operation and size limits) — installing from an arbitrary host
+grants no capability a hand-authored script doesn't already have.
+
+An installed script is still a script, so it goes through the same one-time confirmation as a hand-authored
+one before it executes — see [Trusting a script](custom-scripts#trusting-a-script).
 
 ## Optional repo-side manifest
 

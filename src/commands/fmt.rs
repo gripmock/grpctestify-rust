@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
 
 use anyhow::Result;
 use tracing::{debug, error, warn};
@@ -68,23 +68,16 @@ fn normalize_hash_comment_line(line: &str) -> Option<String> {
     }
 }
 
-fn format_json_content(value: &serde_json::Value) -> Vec<String> {
-    let text = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
-    group_numeric_literals(&text)
-        .lines()
-        .map(str::to_string)
-        .collect()
-}
-
-/// Canonicalize digit-separators outside string literals: `1000000` ->
-/// `1_000_000`, `1_00` -> `100`. Only triggers at the start of a digit run,
-/// so `field_1_2`-style identifiers and string contents are untouched.
+/// `1000000` -> `1_000_000`, `1_00` -> `100`, `1.000000` -> `1.0`. Only a run
+/// that is a number on both ends, so identifiers, UUIDs, hex, exponents,
+/// string contents and comment prose are left as authored.
 fn group_numeric_literals(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
 
     while let Some(c) = chars.next() {
-        if c == '"' {
+        if c == '"' || c == '\'' {
+            let quote = c;
             out.push(c);
             while let Some(next) = chars.next() {
                 out.push(next);
@@ -92,9 +85,33 @@ fn group_numeric_literals(text: &str) -> String {
                     if let Some(escaped) = chars.next() {
                         out.push(escaped);
                     }
-                } else if next == '"' {
+                } else if next == quote {
                     break;
                 }
+            }
+            continue;
+        }
+
+        // `// 1000` must stay `// 1000`.
+        if c == '#' || (c == '/' && chars.peek() == Some(&'/')) {
+            out.push(c);
+            for next in chars.by_ref() {
+                out.push(next);
+                if next == '\n' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if c == '/' && chars.peek() == Some(&'*') {
+            out.push(c);
+            let mut prev = '\0';
+            for next in chars.by_ref() {
+                out.push(next);
+                if prev == '*' && next == '/' {
+                    break;
+                }
+                prev = next;
             }
             continue;
         }
@@ -103,7 +120,7 @@ fn group_numeric_literals(text: &str) -> String {
             && out
                 .chars()
                 .next_back()
-                .is_none_or(|p| !(p.is_ascii_alphanumeric() || p == '_' || p == '.'));
+                .is_none_or(|p| !(p.is_alphanumeric() || p == '_' || p == '.'));
 
         if is_number_start {
             let mut int_part = String::new();
@@ -136,10 +153,24 @@ fn group_numeric_literals(text: &str) -> String {
                 }
             }
 
+            // Glued to a letter, `_` or `-` means it's part of a larger token:
+            // a UUID, hex, an exponent tail. Not ours to regroup.
+            let is_number_end = chars
+                .peek()
+                .is_none_or(|n| !(n.is_alphanumeric() || *n == '_' || *n == '-'));
+            if !is_number_end {
+                out.push_str(&int_part);
+                if let Some(frac) = frac_part {
+                    out.push('.');
+                    out.push_str(&frac);
+                }
+                continue;
+            }
+
             out.push_str(&group_digits(&int_part));
             if let Some(frac) = frac_part {
                 out.push('.');
-                out.push_str(&frac.replace('_', ""));
+                out.push_str(&trim_fraction(&frac));
             }
             continue;
         }
@@ -148,6 +179,17 @@ fn group_numeric_literals(text: &str) -> String {
     }
 
     out
+}
+
+/// `1.000000` -> `1.0`, never `1` — losing the `.0` retypes a float as an int.
+fn trim_fraction(raw: &str) -> String {
+    let digits: String = raw.chars().filter(char::is_ascii_digit).collect();
+    let trimmed = digits.trim_end_matches('0');
+    if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn group_digits(raw: &str) -> String {
@@ -189,21 +231,43 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
     let mut out = String::new();
     let mut chars = raw.chars().peekable();
     let mut indent = 0usize;
-    let mut in_string = false;
+    // JSON5, so `'…'` is a string too — otherwise a `#`, `//` or `:` inside one
+    // reads as syntax and the value gets rewritten.
+    let mut string_quote: Option<char> = None;
     let mut escaped = false;
     let mut in_line_comment = false;
     let mut in_block_comment = false;
     let mut saw_newline_gap = false;
+    // Break owed after `{`/`[`/`,`, emitted by the next token. Emitting it
+    // eagerly moved `"a": 1, // note` onto the next line and split `{}` in two.
+    let mut pending_break = false;
+    // A `/* … */` ended mid-line; without a space the next value fuses onto it.
+    let mut need_space = false;
+    // Offset of a `,` with no value after it yet. JSON5 allows it before the
+    // bracket, canonical JSON doesn't, and a comment may sit in between.
+    let mut dangling_comma: Option<usize> = None;
+
+    macro_rules! open_value {
+        () => {
+            if saw_newline_gap || pending_break {
+                newline_indent(&mut out, indent);
+            } else if need_space && !out.ends_with(' ') && !out.ends_with('\n') {
+                out.push(' ');
+            }
+            saw_newline_gap = false;
+            need_space = false;
+            dangling_comma = None;
+        };
+    }
 
     while let Some(ch) = chars.next() {
         if in_line_comment {
             if ch == '\n' {
                 in_line_comment = false;
-                if !out.ends_with('\n') {
-                    out.push('\n');
-                }
-                push_indent(&mut out, indent);
-                saw_newline_gap = false;
+                // The next token starts a fresh line — including a following
+                // comment, which must not fold up onto this one.
+                saw_newline_gap = true;
+                pending_break = false;
             } else if ch != '\r' {
                 out.push(ch);
             }
@@ -215,32 +279,44 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
             if ch == '*' && chars.next_if_eq(&'/').is_some() {
                 out.push('/');
                 in_block_comment = false;
+                need_space = true;
             }
             continue;
         }
 
-        if in_string {
-            out.push(ch);
+        if let Some(quote) = string_quote {
             saw_newline_gap = false;
             if escaped {
                 escaped = false;
+                // `\'` means nothing once the quotes are doubled.
+                if !(quote == '\'' && ch == '\'') {
+                    out.push('\\');
+                }
+                out.push(ch);
                 continue;
             }
             if ch == '\\' {
                 escaped = true;
-            } else if ch == '"' {
-                in_string = false;
+                continue;
             }
+            if ch == quote {
+                string_quote = None;
+                out.push('"');
+                continue;
+            }
+            if ch == '"' {
+                out.push('\\');
+            }
+            out.push(ch);
             continue;
         }
 
-        if ch == '"' {
-            if saw_newline_gap {
-                newline_indent(&mut out, indent);
-            }
-            in_string = true;
-            out.push(ch);
-            saw_newline_gap = false;
+        // Quoting style carries no meaning; the contents do, and are untouched.
+        if ch == '"' || ch == '\'' {
+            open_value!();
+            pending_break = false;
+            string_quote = Some(ch);
+            out.push('"');
             continue;
         }
 
@@ -254,30 +330,26 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
         };
 
         if ch == '#' || slash_comment_kind.is_some() {
+            // Only a newline in the *source* moves a comment to its own line;
+            // a break merely owed by `{`/`[`/`,` must not.
             if saw_newline_gap {
                 newline_indent(&mut out, indent);
+                pending_break = false;
             } else if !out.is_empty() && !out.ends_with('\n') && !out.ends_with(' ') {
                 out.push(' ');
             }
 
-            if ch == '/' {
-                match slash_comment_kind {
-                    Some('/') => {
-                        out.push('/');
-                        out.push('/');
-                        in_line_comment = true;
-                    }
-                    Some('*') => {
-                        out.push('/');
-                        out.push('*');
-                        in_block_comment = true;
-                    }
-                    _ => out.push('/'),
-                }
+            need_space = false;
+            let is_block = slash_comment_kind == Some('*');
+            if is_block {
+                out.push('/');
+                out.push('*');
+                in_block_comment = true;
             } else {
                 out.push('/');
                 out.push('/');
                 in_line_comment = true;
+                pending_break = false;
             }
             saw_newline_gap = false;
             continue;
@@ -285,22 +357,26 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
 
         match ch {
             '{' | '[' => {
-                if saw_newline_gap {
-                    newline_indent(&mut out, indent);
-                }
+                open_value!();
                 out.push(ch);
-                out.push('\n');
                 indent += 1;
-                push_indent(&mut out, indent);
-                saw_newline_gap = false;
+                pending_break = true;
             }
             '}' | ']' => {
-                if (ch == '}' && out.ends_with('{')) || (ch == ']' && out.ends_with('[')) {
+                // By offset, not `ends_with`: a comment may sit in between.
+                if let Some(pos) = dangling_comma.take() {
+                    out.remove(pos);
+                }
+                let empty = pending_break
+                    && ((ch == '}' && out.ends_with('{')) || (ch == ']' && out.ends_with('[')));
+                indent = indent.saturating_sub(1);
+                pending_break = false;
+                saw_newline_gap = false;
+                need_space = false;
+                if empty {
                     out.push(ch);
-                    saw_newline_gap = false;
                     continue;
                 }
-                indent = indent.saturating_sub(1);
                 while out.ends_with(' ') {
                     out.pop();
                 }
@@ -309,18 +385,19 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
                 }
                 push_indent(&mut out, indent);
                 out.push(ch);
-                saw_newline_gap = false;
             }
             ',' => {
+                dangling_comma = Some(out.len());
                 out.push(',');
-                out.push('\n');
-                push_indent(&mut out, indent);
                 saw_newline_gap = false;
+                need_space = false;
+                pending_break = true;
             }
             ':' => {
                 out.push(':');
                 out.push(' ');
                 saw_newline_gap = false;
+                need_space = false;
             }
             c if c.is_whitespace() => {
                 if c == '\n' {
@@ -328,11 +405,38 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
                 }
             }
             _ => {
-                if saw_newline_gap {
-                    newline_indent(&mut out, indent);
+                open_value!();
+                pending_break = false;
+
+                // JSON5 identifiers are Unicode, not ASCII: `имя: 4` is as
+                // valid an unquoted key as `name: 4` and must be quoted too.
+                if ch.is_alphabetic() || ch == '_' || ch == '$' {
+                    let mut word = String::from(ch);
+                    while let Some(&next) = chars.peek() {
+                        if next.is_alphanumeric() || next == '_' || next == '$' {
+                            word.push(next);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    // In key position it's JSON5's unquoted key. Anywhere else
+                    // it's a literal (`true`, `NaN`, an exponent tail).
+                    let mut lookahead = chars.clone();
+                    while lookahead.peek().is_some_and(|c| c.is_whitespace()) {
+                        lookahead.next();
+                    }
+                    if lookahead.peek() == Some(&':') {
+                        out.push('"');
+                        out.push_str(&word);
+                        out.push('"');
+                    } else {
+                        out.push_str(&word);
+                    }
+                    continue;
                 }
+
                 out.push(ch);
-                saw_newline_gap = false;
             }
         }
     }
@@ -341,43 +445,6 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
         .lines()
         .map(str::to_string)
         .collect()
-}
-
-fn has_json_style_comments(raw: &str) -> bool {
-    for line in raw.lines() {
-        let mut chars = line.chars().peekable();
-        let mut in_string = false;
-        let mut escaped = false;
-
-        while let Some(ch) = chars.next() {
-            if escaped {
-                escaped = false;
-                continue;
-            }
-
-            if ch == '\\' {
-                escaped = true;
-                continue;
-            }
-
-            if ch == '"' {
-                in_string = !in_string;
-                continue;
-            }
-
-            if in_string {
-                continue;
-            }
-
-            match ch {
-                '#' => return true,
-                '/' if let Some('/') | Some('*') = chars.peek() => return true,
-                _ => {}
-            }
-        }
-    }
-
-    false
 }
 
 fn ensure_single_section_separator(output: &mut Vec<String>, has_next_section: bool) {
@@ -444,34 +511,68 @@ fn format_extract_section(raw: &str) -> Vec<String> {
     out
 }
 
-fn format_key_values_section(raw: &str, sort_keys: bool) -> Vec<String> {
-    let lines = normalize_lines(raw);
+/// A key line plus whatever was written above it, so sorting moves a comment
+/// with the key it documents instead of stranding or deleting it.
+struct KeyBlock {
+    sort_key: String,
+    lines: Vec<String>,
+}
 
-    let mut items: Vec<(usize, String, String)> = Vec::new();
+/// Comments and unparsable lines ride onto the next key; the remainder comes
+/// back as the section's tail. Nothing is dropped.
+fn collect_key_blocks(
+    lines: &[String],
+    mut render: impl FnMut(&str, &str) -> (String, String),
+) -> (Vec<KeyBlock>, Vec<String>) {
+    let mut blocks: Vec<KeyBlock> = Vec::new();
+    let mut pending: Vec<String> = Vec::new();
 
-    for line in &lines {
+    for line in lines {
         let trimmed = line.trim();
-        if trimmed.starts_with("//") || trimmed.is_empty() {
+        if trimmed.is_empty() {
             continue;
-        } else if let Some((key, value)) = trimmed.split_once(':') {
-            let sort_key = if sort_keys {
-                key.trim().to_lowercase()
-            } else {
-                String::new()
-            };
-            items.push((
-                items.len(),
-                sort_key,
-                format!("{}: {}", key.trim(), value.trim()),
-            ));
+        }
+        match trimmed.split_once(':') {
+            Some((key, value)) if !trimmed.starts_with("//") => {
+                let (sort_key, text) = render(key.trim(), value.trim());
+                let mut block = std::mem::take(&mut pending);
+                block.push(text);
+                blocks.push(KeyBlock {
+                    sort_key,
+                    lines: block,
+                });
+            }
+            _ => pending.push(trimmed.to_string()),
         }
     }
 
+    (blocks, pending)
+}
+
+fn flatten_key_blocks(blocks: Vec<KeyBlock>, tail: Vec<String>) -> Vec<String> {
+    blocks
+        .into_iter()
+        .flat_map(|b| b.lines)
+        .chain(tail)
+        .collect()
+}
+
+fn format_key_values_section(raw: &str, sort_keys: bool) -> Vec<String> {
+    let lines = normalize_lines(raw);
+    let (mut blocks, tail) = collect_key_blocks(&lines, |key, value| {
+        let sort_key = if sort_keys {
+            key.to_lowercase()
+        } else {
+            String::new()
+        };
+        (sort_key, format!("{}: {}", key, value))
+    });
+
     if sort_keys {
-        items.sort_by(|a, b| a.1.cmp(&b.1));
+        blocks.sort_by(|a, b| a.sort_key.cmp(&b.sort_key));
     }
 
-    items.into_iter().map(|(_, _, v)| v).collect()
+    flatten_key_blocks(blocks, tail)
 }
 
 /// Like `format_key_values_section`, but indented lines stay glued to the
@@ -486,6 +587,7 @@ fn format_bench_section(raw: &str) -> Vec<String> {
         text: Vec<String>,
     }
     let mut items: Vec<Item> = Vec::new();
+    let mut pending: Vec<String> = Vec::new();
 
     for line in &lines {
         let is_continuation = line.starts_with(' ') || line.starts_with('\t');
@@ -495,22 +597,27 @@ fn format_bench_section(raw: &str) -> Vec<String> {
         }
 
         let trimmed = line.trim();
-        if trimmed.starts_with("//") || trimmed.is_empty() {
+        if trimmed.is_empty() {
             continue;
         }
-        if let Some((key, value)) = trimmed.split_once(':') {
-            let key = key.trim();
-            let value = value.trim();
-            let text = if value.is_empty() {
-                format!("{key}:")
-            } else {
-                format!("{key}: {value}")
-            };
-            items.push(Item {
-                rank: apif_source_row::schema::bench_key_rank(key),
-                key: key.to_lowercase(),
-                text: vec![text],
-            });
+        match trimmed.split_once(':') {
+            Some((key, value)) if !trimmed.starts_with("//") => {
+                let key = key.trim();
+                let value = value.trim();
+                let text = if value.is_empty() {
+                    format!("{key}:")
+                } else {
+                    format!("{key}: {value}")
+                };
+                let mut block = std::mem::take(&mut pending);
+                block.push(text);
+                items.push(Item {
+                    rank: apif_source_row::schema::bench_key_rank(key),
+                    key: key.to_lowercase(),
+                    text: block,
+                });
+            }
+            _ => pending.push(trimmed.to_string()),
         }
     }
 
@@ -518,29 +625,25 @@ fn format_bench_section(raw: &str) -> Vec<String> {
     // reference order and the other BENCH serializer in apif-parser — not
     // alphabetical, so e.g. `mode` sorts before `duration`.
     items.sort_by(|a, b| a.rank.cmp(&b.rank).then_with(|| a.key.cmp(&b.key)));
-    items.into_iter().flat_map(|item| item.text).collect()
+    items
+        .into_iter()
+        .flat_map(|item| item.text)
+        .chain(pending)
+        .collect()
 }
 
 fn format_options_section(raw: &str) -> Vec<String> {
     let lines = normalize_lines(raw);
-    let mut items: Vec<(String, String)> = Vec::new();
+    let (mut blocks, tail) = collect_key_blocks(&lines, |key, value| {
+        let normalized_key = crate::parser::canonical_key_spelling(key);
+        (
+            normalized_key.to_ascii_lowercase(),
+            format!("{}: {}", normalized_key, value),
+        )
+    });
 
-    for line in &lines {
-        let trimmed = line.trim();
-        if trimmed.starts_with("//") || trimmed.is_empty() {
-            continue;
-        }
-        if let Some((key, value)) = trimmed.split_once(':') {
-            let normalized_key = crate::parser::canonical_key_spelling(key.trim());
-            items.push((
-                normalized_key.to_ascii_lowercase(),
-                format!("{}: {}", normalized_key, value.trim()),
-            ));
-        }
-    }
-
-    items.sort_by(|a, b| a.0.cmp(&b.0));
-    items.into_iter().map(|(_, v)| v).collect()
+    blocks.sort_by(|a, b| a.sort_key.cmp(&b.sort_key));
+    flatten_key_blocks(blocks, tail)
 }
 
 fn trim_trailing_blank_lines(lines: &mut Vec<String>) {
@@ -551,32 +654,16 @@ fn trim_trailing_blank_lines(lines: &mut Vec<String>) {
 
 fn format_section_lines(section: &crate::parser::ast::Section) -> Vec<String> {
     let mut lines = match (&section.section_type, &section.content) {
+        // Re-indented from source text, never re-serialized: a `serde_json`
+        // round-trip rewrote `0xFF` -> `255`, `1e3` -> `1000.0`,
+        // `Infinity`/`NaN` -> `null`, and dropped a duplicate key.
         (
             crate::parser::ast::SectionType::Request
             | crate::parser::ast::SectionType::Error
             | crate::parser::ast::SectionType::Response,
-            crate::parser::ast::SectionContent::Json(value),
-        ) => {
-            if has_json_style_comments(&section.raw_content) {
-                format_json_with_comments(&section.raw_content)
-            } else {
-                format_json_content(value)
-            }
-        }
-        (
-            crate::parser::ast::SectionType::Response,
-            crate::parser::ast::SectionContent::JsonLines(values),
-        ) => {
-            if has_json_style_comments(&section.raw_content) {
-                format_json_with_comments(&section.raw_content)
-            } else {
-                let mut out = Vec::new();
-                for value in values {
-                    out.extend(format_json_content(value));
-                }
-                out
-            }
-        }
+            crate::parser::ast::SectionContent::Json(_)
+            | crate::parser::ast::SectionContent::JsonLines(_),
+        ) => format_json_with_comments(&section.raw_content),
         // ASSERTS section — normalize type annotation spacing and comments
         (crate::parser::ast::SectionType::Asserts, _) => {
             return normalize_assertion_lines(&section.raw_content);
@@ -662,14 +749,6 @@ fn format_gctf_chain(head: &crate::parser::GctfDocument, source: &str) -> String
     // Walk every section across all documents in the chain, in source order.
     for doc in head.iter_chain() {
         for section in &doc.sections {
-            // Skip empty EXTRACT sections
-            if matches!(section.section_type, parser::ast::SectionType::Extract)
-                && matches!(section.content, parser::ast::SectionContent::Empty)
-            {
-                current_line = section.end_line.min(lines.len());
-                continue;
-            }
-
             let attr_count = section.attributes.len();
             let attr_line_start = section.start_line.saturating_sub(attr_count);
 
@@ -805,27 +884,6 @@ fn apply_optimizer_rewrites(
         rewritten.push_str(eol);
     }
     rewritten
-}
-
-/// Write `content` to `path` atomically: write to a temp file in the same
-/// directory, then rename it over the target. A crash mid-write can therefore
-/// never leave a user's `.gctf` file truncated or half-written.
-fn write_atomic(path: &std::path::Path, content: &str) -> std::io::Result<()> {
-    let parent = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => std::path::Path::new("."),
-    };
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("out.gctf");
-    let tmp_path = parent.join(format!(".{}.{}.tmp", file_name, std::process::id()));
-    std::fs::write(&tmp_path, content)?;
-    if let Err(e) = std::fs::rename(&tmp_path, path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e);
-    }
-    Ok(())
 }
 
 pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
@@ -978,7 +1036,7 @@ pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
 
         if args.write {
             if changed {
-                if let Err(e) = write_atomic(&file, &formatted) {
+                if let Err(e) = crate::utils::file::write_atomic(&file, &formatted) {
                     error!("Failed to write {}: {}", file.display(), e);
                     has_error = true;
                 } else {
@@ -1052,7 +1110,8 @@ fn print_fmt_summary(write: bool, total: usize, written: usize, needing: usize) 
 
 #[cfg(test)]
 mod tests {
-    use super::{format_gctf_content, write_atomic};
+    use super::format_gctf_content;
+    use crate::utils::file::write_atomic;
 
     fn to_crlf(input: &str) -> String {
         input.replace('\n', "\r\n")
@@ -1072,18 +1131,264 @@ mod tests {
         once
     }
 
+    // JSON5 means the whole JSON5 grammar, not its ASCII subset: a Unicode
+    // unquoted key is as valid as an ASCII one, and the numeric forms JSON5
+    // adds are the author's notation, not ours to re-mint.
+    #[test]
+    fn test_fmt_json5_grammar_round_trip() {
+        let body = concat!(
+            "{\n",
+            "  \u{438}\u{43c}\u{44f}: 1,\n",
+            "  $d: 2,\n",
+            "  plus: +1.5,\n",
+            "  dot: .5,\n",
+            "  trail: 5.,\n",
+            "  hex: 0X1F,\n",
+            "  inf: -Infinity,\n",
+            "  esc: 'it\\'s \"q\"',\n",
+            "  arr: [1, 2,],\n",
+            "}\n"
+        );
+        let src = format!("{HDR}--- RESPONSE ---\n{body}");
+        let out = assert_idempotent(&src);
+        for expected in [
+            "\"\u{438}\u{43c}\u{44f}\": 1",
+            "\"$d\": 2",
+            "\"plus\": +1.5",
+            "\"dot\": .5",
+            "\"trail\": 5.",
+            "\"hex\": 0X1F",
+            "\"inf\": -Infinity",
+            "\"esc\": \"it's \\\"q\\\"\"",
+        ] {
+            assert!(out.contains(expected), "missing {expected}: {out}");
+        }
+        assert!(!out.contains(",\n  ]"), "trailing comma must go: {out}");
+    }
+
+    // Regression: an empty EXTRACT section was deleted outright as a "no-op".
+    // It is not one — `inspect`, `explain` and `Workflow::extractions` all
+    // report the section, so dropping it changed what those commands saw.
+    #[test]
+    fn test_fmt_keeps_an_empty_extract_section() {
+        let src = format!("{HDR}--- EXTRACT ---\n\n--- ASSERTS ---\n.a == 1\n");
+        let out = assert_idempotent(&src);
+        assert!(
+            out.contains("--- EXTRACT ---"),
+            "section must survive: {out}"
+        );
+    }
+
     // Regression: a `//` comment on the same line as an opening brace used to
-    // gain a spurious blank line on the SECOND format pass (non-idempotent).
+    // gain a spurious blank line on the SECOND format pass, then be relocated
+    // onto its own line. It belongs where the author put it.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn test_fmt_json_comment_after_brace_idempotent() {
         let src = format!("{}--- RESPONSE ---\n{{ // opener\n  \"a\": 1\n}}\n", HDR);
         let out = assert_idempotent(&src);
         assert!(
-            out.contains("{\n  // opener\n  \"a\": 1\n}"),
-            "comment should sit on its own indented line with no blank line: {out}"
+            out.contains("{ // opener\n  \"a\": 1\n}"),
+            "comment must stay on the brace line: {out}"
         );
         assert!(!out.contains("{\n  \n"), "no spurious blank line: {out}");
+    }
+
+    // Regression: a comment trailing a comma was pushed onto the following
+    // line, re-attaching it to the *next* array element.
+    #[test]
+    fn test_fmt_json_trailing_comment_stays_on_its_line() {
+        let src = format!(
+            "{HDR}--- RESPONSE ---\n{{\n  \"ids\": [\n    \"a\", // first\n    \"b\" // second\n  ]\n}}\n"
+        );
+        let out = assert_idempotent(&src);
+        assert!(
+            out.contains("\"a\", // first"),
+            "trailing comment must not move to the next line: {out}"
+        );
+        assert!(out.contains("\"b\" // second"), "{out}");
+    }
+
+    // Regression: consecutive comment lines were folded onto one physical line.
+    #[test]
+    fn test_fmt_json_consecutive_comments_stay_separate() {
+        let src = format!("{HDR}--- RESPONSE ---\n{{\n  // first\n  // second\n  \"a\": 1\n}}\n");
+        let out = assert_idempotent(&src);
+        assert!(
+            out.contains("// first\n  // second\n"),
+            "each comment keeps its own line: {out}"
+        );
+    }
+
+    // Regression: an empty object/array was blown open across two lines.
+    #[test]
+    fn test_fmt_json_empty_containers_stay_compact() {
+        let src = format!(
+            "{HDR}--- RESPONSE ---\n{{\n  \"o\": {{}},\n  \"a\": [], // none\n  \"b\": 1\n}}\n"
+        );
+        let out = assert_idempotent(&src);
+        assert!(
+            out.contains("\"o\": {},"),
+            "empty object stays compact: {out}"
+        );
+        assert!(out.contains("\"a\": [], // none"), "{out}");
+    }
+
+    // Regression: digit grouping ran over comment prose, rewriting `// 1000`
+    // to `// 1_000`.
+    #[test]
+    fn test_fmt_does_not_group_digits_inside_comments() {
+        let src = format!("{HDR}--- RESPONSE ---\n{{\n  \"a\": 1000000 // limit is 1000000\n}}\n");
+        let out = assert_idempotent(&src);
+        assert!(
+            out.contains("\"a\": 1_000_000 // limit is 1000000"),
+            "{out}"
+        );
+    }
+
+    // Regression: a UUID's digit runs were regrouped (`00000000-0000-...` ->
+    // `00_000_000-0000-...`). Only a run that is a number end to end is one.
+    #[test]
+    fn test_fmt_does_not_group_digits_inside_uuids_or_literals() {
+        let src = format!(
+            "{HDR}--- RESPONSE ---\n{{\n  // 00000000-0000-0000-0000-000000000000\n  \"id\": 1,\n  \"hex\": 0xFF,\n  \"exp\": 1e3\n}}\n"
+        );
+        let out = assert_idempotent(&src);
+        assert!(
+            out.contains("// 00000000-0000-0000-0000-000000000000"),
+            "UUID digits untouched: {out}"
+        );
+        assert!(
+            out.contains("\"hex\": 0xFF"),
+            "hex literal untouched: {out}"
+        );
+        assert!(out.contains("\"exp\": 1e3"), "exponent untouched: {out}");
+    }
+
+    // A redundant fraction normalizes to `1.0`, never to `1` — dropping the
+    // fraction would retype a float as an integer.
+    #[test]
+    fn test_fmt_trailing_zero_fraction_keeps_one_digit() {
+        let src = format!(
+            "{HDR}--- RESPONSE ---\n{{\n  \"a\": 1.000000,\n  \"b\": 2.500, // note\n  \"c\": 3.0\n}}\n"
+        );
+        let out = assert_idempotent(&src);
+        assert!(out.contains("\"a\": 1.0,"), "{out}");
+        assert!(out.contains("\"b\": 2.5, // note"), "{out}");
+        assert!(out.contains("\"c\": 3.0"), "{out}");
+    }
+
+    // Regression: `'…'` wasn't recognized, so a `:` or `#` inside one read as
+    // syntax and rewrote the value. Quotes canonicalize; contents don't.
+    #[test]
+    fn test_fmt_single_quoted_string_contents_survive() {
+        let src = format!("{HDR}--- RESPONSE ---\n{{\n  'url': 'http://x/y#z' // note\n}}\n");
+        let out = assert_idempotent(&src);
+        assert!(
+            out.contains("\"url\": \"http://x/y#z\" // note"),
+            "contents must survive, only the quotes change: {out}"
+        );
+    }
+
+    // JSON5 escapes re-target when the quotes are doubled: `\'` loses its
+    // backslash, a bare `"` gains one.
+    #[test]
+    fn test_fmt_single_quoted_string_requoting_escapes() {
+        let src =
+            format!("{HDR}--- RESPONSE ---\n{{\n  'a': 'it\\'s \"x\"', // note\n  'b': 1\n}}\n");
+        let out = assert_idempotent(&src);
+        assert!(out.contains(r#""a": "it's \"x\"", // note"#), "{out}");
+    }
+
+    // JSON5 trailing commas and unquoted keys canonicalize; the numbers next to
+    // them do not.
+    #[test]
+    fn test_fmt_json5_canonicalizes_syntax_not_literals() {
+        let src = format!(
+            "{HDR}--- RESPONSE ---\n{{\n  name: 'World', // hi\n  meta: {{ id: 0xFF, }},\n  flag: true,\n}}\n"
+        );
+        let out = assert_idempotent(&src);
+        assert!(out.contains("\"name\": \"World\", // hi"), "{out}");
+        assert!(out.contains("\"id\": 0xFF"), "hex literal survives: {out}");
+        assert!(out.contains("\"flag\": true"), "{out}");
+        assert!(!out.contains(",\n}"), "no trailing comma left: {out}");
+    }
+
+    // Regression: `serde_json` round-tripping rewrote authored literals —
+    // `0xFF` -> `255`, `1e3` -> `1000.0`, `Infinity`/`NaN` -> `null` — and
+    // dropped the first of two duplicate keys, all silently.
+    #[test]
+    fn test_fmt_does_not_remint_json_literals() {
+        let src = format!(
+            "{HDR}--- RESPONSE ---\n{{\n  \"hex\": 0xFF,\n  \"exp\": 1e3,\n  \"inf\": Infinity,\n  \"nan\": NaN,\n  \"dup\": 1,\n  \"dup\": 2\n}}\n"
+        );
+        let out = assert_idempotent(&src);
+        for expected in [
+            "\"hex\": 0xFF",
+            "\"exp\": 1e3",
+            "\"inf\": Infinity",
+            "\"nan\": NaN",
+            "\"dup\": 1",
+            "\"dup\": 2",
+        ] {
+            assert!(out.contains(expected), "lost {expected}: {out}");
+        }
+    }
+
+    // Regression: an inline `/* … */` fused onto the following key
+    // (`/* has */"a"`).
+    #[test]
+    fn test_fmt_inline_block_comment_keeps_a_space() {
+        let src = format!("{HDR}--- RESPONSE ---\n{{\n  /* has */ \"a\": 1\n}}\n");
+        let out = assert_idempotent(&src);
+        assert!(out.contains("/* has */ \"a\": 1"), "{out}");
+    }
+
+    // Regression: a trailing comma was only dropped when it was the last
+    // character — a comment after it hid it from the check.
+    #[test]
+    fn test_fmt_drops_trailing_comma_behind_a_comment() {
+        let src = format!(
+            "{HDR}--- RESPONSE ---\n{{\n  \"a\": [\n    1, // one\n    2, // two\n  ],\n}}\n"
+        );
+        let out = assert_idempotent(&src);
+        assert!(out.contains("2 // two"), "trailing comma must go: {out}");
+        assert!(!out.contains(",\n  ]"), "{out}");
+        assert!(!out.contains(",\n}"), "{out}");
+    }
+
+    // Strings are opaque: a digit run inside one is data, not a literal.
+    #[test]
+    fn test_fmt_does_not_group_digits_inside_strings() {
+        let src = format!(
+            "{HDR}--- RESPONSE ---\n{{\n  \"units\": \"1000000\",\n  \"esc\": \"q\\\" 1000000 end\"\n}}\n"
+        );
+        let out = assert_idempotent(&src);
+        assert!(out.contains("\"units\": \"1000000\""), "{out}");
+        assert!(out.contains("1000000 end"), "{out}");
+    }
+
+    // Regression: key-value sections deleted every comment line outright.
+    #[test]
+    fn test_fmt_key_value_section_keeps_comments() {
+        let src = "--- ENDPOINT ---\ntest.Service/Method\n\n--- REQUEST_HEADERS ---\n// staging only\nauthorization: Bearer x\nx-trace: 1\n\n--- REQUEST ---\n{}\n";
+        let out = assert_idempotent(src);
+        assert!(
+            out.contains("// staging only\nauthorization: Bearer x"),
+            "comment must ride along with the key it documents: {out}"
+        );
+    }
+
+    // Regression: OPTIONS sorts its keys, and a comment must travel with the
+    // key it was written above rather than being dropped or stranded.
+    #[test]
+    fn test_fmt_options_comment_travels_with_its_key() {
+        let src = format!(
+            "{HDR}--- OPTIONS ---\n// why we wait\ntimeout: 30\n// retry policy\nretries: 2\n"
+        );
+        let out = assert_idempotent(&src);
+        assert!(out.contains("// retry policy\nretries: 2"), "{out}");
+        assert!(out.contains("// why we wait\ntimeout: 30"), "{out}");
     }
 
     // Regression: a standalone `/* block */` comment used to be glued directly
@@ -2295,8 +2600,7 @@ test.Service/Method
 
 // Another detached comment
 --- REQUEST ---
-{
-}
+{}
 // Comment before response
 
 --- RESPONSE ---

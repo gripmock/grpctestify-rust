@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
 // GCTF file parser - converts .gctf text to AST
 // Handles section extraction, comment removal, and inline option parsing
 

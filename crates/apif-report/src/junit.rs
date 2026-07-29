@@ -419,13 +419,13 @@ mod tests {
     fn test_junit_reporter_lifecycle() {
         use crate::Reporter;
         use apif_state::TestResult;
-        let path = std::env::temp_dir().join("test_junit_output.xml");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_junit_output.xml");
         let reporter = JunitReporter::new(path.clone());
         let mut results = TestResults::new();
         results.add(TestResult::pass("test.gctf", 100, None));
         assert!(reporter.on_suite_end(&results).is_ok());
         assert!(path.exists());
-        let _ = std::fs::remove_file(&path);
     }
 
     #[cfg_attr(miri, ignore)]
@@ -433,7 +433,8 @@ mod tests {
     fn test_junit_failure_body_and_meta_properties() {
         use crate::Reporter;
         use apif_state::{AssertionRecord, TestMeta, TestResult};
-        let path = std::env::temp_dir().join("test_junit_detail.xml");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_junit_detail.xml");
         let reporter = JunitReporter::new(path.clone());
         let mut results = TestResults::new();
         let mut r = TestResult::fail("t.gctf", "1 assertion failed".into(), 10, None)
@@ -472,7 +473,6 @@ mod tests {
             xml.contains("name=\"link\" value=\"http://x\""),
             "link prop: {xml}"
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     // Regression: a connection/timeout failure (no assertion evaluated) must be
@@ -483,7 +483,8 @@ mod tests {
     fn test_junit_splits_errors_from_assertion_failures() {
         use crate::Reporter;
         use apif_state::{AssertionRecord, TestResult};
-        let path = std::env::temp_dir().join("test_junit_errors_vs_failures.xml");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_junit_errors_vs_failures.xml");
         let reporter = JunitReporter::new(path.clone());
         let mut results = TestResults::new();
 
@@ -525,7 +526,6 @@ mod tests {
             xml.contains("<failure message=\"1 assertion failed\""),
             "assertion failure must be <failure>: {xml}"
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[cfg_attr(miri, ignore)]
@@ -534,7 +534,8 @@ mod tests {
         use crate::Reporter;
         use apif_state::{CapturedExchange, TestResult};
         use std::collections::BTreeMap;
-        let path = std::env::temp_dir().join("test_junit_sysout.xml");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_junit_sysout.xml");
         let reporter = JunitReporter::new(path.clone());
         let mut results = TestResults::new();
         let ex = CapturedExchange {
@@ -550,7 +551,6 @@ mod tests {
         assert!(xml.contains("<system-out>"), "system-out element: {xml}");
         assert!(xml.contains("Captured exchange"), "exchange body: {xml}");
         assert!(xml.contains("content-type"), "header in body: {xml}");
-        let _ = std::fs::remove_file(&path);
     }
 
     #[cfg_attr(miri, ignore)]
@@ -558,7 +558,8 @@ mod tests {
     fn test_junit_reporter_with_failure() {
         use crate::Reporter;
         use apif_state::TestResult;
-        let path = std::env::temp_dir().join("test_junit_fail.xml");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_junit_fail.xml");
         let reporter = JunitReporter::new(path.clone());
         let mut results = TestResults::new();
         results.add(TestResult::fail("test.gctf", "error msg".into(), 100, None));
@@ -566,6 +567,5 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("failure"));
         assert!(content.contains("error msg"));
-        let _ = std::fs::remove_file(&path);
     }
 }

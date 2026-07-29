@@ -81,6 +81,10 @@ fn run_in(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
     cli_command()
         .current_dir(dir)
         .env("HOME", dir)
+        // Script plugins only execute once the user has agreed to run them
+        // (`apif_plugins::trust`); a non-interactive test can't answer the
+        // prompt, so it takes the same explicit opt-in CI uses.
+        .env("GRPCTESTIFY_TRUST_PLUGINS", "1")
         .args(args)
         .output()
         .expect("failed to run CLI")

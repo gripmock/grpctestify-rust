@@ -15,11 +15,13 @@ echo.EchoService/ServerStream
   "index": 0,
   "message": "Message #0"
 }
+
 --- RESPONSE ---
 {
   "index": 1,
   "message": "Message #1"
 }
+
 --- RESPONSE ---
 {
   "index": 2,

@@ -10,6 +10,6 @@ grpc.health.v1.Health/Check
 --- ASSERTS ---
 (reduce ([.status,.status,.status])[] as $s (0; . + 1)) == 3
 [.status,.status,.status] | map(. == "SERVING") | all
-{first: .status, doubled: [.status,.status]} == {first: "SERVING", doubled: ["SERVING","SERVING"]}
+{first:.status,doubled:[.status,.status]} == {first:"SERVING",doubled:["SERVING","SERVING"]}
 (.status | "\(.)-checked") == "SERVING-checked"
 last(foreach (.status,.status) as $s (0; .+1)) == 2

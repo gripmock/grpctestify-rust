@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
 use crate::SourceRow;
 use crate::filter::{FilterCondition, matches_all as matches_filter_all};
 use crate::index::SourceIndex;

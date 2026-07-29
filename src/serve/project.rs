@@ -1,7 +1,21 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// A client-supplied id becomes a file name; without this `../../../x` escapes
+/// the project root and the API turns into an arbitrary file writer.
+fn safe_file_stem(kind: &str, id: &str) -> Result<()> {
+    let ok = !id.is_empty()
+        && id.len() <= 128
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !ok {
+        bail!("Invalid {kind}");
+    }
+    Ok(())
+}
 
 /// Project-wide settings stored in settings.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,6 +170,7 @@ pub fn list_history_sessions(root: &Path) -> Result<Vec<String>> {
 
 /// Read all history entries from a session file (NDJSON format).
 pub fn read_history_session(root: &Path, session: &str) -> Result<Vec<String>> {
+    safe_file_stem("session id", session)?;
     let path = root.join("history").join(format!("{}.jsonl", session));
     if !path.is_file() {
         return Ok(vec![]);
@@ -171,6 +186,7 @@ pub fn read_history_session(root: &Path, session: &str) -> Result<Vec<String>> {
 
 /// Append one history entry as a JSON line to a session file.
 pub fn append_history_entry(root: &Path, session: &str, entry: &str) -> Result<()> {
+    safe_file_stem("session id", session)?;
     let dir = root.join("history");
     if !dir.is_dir() {
         std::fs::create_dir_all(&dir).ok();
@@ -193,12 +209,14 @@ pub fn ensure_shares_dir(shares_dir: &Path) -> Result<PathBuf> {
 }
 
 pub fn write_share(shares_dir: &Path, id: &str, content: &str) -> Result<()> {
+    safe_file_stem("share id", id)?;
     let dir = ensure_shares_dir(shares_dir)?;
     fs::write(dir.join(format!("{}.json", id)), content)?;
     Ok(())
 }
 
 pub fn read_share(shares_dir: &Path, id: &str) -> Result<Option<String>> {
+    safe_file_stem("share id", id)?;
     let path = shares_dir.join(format!("{}.json", id));
     if !path.is_file() {
         return Ok(None);
@@ -207,6 +225,7 @@ pub fn read_share(shares_dir: &Path, id: &str) -> Result<Option<String>> {
 }
 
 pub fn delete_share(shares_dir: &Path, id: &str) -> Result<()> {
+    safe_file_stem("share id", id)?;
     let path = shares_dir.join(format!("{}.json", id));
     if path.is_file() {
         fs::remove_file(path)?;
@@ -284,4 +303,43 @@ GRPC_ADDRESS=
     fs::write(dot.join("shares/.gitkeep"), "")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression: these ids went straight into a file name.
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn client_supplied_ids_cannot_escape_their_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        for bad in [
+            "../../../../pwned",
+            "..",
+            "a/b",
+            "a\\b",
+            "",
+            "with space",
+            "dot.name",
+        ] {
+            assert!(
+                append_history_entry(root, bad, "{}").is_err(),
+                "history id {bad:?} must be rejected"
+            );
+            assert!(
+                write_share(root, bad, "{}").is_err(),
+                "share id {bad:?} must be rejected"
+            );
+            assert!(read_share(root, bad).is_err());
+            assert!(delete_share(root, bad).is_err());
+            assert!(read_history_session(root, bad).is_err());
+        }
+
+        append_history_entry(root, "abc-123_XYZ", "{}").unwrap();
+        assert!(root.join("history/abc-123_XYZ.jsonl").is_file());
+        assert!(!root.parent().unwrap().join("pwned.jsonl").exists());
+    }
 }

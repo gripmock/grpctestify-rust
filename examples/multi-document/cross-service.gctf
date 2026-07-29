@@ -13,7 +13,7 @@ auth.AuthService/Login
 
 --- RESPONSE ---
 {
-  "expires_at": 1700000000,
+  "expires_at": 1_700_000_000,
   "session_id": "sess-abc-123"
 }
 
@@ -62,7 +62,7 @@ metrics.MetricsService/GetCounters
 {
   "counters": {
     "errors": 3,
-    "requests": 1542
+    "requests": 1_542
   }
 }
 

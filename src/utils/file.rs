@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::Path;
 
 use anyhow::Result;
@@ -109,23 +108,59 @@ pub fn update_test_file(
     Ok(())
 }
 
+/// A file's permission bits, if it exists. `None` on a platform without them
+/// or when the file is new.
+#[cfg(unix)]
+pub(crate) fn file_mode(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).ok().map(|m| m.permissions().mode())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn file_mode(_path: &Path) -> Option<u32> {
+    None
+}
+
+/// Put `mode` back on `path` after an atomic replace. `NamedTempFile` is 0600
+/// by design, so without this, rewriting a file in place would quietly strip
+/// group/other read access it had before.
+#[cfg(unix)]
+pub(crate) fn restore_mode(path: &Path, mode: Option<u32>) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Some(mode) = mode {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn restore_mode(_path: &Path, _mode: Option<u32>) {}
+
 /// Writes `content` to a temp file in the same directory, then atomically
 /// renames it over `path` so a crash mid-write cannot corrupt the file.
-fn write_atomic(path: &Path, content: &str) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
     let parent = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
     };
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("snapshot.gctf");
-    let tmp_path = parent.join(format!(".{}.{}.tmp", file_name, std::process::id()));
-    fs::write(&tmp_path, content)?;
-    if let Err(e) = fs::rename(&tmp_path, path) {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(e.into());
+    // The old `.<file>.<pid>.tmp` was pre-creatable by anyone who can write the
+    // directory, and `fs::write` follows a symlink planted there.
+    let mut tmp = tempfile::Builder::new()
+        .prefix(".grpctestify-")
+        .suffix(".tmp")
+        .tempfile_in(parent)?;
+    let existing_mode = file_mode(path);
+    use std::io::Write;
+    tmp.write_all(content.as_bytes())?;
+    tmp.flush()?;
+    // Close the handle before renaming: Windows refuses to move a file that is
+    // still open, which is what `persist` does.
+    let (file, tmp_path) = tmp.keep().map_err(|e| e.error)?;
+    drop(file);
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
     }
+    restore_mode(path, existing_mode);
     Ok(())
 }
 
@@ -204,7 +239,7 @@ mod tests {
         let content =
             "--- ENDPOINT ---\nService/Method\n\n--- RESPONSE ---\n{\"result\": \"old\"}\n";
         std::fs::write(temp_file.path(), content).unwrap();
-        assert!(update_test_file(temp_file.path(), &doc, &response).is_ok());
+        update_test_file(temp_file.path(), &doc, &response).expect("update_test_file failed");
         let updated = std::fs::read_to_string(temp_file.path()).unwrap();
         assert!(updated.contains("\"result\": \"new\""));
     }
@@ -226,7 +261,7 @@ mod tests {
             messages: vec![serde_json::json!({"result": "new"})],
             error: None,
         };
-        assert!(update_test_file(temp_file.path(), &doc, &response).is_ok());
+        update_test_file(temp_file.path(), &doc, &response).expect("update_test_file failed");
         let updated = std::fs::read_to_string(temp_file.path()).unwrap();
         assert!(updated.contains("\"result\": \"new\""));
     }
@@ -247,7 +282,7 @@ mod tests {
             messages: vec![serde_json::json!({"status": "ok"})],
             error: None,
         };
-        assert!(update_test_file(temp_file.path(), &doc, &response).is_ok());
+        update_test_file(temp_file.path(), &doc, &response).expect("update_test_file failed");
     }
 
     #[cfg_attr(miri, ignore)]
@@ -270,7 +305,7 @@ mod tests {
             ],
             error: None,
         };
-        assert!(update_test_file(temp_file.path(), &doc, &response).is_ok());
+        update_test_file(temp_file.path(), &doc, &response).expect("update_test_file failed");
         let updated = std::fs::read_to_string(temp_file.path()).unwrap();
         // Both streamed messages must survive the rewrite, not just the first.
         assert!(updated.contains("\"index\": 10"), "updated: {updated}");
@@ -294,7 +329,7 @@ mod tests {
             messages: vec![],
             error: None,
         };
-        assert!(update_test_file(temp_file.path(), &doc, &response).is_ok());
+        update_test_file(temp_file.path(), &doc, &response).expect("update_test_file failed");
         let updated = std::fs::read_to_string(temp_file.path()).unwrap();
         assert!(
             updated.contains("\"result\": \"old\""),

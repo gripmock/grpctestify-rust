@@ -6,12 +6,12 @@ users.UserService/GetUser
   "id": 123
 }
 
---- RESPONSE with_asserts partial ---
+--- RESPONSE partial with_asserts ---
 {
   "id": 123
 }
 
 --- ASSERTS ---
 .name == "John Doe"
-@email(.email)
+@is_email(.email)
 .active == true

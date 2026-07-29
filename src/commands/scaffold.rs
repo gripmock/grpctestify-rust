@@ -271,25 +271,7 @@ fn emit(content: &str, output: Option<&Path>, force: bool) -> Result<()> {
     }
 }
 
-/// Write `content` to `path` atomically: temp file in the same directory then
-/// rename over the target, so a crash never leaves a half-written .gctf file.
-fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
-    let parent = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => Path::new("."),
-    };
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("out.gctf");
-    let tmp_path = parent.join(format!(".{}.{}.tmp", file_name, std::process::id()));
-    std::fs::write(&tmp_path, content)?;
-    if let Err(e) = std::fs::rename(&tmp_path, path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e);
-    }
-    Ok(())
-}
+use crate::utils::file::write_atomic;
 
 fn collect_proto_files(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();

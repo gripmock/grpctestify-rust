@@ -331,8 +331,16 @@ fn parse_section_content(
     let content_str = content.join("\n");
 
     match section_type {
+        // Same rule as the strict path: a `//`/`#` line is a comment, never
+        // part of the dialed address. This is the path `run` takes.
         SectionType::Address | SectionType::Endpoint => {
-            SectionContent::Single(content_str.trim().to_string())
+            let stripped = crate::gctf_tokenizer::strip_gctf_comment_lines(&content_str);
+            let stripped = stripped.trim();
+            if stripped.is_empty() {
+                SectionContent::Empty
+            } else {
+                SectionContent::Single(stripped.to_string())
+            }
         }
         SectionType::Request | SectionType::Response | SectionType::Error => {
             if content_str.trim().is_empty() {
@@ -521,6 +529,27 @@ fn parse_inline_options_diagnostic(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The lenient path is the one `run` takes, so this is where a comment
+    // leaking into the address actually changed the dial target.
+    #[test]
+    fn a_comment_line_is_not_part_of_a_single_value_section() {
+        let mut diagnostics = DiagnosticCollection::new();
+        let content = vec!["// staging only".to_string(), "localhost:4770".to_string()];
+        assert_eq!(
+            parse_section_content(&content, 1, SectionType::Address, &mut diagnostics),
+            SectionContent::Single("localhost:4770".to_string())
+        );
+        assert_eq!(
+            parse_section_content(
+                &["// note".to_string()],
+                1,
+                SectionType::Address,
+                &mut diagnostics
+            ),
+            SectionContent::Empty
+        );
+    }
 
     #[test]
     #[cfg_attr(miri, ignore)]

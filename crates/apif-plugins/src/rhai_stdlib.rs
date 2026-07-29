@@ -55,6 +55,9 @@ pub fn build_engine() -> Engine {
         .set_max_array_size(MAX_COLLECTION_SIZE)
         .set_max_map_size(MAX_COLLECTION_SIZE)
         .disable_symbol("eval");
+    // `Engine::new()` ships a filesystem resolver, so `import "../../x"` both
+    // escaped the plugin dir and ran the imported script's top level.
+    engine.set_module_resolver(rhai::module_resolvers::DummyModuleResolver::new());
     register(&mut engine);
     engine
 }

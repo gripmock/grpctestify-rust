@@ -104,6 +104,30 @@ fn primary_dir(state: &PlayState) -> &std::path::Path {
     &state.collections_dirs[0]
 }
 
+/// Reads already go through `resolve_file`'s containment check; without the
+/// same guard here a committed symlink redirects the write anywhere.
+fn resolve_write_path(
+    dir: &std::path::Path,
+    rel: &str,
+) -> Result<std::path::PathBuf, (StatusCode, String)> {
+    let invalid = || (StatusCode::BAD_REQUEST, "Invalid path".to_string());
+    reject_traversal(rel).map_err(|_| invalid())?;
+    let target = dir.join(rel);
+    if std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(invalid());
+    }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).ok();
+        let (Ok(parent_canon), Ok(dir_canon)) = (parent.canonicalize(), dir.canonicalize()) else {
+            return Err(invalid());
+        };
+        if !parent_canon.starts_with(&dir_canon) {
+            return Err(invalid());
+        }
+    }
+    Ok(target)
+}
+
 #[derive(Deserialize)]
 pub struct ReflectRequest {
     pub address: String,
@@ -542,10 +566,7 @@ pub async fn save_collection(
     let path_str = req.path.clone();
     let content = req.content.clone();
     tokio::task::spawn_blocking(move || {
-        let file_path = primary_dir(&state).join(&path_str);
-        if let Some(parent) = file_path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
+        let file_path = resolve_write_path(primary_dir(&state), &path_str)?;
         std::fs::write(&file_path, &content)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         state
@@ -584,7 +605,7 @@ pub async fn save_collection_structured(
 ) -> Result<Json<()>, (StatusCode, String)> {
     reject_traversal(&req.path)?;
     require_gctf(&req.path)?;
-    let file_path = primary_dir(&state).join(&req.path);
+    let file_path = resolve_write_path(primary_dir(&state), &req.path)?;
 
     let mut builder = crate::parser::GctfDocumentBuilder::new().with_file_path(&req.path);
 
@@ -634,9 +655,6 @@ pub async fn save_collection_structured(
     }
 
     let content = crate::parser::serialize_gctf(&doc);
-    if let Some(parent) = file_path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
     std::fs::write(&file_path, &content)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     state
@@ -660,7 +678,7 @@ pub async fn proto_upload(
     if filename.contains(['/', '\\']) || reject_traversal(&filename).is_err() {
         return Err((StatusCode::BAD_REQUEST, "Invalid filename".to_string()));
     }
-    let file_path = primary_dir(&state).join(&filename);
+    let file_path = resolve_write_path(primary_dir(&state), &filename)?;
     std::fs::write(&file_path, &req.content)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     state
@@ -1964,7 +1982,7 @@ pub async fn move_item(
     reject_traversal(&req.to)?;
     let src =
         resolve_file(&state, &req.from).unwrap_or_else(|| primary_dir(&state).join(&req.from));
-    let dst = primary_dir(&state).join(&req.to);
+    let dst = resolve_write_path(primary_dir(&state), &req.to)?;
 
     if !src.exists() {
         return Err((
@@ -1977,15 +1995,6 @@ pub async fn move_item(
             StatusCode::CONFLICT,
             format!("Destination already exists: {}", req.to),
         ));
-    }
-
-    if let Some(parent) = dst.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to create parent: {}", e),
-            )
-        })?;
     }
 
     std::fs::rename(&src, &dst).map_err(|e| {
@@ -2007,6 +2016,26 @@ mod tests {
     use std::path::PathBuf;
     #[cfg(not(miri))]
     use std::sync::atomic::AtomicU64;
+
+    // Regression: reads were contained, writes were not.
+    #[cfg(all(unix, not(miri)))]
+    #[test]
+    fn write_path_refuses_symlinks_and_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("collections");
+        std::fs::create_dir_all(&root).unwrap();
+        let outside = dir.path().join("victim.gctf");
+        std::fs::write(&outside, "ORIGINAL").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link.gctf")).unwrap();
+
+        assert!(resolve_write_path(&root, "link.gctf").is_err());
+        assert!(resolve_write_path(&root, "../escape.gctf").is_err());
+        assert!(resolve_write_path(&root, "/etc/passwd").is_err());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "ORIGINAL");
+
+        let ok = resolve_write_path(&root, "sub/ok.gctf").unwrap();
+        assert!(ok.starts_with(&root));
+    }
 
     #[test]
     fn test_reject_traversal_valid() {
