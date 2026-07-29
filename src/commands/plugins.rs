@@ -455,9 +455,9 @@ pub fn handle_plugins_update(args: &PluginsUpdateArgs) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[cfg_attr(miri, ignore)]
     // Regression: the guard sat inside the manifest arm only, so the default
     // no-manifest scan read straight through a symlink.
+    #[cfg_attr(miri, ignore)]
     #[cfg(unix)]
     #[test]
     fn resolve_install_files_rejects_a_symlink_out_of_the_source_dir() {
@@ -490,6 +490,7 @@ mod tests {
 
     // The manifest is a repo-controlled path too, and a parse failure echoes
     // part of the file back in the warning.
+    #[cfg_attr(miri, ignore)]
     #[cfg(unix)]
     #[test]
     fn resolve_install_files_rejects_a_symlinked_manifest() {
@@ -507,6 +508,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn resolve_install_files_default_scan_finds_rhai_files_sorted() {
         let dir = tempfile::tempdir().unwrap();
