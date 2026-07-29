@@ -325,6 +325,35 @@ grpctestify health localhost:50051 --service my.Service
 - Safe optimizer rewrites are applied by default.
 - For CI, run both `fmt` and `check`.
 
+### What it changes, and what it leaves alone
+
+Layout is the formatter's to decide. What you wrote is not.
+
+Normalized:
+
+- Indentation, one blank line between sections, trailing newline, CRLF to LF.
+- Preamble section order (`META` → `BENCH` → `DATASET` → `ADDRESS` → `ENDPOINT` → `TLS` → `PROTO` → `OPTIONS`);
+  body sections keep their order.
+- Key order in `OPTIONS` and other key-value sections (order carries no meaning there). JSON object key order
+  is **not** touched.
+- JSON5 syntax to canonical JSON: `'single'` quotes become `"double"`, unquoted keys get quoted, trailing
+  commas go.
+- `#` comments to `//` inside JSON bodies. `META` and `DATASET` are YAML, where `#` is the comment marker, so
+  they are left verbatim.
+- Digit grouping on plain integers: `1000000` becomes `1_000_000`. A redundant fraction shortens but never
+  disappears: `1.000000` becomes `1.0`, never `1` — that would retype a float as an integer.
+
+Left exactly as authored:
+
+- Comments — their text and the line they sit on. `"a": 1, // note` keeps the comment on that line, and
+  `// 1000` stays `// 1000`.
+- String contents. `"units": "1000000"` is data, not a literal.
+- Numeric notation that isn't a plain integer: `0xFF`, `1e3`, `Infinity`, `NaN`, and any digit run that is
+  part of a larger token such as a UUID (`00000000-0000-0000-0000-000000000000`).
+- Duplicate JSON keys — both are kept, so `check` can report them rather than `fmt` silently deleting one.
+
+`fmt` is idempotent: `fmt(fmt(x)) == fmt(x)` for every input.
+
 ## See Also
 
 - [Test File Format](./test-files)

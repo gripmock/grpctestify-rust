@@ -17,6 +17,7 @@ pub mod schema;
 pub mod timestamp;
 pub mod timing;
 pub mod trailer_extract;
+pub mod trust;
 pub mod type_info;
 pub mod type_methods;
 pub mod url;

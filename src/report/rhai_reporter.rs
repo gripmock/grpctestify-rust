@@ -25,9 +25,20 @@ pub struct RhaiReporter {
     has_on_test_start: bool,
     has_on_test_end: bool,
     has_on_suite_end: bool,
+    /// `call_fn` evaluates the AST's top level too, so an untrusted script
+    /// must not reach any of the three hooks.
+    path: std::path::PathBuf,
+    digest: String,
+    trusted: std::sync::OnceLock<bool>,
 }
 
 impl RhaiReporter {
+    fn is_trusted(&self) -> bool {
+        *self
+            .trusted
+            .get_or_init(|| apif_plugins::trust::is_trusted(&self.path, &self.digest))
+    }
+
     /// `None` when the script defines none of the three Reporter hooks —
     /// not every `.rhai` file under `--plugin-dir` is a reporter (most are
     /// assertion plugins), so this isn't an error, just "not applicable".
@@ -38,8 +49,14 @@ impl RhaiReporter {
             .with_context(|| format!("plugin script has no file name: {}", path.display()))?;
 
         let engine = apif_plugins::rhai_stdlib::build_engine();
+        // Hash what we compile, so the recorded digest is what actually runs.
+        let source = std::fs::read(path)
+            .with_context(|| format!("failed to read plugin script: {}", path.display()))?;
+        let digest = apif_plugins::marketplace::sha256_hex(&source);
+        let source = String::from_utf8(source)
+            .with_context(|| format!("plugin script is not UTF-8: {}", path.display()))?;
         let ast = engine
-            .compile_file(path.to_path_buf())
+            .compile(&source)
             .with_context(|| format!("failed to compile plugin script: {}", path.display()))?;
 
         let has_on_test_start = ast.iter_functions().any(|f| f.name == "on_test_start");
@@ -57,6 +74,9 @@ impl RhaiReporter {
             has_on_test_start,
             has_on_test_end,
             has_on_suite_end,
+            path: path.to_path_buf(),
+            digest,
+            trusted: std::sync::OnceLock::new(),
         }))
     }
 }
@@ -69,6 +89,13 @@ impl RhaiReporter {
     fn call_on_test_start(&self, test_name: &str) -> Result<()> {
         if !self.has_on_test_start {
             return Ok(());
+        }
+        if !self.is_trusted() {
+            anyhow::bail!(
+                "reporter '{}': refusing to execute untrusted script {}",
+                self.name,
+                self.path.display()
+            );
         }
         self.engine
             .call_fn::<()>(
@@ -83,6 +110,13 @@ impl RhaiReporter {
     fn call_on_test_end(&self, test_name: &str, result: &TestResult) -> Result<()> {
         if !self.has_on_test_end {
             return Ok(());
+        }
+        if !self.is_trusted() {
+            anyhow::bail!(
+                "reporter '{}': refusing to execute untrusted script {}",
+                self.name,
+                self.path.display()
+            );
         }
         let value = serde_json::to_value(result).context("failed to serialize test result")?;
         let dynamic = rhai::serde::to_dynamic(&value).context("failed to convert test result")?;
@@ -99,6 +133,13 @@ impl RhaiReporter {
     fn call_on_suite_end(&self, results: &TestResults) -> Result<()> {
         if !self.has_on_suite_end {
             return Ok(());
+        }
+        if !self.is_trusted() {
+            anyhow::bail!(
+                "reporter '{}': refusing to execute untrusted script {}",
+                self.name,
+                self.path.display()
+            );
         }
         let value = serde_json::to_value(results).context("failed to serialize suite results")?;
         let dynamic = rhai::serde::to_dynamic(&value).context("failed to convert suite results")?;
@@ -184,6 +225,12 @@ pub fn load_all_configured_reporters() -> Vec<Box<dyn Reporter>> {
 #[cfg(all(test, not(miri)))]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    /// `load` + pre-approve, so a temp script doesn't hit `apif_plugins::trust`.
+    fn load_trusted(path: &std::path::Path) -> super::RhaiReporter {
+        let reporter = super::RhaiReporter::load(path).unwrap().unwrap();
+        let _ = reporter.trusted.set(true);
+        reporter
+    }
     use super::*;
     use apif_state::TestMeta;
 
@@ -226,7 +273,7 @@ mod tests {
                 if result.duration_ms != 42 { throw "wrong duration: " + result.duration_ms; }
             }"#,
         );
-        let reporter = RhaiReporter::load(&path).unwrap().unwrap();
+        let reporter = load_trusted(&path);
         let result = TestResult::fail("svc.Thing/Do", "boom".into(), 42, None);
         reporter.call_on_test_end("svc.Thing/Do", &result).unwrap();
     }
@@ -242,7 +289,7 @@ mod tests {
             "always_wrong.rhai",
             r#"fn on_test_end(name, result) { throw "deliberately wrong"; }"#,
         );
-        let reporter = RhaiReporter::load(&path).unwrap().unwrap();
+        let reporter = load_trusted(&path);
         let result = TestResult::pass("a.gctf", 5, None);
         let err = reporter.call_on_test_end("a.gctf", &result).unwrap_err();
         assert!(err.to_string().contains("deliberately wrong"), "{err}");
@@ -261,7 +308,7 @@ mod tests {
                 if results.results.len() != 2 { throw "wrong results length"; }
             }"#,
         );
-        let reporter = RhaiReporter::load(&path).unwrap().unwrap();
+        let reporter = load_trusted(&path);
 
         let mut results = TestResults::new();
         results.add(TestResult::pass("a.gctf", 5, None));
@@ -278,7 +325,7 @@ mod tests {
             "throws.rhai",
             "fn on_suite_end(r) { throw \"boom\"; }",
         );
-        let reporter = RhaiReporter::load(&path).unwrap().unwrap();
+        let reporter = load_trusted(&path);
         let err = reporter.on_suite_end(&TestResults::new()).unwrap_err();
         assert!(err.to_string().contains("boom"), "{err}");
     }
@@ -296,7 +343,7 @@ mod tests {
                 if result.meta.owner != "team-x" { throw "missing meta: " + result.meta.owner; }
             }"#,
         );
-        let reporter = RhaiReporter::load(&path).unwrap().unwrap();
+        let reporter = load_trusted(&path);
         let mut result = TestResult::pass("a.gctf", 5, None);
         result.meta = TestMeta {
             owner: Some("team-x".to_string()),

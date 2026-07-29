@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
 
 use crate::bench::schema::bench_value;
 use crate::cli::args::BenchArgs;
@@ -2743,7 +2743,7 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
     }
 
     // Direct call mode: create temp .gctf from --call / --data flags
-    let synthetic_path = if let Some(endpoint) = &args.call {
+    let (_synthetic_dir, synthetic_path) = if let Some(endpoint) = &args.call {
         let body = args.data.as_deref().unwrap_or("{}");
         // No ADDRESS section — `$GRPCTESTIFY_ADDRESS` fallback (same as every
         // other command) applies when it's absent. `<env:GRPCTESTIFY_ADDRESS>`
@@ -2753,16 +2753,16 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
         // it here as a literal `ADDRESS` value made every direct-call bench
         // fail immediately with an invalid-URI error, 100% of the time.
         let content = format!("--- ENDPOINT ---\n{endpoint}\n--- REQUEST ---\n{body}\n");
-        let dir = std::env::temp_dir().join("grpctestify-bench");
-        std::fs::create_dir_all(&dir)?;
-        let path = dir.join(format!(
-            "direct-{}.gctf",
-            apif_cfg_runtime::now_unix_nanos()
-        ));
+        // `--data` routinely carries credentials; this used to land in a fixed
+        // world-readable path in the shared temp dir and was never deleted.
+        let dir = tempfile::Builder::new()
+            .prefix("grpctestify-bench-")
+            .tempdir()?;
+        let path = dir.path().join("direct.gctf");
         std::fs::write(&path, &content)?;
-        Some(path)
+        (Some(dir), Some(path))
     } else {
-        None
+        (None, None)
     };
 
     let mut test_paths = args.test_paths.clone();

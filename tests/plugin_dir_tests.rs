@@ -81,6 +81,7 @@ fn run_isolated(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
     cli_command()
         .current_dir(dir)
         .env("HOME", dir)
+        .env("GRPCTESTIFY_TRUST_PLUGINS", "1")
         .args(args)
         .output()
         .expect("failed to run CLI")
@@ -276,6 +277,7 @@ async fn run_loads_plugins_from_the_user_global_convention_dir() {
     let output = cli_command()
         .current_dir(test_dir.path())
         .env("HOME", fake_home.path())
+        .env("GRPCTESTIFY_TRUST_PLUGINS", "1")
         .args(["run", &file.to_string_lossy()])
         .output()
         .expect("failed to run CLI");
@@ -314,6 +316,7 @@ async fn project_local_convention_dir_wins_over_the_user_global_one() {
     let output = cli_command()
         .current_dir(project_dir.path())
         .env("HOME", test_dir.path())
+        .env("GRPCTESTIFY_TRUST_PLUGINS", "1")
         .args(["run", &file.to_string_lossy()])
         .output()
         .expect("failed to run CLI");
@@ -338,6 +341,7 @@ async fn convention_dirs_are_never_created() {
     let _ = cli_command()
         .current_dir(test_dir.path())
         .env("HOME", fake_home.path())
+        .env("GRPCTESTIFY_TRUST_PLUGINS", "1")
         .args(["run", &file.to_string_lossy()])
         .output()
         .expect("failed to run CLI");
@@ -366,6 +370,7 @@ async fn grpctestify_home_env_var_overrides_the_global_dir() {
     let output = cli_command()
         .current_dir(test_dir.path())
         .env("HOME", real_home.path())
+        .env("GRPCTESTIFY_TRUST_PLUGINS", "1")
         .env("GRPCTESTIFY_HOME", override_home.path())
         .args(["run", &file.to_string_lossy()])
         .output()
@@ -392,6 +397,7 @@ async fn grpctestify_project_dir_env_var_overrides_the_project_local_dir() {
     let output = cli_command()
         .current_dir(cwd.path())
         .env("HOME", fake_home.path())
+        .env("GRPCTESTIFY_TRUST_PLUGINS", "1")
         .env("GRPCTESTIFY_PROJECT_DIR", override_project.path())
         .args(["run", &file.to_string_lossy()])
         .output()

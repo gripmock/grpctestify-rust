@@ -1112,11 +1112,12 @@ fn suggest_boolean_identity_laws(expr: &str, level: OptimizeLevel) -> Option<(Ru
     }
     let expr = expr.trim();
 
-    // Check for "or true" / "or false"
-    if let Some(or_pos) = expr.find(" or ") {
-        let left = expr[..or_pos].trim();
-        let right = expr[or_pos + 4..].trim();
+    // Only the operator that actually joins the expression may be folded:
+    // `.a or .b and false` is `.a or (.b and false)`, so folding on the `and`
+    // used to collapse the whole thing to `false`.
+    let (left, op, right) = top_level_split(expr)?;
 
+    if op == "or" {
         if right == "true" || left == "true" {
             return Some((rule_ids::B009, "true".to_string()));
         }
@@ -1126,22 +1127,17 @@ fn suggest_boolean_identity_laws(expr: &str, level: OptimizeLevel) -> Option<(Ru
         if left == "false" {
             return Some((rule_ids::B009, right.to_string()));
         }
+        return None;
     }
 
-    // Check for "and true" / "and false"
-    if let Some(and_pos) = expr.find(" and ") {
-        let left = expr[..and_pos].trim();
-        let right = expr[and_pos + 5..].trim();
-
-        if left == "true" {
-            return Some((rule_ids::B010, right.to_string()));
-        }
-        if right == "true" {
-            return Some((rule_ids::B010, left.to_string()));
-        }
-        if left == "false" || right == "false" {
-            return Some((rule_ids::B010, "false".to_string()));
-        }
+    if left == "true" {
+        return Some((rule_ids::B010, right.to_string()));
+    }
+    if right == "true" {
+        return Some((rule_ids::B010, left.to_string()));
+    }
+    if left == "false" || right == "false" {
+        return Some((rule_ids::B010, "false".to_string()));
     }
 
     None
@@ -1275,6 +1271,89 @@ fn suggest_type_aware_numeric_comparison(
 }
 
 /// Comparison negation: not (.x == 5) → .x != 5
+/// Positions of `op` that sit at paren depth 0 and outside string literals.
+/// Every boolean rule below used a raw `find`, which happily matched an
+/// operator nested inside parentheses, inside a string, or belonging to a
+/// sub-expression — the source of three rewrites that changed what an
+/// assertion means.
+fn top_level_positions(expr: &str, op: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let bytes = expr.as_bytes();
+
+    for (i, ch) in expr.char_indices() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            _ if depth == 0 && bytes[i..].starts_with(op.as_bytes()) => out.push(i),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The lowest-precedence operator actually joining `expr`, if any. `and` binds
+/// tighter than `or`, so an `and` is not the top-level operator whenever a
+/// top-level `or` is present — and the split must be at the LAST occurrence,
+/// both being left-associative.
+fn top_level_split(expr: &str) -> Option<(&str, &str, &str)> {
+    for op in [" or ", " and "] {
+        if let Some(&at) = top_level_positions(expr, op).last() {
+            return Some((expr[..at].trim(), op.trim(), expr[at + op.len()..].trim()));
+        }
+    }
+    None
+}
+
+/// Arguments of a call whose `(` has already been consumed, plus whatever
+/// follows the matching `)`. Returns `None` if the parenthesis never closes.
+fn split_call_args(after_open_paren: &str) -> Option<(&str, &str)> {
+    let mut parens = 0i32;
+    // Brackets are tracked too, so a `)` that belongs to neither a nested call
+    // nor a string cannot end the argument list from inside `[…]`/`{…}`.
+    let mut brackets = 0i32;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+
+    for (i, ch) in after_open_paren.char_indices() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '(' => parens += 1,
+            '[' | '{' => brackets += 1,
+            ']' | '}' => brackets = (brackets - 1).max(0),
+            ')' if parens == 0 && brackets == 0 => {
+                return Some((&after_open_paren[..i], after_open_paren[i + 1..].trim()));
+            }
+            ')' => parens = (parens - 1).max(0),
+            _ => {}
+        }
+    }
+    None
+}
+
 fn suggest_comparison_negation(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
     if !level.is_enabled(OptimizeLevel::Safe) {
         return None;
@@ -1288,6 +1367,13 @@ fn suggest_comparison_negation(expr: &str, level: OptimizeLevel) -> Option<(Rule
     } else {
         return None;
     };
+
+    // `!(A and B)` is `!A or !B`, not `!A and B`. Negating a compound
+    // expression needs De Morgan; this rule only knows how to flip a single
+    // comparison, so it declines the rest.
+    if top_level_split(inner).is_some() {
+        return None;
+    }
 
     negate_comparison_expr(inner).map(|rewritten| (rule_ids::N002, rewritten))
 }
@@ -1303,7 +1389,7 @@ fn negate_comparison_expr(inner: &str) -> Option<String> {
     ];
 
     for (op, neg_op) in negations {
-        if let Some(op_pos) = inner.find(op) {
+        if let Some(&op_pos) = top_level_positions(inner, op).first() {
             let left = inner[..op_pos].trim();
             let right = inner[op_pos + op.len()..].trim();
 
@@ -1391,27 +1477,28 @@ fn suggest_deprecated_plugin_rename(
     }
     let trimmed = expr.trim();
 
-    // Check for `!@is_empty(args)` → `@has_value(args)`
+    // The call's own parenthesis has to close where the pattern says it does.
+    // Taking "everything up to the last 10 characters" as the argument turned
+    // `@is_empty(.a) and @is_empty(.b) == false` into
+    // `@has_value(.a) and @is_empty(.b)` — both operands inverted the wrong way.
     if let Some(inner) = trimmed.strip_prefix("!@is_empty(")
-        && inner.ends_with(')')
+        && let Some((args, rest)) = split_call_args(inner)
+        && rest.is_empty()
     {
-        let args = &inner[..inner.len() - 1];
         return Some((rule_ids::R002, format!("@has_value({})", args)));
     }
 
-    // Check for `@is_empty(args) == false` → `@has_value(args)`
     if let Some(inner) = trimmed.strip_prefix("@is_empty(")
-        && inner.ends_with(") == false")
+        && let Some((args, rest)) = split_call_args(inner)
+        && rest == "== false"
     {
-        let args = &inner[..inner.len() - 10];
         return Some((rule_ids::R002, format!("@has_value({})", args)));
     }
 
-    // Check for `false == @is_empty(args)` → `@has_value(args)`
     if let Some(inner) = trimmed.strip_prefix("false == @is_empty(")
-        && inner.ends_with(')')
+        && let Some((args, rest)) = split_call_args(inner)
+        && rest.is_empty()
     {
-        let args = &inner[..inner.len() - 1];
         return Some((rule_ids::R002, format!("@has_value({})", args)));
     }
 
@@ -1429,10 +1516,10 @@ fn suggest_deprecated_plugin_rename(
         // Handle !@name(...) pattern too — check for known boolean replacements
         let not_at_name = format!("!@{}", name);
         if let Some(rest) = trimmed.strip_prefix(&not_at_name)
-            && rest.starts_with('(')
-            && rest.ends_with(')')
+            && let Some(inner) = rest.strip_prefix('(')
+            && let Some((args, after)) = split_call_args(inner)
+            && after.is_empty()
         {
-            let args = &rest[1..rest.len() - 1];
             // If the canonical replacement is `is_empty`, skip to `@has_value` directly
             if replacement == "is_empty" {
                 return Some((rule_ids::R002, format!("@has_value({})", args)));
@@ -1660,6 +1747,124 @@ pub fn collect_assertion_optimizations(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rewrite that changes what an assertion *means* is worse than no
+    /// rewrite at all — and these three ran at Safe/Advisory, i.e. inside
+    /// `run`, so a test silently checked something the author never wrote.
+    #[test]
+    fn compound_negation_is_declined_rather_than_botched() {
+        // `!(A and B)` is `!A or !B`. The old rule split on the first
+        // comparison and emitted `!A and B`.
+        assert_eq!(
+            suggest_comparison_negation("!(.x == 1 and .y == 2)", OptimizeLevel::Safe),
+            None
+        );
+        assert_eq!(
+            suggest_comparison_negation("not (.x == 1 or .y == 2)", OptimizeLevel::Safe),
+            None
+        );
+        // A single comparison still flips.
+        assert_eq!(
+            suggest_comparison_negation("!(.x == 1)", OptimizeLevel::Safe)
+                .map(|(_, out)| out)
+                .as_deref(),
+            Some(".x != 1")
+        );
+    }
+
+    #[test]
+    fn a_comparison_operator_inside_parens_is_not_the_top_level_one() {
+        // The operator to flip is the outermost one, not the first textually.
+        assert_eq!(
+            negate_comparison_expr("(.a == 1) != .b").as_deref(),
+            Some("(.a == 1) == .b")
+        );
+    }
+
+    #[test]
+    fn is_empty_rename_requires_its_own_parenthesis_to_close() {
+        let sigs = HashMap::new();
+        // `@is_empty(.a) and @is_empty(.b) == false` used to become
+        // `@has_value(.a) and @is_empty(.b)` — both operands wrong.
+        assert_eq!(
+            suggest_deprecated_plugin_rename(
+                "@is_empty(.a) and @is_empty(.b) == false",
+                &sigs,
+                OptimizeLevel::Safe
+            ),
+            None
+        );
+        assert_eq!(
+            suggest_deprecated_plugin_rename("!@is_empty(.a) and .b", &sigs, OptimizeLevel::Safe),
+            None
+        );
+        // The plain forms still rewrite, including a nested call in the args.
+        for (input, expected) in [
+            ("@is_empty(.a) == false", "@has_value(.a)"),
+            ("!@is_empty(.a)", "@has_value(.a)"),
+            ("false == @is_empty(.a)", "@has_value(.a)"),
+            ("!@is_empty(f(.a, g(.b)))", "@has_value(f(.a, g(.b)))"),
+        ] {
+            assert_eq!(
+                suggest_deprecated_plugin_rename(input, &sigs, OptimizeLevel::Safe)
+                    .map(|(_, out)| out)
+                    .as_deref(),
+                Some(expected),
+                "input: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn boolean_identities_respect_operator_precedence() {
+        // `and` binds tighter, so this is `.a or (.b and false)` = `.a`,
+        // never `false`.
+        assert_eq!(
+            suggest_boolean_identity_laws(".a or .b and false", OptimizeLevel::Advisory),
+            None
+        );
+        assert_eq!(
+            suggest_boolean_identity_laws(".a or .b and true", OptimizeLevel::Advisory),
+            None
+        );
+        // A parenthesised operand is not a top-level one either.
+        assert_eq!(
+            suggest_boolean_identity_laws(".a and (.b or false)", OptimizeLevel::Advisory),
+            None
+        );
+        // Genuine identities still fold.
+        for (input, expected) in [
+            (".a or true", "true"),
+            (".a or false", ".a"),
+            (".a and true", ".a"),
+            (".a and false", "false"),
+        ] {
+            assert_eq!(
+                suggest_boolean_identity_laws(input, OptimizeLevel::Advisory)
+                    .map(|(_, out)| out)
+                    .as_deref(),
+                Some(expected),
+                "input: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn call_args_end_at_the_call_s_own_parenthesis() {
+        assert_eq!(split_call_args(".a)"), Some((".a", "")));
+        assert_eq!(split_call_args(".a) == false"), Some((".a", "== false")));
+        assert_eq!(split_call_args("f(.a, g(.b)))"), Some(("f(.a, g(.b))", "")));
+        assert_eq!(split_call_args("[(.a), .b])"), Some(("[(.a), .b]", "")));
+        assert_eq!(split_call_args(r#"".a)")"#), Some((r#"".a)""#, "")));
+        assert_eq!(split_call_args(".a"), None);
+    }
+
+    #[test]
+    fn a_boolean_operator_inside_a_string_is_not_an_operator() {
+        assert!(top_level_positions(r#".msg == " and ""#, " and ").is_empty());
+        assert!(top_level_positions(".a and .b", " and ").len() == 1);
+        assert!(top_level_positions("f(.a and .b)", " and ").is_empty());
+    }
 
     fn ast_mode_active_for_tests() -> bool {
         matches!(normalization_mode(), NormalizationMode::AstCanonical)

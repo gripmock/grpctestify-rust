@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
 //! Assertion plugins — built-in functions for gRPC test assertions.
 //!
 //! Plugins extend the assertion engine with custom validation logic.

@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
 //! Section content parser for GCTF files.
 //!
 //! Parses the content of different section types based on their structure.
@@ -9,7 +9,9 @@ use std::sync::OnceLock;
 
 use crate::assertions::strip_assertion_comments;
 use crate::ast::{FileMeta, GctfAttribute, InlineOptions, Section, SectionContent, SectionType};
-use crate::gctf_tokenizer::{tokenize_extract_line, tokenize_inline_options, tokenize_kv_line};
+use crate::gctf_tokenizer::{
+    strip_gctf_comment_lines, tokenize_extract_line, tokenize_inline_options, tokenize_kv_line,
+};
 use crate::json_mod;
 use crate::json_stream_parser;
 
@@ -43,9 +45,16 @@ pub fn parse_section_content(section_type: SectionType, content: &str) -> Result
     }
 
     match section_type {
-        // Single value sections
+        // Single value sections. A `//`/`#` line here is a comment, not part
+        // of the value — without stripping it, `--- ADDRESS ---` preceded by a
+        // comment resolved to the comment text and `check` still passed.
         SectionType::Address | SectionType::Endpoint => {
-            Ok(SectionContent::Single(content.to_string()))
+            let stripped = strip_gctf_comment_lines(content);
+            let stripped = stripped.trim();
+            if stripped.is_empty() {
+                return Ok(SectionContent::Empty);
+            }
+            Ok(SectionContent::Single(stripped.to_string()))
         }
 
         // JSON sections
@@ -419,6 +428,35 @@ fn parse_assertions(content: &str) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression: a comment line above the address became the address. The
+    // file still dialed, `check` still passed, and `explain` reported
+    // `Address: // staging only`.
+    #[test]
+    fn a_comment_line_is_not_part_of_a_single_value_section() {
+        for (input, expected) in [
+            ("// staging only\nlocalhost:4770", "localhost:4770"),
+            ("# staging only\nlocalhost:4770", "localhost:4770"),
+            ("localhost:4770\n// trailing note", "localhost:4770"),
+            ("localhost:4770", "localhost:4770"),
+        ] {
+            assert_eq!(
+                parse_section_content(SectionType::Address, input).unwrap(),
+                SectionContent::Single(expected.to_string()),
+                "input: {input:?}"
+            );
+        }
+
+        assert_eq!(
+            parse_section_content(SectionType::Endpoint, "// note\ns.S/M").unwrap(),
+            SectionContent::Single("s.S/M".to_string())
+        );
+        // Comments only: nothing is left to dial.
+        assert_eq!(
+            parse_section_content(SectionType::Address, "// note").unwrap(),
+            SectionContent::Empty
+        );
+    }
 
     #[test]
     fn test_parse_bench_section_keeps_nested_sources_as_one_value() {

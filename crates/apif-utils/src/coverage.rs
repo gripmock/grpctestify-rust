@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
 //! gRPC method and protobuf message field coverage collector.
 //!
 //! Tracks which gRPC service/method calls were made during test execution

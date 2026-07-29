@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe (openspec code-safety-hardening §3/§4)
+#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
 use crate::bench::sources::{
     SourceDefinition, SourceIndex, SourceReader, SourceRow, detect_format,
 };

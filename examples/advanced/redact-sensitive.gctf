@@ -14,4 +14,4 @@ auth.AuthService/Register
 }
 
 --- ASSERTS ---
-@uuid(.token)
+@is_uuid(.token)
