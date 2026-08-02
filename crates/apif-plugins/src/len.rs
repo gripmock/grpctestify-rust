@@ -69,18 +69,17 @@ mod tests {
     }
 
     #[test]
-    fn test_len_plugin_name() {
+    fn len_plugin_name() {
         let plugin = LenPlugin;
         assert_eq!(plugin.name(), "len");
     }
 
     #[test]
-    fn test_len_plugin_string_length() {
+    fn len_plugin_string_length() {
         let plugin = LenPlugin;
         let context = create_context();
         let result = plugin.execute(&[Value::String("hello".to_string())], &context);
-        assert!(result.is_ok());
-        if let PluginResult::Value(Value::Number(n)) = result.unwrap() {
+        if let PluginResult::Value(Value::Number(n)) = result.expect("len plugin must execute") {
             assert_eq!(n.as_u64().unwrap(), 5);
         } else {
             panic!("Expected Value result with number");
@@ -88,7 +87,7 @@ mod tests {
     }
 
     #[test]
-    fn test_len_plugin_array_length() {
+    fn len_plugin_array_length() {
         let plugin = LenPlugin;
         let context = create_context();
         let arr = Value::Array(vec![
@@ -97,8 +96,7 @@ mod tests {
             Value::Number(serde_json::Number::from(3)),
         ]);
         let result = plugin.execute(&[arr], &context);
-        assert!(result.is_ok());
-        if let PluginResult::Value(Value::Number(n)) = result.unwrap() {
+        if let PluginResult::Value(Value::Number(n)) = result.expect("len plugin must execute") {
             assert_eq!(n.as_u64().unwrap(), 3);
         } else {
             panic!("Expected Value result with number");
@@ -106,12 +104,11 @@ mod tests {
     }
 
     #[test]
-    fn test_len_plugin_empty_string() {
+    fn len_plugin_empty_string() {
         let plugin = LenPlugin;
         let context = create_context();
         let result = plugin.execute(&[Value::String("".to_string())], &context);
-        assert!(result.is_ok());
-        if let PluginResult::Value(Value::Number(n)) = result.unwrap() {
+        if let PluginResult::Value(Value::Number(n)) = result.expect("len plugin must execute") {
             assert_eq!(n.as_u64().unwrap(), 0);
         } else {
             panic!("Expected Value result with number");
@@ -119,26 +116,23 @@ mod tests {
     }
 
     #[test]
-    fn test_len_plugin_null_type() {
+    fn len_plugin_null_type() {
         let plugin = LenPlugin;
         let context = create_context();
         let result = plugin.execute(&[Value::Null], &context);
-        assert!(result.is_ok());
-        if let PluginResult::Value(Value::Null) = result.unwrap() {
-            // Pass
-        } else {
-            panic!("Expected Null result");
-        }
+        assert_eq!(
+            result.expect("len plugin must execute"),
+            PluginResult::Value(Value::Null)
+        );
     }
 
     #[test]
-    fn test_len_plugin_unicode_string_counts_codepoints() {
+    fn len_plugin_unicode_string_counts_codepoints() {
         // Regression: "привет" is 12 bytes but 6 codepoints; jq `length` == 6.
         let plugin = LenPlugin;
         let context = create_context();
         let result = plugin.execute(&[Value::String("привет".to_string())], &context);
-        assert!(result.is_ok());
-        if let PluginResult::Value(Value::Number(n)) = result.unwrap() {
+        if let PluginResult::Value(Value::Number(n)) = result.expect("len plugin must execute") {
             assert_eq!(n.as_u64().unwrap(), 6);
         } else {
             panic!("Expected Value result with number");
@@ -146,13 +140,12 @@ mod tests {
     }
 
     #[test]
-    fn test_len_plugin_object_counts_entries() {
+    fn len_plugin_object_counts_entries() {
         let plugin = LenPlugin;
         let context = create_context();
         let obj = serde_json::json!({"a": 1, "b": 2});
         let result = plugin.execute(&[obj], &context);
-        assert!(result.is_ok());
-        if let PluginResult::Value(Value::Number(n)) = result.unwrap() {
+        if let PluginResult::Value(Value::Number(n)) = result.expect("len plugin must execute") {
             assert_eq!(n.as_u64().unwrap(), 2);
         } else {
             panic!("Expected Value result with number");
@@ -160,12 +153,13 @@ mod tests {
     }
 
     #[test]
-    fn test_len_plugin_no_args() {
+    fn len_plugin_no_args() {
         let plugin = LenPlugin;
         let context = create_context();
         let result = plugin.execute(&[], &context);
-        assert!(result.is_ok());
-        if let PluginResult::Assertion(AssertionResult::Error(msg)) = result.unwrap() {
+        if let PluginResult::Assertion(AssertionResult::Error(msg)) =
+            result.expect("len plugin must execute")
+        {
             assert!(msg.contains("1 argument"));
         } else {
             panic!("Expected Error assertion result");

@@ -22,6 +22,9 @@ extend-ignore-re = [
   "load_shedule",
   # Ignore fpr (false positive rate) variable name in benchmarks
   "fpr",
+  # A \uXXXX escape splits the word it sits in ("café"), leaving a
+  # fragment typos reads as a misspelling.
+  '[A-Za-z]*\\u[0-9a-fA-F]{4}',
 ]
 
 [default.extend-identifiers]

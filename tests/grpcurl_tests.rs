@@ -25,7 +25,7 @@ fn run_cli_in_dir_with_env(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> 
 }
 
 #[test]
-fn test_grpcurl_builds_paths_relative_to_invocation_cwd() {
+fn grpcurl_builds_paths_relative_to_invocation_cwd() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let tests_dir = root.join("tests");
@@ -66,7 +66,7 @@ authorization: Bearer abc
 }
 
 #[test]
-fn test_grpcurl_json_output_contains_command() {
+fn grpcurl_json_output_contains_command() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let gctf_path = root.join("sample.gctf");
@@ -97,7 +97,7 @@ demo.UserService/GetUser
 }
 
 #[test]
-fn test_grpcurl_doc_index_selects_single_document() {
+fn grpcurl_doc_index_selects_single_document() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let gctf_path = root.join("multi.gctf");
@@ -137,7 +137,7 @@ demo.UserService/GetUserV2
 }
 
 #[test]
-fn test_grpcurl_doc_index_out_of_range_fails() {
+fn grpcurl_doc_index_out_of_range_fails() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let gctf_path = root.join("sample.gctf");
@@ -156,7 +156,7 @@ demo.UserService/GetUser
 }
 
 #[test]
-fn test_grpcurl_uses_default_address_without_section_or_env() {
+fn grpcurl_uses_default_address_without_section_or_env() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let gctf_path = root.join("sample.gctf");
@@ -180,7 +180,7 @@ demo.UserService/GetUser
 }
 
 #[test]
-fn test_grpcurl_uses_env_address_when_section_missing() {
+fn grpcurl_uses_env_address_when_section_missing() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let gctf_path = root.join("sample.gctf");
@@ -209,7 +209,7 @@ demo.UserService/GetUser
 }
 
 #[test]
-fn test_grpcurl_emits_run_parity_tls_compression_and_empty_request() {
+fn grpcurl_emits_run_parity_tls_compression_and_empty_request() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let tests_dir = root.join("tests");
@@ -252,7 +252,7 @@ insecure: true
 }
 
 #[test]
-fn test_grpcurl_does_not_emit_plaintext_when_tls_present() {
+fn grpcurl_does_not_emit_plaintext_when_tls_present() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let gctf_path = root.join("sample.gctf");
@@ -283,7 +283,7 @@ insecure: true
 }
 
 #[test]
-fn test_grpcurl_prefers_protoset_over_proto_flags() {
+fn grpcurl_prefers_protoset_over_proto_flags() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let gctf_path = root.join("sample.gctf");
@@ -314,7 +314,7 @@ import_paths: api
 }
 
 #[test]
-fn test_grpcurl_default_includes_all_requests() {
+fn grpcurl_default_includes_all_requests() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let gctf_path = root.join("sample.gctf");

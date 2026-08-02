@@ -57,7 +57,7 @@
 //! option key on a section header (`--- RESPONSE my_check=5 ---`) instead of
 //! the parser rejecting it as unknown — see [`load_all_inline_option_keys`].
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use apif_assert::engine::AssertionResult;
 use rhai::{AST, Dynamic, Engine, FnAccess};
 use serde_json::Value;
@@ -116,15 +116,7 @@ impl RhaiPlugin {
     /// reporter-only script. Fails only if the file doesn't parse.
     pub fn load_all(path: &Path) -> Result<Vec<Self>> {
         let engine = crate::rhai_stdlib::build_engine();
-        // Hash what we compile, so the recorded digest is what actually runs.
-        let source = std::fs::read(path)
-            .with_context(|| format!("failed to read plugin script: {}", path.display()))?;
-        let digest = crate::marketplace::sha256_hex(&source);
-        let source = String::from_utf8(source)
-            .with_context(|| format!("plugin script is not UTF-8: {}", path.display()))?;
-        let ast = engine
-            .compile(&source)
-            .with_context(|| format!("failed to compile plugin script: {}", path.display()))?;
+        let (ast, digest) = crate::rhai_stdlib::compile_with_digest(&engine, path)?;
 
         let engine = Arc::new(engine);
         let ast = Arc::new(ast);

@@ -171,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trailer_plugin_exists() {
+    fn trailer_plugin_exists() {
         let plugin = TrailerExtractPlugin;
         let context = create_context_with_trailers();
 
@@ -183,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trailer_plugin_case_insensitive() {
+    fn trailer_plugin_case_insensitive() {
         let plugin = TrailerExtractPlugin;
         let context = create_context_with_trailers();
 
@@ -200,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trailer_plugin_not_found() {
+    fn trailer_plugin_not_found() {
         let plugin = TrailerExtractPlugin;
         let context = create_context_with_trailers();
 
@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trailer_plugin_no_trailers() {
+    fn trailer_plugin_no_trailers() {
         let plugin = TrailerExtractPlugin;
         let context = create_context_no_trailers();
 
@@ -224,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trailer_plugin_no_args() {
+    fn trailer_plugin_no_args() {
         let plugin = TrailerExtractPlugin;
         let context = create_context_with_trailers();
 
@@ -237,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trailer_plugin_too_many_args() {
+    fn trailer_plugin_too_many_args() {
         let plugin = TrailerExtractPlugin;
         let context = create_context_with_trailers();
 
@@ -258,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trailer_plugin_wrong_type() {
+    fn trailer_plugin_wrong_type() {
         let plugin = TrailerExtractPlugin;
         let context = create_context_with_trailers();
 
@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trailer_plugin_checksum() {
+    fn trailer_plugin_checksum() {
         let plugin = TrailerExtractPlugin;
         let context = create_context_with_trailers();
 
@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trailer_plugin_processing_time() {
+    fn trailer_plugin_processing_time() {
         let plugin = TrailerExtractPlugin;
         let context = create_context_with_trailers();
 
@@ -300,19 +300,19 @@ mod tests {
     }
 
     #[test]
-    fn test_trailer_plugin_name() {
+    fn trailer_plugin_name() {
         let plugin = TrailerExtractPlugin;
         assert_eq!(plugin.name(), "trailer");
     }
 
     #[test]
-    fn test_trailer_plugin_description() {
+    fn trailer_plugin_description() {
         let plugin = TrailerExtractPlugin;
         assert!(plugin.description().contains("trailer"));
     }
 
     #[test]
-    fn test_has_trailer_plugin_exists() {
+    fn has_trailer_plugin_exists() {
         let plugin = HasTrailerPlugin;
         let context = create_context_with_trailers();
 
@@ -324,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_trailer_plugin_not_found() {
+    fn has_trailer_plugin_not_found() {
         let plugin = HasTrailerPlugin;
         let context = create_context_with_trailers();
 
@@ -336,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_trailer_plugin_no_trailers() {
+    fn has_trailer_plugin_no_trailers() {
         let plugin = HasTrailerPlugin;
         let context = create_context_no_trailers();
 
@@ -348,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_trailer_plugin_case_insensitive() {
+    fn has_trailer_plugin_case_insensitive() {
         let plugin = HasTrailerPlugin;
         let context = create_context_with_trailers();
 
@@ -365,7 +365,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_trailer_plugin_too_many_args() {
+    fn has_trailer_plugin_too_many_args() {
         let plugin = HasTrailerPlugin;
         let context = create_context_with_trailers();
 
@@ -386,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_trailer_plugin_wrong_type() {
+    fn has_trailer_plugin_wrong_type() {
         let plugin = HasTrailerPlugin;
         let context = create_context_with_trailers();
 
@@ -401,13 +401,13 @@ mod tests {
     }
 
     #[test]
-    fn test_has_trailer_plugin_name() {
+    fn has_trailer_plugin_name() {
         let plugin = HasTrailerPlugin;
         assert_eq!(plugin.name(), "has_trailer");
     }
 
     #[test]
-    fn test_has_trailer_plugin_description() {
+    fn has_trailer_plugin_description() {
         let plugin = HasTrailerPlugin;
         assert!(plugin.description().contains("trailer"));
     }

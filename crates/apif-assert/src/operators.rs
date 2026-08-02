@@ -40,7 +40,7 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
-fn cached_regex(pattern: &str) -> std::result::Result<Rc<Regex>, String> {
+pub fn cached_regex(pattern: &str) -> std::result::Result<Rc<Regex>, String> {
     if let Some(cached) = REGEX_CACHE.with(|cache| cache.borrow().get(pattern).cloned()) {
         return cached;
     }
@@ -641,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn test_equality_pass() {
+    fn equality_pass() {
         let r = eval(
             &pm(),
             ".status == \"success\"",
@@ -651,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    fn test_number_type_annotation_coerces_int64_string_field() {
+    fn number_type_annotation_coerces_int64_string_field() {
         // int64 protobuf fields serialize as JSON strings; `:number` must
         // still let numeric comparisons work against them.
         let r = eval(
@@ -663,55 +663,55 @@ mod tests {
     }
 
     #[test]
-    fn test_equality_fail() {
+    fn equality_fail() {
         let r = eval(&pm(), ".status == \"error\"", &json!({"status": "success"}));
         assert!(matches!(r, AssertionResult::Fail { .. }));
     }
 
     #[test]
-    fn test_contains() {
+    fn contains() {
         let r = eval(&pm(), ".name contains \"te\"", &json!({"name": "test"}));
         assert!(matches!(r, AssertionResult::Pass));
     }
 
     #[test]
-    fn test_xor_both_true() {
+    fn xor_both_true() {
         let r = eval(&pm(), ".x == 1 xor .y == 2", &json!({"x": 1, "y": 2}));
         assert!(matches!(r, AssertionResult::Fail { .. }), "got: {:?}", r);
     }
 
     #[test]
-    fn test_xor_both_false() {
+    fn xor_both_false() {
         let r = eval(&pm(), ".x == 9 xor .y == 9", &json!({"x": 1, "y": 2}));
         assert!(matches!(r, AssertionResult::Fail { .. }), "got: {:?}", r);
     }
 
     #[test]
-    fn test_numeric_greater() {
+    fn numeric_greater() {
         let r = eval(&pm(), ".id > 100", &json!({"id": 123}));
         assert!(matches!(r, AssertionResult::Pass));
     }
 
     #[test]
-    fn test_numeric_less() {
+    fn numeric_less() {
         let r = eval(&pm(), ".id < 200", &json!({"id": 123}));
         assert!(matches!(r, AssertionResult::Pass));
     }
 
     #[test]
-    fn test_matches_regex() {
+    fn matches_regex() {
         let r = eval(&pm(), ".name matches \"^te.*t$\"", &json!({"name": "test"}));
         assert!(matches!(r, AssertionResult::Pass));
     }
 
     #[test]
-    fn test_matches_regex_fail() {
+    fn matches_regex_fail() {
         let r = eval(&pm(), ".name matches \"^xyz\"", &json!({"name": "test"}));
         assert!(matches!(r, AssertionResult::Fail { .. }));
     }
 
     #[test]
-    fn test_jq_fallback_via_raw() {
+    fn jq_fallback_via_raw() {
         let p = pm();
         let response = json!({"tags": [1, 2, 3]});
         let empty = HashMap::new();
@@ -723,57 +723,57 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_path_simple() {
+    fn resolve_path_simple() {
         let r = resolve_path(".key", &json!({"key": "value"}));
         assert_eq!(r, json!("value"));
     }
 
     #[test]
-    fn test_resolve_path_nested() {
+    fn resolve_path_nested() {
         let r = resolve_path(".outer.inner", &json!({"outer": {"inner": "value"}}));
         assert_eq!(r, json!("value"));
     }
 
     #[test]
-    fn test_resolve_path_array_index() {
+    fn resolve_path_array_index() {
         let r = resolve_path(".items[0]", &json!({"items": ["first", "second"]}));
         assert_eq!(r, json!("first"));
     }
 
     #[test]
-    fn test_resolve_path_missing_key() {
+    fn resolve_path_missing_key() {
         let r = resolve_path(".missing", &json!({"a": 1}));
         assert!(r.is_null());
     }
 
     #[test]
-    fn test_compare_numeric_greater() {
+    fn compare_numeric_greater() {
         assert_eq!(compare_numeric(&json!(5), &json!(3), ">"), Some(true));
     }
 
     #[test]
-    fn test_compare_numeric_less() {
+    fn compare_numeric_less() {
         assert_eq!(compare_numeric(&json!(3), &json!(5), "<"), Some(true));
     }
 
     #[test]
-    fn test_compare_numeric_equality() {
+    fn compare_numeric_equality() {
         assert_eq!(compare_numeric(&json!(5), &json!(5), ">="), Some(true));
         assert_eq!(compare_numeric(&json!(5), &json!(5), "<="), Some(true));
     }
 
     #[test]
-    fn test_compare_numeric_mixed_types() {
+    fn compare_numeric_mixed_types() {
         assert_eq!(compare_numeric(&json!(5), &json!("5"), ">"), None);
     }
 
     #[test]
-    fn test_cached_regex_valid() {
+    fn cached_regex_valid() {
         assert!(cached_regex(r"\d+").is_ok());
     }
 
     #[test]
-    fn test_cached_regex_invalid() {
+    fn cached_regex_invalid() {
         assert!(cached_regex(r"[").is_err());
     }
 
@@ -830,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_type_cast_coerces_numeric_strings() {
+    fn validate_type_cast_coerces_numeric_strings() {
         // int64/uint64 protobuf fields are JSON-encoded as strings.
         assert_eq!(
             validate_type_cast(&json!("123456789012345"), "number"),
@@ -845,7 +845,7 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_plugin_name_assert() {
+    fn normalize_plugin_name_assert() {
         assert_eq!(normalize_plugin_name("@uuid"), "uuid");
         assert_eq!(normalize_plugin_name("uuid"), "uuid");
         assert_eq!(normalize_plugin_name(" @uuid "), "uuid");
@@ -883,7 +883,7 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_atom_literal() {
+    fn eval_atom_literal() {
         let pm = crate::registry::NoopPluginRegistry;
         let response = json!({});
         let empty = HashMap::new();
@@ -908,7 +908,7 @@ mod tests {
     }
 
     #[test]
-    fn test_matches_regex_honors_case_insensitive_flag() {
+    fn matches_regex_honors_case_insensitive_flag() {
         use apif_ast::assertion_ast::{BinaryOp, Expr};
         let expr = AssertionExpr::Binary {
             op: BinaryOp::Matches,
@@ -961,7 +961,7 @@ mod tests {
     }
 
     #[test]
-    fn test_plugin_error_in_value_position_propagates() {
+    fn plugin_error_in_value_position_propagates() {
         // Regression: a plugin Error used as a value became the truthy string
         // "error: ..." and could flip a comparison to PASS.
         let r = eval(
@@ -977,7 +977,7 @@ mod tests {
     }
 
     #[test]
-    fn test_eval_binary_value_num() {
+    fn eval_binary_value_num() {
         use apif_ast::assertion_ast::BinaryOp;
         assert_eq!(
             eval_binary_value(json!(5), &BinaryOp::Gt, json!(3)),
@@ -990,7 +990,7 @@ mod tests {
     }
 
     #[test]
-    fn test_eq_is_exact_on_large_integers() {
+    fn eq_is_exact_on_large_integers() {
         // Regression: `as_f64` collapsed neighbouring i64 values onto the same
         // float, so `...807 == ...806` false-passed.
         let r = eval(
@@ -1018,7 +1018,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_variable_resolves_in_assertion() {
+    fn extract_variable_resolves_in_assertion() {
         // Regression: `$price >= 0` must resolve `$price` to the EXTRACT-bound
         // value, not compare the literal string "$price" to 0.
         let mut vars = HashMap::new();
@@ -1032,7 +1032,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_variable_string_contains() {
+    fn extract_variable_string_contains() {
         let mut vars = HashMap::new();
         vars.insert("name".to_string(), json!("hello world"));
         let r = eval_with_vars(&pm(), "$name contains \"hello\"", &json!({}), &vars);
@@ -1040,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unbound_variable_errors() {
+    fn unbound_variable_errors() {
         let vars = HashMap::new();
         let r = eval_with_vars(&pm(), "$missing >= 0", &json!({}), &vars);
         match r {
@@ -1050,7 +1050,7 @@ mod tests {
     }
 
     #[test]
-    fn test_eq_int_vs_float_still_equal_by_value() {
+    fn eq_int_vs_float_still_equal_by_value() {
         let r = eval(&pm(), ".x == 3.0", &json!({"x": 3}));
         assert!(matches!(r, AssertionResult::Pass), "got: {:?}", r);
         let r = eval(&pm(), ".x == 3", &json!({"x": 3.0}));

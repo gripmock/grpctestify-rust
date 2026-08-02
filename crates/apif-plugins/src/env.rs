@@ -114,7 +114,7 @@ mod tests {
     use std::env;
 
     #[test]
-    fn test_env_plugin_exists() {
+    fn env_plugin_exists() {
         // Arrange
         let plugin = EnvPlugin;
         unsafe {
@@ -138,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn test_env_plugin_not_exists() {
+    fn env_plugin_not_exists() {
         // Arrange
         let plugin = EnvPlugin;
 
@@ -155,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn test_env_plugin_no_args() {
+    fn env_plugin_no_args() {
         // Arrange
         let plugin = EnvPlugin;
 
@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn test_env_plugin_too_many_args() {
+    fn env_plugin_too_many_args() {
         // Arrange
         let plugin = EnvPlugin;
 
@@ -196,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn test_env_plugin_with_default_value() {
+    fn env_plugin_with_default_value() {
         // Arrange
         let plugin = EnvPlugin;
 
@@ -216,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn test_env_plugin_var_exists_ignores_default() {
+    fn env_plugin_var_exists_ignores_default() {
         // Arrange
         let plugin = EnvPlugin;
         unsafe {
@@ -243,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn test_env_plugin_wrong_type() {
+    fn env_plugin_wrong_type() {
         // Arrange
         let plugin = EnvPlugin;
 
@@ -264,7 +264,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn test_env_plugin_non_utf8_errors_not_treated_as_unset() {
+    fn env_plugin_non_utf8_errors_not_treated_as_unset() {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
 
@@ -298,13 +298,13 @@ mod tests {
     }
 
     #[test]
-    fn test_env_plugin_name() {
+    fn env_plugin_name() {
         let plugin = EnvPlugin;
         assert_eq!(plugin.name(), "env");
     }
 
     #[test]
-    fn test_env_plugin_description() {
+    fn env_plugin_description() {
         let plugin = EnvPlugin;
         assert!(plugin.description().contains("environment"));
     }

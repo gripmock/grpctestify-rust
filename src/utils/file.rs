@@ -246,7 +246,7 @@ mod tests {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_update_test_file_with_parsed_zero_based_sections() {
+    fn update_test_file_with_parsed_zero_based_sections() {
         if !runtime::supports(runtime::Capability::IsolatedFsIo) {
             return;
         }
@@ -268,7 +268,7 @@ mod tests {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_update_test_file_updates_jsonlines_response_count() {
+    fn update_test_file_updates_jsonlines_response_count() {
         if !runtime::supports(runtime::Capability::IsolatedFsIo) {
             return;
         }
@@ -287,7 +287,7 @@ mod tests {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_update_test_file_preserves_streaming_message_count() {
+    fn update_test_file_preserves_streaming_message_count() {
         if !runtime::supports(runtime::Capability::IsolatedFsIo) {
             return;
         }
@@ -314,7 +314,7 @@ mod tests {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_update_test_file_empty_response_preserves_original_content() {
+    fn update_test_file_empty_response_preserves_original_content() {
         if !runtime::supports(runtime::Capability::IsolatedFsIo) {
             return;
         }
@@ -340,7 +340,7 @@ mod tests {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_update_test_file_preserves_trailing_newline_and_no_temp_leftover() {
+    fn update_test_file_preserves_trailing_newline_and_no_temp_leftover() {
         if !runtime::supports(runtime::Capability::IsolatedFsIo) {
             return;
         }
@@ -356,7 +356,7 @@ mod tests {
             messages: vec![serde_json::json!({"result": "new"})],
             error: None,
         };
-        assert!(update_test_file(&path, &doc, &response).is_ok());
+        update_test_file(&path, &doc, &response).expect("update_test_file must succeed");
         let updated = std::fs::read_to_string(&path).unwrap();
         assert!(updated.contains("\"result\": \"new\""));
         assert!(

@@ -149,7 +149,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_config_default() {
+    fn config_default() {
         let config = Config::default();
         assert_eq!(config.general.address, "localhost:4770");
         assert_eq!(config.general.parallel, "auto");
@@ -163,7 +163,7 @@ mod tests {
     }
 
     #[test]
-    fn test_general_config_default() {
+    fn general_config_default() {
         let general = GeneralConfig::default();
         assert_eq!(general.address, "localhost:4770");
         assert_eq!(general.parallel, "auto");
@@ -175,21 +175,21 @@ mod tests {
     }
 
     #[test]
-    fn test_progress_config_default() {
+    fn progress_config_default() {
         let progress = ProgressConfig::default();
         assert_eq!(progress.mode, "auto");
         assert!(progress.color);
     }
 
     #[test]
-    fn test_coverage_config_default() {
+    fn coverage_config_default() {
         let coverage = CoverageConfig::default();
         assert!(!coverage.enabled);
         assert!(coverage.output.is_none());
     }
 
     #[test]
-    fn test_default_values() {
+    fn default_values() {
         assert_eq!(default_address(), "localhost:4770");
         assert_eq!(default_address_for(None), "localhost:4770");
         assert_eq!(default_address_for(Some("grpc")), "localhost:4770");
@@ -202,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn test_config_debug() {
+    fn config_debug() {
         let config = Config::default();
         let debug_str = format!("{:?}", config);
         assert!(debug_str.contains("Config"));
@@ -210,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn test_config_clone() {
+    fn config_clone() {
         let config1 = Config::default();
         let config2 = config1.clone();
         assert_eq!(config1.general.address, config2.general.address);

@@ -148,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn test_elapsed_ms_plugin_returns_value() {
+    fn elapsed_ms_plugin_returns_value() {
         let plugin = ElapsedMsPlugin;
         let response = Value::Null;
         let timing = AssertionTiming {
@@ -164,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn test_total_elapsed_ms_plugin_returns_value() {
+    fn total_elapsed_ms_plugin_returns_value() {
         let plugin = TotalElapsedMsPlugin;
         let response = Value::Null;
         let timing = AssertionTiming {
@@ -180,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn test_plugins_fail_without_timing_context() {
+    fn plugins_fail_without_timing_context() {
         let plugin = ElapsedMsPlugin;
         let context = PluginContext::new(&Value::Null);
 

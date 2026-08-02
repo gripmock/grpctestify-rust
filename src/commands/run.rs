@@ -241,11 +241,17 @@ fn expand_dataset_files(
             plain.push(file);
             continue;
         };
-        let SectionContent::Rows(rows) = &section.content else {
-            plain.push(file);
-            continue;
+        // An empty section parses to `Empty`, not `Rows([])`, so matching only
+        // on `Rows` sent a row-less DATASET down the plain path and ran it once
+        // with its `{{var}}` placeholders unresolved instead of reporting it.
+        let rows = match &section.content {
+            SectionContent::Rows(rows) => rows.clone(),
+            SectionContent::Empty => Vec::new(),
+            _ => {
+                plain.push(file);
+                continue;
+            }
         };
-        let rows = rows.clone();
 
         let file_str = file.to_string_lossy().to_string();
         dataset_files.push(file.clone());
@@ -1338,7 +1344,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_test_meta_from_file_meta() {
+    fn extract_test_meta_from_file_meta() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         let file_meta = crate::parser::ast::FileMeta {
             name: Some("suite name".to_string()),
@@ -1366,7 +1372,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_test_meta_fallback_tags_from_attributes() {
+    fn extract_test_meta_fallback_tags_from_attributes() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -1387,7 +1393,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_test_meta_no_fallback_when_meta_has_tags() {
+    fn extract_test_meta_no_fallback_when_meta_has_tags() {
         let file_meta = crate::parser::ast::FileMeta {
             tags: vec!["smoke".to_string()],
             ..Default::default()
@@ -1419,7 +1425,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_test_meta_fallback_owner_from_attributes() {
+    fn extract_test_meta_fallback_owner_from_attributes() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -1437,7 +1443,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_test_meta_fallback_summary_from_attributes() {
+    fn extract_test_meta_fallback_summary_from_attributes() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -1455,7 +1461,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_test_meta_dedup_tags() {
+    fn extract_test_meta_dedup_tags() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -1483,7 +1489,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_test_meta_empty() {
+    fn extract_test_meta_empty() {
         let doc = GctfDocument::new("test.gctf".to_string());
         let meta = extract_test_meta(&doc);
         assert!(meta.is_empty());

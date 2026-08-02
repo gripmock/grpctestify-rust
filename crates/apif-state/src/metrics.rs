@@ -34,7 +34,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_execution_metrics_default() {
+    fn execution_metrics_default() {
         let metrics = ExecutionMetrics::default();
         assert_eq!(metrics.total_duration_ms, 0);
         assert_eq!(metrics.rpc_calls, 0);
@@ -44,7 +44,7 @@ mod tests {
     }
 
     #[test]
-    fn test_execution_metrics_clone() {
+    fn execution_metrics_clone() {
         let metrics = ExecutionMetrics::default();
         let cloned = metrics.clone();
         assert_eq!(metrics.total_duration_ms, cloned.total_duration_ms);
@@ -52,14 +52,14 @@ mod tests {
     }
 
     #[test]
-    fn test_execution_metrics_debug() {
+    fn execution_metrics_debug() {
         let metrics = ExecutionMetrics::default();
         let debug_str = format!("{:?}", metrics);
         assert!(debug_str.contains("ExecutionMetrics"));
     }
 
     #[test]
-    fn test_execution_metrics_serialize() {
+    fn execution_metrics_serialize() {
         let metrics = ExecutionMetrics::default();
         let json = serde_json::to_string(&metrics).unwrap();
         assert!(json.contains("total_duration_ms"));

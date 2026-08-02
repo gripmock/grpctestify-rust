@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 #[test]
-fn test_allure_passed_test_structure() {
+fn allure_passed_test_structure() {
     let allure_result = serde_json::json!({
         "uuid": "test-uuid-passed",
         "historyId": "history-id-passed",
@@ -34,7 +34,7 @@ fn test_allure_passed_test_structure() {
 }
 
 #[test]
-fn test_allure_json_has_required_fields() {
+fn allure_json_has_required_fields() {
     // Test that Allure JSON structure matches expected schema
     let allure_result = serde_json::json!({
         "uuid": "test-uuid-123",
@@ -95,7 +95,7 @@ fn test_allure_json_has_required_fields() {
 }
 
 #[test]
-fn test_allure_failed_test_structure() {
+fn allure_failed_test_structure() {
     let allure_result = serde_json::json!({
         "uuid": "test-uuid-failed",
         "historyId": "history-id-failed",
@@ -124,7 +124,7 @@ fn test_allure_failed_test_structure() {
 }
 
 #[test]
-fn test_allure_labels_required() {
+fn allure_labels_required() {
     let required_labels = ["language", "framework", "suite", "feature"];
 
     let allure_result = serde_json::json!({
@@ -149,7 +149,7 @@ fn test_allure_labels_required() {
 }
 
 #[test]
-fn test_allure_status_details_for_failure() {
+fn allure_status_details_for_failure() {
     // Test statusDetails structure for failed tests
     let status_details = serde_json::json!({
         "message": "Assertion failed: expected value X, got Y",
@@ -168,7 +168,7 @@ fn test_allure_status_details_for_failure() {
 }
 
 #[test]
-fn test_allure_step_structure() {
+fn allure_step_structure() {
     let step = serde_json::json!({
         "name": "gRPC call",
         "status": "passed",
@@ -191,7 +191,7 @@ fn test_allure_step_structure() {
 }
 
 #[test]
-fn test_allure_attachment_structure() {
+fn allure_attachment_structure() {
     // Test attachment structure (for future request/response attachments)
     let attachment = serde_json::json!({
         "name": "Request Body",
@@ -205,7 +205,7 @@ fn test_allure_attachment_structure() {
 }
 
 #[test]
-fn test_allure_history_id_stability() {
+fn allure_history_id_stability() {
     // Test that historyId is consistent for same test
     use uuid::Uuid;
 
@@ -230,7 +230,7 @@ fn test_allure_history_id_stability() {
 }
 
 #[test]
-fn test_allure_suite_extraction() {
+fn allure_suite_extraction() {
     // Test suite name extraction from path
     let test_path = "/workspace/tests/projects/search/case_tech_search.gctf";
 
@@ -244,7 +244,7 @@ fn test_allure_suite_extraction() {
 }
 
 #[test]
-fn test_allure_test_name_extraction() {
+fn allure_test_name_extraction() {
     // Test short name extraction from path
     let test_path = "/workspace/tests/projects/search/case_tech_search.gctf";
 
@@ -257,7 +257,7 @@ fn test_allure_test_name_extraction() {
 }
 
 #[test]
-fn test_allure_label_structure() {
+fn allure_label_structure() {
     // Test that Allure labels have correct structure
     let label = serde_json::json!({
         "name": "severity",
@@ -283,7 +283,7 @@ fn test_allure_label_structure() {
 }
 
 #[test]
-fn test_allure_timestamp_format() {
+fn allure_timestamp_format() {
     // Test that timestamps are in correct format (milliseconds since epoch)
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -306,7 +306,7 @@ fn test_allure_timestamp_format() {
 }
 
 #[test]
-fn test_allure_status_transitions() {
+fn allure_status_transitions() {
     // Test valid status transitions
     let valid_transitions = [
         ("pending", "passed"),

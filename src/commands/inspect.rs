@@ -17,7 +17,7 @@ use crate::report::{AstOverview, InspectReport, SectionInfo};
 fn bench_resolved_options(
     doc: &parser::GctfDocument,
 ) -> Option<Vec<crate::report::BenchResolvedOption>> {
-    let bench_section = bench_section_map(doc)?;
+    let bench_section = doc.bench_key_values()?;
     let config = BenchConfigResolved::from_bench_section(Some(bench_section)).ok()?;
 
     let mut out = Vec::new();
@@ -1072,19 +1072,8 @@ fn print_source_info(doc: &parser::GctfDocument, file_path: &Path) {
     }
 }
 
-fn bench_section_map(doc: &parser::GctfDocument) -> Option<&crate::parser::OrderedStringMap> {
-    doc.sections.iter().find_map(|section| {
-        if section.section_type == SectionType::Bench
-            && let SectionContent::KeyValues(bench) = &section.content
-        {
-            return Some(bench);
-        }
-        None
-    })
-}
-
 fn print_bench_resolved(doc: &parser::GctfDocument) {
-    let Some(bench_section) = bench_section_map(doc) else {
+    let Some(bench_section) = doc.bench_key_values() else {
         return;
     };
 

@@ -155,14 +155,14 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_parse_json5_simple() {
+    fn parse_json5_simple() {
         let input = r#"{key: "value"}"#;
         let expected = json!({"key": "value"});
         assert_eq!(from_str(input).unwrap(), expected);
     }
 
     #[test]
-    fn test_parse_json5_comments() {
+    fn parse_json5_comments() {
         let input = r#"{
             // This is a comment
             key: "value" /* block comment */
@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_json5_trailing_comma() {
+    fn parse_json5_trailing_comma() {
         let input = r#"{
             key: "value",
         }"#;
@@ -181,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_json5_numeric_digit_separators() {
+    fn parse_json5_numeric_digit_separators() {
         let input = r#"{
             amount: 1_000_000,
             price: 1_234.567_89,
@@ -196,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_json5_unquoted_keys() {
+    fn parse_json5_unquoted_keys() {
         let input = r#"{
             key: "value",
             number: 123,
@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_hash_comments() {
+    fn parse_hash_comments() {
         let input = r#"{
             key: "value", # inline comment
             num: 1
@@ -219,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hash_in_string_not_comment() {
+    fn hash_in_string_not_comment() {
         let input = r#"{
             url: "https://example.com/path#anchor"
         }"#;
@@ -228,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_inline_slash_comment() {
+    fn tokenize_inline_slash_comment() {
         let input = r#"{
   "ipsToDecorations": {
     "10.0.0.1": {
@@ -245,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_trailing_comment_after_json() {
+    fn tokenize_trailing_comment_after_json() {
         let input = r#"{
   "key": "value"
 }
@@ -256,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_block_comment_multiline() {
+    fn tokenize_block_comment_multiline() {
         let input = r#"{
   /* this is
      a multiline
@@ -268,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_slash_in_string_preserved() {
+    fn tokenize_slash_in_string_preserved() {
         let input = r#"{"url": "http://example.com", "path": "a/b/c"}"#;
         let result = from_str(input).unwrap();
         assert_eq!(result["url"], "http://example.com");
@@ -276,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_escaped_quotes_in_string() {
+    fn tokenize_escaped_quotes_in_string() {
         let input = r#"{"text": "say \"hello\" // not a comment"}"#;
         let result = from_str(input).unwrap();
         assert_eq!(result["text"], "say \"hello\" // not a comment");
@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_deeply_nested_rejected_without_overflow() {
+    fn deeply_nested_rejected_without_overflow() {
         // Regression: deeply nested input previously reached the recursive json5
         // parser and overflowed the stack (uncatchable process abort). It must
         // now be rejected with a clean error instead.
@@ -295,14 +295,14 @@ mod tests {
     }
 
     #[test]
-    fn test_moderately_nested_still_parses() {
+    fn moderately_nested_still_parses() {
         let n = 100;
         let input = format!("{}1{}", "[".repeat(n), "]".repeat(n));
         assert!(from_str(&input).is_ok());
     }
 
     #[test]
-    fn test_brackets_inside_string_not_counted_as_depth() {
+    fn brackets_inside_string_not_counted_as_depth() {
         // Brackets inside a string must not contribute to nesting depth.
         let input = "{a: \"[[[[[[[[[[\"}";
         let result = from_str(input).unwrap();
@@ -310,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn test_single_quoted_string_hash_not_comment() {
+    fn single_quoted_string_hash_not_comment() {
         // Regression: `#` inside a single-quoted JSON5 string must not be
         // stripped as a comment.
         let input = "{a: '# not a comment'}";
@@ -319,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn test_single_quoted_string_double_slash_not_comment() {
+    fn single_quoted_string_double_slash_not_comment() {
         // Regression: `//` inside a single-quoted string (e.g. a URL) must be
         // preserved, not treated as a line comment.
         let input = "{url: 'http://example.com/path'}";
@@ -328,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn test_single_quoted_string_block_comment_preserved() {
+    fn single_quoted_string_block_comment_preserved() {
         // Regression: `/* */` inside a single-quoted string must not be stripped
         // (previously silently corrupted the value).
         let input = "{a: 'has /* stars */ inside'}";
@@ -337,14 +337,14 @@ mod tests {
     }
 
     #[test]
-    fn test_double_quote_inside_single_quoted_string() {
+    fn double_quote_inside_single_quoted_string() {
         let input = "{a: 'say \"hi\"'}";
         let result = from_str(input).unwrap();
         assert_eq!(result["a"], "say \"hi\"");
     }
 
     #[test]
-    fn test_tokenize_hash_preserves_newlines() {
+    fn tokenize_hash_preserves_newlines() {
         let input = "{\n  # comment line 1\n  # comment line 2\n  \"key\": \"value\"\n}";
         let result = from_str(input).unwrap();
         assert_eq!(result["key"], "value");

@@ -12,12 +12,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_section_content_line_first() {
+    fn section_content_line_first() {
         assert_eq!(section_content_line(5, 0), 7);
     }
 
     #[test]
-    fn test_section_content_line_offset() {
+    fn section_content_line_offset() {
         assert_eq!(section_content_line(10, 3), 15);
     }
 }

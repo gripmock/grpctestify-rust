@@ -15,7 +15,7 @@ mod support;
 /// added so a long chain has a table-of-contents rather than requiring a
 /// full scroll to see the shape of the scenario.
 #[test]
-fn test_explain_multi_document_flow_summary() {
+fn explain_multi_document_flow_summary() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("chain.gctf");
     std::fs::write(
@@ -46,7 +46,7 @@ fn test_explain_multi_document_flow_summary() {
 /// sequenceDiagram``` block — plain text, renders natively when the output
 /// is pasted into a markdown file (GitHub/VitePress).
 #[test]
-fn test_explain_multi_document_mermaid_block() {
+fn explain_multi_document_mermaid_block() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("chain.gctf");
     std::fs::write(
@@ -72,7 +72,7 @@ fn test_explain_multi_document_mermaid_block() {
 
 /// Test that explain output matches expected RPC mode
 #[test]
-fn test_explain_rpc_mode_unary() {
+fn explain_rpc_mode_unary() {
     let test_cases = vec![
         "tests/gctf/basic/unary.gctf",
         "examples/basic/unary.gctf",
@@ -100,7 +100,7 @@ fn test_explain_rpc_mode_unary() {
 }
 
 #[test]
-fn test_explain_rpc_mode_server_streaming() {
+fn explain_rpc_mode_server_streaming() {
     let test_cases = vec![
         "tests/gctf/streaming/server-streaming.gctf",
         "examples/streaming/server-streaming.gctf",
@@ -126,7 +126,7 @@ fn test_explain_rpc_mode_server_streaming() {
 }
 
 #[test]
-fn test_explain_rpc_mode_client_streaming() {
+fn explain_rpc_mode_client_streaming() {
     let test_cases = vec![
         "tests/gctf/streaming/client-streaming.gctf",
         "examples/streaming/client-streaming.gctf",
@@ -152,7 +152,7 @@ fn test_explain_rpc_mode_client_streaming() {
 }
 
 #[test]
-fn test_explain_rpc_mode_unary_error() {
+fn explain_rpc_mode_unary_error() {
     let test_cases = vec![
         "tests/gctf/error-handling/expected-error.gctf",
         "examples/error-handling/expected-error.gctf",
@@ -179,7 +179,7 @@ fn test_explain_rpc_mode_unary_error() {
 
 /// Test explain output against expected JSON fixtures
 #[test]
-fn test_explain_against_fixture() {
+fn explain_against_fixture() {
     let fixture_path = "tests/fixtures/explain/basic-unary.json";
     let gctf_path = "tests/gctf/basic/unary.gctf";
 
@@ -218,7 +218,7 @@ fn test_explain_against_fixture() {
 
 /// Test explain with multiple requests (streaming detection)
 #[test]
-fn test_explain_multiple_requests() {
+fn explain_multiple_requests() {
     let test_cases = vec![
         (
             "examples/streaming/client-streaming.gctf",
@@ -252,7 +252,7 @@ fn test_explain_multiple_requests() {
 
 /// Test explain with extract sections
 #[test]
-fn test_explain_with_extractions() {
+fn explain_with_extractions() {
     let path = "examples/variables/extract-basic.gctf";
 
     if !Path::new(path).exists() {
@@ -276,7 +276,7 @@ fn test_explain_with_extractions() {
 /// between runs. Two other listing sites in the same file already sorted;
 /// this one didn't.
 #[test]
-fn test_explain_single_document_extract_listing_is_alphabetically_sorted() {
+fn explain_single_document_extract_listing_is_alphabetically_sorted() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("extract.gctf");
     std::fs::write(
@@ -302,7 +302,7 @@ fn test_explain_single_document_extract_listing_is_alphabetically_sorted() {
 
 /// Test explain with assertions
 #[test]
-fn test_explain_with_assertions() {
+fn explain_with_assertions() {
     let path = "examples/assertions/response-with-asserts.gctf";
 
     if !Path::new(path).exists() {
@@ -317,7 +317,7 @@ fn test_explain_with_assertions() {
 
 /// Test explain summary accuracy
 #[test]
-fn test_explain_summary_accuracy() {
+fn explain_summary_accuracy() {
     let test_cases = vec![
         ("examples/basic/unary.gctf", 1, 1, false, 0),
         ("examples/basic/with-headers.gctf", 1, 1, false, 0),
@@ -356,7 +356,7 @@ fn test_explain_summary_accuracy() {
 }
 
 #[test]
-fn test_explain_error_partial_and_with_asserts_via_ast() {
+fn explain_error_partial_and_with_asserts_via_ast() {
     let content = r#"--- ENDPOINT ---
 tasktracker.TaskService/CompleteTask
 

@@ -226,7 +226,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_evaluate_assertions_pass() {
+    fn evaluate_assertions_pass() {
         let handler = AssertionHandler::new(false);
         let sections = vec![Section {
             section_type: SectionType::Asserts,
@@ -249,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_assertions_fail() {
+    fn evaluate_assertions_fail() {
         let handler = AssertionHandler::new(false);
         let sections = vec![Section {
             section_type: SectionType::Asserts,
@@ -334,11 +334,11 @@ mod tests {
             Some(&headers),
             Some(&trailers),
         );
-        assert!(result.is_ok());
+        result.expect("assertions must run without error");
     }
 
     #[test]
-    fn test_evaluate_section_assertions_empty() {
+    fn evaluate_section_assertions_empty() {
         let handler = AssertionHandler::new(false);
         let section = Section {
             section_type: SectionType::Asserts,

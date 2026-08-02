@@ -379,6 +379,10 @@ impl SourceRuntimeStats {
         }
     }
 
+    /// Count one time an indexed dimension had to fall back to a scan. Feeds the
+    /// `index_fallbacks` field reported in the bench output. NOT yet called from
+    /// the fallback policy, so that metric currently always reads 0 — see the
+    /// codebase-reduction change, task 8.x.
     pub fn record_fallback(&self) {
         use std::sync::atomic::Ordering;
         self.index_fallbacks.fetch_add(1, Ordering::Relaxed);
@@ -767,28 +771,6 @@ impl SourceDrivenConfig {
         if rows.is_empty() { None } else { Some(rows) }
     }
 
-    pub fn build_dimension_variables(
-        &self,
-        row: &SourceRow,
-        joins: &[(String, String, String)],
-    ) -> HashMap<String, Value> {
-        let mut vars = HashMap::new();
-
-        for (dim_name, local_key_col, _remote_key_col) in joins {
-            if let Some(key_val) = row.get(local_key_col)
-                && let Some(dim_row) = self.dimension_lookup(dim_name, key_val)
-            {
-                for col in dim_row.columns() {
-                    if let Some(val) = dim_row.get(col) {
-                        vars.insert(format!("{dim_name}.{col}"), Value::String(val.to_string()));
-                    }
-                }
-            }
-        }
-
-        vars
-    }
-
     pub fn primary_headers(&self) -> Vec<String> {
         let reader = self.primary.lock().ok();
         match reader {
@@ -917,10 +899,10 @@ mod tests {
     #[test]
     #[cfg(not(miri))]
     fn indexed_dimension_matches_in_memory() {
-        let dir = std::env::temp_dir().join("gctf_driven_indexed_match_test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
         create_temp_csv(
-            &dir,
+            dir,
             "regions.csv",
             "region_id,region_name\nR01,Moscow\nR02,Saint Petersburg\n",
         );
@@ -970,8 +952,6 @@ mod tests {
         assert!(indexed.lookup_all("NOPE").is_empty());
         assert!(memory.lookup_all("NOPE").is_empty());
         assert!(indexed.lookup_row("NOPE").unwrap().is_none());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Regression (BUG 1): a CROSS join over an indexed dimension must expand
@@ -982,11 +962,11 @@ mod tests {
     #[test]
     #[cfg(not(miri))]
     fn cross_join_indexed_dimension_expands_rows() {
-        let dir = std::env::temp_dir().join("gctf_driven_cross_indexed_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        create_temp_csv(&dir, "orders.csv", "order_id,region_id\nO1,R01\n");
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        create_temp_csv(dir, "orders.csv", "order_id,region_id\nO1,R01\n");
         create_temp_csv(
-            &dir,
+            dir,
             "regions.csv",
             "region_id,region_name\nR01,Moscow\nR01,Kazan\nR02,Perm\n",
         );
@@ -1043,8 +1023,6 @@ mod tests {
             region_names,
             vec!["Kazan".to_string(), "Moscow".to_string()]
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Regression (BUG 1): an INNER join must skip a primary row whose FK
@@ -1057,14 +1035,14 @@ mod tests {
     #[test]
     #[cfg(not(miri))]
     fn inner_join_skips_rows_missing_fk_column() {
-        let dir = std::env::temp_dir().join("gctf_driven_inner_missing_col_test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
         create_temp_csv(
-            &dir,
+            dir,
             "orders.jsonl",
             "{\"order_id\":\"O1\"}\n{\"order_id\":\"O2\"}\n",
         );
-        create_temp_csv(&dir, "regions.csv", "region_id,region_name\nR01,Moscow\n");
+        create_temp_csv(dir, "regions.csv", "region_id,region_name\nR01,Moscow\n");
 
         let defs: Vec<SourceDefinition> = serde_yaml_ng::from_str(
             "- file: orders.jsonl\n  name: orders\n- file: regions.csv\n  name: regions\n  indexed_by: [region_id]\n  join_type: inner\n",
@@ -1079,8 +1057,6 @@ mod tests {
 
         // No primary row carries the FK column, so the INNER join drops them all.
         assert!(config.next_row_variables().unwrap().is_none());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Regression (BUG 1): a run of INNER-join misses is drained iteratively
@@ -1090,14 +1066,14 @@ mod tests {
     #[test]
     #[cfg(not(miri))]
     fn inner_join_drains_leading_misses_then_matches() {
-        let dir = std::env::temp_dir().join("gctf_driven_inner_drain_test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
         create_temp_csv(
-            &dir,
+            dir,
             "orders.csv",
             "order_id,region_id\nO1,NOPE\nO2,NOPE\nO3,R01\n",
         );
-        create_temp_csv(&dir, "regions.csv", "region_id,region_name\nR01,Moscow\n");
+        create_temp_csv(dir, "regions.csv", "region_id,region_name\nR01,Moscow\n");
 
         let defs: Vec<SourceDefinition> = serde_yaml_ng::from_str(
             "- file: orders.csv\n  name: orders\n- file: regions.csv\n  name: regions\n  indexed_by: [region_id]\n  join_type: inner\n",
@@ -1118,8 +1094,6 @@ mod tests {
             Some(&Value::String("O3".into()))
         );
         assert!(config.next_row_variables().unwrap().is_none());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1132,9 +1106,9 @@ mod tests {
     #[test]
     #[cfg(not(miri))]
     fn primary_only_no_dimensions() {
-        let dir = std::env::temp_dir().join("gctf_driven_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        create_temp_csv(&dir, "users.csv", "id,name,age\n1,Alice,30\n2,Bob,25\n");
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        create_temp_csv(dir, "users.csv", "id,name,age\n1,Alice,30\n2,Bob,25\n");
 
         let defs: Vec<SourceDefinition> =
             serde_yaml_ng::from_str("- file: users.csv\n  name: users\n").unwrap();
@@ -1158,8 +1132,6 @@ mod tests {
 
         let vars3 = config.next_row_variables().unwrap();
         assert!(vars3.is_none());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Regression: in duration/soak bench mode, once the primary source is
@@ -1172,9 +1144,9 @@ mod tests {
     #[test]
     #[cfg(not(miri))]
     fn primary_reset_replays_rows_for_duration_mode() {
-        let dir = std::env::temp_dir().join("gctf_driven_reset_replay_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        create_temp_csv(&dir, "users.csv", "id,name\n1,Alice\n2,Bob\n");
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        create_temp_csv(dir, "users.csv", "id,name\n1,Alice\n2,Bob\n");
 
         let defs: Vec<SourceDefinition> =
             serde_yaml_ng::from_str("- file: users.csv\n  name: users\n").unwrap();
@@ -1214,24 +1186,22 @@ mod tests {
         let vars2 = config.next_row_variables().unwrap().unwrap();
         assert_eq!(vars2.get("users.name"), Some(&Value::String("Bob".into())));
         assert!(config.next_row_variables().unwrap().is_none());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
     fn primary_with_dimension_join() {
-        let dir = std::env::temp_dir().join("gctf_driven_join_test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
 
         create_temp_csv(
-            &dir,
+            dir,
             "pvz.csv",
             "pvz_id,region_id,name\n1,R01,PVZ Alpha\n2,R02,PVZ Beta\n",
         );
         create_temp_csv(
-            &dir,
+            dir,
             "regions.csv",
             "region_id,region_name\nR01,Moscow\nR02,Saint Petersburg\n",
         );
@@ -1279,19 +1249,17 @@ mod tests {
             vars2.get("regions.region_name"),
             Some(&Value::String("Saint Petersburg".into()))
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
     fn dimension_missing_fk_still_injects_primary() {
-        let dir = std::env::temp_dir().join("gctf_driven_fk_test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
 
-        create_temp_csv(&dir, "data.csv", "id,ref_id,val\n1,MISSING,hello\n");
-        create_temp_csv(&dir, "ref.csv", "ref_id,label\nOK,Found\n");
+        create_temp_csv(dir, "data.csv", "id,ref_id,val\n1,MISSING,hello\n");
+        create_temp_csv(dir, "ref.csv", "ref_id,label\nOK,Found\n");
 
         let defs: Vec<SourceDefinition> = serde_yaml_ng::from_str(
             "- file: data.csv\n  name: data\n- file: ref.csv\n  name: ref\n  indexed_by: [ref_id]\n",
@@ -1308,19 +1276,17 @@ mod tests {
         let vars = config.next_row_variables().unwrap().unwrap();
         assert_eq!(vars.get("data.val"), Some(&Value::String("hello".into())));
         assert!(!vars.contains_key("ref.label"));
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
     fn primary_filter_skips_non_matching_rows() {
-        let dir = std::env::temp_dir().join("gctf_driven_filter_test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
 
         create_temp_csv(
-            &dir,
+            dir,
             "pvz.csv",
             "pvz_id,status,name\n1,inactive,Old\n2,active,New\n",
         );
@@ -1340,7 +1306,5 @@ mod tests {
         assert_eq!(vars.get("pvz.pvz_id"), Some(&Value::String("2".into())));
         assert_eq!(vars.get("pvz.name"), Some(&Value::String("New".into())));
         assert!(config.next_row_variables().unwrap().is_none());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

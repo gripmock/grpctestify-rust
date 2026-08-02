@@ -59,10 +59,6 @@ pub fn now_unix_millis() -> u128 {
     SystemClock::unix_millis()
 }
 
-pub fn now_unix_nanos() -> u128 {
-    SystemClock::unix_nanos()
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capability {
     ProcessSpawn,
@@ -82,7 +78,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_system_clock_timestamp() {
+    fn system_clock_timestamp() {
         let ts = SystemClock::timestamp();
         // Should be a reasonable timestamp (after 2020, before 2100)
         assert!(
@@ -94,7 +90,7 @@ mod tests {
     }
 
     #[test]
-    fn test_system_clock_rfc3339() {
+    fn system_clock_rfc3339() {
         let rfc = SystemClock::rfc3339();
         // RFC3339 format: YYYY-MM-DDTHH:MM:SS+00:00 or similar
         assert!(
@@ -106,7 +102,7 @@ mod tests {
     }
 
     #[test]
-    fn test_system_clock_unix_millis() {
+    fn system_clock_unix_millis() {
         let ms = SystemClock::unix_millis();
         // Should be a reasonable millis value (after 2020)
         assert!(
@@ -135,7 +131,7 @@ mod tests {
     }
 
     #[test]
-    fn test_supports() {
+    fn every_capability_is_available_outside_miri() {
         #[cfg(not(miri))]
         {
             assert!(supports(Capability::RealtimeClock));
@@ -144,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn test_capability_debug() {
+    fn capability_debug() {
         let cap = Capability::RealtimeClock;
         let s = format!("{:?}", cap);
         assert!(!s.is_empty());

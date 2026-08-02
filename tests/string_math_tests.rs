@@ -4,7 +4,7 @@
 use grpctestify::parser::ternary::process_extract_value;
 
 #[test]
-fn test_string_concatenation() {
+fn string_concatenation() {
     // String concatenation via JQ
     let input = ".first + \" \" + .last";
     let result = process_extract_value(input);
@@ -15,7 +15,7 @@ fn test_string_concatenation() {
 }
 
 #[test]
-fn test_string_uppercase() {
+fn string_uppercase() {
     // Uppercase via JQ
     let input = ".name | ascii_upcase";
     let result = process_extract_value(input);
@@ -24,7 +24,7 @@ fn test_string_uppercase() {
 }
 
 #[test]
-fn test_string_lowercase() {
+fn string_lowercase() {
     // Lowercase via JQ
     let input = ".name | ascii_downcase";
     let result = process_extract_value(input);
@@ -33,7 +33,7 @@ fn test_string_lowercase() {
 }
 
 #[test]
-fn test_string_length() {
+fn string_length() {
     // String length via JQ
     let input = ".name | length";
     let result = process_extract_value(input);
@@ -42,7 +42,7 @@ fn test_string_length() {
 }
 
 #[test]
-fn test_string_split() {
+fn string_split() {
     // Split string via JQ
     let input = ".tags | split(\",\")";
     let result = process_extract_value(input);
@@ -51,7 +51,7 @@ fn test_string_split() {
 }
 
 #[test]
-fn test_string_join() {
+fn string_join() {
     // Join array via JQ
     let input = ".items | join(\", \")";
     let result = process_extract_value(input);
@@ -60,7 +60,7 @@ fn test_string_join() {
 }
 
 #[test]
-fn test_string_substring() {
+fn string_substring() {
     // Substring via JQ slice
     let input = ".name[0:3]";
     let result = process_extract_value(input);
@@ -69,7 +69,7 @@ fn test_string_substring() {
 }
 
 #[test]
-fn test_string_replace() {
+fn string_replace() {
     // Replace via JQ gsub
     let input = ".text | gsub(\"old\"; \"new\")";
     let result = process_extract_value(input);
@@ -78,7 +78,7 @@ fn test_string_replace() {
 }
 
 #[test]
-fn test_math_addition() {
+fn math_addition() {
     // Addition via JQ
     let input = ".a + .b";
     let result = process_extract_value(input);
@@ -88,7 +88,7 @@ fn test_math_addition() {
 }
 
 #[test]
-fn test_math_subtraction() {
+fn math_subtraction() {
     // Subtraction via JQ
     let input = ".a - .b";
     let result = process_extract_value(input);
@@ -98,7 +98,7 @@ fn test_math_subtraction() {
 }
 
 #[test]
-fn test_math_multiplication() {
+fn math_multiplication() {
     // Multiplication via JQ
     let input = ".price * .quantity";
     let result = process_extract_value(input);
@@ -108,7 +108,7 @@ fn test_math_multiplication() {
 }
 
 #[test]
-fn test_math_division() {
+fn math_division() {
     // Division via JQ
     let input = ".total / .count";
     let result = process_extract_value(input);
@@ -118,7 +118,7 @@ fn test_math_division() {
 }
 
 #[test]
-fn test_math_modulo() {
+fn math_modulo() {
     // Modulo via JQ
     let input = "5 % 3";
     let result = process_extract_value(input);
@@ -127,7 +127,7 @@ fn test_math_modulo() {
 }
 
 #[test]
-fn test_math_min() {
+fn math_min() {
     // Min via JQ
     let input = ".numbers | min";
     let result = process_extract_value(input);
@@ -136,7 +136,7 @@ fn test_math_min() {
 }
 
 #[test]
-fn test_math_max() {
+fn math_max() {
     // Max via JQ
     let input = ".numbers | max";
     let result = process_extract_value(input);
@@ -145,7 +145,7 @@ fn test_math_max() {
 }
 
 #[test]
-fn test_math_sum() {
+fn math_sum() {
     // Sum via JQ add
     let input = ".numbers | add";
     let result = process_extract_value(input);
@@ -154,7 +154,7 @@ fn test_math_sum() {
 }
 
 #[test]
-fn test_math_round() {
+fn math_round() {
     // Round via JQ
     let input = ".value | round";
     let result = process_extract_value(input);
@@ -163,7 +163,7 @@ fn test_math_round() {
 }
 
 #[test]
-fn test_math_floor() {
+fn math_floor() {
     // Floor via JQ
     let input = ".value | floor";
     let result = process_extract_value(input);
@@ -172,7 +172,7 @@ fn test_math_floor() {
 }
 
 #[test]
-fn test_math_ceil() {
+fn math_ceil() {
     // Ceil via JQ
     let input = ".value | ceil";
     let result = process_extract_value(input);
@@ -181,7 +181,7 @@ fn test_math_ceil() {
 }
 
 #[test]
-fn test_math_sort() {
+fn math_sort() {
     // Sort via JQ
     let input = ".numbers | sort";
     let result = process_extract_value(input);
@@ -190,7 +190,7 @@ fn test_math_sort() {
 }
 
 #[test]
-fn test_conditional_string() {
+fn conditional_string() {
     // Conditional with string
     let input = "if .name == \"Admin\" then \"Hello Admin\" else \"Hello \" + .name end";
     let result = process_extract_value(input);
@@ -202,7 +202,7 @@ fn test_conditional_string() {
 }
 
 #[test]
-fn test_conditional_math() {
+fn conditional_math() {
     // Conditional with math
     let input = "if .price > 100 then \"expensive\" else \"cheap\" end";
     let result = process_extract_value(input);
@@ -214,7 +214,7 @@ fn test_conditional_math() {
 }
 
 #[test]
-fn test_combined_operations() {
+fn combined_operations() {
     // Combined string operations
     let input = "(.first + \" \" + .last) | ascii_upcase";
     let result = process_extract_value(input);
@@ -223,7 +223,7 @@ fn test_combined_operations() {
 }
 
 #[test]
-fn test_array_map() {
+fn array_map() {
     // Map over array
     let input = ".items | map(.price * .qty)";
     let result = process_extract_value(input);
@@ -232,7 +232,7 @@ fn test_array_map() {
 }
 
 #[test]
-fn test_array_filter() {
+fn array_filter() {
     // Filter array with select
     let input = ".items | map(select(.price > 50))";
     let result = process_extract_value(input);

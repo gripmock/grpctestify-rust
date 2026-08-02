@@ -363,7 +363,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_compare_exact_match() {
+    fn compare_exact_match() {
         let actual = json!({"foo": "bar", "num": 1});
         let expected = json!({"foo": "bar", "num": 1});
         let options = InlineOptions::default();
@@ -373,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_numeric_representation_match() {
+    fn compare_numeric_representation_match() {
         let actual = json!({"result": 60.0});
         let expected = json!({"result": 60});
         let options = InlineOptions::default();
@@ -383,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_mismatch() {
+    fn compare_mismatch() {
         let actual = json!({"foo": "bar"});
         let expected = json!({"foo": "baz"});
         let options = InlineOptions::default();
@@ -398,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_partial_object() {
+    fn compare_partial_object() {
         let actual = json!({"foo": "bar", "extra": "field"});
         let expected = json!({"foo": "bar"});
 
@@ -417,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn test_wildcard() {
+    fn wildcard() {
         let actual = json!({"id": 12345, "name": "test"});
         let expected = json!({"id": "*", "name": "test"});
         let options = InlineOptions::default();
@@ -427,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn test_redact() {
+    fn redact() {
         let actual = json!({"id": 12345, "secret": "hidden", "name": "test"});
         // If we redact "secret", it's removed from actual.
         // If expected doesn't have it, strict match should pass.
@@ -443,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tolerance() {
+    fn tolerance() {
         let actual = json!({"val": 10.005});
         let expected = json!({"val": 10.0});
 
@@ -461,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_empty_objects() {
+    fn compare_empty_objects() {
         let actual = json!({});
         let expected = json!({});
         let options = InlineOptions::default();
@@ -471,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_empty_arrays() {
+    fn compare_empty_arrays() {
         let actual = json!([]);
         let expected = json!([]);
         let options = InlineOptions::default();
@@ -481,7 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_null_values() {
+    fn compare_null_values() {
         let actual = json!({"val": null});
         let expected = json!({"val": null});
         let options = InlineOptions::default();
@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_null_mismatch() {
+    fn compare_null_mismatch() {
         let actual = json!({"val": "not null"});
         let expected = json!({"val": null});
         let options = InlineOptions::default();
@@ -501,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_boolean_values() {
+    fn compare_boolean_values() {
         let actual = json!({"active": true, "deleted": false});
         let expected = json!({"active": true, "deleted": false});
         let options = InlineOptions::default();
@@ -511,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_boolean_mismatch() {
+    fn compare_boolean_mismatch() {
         let actual = json!({"active": true});
         let expected = json!({"active": false});
         let options = InlineOptions::default();
@@ -521,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_nested_objects() {
+    fn compare_nested_objects() {
         let actual = json!({"user": {"name": "test", "age": 25}});
         let expected = json!({"user": {"name": "test", "age": 25}});
         let options = InlineOptions::default();
@@ -531,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_nested_mismatch() {
+    fn compare_nested_mismatch() {
         let actual = json!({"user": {"name": "test"}});
         let expected = json!({"user": {"name": "other"}});
         let options = InlineOptions::default();
@@ -541,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_arrays_different_lengths() {
+    fn compare_arrays_different_lengths() {
         let actual = json!([1, 2, 3]);
         let expected = json!([1, 2]);
         let options = InlineOptions::default();
@@ -551,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_arrays_with_objects() {
+    fn compare_arrays_with_objects() {
         let actual = json!([{"id": 1}, {"id": 2}]);
         let expected = json!([{"id": 1}, {"id": 2}]);
         let options = InlineOptions::default();
@@ -561,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_partial_nested_object() {
+    fn compare_partial_nested_object() {
         let actual = json!({"user": {"name": "test", "age": 25, "extra": "field"}});
         let expected = json!({"user": {"name": "test"}});
         let options = InlineOptions {
@@ -574,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn test_redact_nested() {
+    fn redact_nested() {
         let actual = json!({"user": {"password": "secret", "name": "test"}});
         let expected = json!({"user": {"name": "test"}});
 
@@ -604,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unordered_arrays_optimized() {
+    fn unordered_arrays_optimized() {
         let actual = json!([3, 1, 2]);
         let expected = json!([1, 2, 3]);
         let options = InlineOptions {
@@ -617,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unordered_arrays_with_objects() {
+    fn unordered_arrays_with_objects() {
         let actual = json!([
             {"id": 3, "name": "c"},
             {"id": 1, "name": "a"},
@@ -638,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unordered_arrays_missing_item() {
+    fn unordered_arrays_missing_item() {
         let actual = json!([1, 2]);
         let expected = json!([1, 2, 3]);
         let options = InlineOptions {
@@ -651,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unordered_arrays_extra_item() {
+    fn unordered_arrays_extra_item() {
         let actual = json!([1, 2, 3, 4]);
         let expected = json!([1, 2, 3]);
         let options = InlineOptions {
@@ -664,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unordered_arrays_partial() {
+    fn unordered_arrays_partial() {
         let actual = json!([1, 2, 3, 4]);
         let expected = json!([1, 3]);
         let options = InlineOptions {
@@ -687,7 +687,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unordered_arrays_partial_missing_item_fails() {
+    fn unordered_arrays_partial_missing_item_fails() {
         // Regression: with unordered_arrays + partial, expected items that are
         // completely absent from actual used to be silently accepted.
         let actual = json!([1, 2, 3]);
@@ -708,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unordered_arrays_numeric_representation() {
+    fn unordered_arrays_numeric_representation() {
         // Regression: hash prefilter rejected fuzzy-equal numbers (60.0 vs 60)
         // because their hashes differ.
         let actual = json!([60.0]);
@@ -723,7 +723,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unordered_arrays_wildcard() {
+    fn unordered_arrays_wildcard() {
         // Regression: wildcard "*" items never hash-matched anything.
         let actual = json!(["abc", 1]);
         let expected = json!([1, "*"]);
@@ -737,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unordered_arrays_tolerance() {
+    fn unordered_arrays_tolerance() {
         // Regression: tolerance matching inside unordered arrays was defeated
         // by the hash prefilter.
         let actual = json!([10.005, 20.0]);
@@ -753,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unordered_arrays_partial_objects() {
+    fn unordered_arrays_partial_objects() {
         // Regression: partial object matching inside unordered arrays was
         // defeated by the hash prefilter (extra keys change the hash).
         let actual = json!([{"id": 2, "extra": "y"}, {"id": 1, "extra": "x"}]);
@@ -769,7 +769,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_large_integers_exact() {
+    fn compare_large_integers_exact() {
         // Regression: i64 values that differ by 1 near i64::MAX used to pass
         // because equality went through lossy f64 conversion.
         let actual = json!({"id": 9223372036854775807i64});
@@ -785,7 +785,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_small_floats_not_equal() {
+    fn compare_small_floats_not_equal() {
         // Regression: fixed absolute epsilon 1e-6 made 0.0000001 == 0.0000009.
         let actual = json!({"val": 0.0000001});
         let expected = json!({"val": 0.0000009});
@@ -796,7 +796,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_float_rounding_noise_equal() {
+    fn compare_float_rounding_noise_equal() {
         // f64 rounding noise (0.1 + 0.2 != 0.3 exactly) must still compare equal.
         let actual = json!({"val": 0.1 + 0.2});
         let expected = json!({"val": 0.3});
@@ -807,7 +807,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_mixed_sign_large_integers() {
+    fn compare_mixed_sign_large_integers() {
         // Negative i64 vs u64 beyond i64::MAX must not be equal.
         let actual = json!({"val": -1i64});
         let expected = json!({"val": 18446744073709551615u64});
@@ -818,7 +818,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hash_value_consistency() {
+    fn hash_value_consistency() {
         let value1 = json!({"id": 1, "name": "test"});
         let value2 = json!({"id": 1, "name": "test"});
         let value3 = json!({"name": "test", "id": 1}); // Different key order

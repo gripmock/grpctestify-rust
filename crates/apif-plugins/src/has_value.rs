@@ -56,17 +56,17 @@ mod tests {
     }
 
     #[test]
-    fn test_has_value_name() {
+    fn has_value_name() {
         assert_eq!(HasValuePlugin.name(), "has_value");
     }
 
     #[test]
-    fn test_has_value_description() {
+    fn has_value_description() {
         assert!(!HasValuePlugin.description().is_empty());
     }
 
     #[test]
-    fn test_has_value_signature() {
+    fn has_value_signature() {
         let sig = HasValuePlugin.signature();
         assert_eq!(sig.return_type, TypeInfo::Bool);
         assert!(sig.safe_for_rewrite);
@@ -74,7 +74,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_value_null() {
+    fn has_value_null() {
         assert_eq!(
             HasValuePlugin.execute(&[Value::Null], &ctx()).unwrap(),
             PluginResult::Value(Value::Bool(false))
@@ -82,7 +82,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_value_empty_string() {
+    fn has_value_empty_string() {
         assert_eq!(
             HasValuePlugin
                 .execute(&[Value::String("".into())], &ctx())
@@ -92,7 +92,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_value_non_empty_string() {
+    fn has_value_non_empty_string() {
         assert_eq!(
             HasValuePlugin
                 .execute(&[Value::String("hello".into())], &ctx())
@@ -102,7 +102,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_value_empty_array() {
+    fn has_value_empty_array() {
         assert_eq!(
             HasValuePlugin
                 .execute(&[Value::Array(vec![])], &ctx())
@@ -112,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_value_non_empty_array() {
+    fn has_value_non_empty_array() {
         assert_eq!(
             HasValuePlugin
                 .execute(&[Value::Array(vec![Value::Bool(true)])], &ctx())
@@ -122,7 +122,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_value_empty_object() {
+    fn has_value_empty_object() {
         assert_eq!(
             HasValuePlugin
                 .execute(&[Value::Object(serde_json::Map::new())], &ctx())
@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_value_non_empty_object() {
+    fn has_value_non_empty_object() {
         assert_eq!(
             HasValuePlugin
                 .execute(&[serde_json::json!({"k": "v"})], &ctx())
@@ -142,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_value_bool() {
+    fn has_value_bool() {
         assert_eq!(
             HasValuePlugin
                 .execute(&[Value::Bool(true)], &ctx())
@@ -152,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_value_number() {
+    fn has_value_number() {
         assert_eq!(
             HasValuePlugin
                 .execute(&[Value::Number(0.into())], &ctx())
@@ -162,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_value_no_args() {
+    fn has_value_no_args() {
         assert_eq!(
             HasValuePlugin.execute(&[], &ctx()).unwrap(),
             PluginResult::Value(Value::Bool(false))

@@ -58,7 +58,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_source_error_display() {
+    fn source_error_display() {
         let err = SourceError::FileOpenFailed(
             "test.csv".into(),
             std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"),
@@ -92,7 +92,7 @@ mod tests {
     }
 
     #[test]
-    fn test_source_error_debug() {
+    fn source_error_debug() {
         let err = SourceError::EmptyFile("test.csv".into());
         let s = format!("{:?}", err);
         assert!(!s.is_empty());

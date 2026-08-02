@@ -418,7 +418,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_sections_basic() {
+    fn parse_sections_basic() {
         let input = "\
 --- ENDPOINT ---
 test.Service/Method
@@ -435,7 +435,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_malformed_attribute_is_a_hard_error_in_strict_path() {
+    fn malformed_attribute_is_a_hard_error_in_strict_path() {
         // §3.4: a malformed `#[...]` attribute must not be silently swallowed
         // by the strict path — `#[]` (empty, `parse_attribute` returns None)
         // is a hard parse error.
@@ -445,7 +445,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_section_span_slices_back_to_the_sections_own_source_text() {
+    fn section_span_slices_back_to_the_sections_own_source_text() {
         let input = "\
 --- ENDPOINT ---
 test.Service/Method
@@ -471,7 +471,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_section_end_line_excludes_attribute_lines_of_next_section() {
+    fn section_end_line_excludes_attribute_lines_of_next_section() {
         // Regression: `end_line` used to be set to the *next* section's
         // header line unconditionally, overshooting past `#[attr]` lines
         // that sit between this section and that header (those lines belong
@@ -503,7 +503,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_section_header_tokenizer() {
+    fn section_header_tokenizer() {
         let input = "\
 --- ENDPOINT ---
 test.Service/Method
@@ -526,7 +526,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_parse_multi_document() {
+    fn parse_multi_document() {
         let input = "\
 --- ENDPOINT ---
 test.Service/Method
@@ -557,13 +557,13 @@ test.Service/Method2
     }
 
     #[test]
-    fn test_parse_empty_content() {
+    fn parse_empty_content() {
         let doc = parse_gctf_from_str("", "test.gctf").unwrap();
         assert!(doc.sections.is_empty());
     }
 
     #[test]
-    fn test_parse_all_section_types() {
+    fn parse_all_section_types() {
         let input = "\
 --- ADDRESS ---
 localhost:50051
@@ -612,7 +612,7 @@ total = .response.total
     }
 
     #[test]
-    fn test_parse_unknown_section_type() {
+    fn parse_unknown_section_type() {
         let input = "--- UNKNOWN ---\nhello\n";
         let result = parse_sections_from_str(input);
         assert!(result.is_err());
@@ -625,7 +625,7 @@ total = .response.total
     }
 
     #[test]
-    fn test_parse_preserves_comments_in_content() {
+    fn parse_preserves_comments_in_content() {
         let input = "\
 --- RESPONSE ---
 // This is a comment
@@ -642,7 +642,7 @@ total = .response.total
     }
 
     #[test]
-    fn test_parse_from_str_section_counts() {
+    fn parse_from_str_section_counts() {
         let input = "\
 --- ENDPOINT ---
 test.Service/Method
@@ -661,7 +661,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_extract_doc_source() {
+    fn extract_doc_source() {
         let source = "line0\nline1\nline2\nline3\nline4";
         let lines: Vec<&str> = source.lines().collect();
         let sections = vec![Section {
@@ -679,13 +679,13 @@ test.Service/Method
     }
 
     #[test]
-    fn test_extract_doc_source_empty() {
+    fn extract_doc_source_empty() {
         let result = extract_doc_source_from_lines(&[], &[]);
         assert!(result.is_empty());
     }
 
     #[test]
-    fn test_attribute_before_section_attaches_to_following_section() {
+    fn attribute_before_section_attaches_to_following_section() {
         let input = "\
 --- ENDPOINT ---
 test.Service/Method
@@ -711,7 +711,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_attribute_between_sections_not_attached_to_previous_section() {
+    fn attribute_between_sections_not_attached_to_previous_section() {
         let input = "\
 --- ENDPOINT ---
 test.Service/Method
@@ -728,7 +728,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_dataset_section_round_trips_through_serialize_gctf() {
+    fn dataset_section_round_trips_through_serialize_gctf() {
         let input = "\
 --- ENDPOINT ---
 test.Service/Method

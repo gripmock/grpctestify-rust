@@ -34,7 +34,7 @@ fn create_response_section(expected: serde_json::Value, options: InlineOptions) 
 }
 
 #[test]
-fn test_validate_response_exact_match() {
+fn validate_response_exact_match() {
     let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
@@ -67,7 +67,7 @@ fn create_asserts_section(assertions: Vec<String>) -> Section {
 }
 
 #[test]
-fn test_validate_response_with_asserts() {
+fn validate_response_with_asserts() {
     let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
@@ -93,7 +93,7 @@ fn test_validate_response_with_asserts() {
 }
 
 #[test]
-fn test_validate_response_with_asserts_fail() {
+fn validate_response_with_asserts_fail() {
     let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
@@ -126,7 +126,7 @@ fn test_validate_response_with_asserts_fail() {
 }
 
 #[test]
-fn test_validate_response_mixed_asserts() {
+fn validate_response_mixed_asserts() {
     let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
@@ -165,7 +165,7 @@ fn test_validate_response_mixed_asserts() {
 }
 
 #[test]
-fn test_validate_response_mismatch() {
+fn validate_response_mismatch() {
     let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
@@ -191,7 +191,7 @@ fn test_validate_response_mismatch() {
 }
 
 #[test]
-fn test_validate_response_partial() {
+fn validate_response_partial() {
     let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
@@ -213,7 +213,7 @@ fn test_validate_response_partial() {
 }
 
 #[test]
-fn test_validate_response_partial_fail() {
+fn validate_response_partial_fail() {
     let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
@@ -237,7 +237,7 @@ fn test_validate_response_partial_fail() {
 }
 
 #[test]
-fn test_validate_response_multiple() {
+fn validate_response_multiple() {
     let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
@@ -266,7 +266,7 @@ fn test_validate_response_multiple() {
 }
 
 #[test]
-fn test_validate_response_count_mismatch() {
+fn validate_response_count_mismatch() {
     let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
@@ -300,7 +300,7 @@ fn test_validate_response_count_mismatch() {
 }
 
 #[test]
-fn test_validate_response_unordered_arrays() {
+fn validate_response_unordered_arrays() {
     let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
@@ -324,7 +324,7 @@ fn test_validate_response_unordered_arrays() {
 }
 
 #[test]
-fn test_validate_response_unordered_arrays_fail() {
+fn validate_response_unordered_arrays_fail() {
     let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 
@@ -367,7 +367,7 @@ fn create_extract_section(extractions: Vec<(String, String)>) -> Section {
 }
 
 #[test]
-fn test_validate_response_extract() {
+fn validate_response_extract() {
     let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();
 

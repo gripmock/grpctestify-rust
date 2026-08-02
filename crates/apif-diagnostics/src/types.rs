@@ -362,7 +362,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_diagnostic_code_as_str() {
+    fn diagnostic_code_as_str() {
         assert_eq!(DiagnosticCode::JsonParseError.as_str(), "json_parse_error");
         assert_eq!(DiagnosticCode::MissingSection.as_str(), "missing_section");
         assert_eq!(DiagnosticCode::InvalidSyntax.as_str(), "invalid_syntax");
@@ -378,13 +378,13 @@ mod tests {
     }
 
     #[test]
-    fn test_diagnostic_collection_new() {
+    fn diagnostic_collection_new() {
         let coll = DiagnosticCollection::new();
         assert!(coll.is_empty());
     }
 
     #[test]
-    fn test_diagnostic_collection_push() {
+    fn diagnostic_collection_push() {
         let mut coll = DiagnosticCollection::new();
         let diag = Diagnostic::error(DiagnosticCode::JsonParseError, "err", Range::default());
         coll.push(diag);
@@ -392,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn test_diagnostic_collection_error() {
+    fn diagnostic_collection_error() {
         let mut coll = DiagnosticCollection::new();
         coll.error(DiagnosticCode::JsonParseError, "err", Range::default());
         assert!(coll.has_errors());
@@ -401,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn test_diagnostic_collection_warning() {
+    fn diagnostic_collection_warning() {
         let mut coll = DiagnosticCollection::new();
         coll.warning(DiagnosticCode::DuplicateSection, "warn", Range::default());
         assert!(!coll.has_errors());
@@ -410,27 +410,27 @@ mod tests {
     }
 
     #[test]
-    fn test_diagnostic_collection_info() {
+    fn diagnostic_collection_info() {
         let mut coll = DiagnosticCollection::new();
         coll.info(DiagnosticCode::EmptySection, "info", Range::default());
         assert!(!coll.is_empty());
     }
 
     #[test]
-    fn test_diagnostic_collection_hint() {
+    fn diagnostic_collection_hint() {
         let mut coll = DiagnosticCollection::new();
         coll.hint(DiagnosticCode::UnusedVariable, "hint", Range::default());
         assert!(!coll.is_empty());
     }
 
     #[test]
-    fn test_diagnostic_collection_default() {
+    fn diagnostic_collection_default() {
         let coll = DiagnosticCollection::default();
         assert!(coll.is_empty());
     }
 
     #[test]
-    fn test_diagnostic_collection_mixed_severities() {
+    fn diagnostic_collection_mixed_severities() {
         let mut coll = DiagnosticCollection::new();
         coll.error(DiagnosticCode::JsonParseError, "err", Range::default());
         coll.warning(DiagnosticCode::DuplicateSection, "warn", Range::default());
@@ -441,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn test_diagnostic_with_suggestions() {
+    fn diagnostic_with_suggestions() {
         let diag = Diagnostic::error(DiagnosticCode::JsonParseError, "err", Range::default())
             .with_suggestions(vec!["fix1".into(), "fix2".into()]);
         assert_eq!(diag.suggestions.len(), 2);
@@ -454,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn test_diagnostic_file_and_source() {
+    fn diagnostic_file_and_source() {
         let diag = Diagnostic::error(DiagnosticCode::JsonParseError, "err", Range::default())
             .with_file("test.gctf");
         assert_eq!(diag.file, Some("test.gctf".into()));
@@ -462,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn test_diagnostic_with_related_info() {
+    fn diagnostic_with_related_info() {
         let loc = DiagnosticLocation {
             file: "ref.gctf".into(),
             range: Range::at_line(5),

@@ -1330,19 +1330,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_key_line_finds_the_actual_kv_line_not_the_section_header() {
+    fn key_line_finds_the_actual_kv_line_not_the_section_header() {
         let raw = "timeout: 30\nretry-delay: 0.3\n";
         assert_eq!(key_line(raw, 5, "retry-delay"), 5 + 1 + 1);
     }
 
     #[test]
-    fn test_key_line_falls_back_to_start_line_when_key_absent() {
+    fn key_line_falls_back_to_start_line_when_key_absent() {
         let raw = "timeout: 30\n";
         assert_eq!(key_line(raw, 5, "retry-delay"), 5);
     }
 
     #[test]
-    fn test_key_line_does_not_false_match_key_text_inside_a_value() {
+    fn key_line_does_not_false_match_key_text_inside_a_value() {
         // The literal substring "retry-delay" appears only in a quoted
         // value here, never as an actual key — tokenize_kv_line must not
         // treat that as a match the way a bare string search would.
@@ -1380,7 +1380,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_required_sections_pass() {
+    fn validate_required_sections_pass() {
         let doc = create_test_document();
         let result = validate_document(&doc);
         // Should fail because no REQUEST or ASSERTS
@@ -1388,7 +1388,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_endpoint_format() {
+    fn validate_endpoint_format() {
         let mut doc = create_test_document();
         doc.sections[1].content = SectionContent::Single("invalid_endpoint".to_string());
 
@@ -1397,7 +1397,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_address_format() {
+    fn validate_address_format() {
         let mut doc = create_test_document();
         doc.sections[0].content = SectionContent::Single("invalid_address".to_string());
 
@@ -1424,7 +1424,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validation_failed() {
+    fn validation_failed() {
         let errors = vec![
             ValidationError {
                 message: "Warning".to_string(),
@@ -1450,7 +1450,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_document_with_response() {
+    fn validate_document_with_response() {
         let mut doc = create_test_document();
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -1465,11 +1465,11 @@ mod tests {
 
         let result = validate_document(&doc);
         // Should pass with ADDRESS, ENDPOINT, and RESPONSE
-        assert!(result.is_ok());
+        result.expect("document must validate");
     }
 
     #[test]
-    fn test_validate_document_with_error_section() {
+    fn validate_document_with_error_section() {
         let mut doc = create_test_document();
         doc.sections.push(Section {
             section_type: SectionType::Error,
@@ -1484,11 +1484,11 @@ mod tests {
 
         let result = validate_document(&doc);
         // Should pass with ADDRESS, ENDPOINT, and ERROR
-        assert!(result.is_ok());
+        result.expect("document must validate");
     }
 
     #[test]
-    fn test_validate_document_with_request_jsonlines() {
+    fn validate_document_with_request_jsonlines() {
         // Symmetric with RESPONSE: a REQUEST section carrying several
         // self-delimiting JSON values (client/bidi streaming) must validate,
         // not hit the "does not support newline-delimited JSON messages"
@@ -1519,11 +1519,11 @@ mod tests {
         });
 
         let result = validate_document(&doc);
-        assert!(result.is_ok());
+        result.expect("document must validate");
     }
 
     #[test]
-    fn test_validate_document_error_partial_option_allowed() {
+    fn validate_document_error_partial_option_allowed() {
         let mut doc = create_test_document();
         doc.sections.push(Section {
             section_type: SectionType::Error,
@@ -1547,7 +1547,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_document_error_tolerance_still_warns() {
+    fn validate_document_error_tolerance_still_warns() {
         let mut doc = create_test_document();
         doc.sections.push(Section {
             section_type: SectionType::Error,
@@ -1571,7 +1571,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_document_warns_on_empty_error_with_asserts() {
+    fn validate_document_warns_on_empty_error_with_asserts() {
         let mut doc = create_test_document();
         doc.sections.push(Section {
             section_type: SectionType::Error,
@@ -1606,7 +1606,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_document_no_warning_for_non_empty_error_with_asserts() {
+    fn validate_document_no_warning_for_non_empty_error_with_asserts() {
         let mut doc = create_test_document();
         doc.sections.push(Section {
             section_type: SectionType::Error,
@@ -1640,7 +1640,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_document_no_warning_for_empty_error_without_with_asserts() {
+    fn validate_document_no_warning_for_empty_error_without_with_asserts() {
         let mut doc = create_test_document();
         doc.sections.push(Section {
             section_type: SectionType::Error,
@@ -1671,7 +1671,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_document_no_warning_for_empty_error_with_non_adjacent_asserts() {
+    fn validate_document_no_warning_for_empty_error_with_non_adjacent_asserts() {
         let mut doc = create_test_document();
         doc.sections.push(Section {
             section_type: SectionType::Error,
@@ -1715,7 +1715,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_document_with_asserts() {
+    fn validate_document_with_asserts() {
         let mut doc = create_test_document();
         doc.sections.push(Section {
             section_type: SectionType::Asserts,
@@ -1730,11 +1730,11 @@ mod tests {
 
         let result = validate_document(&doc);
         // Should pass with ADDRESS, ENDPOINT, and ASSERTS
-        assert!(result.is_ok());
+        result.expect("document must validate");
     }
 
     #[test]
-    fn test_validate_document_missing_endpoint() {
+    fn validate_document_missing_endpoint() {
         let mut doc = create_test_document();
         doc.sections.remove(1); // Remove ENDPOINT
 
@@ -1744,7 +1744,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_document_response_error_conflict() {
+    fn validate_document_response_error_conflict() {
         let mut doc = create_test_document();
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -1775,7 +1775,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_document_empty_requests() {
+    fn validate_document_empty_requests() {
         let mut doc = create_test_document();
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -1800,11 +1800,11 @@ mod tests {
 
         let result = validate_document(&doc);
         // Empty REQUEST is allowed
-        assert!(result.is_ok());
+        result.expect("document must validate");
     }
 
     #[test]
-    fn test_validate_document_invalid_request_json() {
+    fn validate_document_invalid_request_json() {
         let mut doc = create_test_document();
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -1829,11 +1829,11 @@ mod tests {
 
         let result = validate_document(&doc);
         // Valid JSON should pass
-        assert!(result.is_ok());
+        result.expect("document must validate");
     }
 
     #[test]
-    fn test_validate_document_invalid_response_json() {
+    fn validate_document_invalid_response_json() {
         let mut doc = create_test_document();
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -1863,7 +1863,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_error_details_must_be_array() {
+    fn validate_error_details_must_be_array() {
         let mut doc = create_test_document();
         doc.sections.push(Section {
             section_type: SectionType::Error,
@@ -1888,7 +1888,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_error_details_items_must_be_objects() {
+    fn validate_error_details_items_must_be_objects() {
         let mut doc = create_test_document();
         doc.sections.push(Section {
             section_type: SectionType::Error,
@@ -1913,7 +1913,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_document_address_from_env() {
+    fn validate_document_address_from_env() {
         // Set env var
         unsafe {
             std::env::set_var("GRPCTESTIFY_ADDRESS", "env:5000");
@@ -1943,7 +1943,7 @@ mod tests {
 
         let result = validate_document(&doc);
         // Should pass because address comes from env
-        assert!(result.is_ok());
+        result.expect("document must validate");
 
         // Clean up
         unsafe {
@@ -1952,7 +1952,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_options_unknown_key_warning() {
+    fn validate_options_unknown_key_warning() {
         let mut doc = create_test_document();
         let mut options = crate::ast::OrderedStringMap::new();
         options.insert("unknown".to_string(), "value".to_string());
@@ -1984,7 +1984,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_options_unknown_key_points_at_the_key_line_not_the_header() {
+    fn validate_options_unknown_key_points_at_the_key_line_not_the_header() {
         // The unknown-OPTIONS-key warning must land on the offending key's own
         // line (via `key_line`), consistent with the BENCH unknown-key error —
         // not on the section header line.
@@ -2026,7 +2026,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_options_dry_run_is_unknown_key_warning() {
+    fn validate_options_dry_run_is_unknown_key_warning() {
         let mut doc = create_test_document();
         let mut options = crate::ast::OrderedStringMap::new();
         options.insert("dry_run".to_string(), "true".to_string());
@@ -2060,7 +2060,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_options_timeout_invalid_error() {
+    fn validate_options_timeout_invalid_error() {
         let mut doc = create_test_document();
         let mut options = crate::ast::OrderedStringMap::new();
         options.insert("timeout".to_string(), "0".to_string());
@@ -2094,7 +2094,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_options_snake_case_keys_are_supported() {
+    fn validate_options_snake_case_keys_are_supported() {
         let mut doc = create_test_document();
         let mut options = crate::ast::OrderedStringMap::new();
         options.insert("timeout".to_string(), "5".to_string());
@@ -2137,7 +2137,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_options_compression_invalid_error() {
+    fn validate_options_compression_invalid_error() {
         let mut doc = create_test_document();
         let mut options = crate::ast::OrderedStringMap::new();
         options.insert("compression".to_string(), "brotli".to_string());
@@ -2171,7 +2171,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_options_kebab_case_keys_accepted_without_error() {
+    fn validate_options_kebab_case_keys_accepted_without_error() {
         // The validator still ACCEPTS + value-validates the kebab aliases (no
         // error); the *deprecation warning* moved to the shared
         // `deprecations::detect_deprecations` (§7.1), so the validator itself
@@ -2218,7 +2218,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_options_no_retry_retry_conflict_warning() {
+    fn validate_options_no_retry_retry_conflict_warning() {
         let mut doc = create_test_document();
         let mut options = crate::ast::OrderedStringMap::new();
         options.insert("retry".to_string(), "3".to_string());
@@ -2253,7 +2253,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_kebab_case_attributes_accepted_without_error() {
+    fn validate_kebab_case_attributes_accepted_without_error() {
         // The validator still accepts + value-validates `#[retry-delay]` /
         // `#[no-retry]` (no error); the deprecation *warning* moved to the
         // shared `deprecations::detect_deprecations` (§7.1), covered by
@@ -2298,7 +2298,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_attribute_repeat_and_compression_are_recognized() {
+    fn validate_attribute_repeat_and_compression_are_recognized() {
         // Real, tested runtime attributes (crates/apif-execution/src/helpers.rs,
         // src/execution/runner.rs::get_repeat) that the validator previously
         // didn't know about, so they were falsely flagged "Unknown attribute"
@@ -2339,7 +2339,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_attribute_repeat_rejects_zero() {
+    fn validate_attribute_repeat_rejects_zero() {
         let mut doc = create_test_document();
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -2371,7 +2371,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_attribute_compression_rejects_unknown_codec() {
+    fn validate_attribute_compression_rejects_unknown_codec() {
         let mut doc = create_test_document();
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -2403,7 +2403,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_bench_dynamic_percentile_key_ok() {
+    fn validate_bench_dynamic_percentile_key_ok() {
         let mut doc = create_test_document();
         let mut bench = crate::ast::OrderedStringMap::new();
         bench.insert(
@@ -2432,7 +2432,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_bench_dynamic_percentile_key_invalid_range() {
+    fn validate_bench_dynamic_percentile_key_invalid_range() {
         let mut doc = create_test_document();
         let mut bench = crate::ast::OrderedStringMap::new();
         bench.insert("thresholds.p(120)".to_string(), "<300".to_string());
@@ -2459,7 +2459,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_bench_threshold_expression_invalid() {
+    fn validate_bench_threshold_expression_invalid() {
         let mut doc = create_test_document();
         let mut bench = crate::ast::OrderedStringMap::new();
         bench.insert("thresholds.p(95)".to_string(), "~120".to_string());
@@ -2486,7 +2486,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_bench_numeric_keys_accept_digit_separators() {
+    fn validate_bench_numeric_keys_accept_digit_separators() {
         // §4.3: BENCH numeric keys accept `1_000`-style separators, matching
         // the runtime parse and JSON/YAML/ASSERTS numbers.
         let mut doc = create_test_document();
@@ -2517,7 +2517,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_bench_load_schedule_and_progress_keys() {
+    fn validate_bench_load_schedule_and_progress_keys() {
         let mut doc = create_test_document();
         let mut bench = crate::ast::OrderedStringMap::new();
         bench.insert("load_schedule".to_string(), "step".to_string());
@@ -2549,7 +2549,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_bench_hyphenated_keys_are_unknown() {
+    fn validate_bench_hyphenated_keys_are_unknown() {
         let mut doc = create_test_document();
         let mut bench = crate::ast::OrderedStringMap::new();
         bench.insert("load-schedule".to_string(), "line".to_string());
@@ -2579,7 +2579,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_bench_snake_case_keys_no_deprecation_warning() {
+    fn validate_bench_snake_case_keys_no_deprecation_warning() {
         let mut doc = create_test_document();
         let mut bench = crate::ast::OrderedStringMap::new();
         bench.insert("load_schedule".to_string(), "line".to_string());
@@ -2607,7 +2607,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_bench_unknown_key_typo_suggestion() {
+    fn validate_bench_unknown_key_typo_suggestion() {
         let mut doc = create_test_document();
         let mut bench = crate::ast::OrderedStringMap::new();
         bench.insert("load_shedule".to_string(), "step".to_string());
@@ -2633,7 +2633,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validation_error_debug() {
+    fn validation_error_debug() {
         let error = ValidationError {
             message: "test error".to_string(),
             line: Some(10),
@@ -2645,7 +2645,7 @@ mod tests {
     }
 
     #[test]
-    fn test_error_severity_serialize() {
+    fn error_severity_serialize() {
         let error = ErrorSeverity::Error;
         let json = serde_json::to_string(&error).unwrap();
         assert_eq!(json, "\"error\"");
@@ -2656,7 +2656,7 @@ mod tests {
     }
 
     #[test]
-    fn test_section_order_response_before_request_warns() {
+    fn section_order_response_before_request_warns() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Response,
@@ -2674,7 +2674,7 @@ mod tests {
     }
 
     #[test]
-    fn test_section_order_response_after_request_ok() {
+    fn section_order_response_after_request_ok() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -2702,7 +2702,7 @@ mod tests {
     }
 
     #[test]
-    fn test_section_order_extract_before_response_warns() {
+    fn section_order_extract_before_response_warns() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -2745,7 +2745,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_chain_second_document_missing_endpoint() {
+    fn validate_chain_second_document_missing_endpoint() {
         let mut head = valid_doc();
         let mut second = valid_doc();
         second
@@ -2763,7 +2763,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_chain_all_valid_passes() {
+    fn validate_chain_all_valid_passes() {
         let mut head = valid_doc();
         head.next_document = Some(Box::new(valid_doc()));
         assert!(validate_document_chain(&head).is_ok());

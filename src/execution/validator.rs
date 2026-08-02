@@ -138,11 +138,11 @@ mod tests {
     fn test_validate_required_sections() {
         let doc = create_test_document();
         let result = TestValidator::validate(&doc);
-        assert!(result.is_ok());
+        result.expect("a document with all required sections must validate");
     }
 
     #[test]
-    fn test_validate_missing_endpoint() {
+    fn validate_missing_endpoint() {
         let mut doc = create_test_document();
         doc.sections
             .retain(|s| !matches!(s.section_type, SectionType::Endpoint));
@@ -152,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_missing_request() {
+    fn validate_missing_request() {
         let mut doc = create_test_document();
         doc.sections
             .retain(|s| !matches!(s.section_type, SectionType::Request));
@@ -190,19 +190,19 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_result_pass() {
+    fn validate_result_pass() {
         let result = TestExecutionResult::pass(Some(100));
         assert!(TestValidator::validate_result(&result));
     }
 
     #[test]
-    fn test_validate_result_fail() {
+    fn validate_result_fail() {
         let result = TestExecutionResult::fail("Assertion failed".to_string(), Some(100));
         assert!(!TestValidator::validate_result(&result));
     }
 
     #[test]
-    fn test_get_result_summary_pass() {
+    fn get_result_summary_pass() {
         let result = TestExecutionResult::pass(Some(100));
         let summary = TestValidator::get_result_summary(&result);
         assert!(summary.contains("Passed"));
@@ -210,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_result_summary_fail() {
+    fn get_result_summary_fail() {
         let result = TestExecutionResult::fail("Error".to_string(), Some(100));
         let summary = TestValidator::get_result_summary(&result);
         assert!(summary.contains("Failed"));

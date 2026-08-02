@@ -4,7 +4,7 @@
 use grpctestify::grpc::TlsConfig;
 
 #[test]
-fn test_tls_config_insecure_skip_verify() {
+fn tls_config_insecure_skip_verify() {
     let tls_config = TlsConfig {
         ca_cert_path: None,
         client_cert_path: None,
@@ -17,7 +17,7 @@ fn test_tls_config_insecure_skip_verify() {
 }
 
 #[test]
-fn test_tls_config_secure() {
+fn tls_config_secure() {
     let tls_config = TlsConfig {
         ca_cert_path: None,
         client_cert_path: None,
@@ -30,7 +30,7 @@ fn test_tls_config_secure() {
 }
 
 #[test]
-fn test_tls_config_with_server_name() {
+fn tls_config_with_server_name() {
     let tls_config = TlsConfig {
         ca_cert_path: None,
         client_cert_path: None,

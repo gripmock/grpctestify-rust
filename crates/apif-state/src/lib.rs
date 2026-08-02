@@ -88,7 +88,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_test_results_new() {
+    fn results_new() {
         let r = TestResults::new();
         assert_eq!(r.total(), 0);
         assert_eq!(r.passed(), 0);
@@ -99,7 +99,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_results_add_pass() {
+    fn results_add_pass() {
         let mut r = TestResults::new();
         r.add(TestResult::pass("t.gctf", 100, Some(50)));
         assert_eq!(r.total(), 1);
@@ -135,7 +135,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_results_add_fail() {
+    fn results_add_fail() {
         let mut r = TestResults::new();
         r.add(TestResult::fail("t.gctf", "err".into(), 100, None));
         assert_eq!(r.total(), 1);
@@ -145,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_results_add_skip() {
+    fn results_add_skip() {
         let mut r = TestResults::new();
         r.add(TestResult {
             name: "t.gctf".into(),
@@ -167,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_results_mixed() {
+    fn results_mixed() {
         let mut r = TestResults::new();
         r.add(TestResult::pass("a.gctf", 10, None));
         r.add(TestResult::pass("b.gctf", 20, None));
@@ -180,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn test_execution_metrics_default() {
+    fn execution_metrics_default() {
         let m = ExecutionMetrics::default();
         assert_eq!(m.total_duration_ms, 0);
         assert_eq!(m.rpc_calls, 0);

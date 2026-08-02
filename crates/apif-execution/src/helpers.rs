@@ -528,6 +528,12 @@ pub fn interpolate_variables(template: &str, variables: &HashMap<String, Value>)
 pub fn substitute_variables(value: &mut Value, variables: &HashMap<String, Value>) {
     match value {
         Value::String(s) => {
+            // Without this, every placeholder-free string still pays for
+            // `interpolate_variables`'s `String::with_capacity` + full copy
+            // before it can report "nothing changed".
+            if !s.contains("{{") {
+                return;
+            }
             if s.starts_with("{{") && s.ends_with("}}") {
                 let inner = s[2..s.len() - 2].trim();
                 if !inner.contains("{{")
@@ -697,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_defaults_only() {
+    fn resolve_defaults_only() {
         let doc = make_doc(vec![
             make_section(
                 SectionType::Endpoint,
@@ -724,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_file_options_override_defaults() {
+    fn resolve_file_options_override_defaults() {
         let doc = make_doc(vec![
             make_section(
                 SectionType::Options,
@@ -760,7 +766,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_section_attribute_overrides_file_options() {
+    fn resolve_section_attribute_overrides_file_options() {
         let doc = make_doc(vec![
             make_section(
                 SectionType::Options,
@@ -799,7 +805,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_attribute_overrides_options_only_for_present_fields() {
+    fn resolve_attribute_overrides_options_only_for_present_fields() {
         let doc = make_doc(vec![
             make_section(
                 SectionType::Options,
@@ -828,7 +834,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_kebab_alias_in_options() {
+    fn resolve_kebab_alias_in_options() {
         let doc = make_doc(vec![
             make_section(
                 SectionType::Options,
@@ -852,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_kebab_alias_in_attributes() {
+    fn resolve_kebab_alias_in_attributes() {
         let doc = make_doc(vec![make_section_with_attrs(
             SectionType::Request,
             SectionContent::Empty,
@@ -876,7 +882,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_error_invalid_timeout() {
+    fn resolve_error_invalid_timeout() {
         let doc = make_doc(vec![
             make_section(SectionType::Options, kv(&[("timeout", "abc")])),
             make_section(
@@ -890,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_error_zero_timeout() {
+    fn resolve_error_zero_timeout() {
         let doc = make_doc(vec![
             make_section(SectionType::Options, kv(&[("timeout", "0")])),
             make_section(
@@ -903,7 +909,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_error_invalid_retry() {
+    fn resolve_error_invalid_retry() {
         let doc = make_doc(vec![
             make_section(SectionType::Options, kv(&[("retry", "abc")])),
             make_section(
@@ -917,7 +923,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_error_invalid_retry_delay() {
+    fn resolve_error_invalid_retry_delay() {
         let doc = make_doc(vec![
             make_section(SectionType::Options, kv(&[("retry_delay", "abc")])),
             make_section(
@@ -931,7 +937,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_error_negative_retry_delay() {
+    fn resolve_error_negative_retry_delay() {
         let doc = make_doc(vec![
             make_section(SectionType::Options, kv(&[("retry_delay", "-1.0")])),
             make_section(
@@ -944,7 +950,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_error_invalid_no_retry() {
+    fn resolve_error_invalid_no_retry() {
         let doc = make_doc(vec![
             make_section(SectionType::Options, kv(&[("no_retry", "maybe")])),
             make_section(
@@ -958,7 +964,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_zero_timeout_attribute_ignored() {
+    fn resolve_zero_timeout_attribute_ignored() {
         let doc = make_doc(vec![make_section_with_attrs(
             SectionType::Request,
             SectionContent::Empty,
@@ -974,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_negative_retry_delay_attribute_ignored() {
+    fn resolve_negative_retry_delay_attribute_ignored() {
         let doc = make_doc(vec![make_section_with_attrs(
             SectionType::Request,
             SectionContent::Empty,
@@ -990,7 +996,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_compression_from_options() {
+    fn resolve_compression_from_options() {
         let doc = make_doc(vec![
             make_section(SectionType::Options, kv(&[("compression", "gzip")])),
             make_section(
@@ -1005,7 +1011,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_compression_defaults() {
+    fn resolve_compression_defaults() {
         let doc = make_doc(vec![make_section(
             SectionType::Endpoint,
             SectionContent::Single("svc/Method".into()),
@@ -1016,7 +1022,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_json_serialization() {
+    fn resolve_json_serialization() {
         let doc = make_doc(vec![
             make_section(
                 SectionType::Options,
@@ -1043,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn test_runtime_option_source_serde_roundtrip() {
+    fn runtime_option_source_serde_roundtrip() {
         let sources = vec![
             RuntimeOptionSource::SectionAttribute,
             RuntimeOptionSource::FileOptions,
@@ -1057,7 +1063,7 @@ mod tests {
     }
 
     #[test]
-    fn test_effective_runtime_options_clone_roundtrip() {
+    fn effective_runtime_options_clone_roundtrip() {
         let doc = make_doc(vec![
             make_section(SectionType::Options, kv(&[("timeout", "10")])),
             make_section(
@@ -1075,7 +1081,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_compression_from_section_attribute() {
+    fn resolve_compression_from_section_attribute() {
         let doc = make_doc(vec![make_section_with_attrs(
             SectionType::Request,
             SectionContent::Empty,
@@ -1091,7 +1097,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_compression_attribute_overrides_file_options() {
+    fn resolve_compression_attribute_overrides_file_options() {
         let doc = make_doc(vec![
             make_section(SectionType::Options, kv(&[("compression", "none")])),
             make_section_with_attrs(
@@ -1110,7 +1116,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_compression_attribute_none_value() {
+    fn resolve_compression_attribute_none_value() {
         let doc = make_doc(vec![make_section_with_attrs(
             SectionType::Request,
             SectionContent::Empty,
@@ -1126,7 +1132,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_compression_invalid_options_value_errors() {
+    fn resolve_compression_invalid_options_value_errors() {
         // An explicit-but-unknown OPTIONS.compression must be a hard error, not
         // a silent fall-back to `none`.
         let doc = make_doc(vec![
@@ -1142,7 +1148,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_compression_invalid_attribute_value_falls_back() {
+    fn resolve_compression_invalid_attribute_value_falls_back() {
         let doc = make_doc(vec![
             make_section(SectionType::Options, kv(&[("compression", "gzip")])),
             make_section_with_attrs(
@@ -1165,7 +1171,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_compression_attribute_beats_options() {
+    fn resolve_compression_attribute_beats_options() {
         let doc = make_doc(vec![
             make_section(SectionType::Options, kv(&[("compression", "none")])),
             make_section_with_attrs(
@@ -1185,7 +1191,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_compression_options_used_when_no_attribute() {
+    fn resolve_compression_options_used_when_no_attribute() {
         let doc = make_doc(vec![make_section(
             SectionType::Endpoint,
             SectionContent::Single("svc/M".into()),
@@ -1201,7 +1207,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_compression_invalid_options_is_error_not_fallback() {
+    fn resolve_compression_invalid_options_is_error_not_fallback() {
         let doc = make_doc(vec![make_section(
             SectionType::Endpoint,
             SectionContent::Single("svc/M".into()),
@@ -1216,7 +1222,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_compression_env_default_when_unset() {
+    fn resolve_compression_env_default_when_unset() {
         let doc = make_doc(vec![make_section(
             SectionType::Endpoint,
             SectionContent::Single("svc/M".into()),
@@ -1233,7 +1239,7 @@ mod tests {
 
     // (1) An undefined variable in a request body must be reported, not sent.
     #[test]
-    fn test_collect_unresolved_placeholder_undefined_in_body() {
+    fn collect_unresolved_placeholder_undefined_in_body() {
         let vars = HashMap::new();
         let mut body = serde_json::json!({ "user": "{{missing}}" });
         substitute_variables(&mut body, &vars);
@@ -1245,7 +1251,7 @@ mod tests {
 
     // (2) A defined variable still substitutes and is not flagged.
     #[test]
-    fn test_collect_unresolved_placeholder_bound_variable_ok() {
+    fn collect_unresolved_placeholder_bound_variable_ok() {
         let mut vars = HashMap::new();
         vars.insert("user_id".to_string(), Value::from(42));
         let mut body = serde_json::json!({ "id": "{{user_id}}", "note": "u={{user_id}}" });
@@ -1257,9 +1263,49 @@ mod tests {
         assert!(unresolved.is_empty());
     }
 
+    /// The placeholder-free early return must be a pure fast path: strings
+    /// without `{{` are left exactly as they were, at every nesting depth,
+    /// and non-string scalars are untouched.
+    #[test]
+    fn substitute_variables_leaves_placeholder_free_values_alone() {
+        let mut vars = HashMap::new();
+        vars.insert("v".to_string(), Value::from("X"));
+        let original = serde_json::json!({
+            "plain": "no placeholders here",
+            "braces": "a { b } c",
+            "half": "unclosed {{ still literal",
+            "nested": { "deep": ["untouched", 1, true, null] },
+        });
+        let mut body = original.clone();
+        substitute_variables(&mut body, &vars);
+        assert_eq!(body["plain"], original["plain"]);
+        assert_eq!(body["braces"], original["braces"]);
+        assert_eq!(body["nested"], original["nested"]);
+        // An unclosed `{{` has no matching `}}`, so it stays literal.
+        assert_eq!(body["half"], original["half"]);
+    }
+
+    /// Substitution still reaches inside arrays and nested objects — the
+    /// recursion the runner used to own its own copy of.
+    #[test]
+    fn substitute_variables_recurses_into_arrays_and_objects() {
+        let mut vars = HashMap::new();
+        vars.insert("id".to_string(), Value::from(7));
+        vars.insert("name".to_string(), Value::from("ada"));
+        let mut body = serde_json::json!({
+            "list": ["{{id}}", "n={{name}}", "plain"],
+            "obj": { "inner": { "id": "{{id}}" } },
+        });
+        substitute_variables(&mut body, &vars);
+        assert_eq!(body["list"][0], Value::from(7));
+        assert_eq!(body["list"][1], Value::from("n=ada"));
+        assert_eq!(body["list"][2], Value::from("plain"));
+        assert_eq!(body["obj"]["inner"]["id"], Value::from(7));
+    }
+
     // (3) An unresolved placeholder in a header value is detected.
     #[test]
-    fn test_find_unresolved_placeholder_in_header_value() {
+    fn find_unresolved_placeholder_in_header_value() {
         let vars = HashMap::new();
         let header_value =
             interpolate_variables("Bearer {{token}}", &vars).unwrap_or("Bearer {{token}}".into());
@@ -1270,7 +1316,7 @@ mod tests {
 
     // (4) A legitimate literal that merely contains braces is not false-flagged.
     #[test]
-    fn test_collect_unresolved_placeholder_ignores_non_placeholder_literals() {
+    fn collect_unresolved_placeholder_ignores_non_placeholder_literals() {
         let vars = HashMap::new();
         let body = serde_json::json!({
             "json_like": "{ \"a\": 1 }",

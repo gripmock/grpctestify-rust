@@ -343,6 +343,9 @@ fn streaming_response_to_items(
             Phase::Done => None,
         }
     });
+    // `unfold` panics if polled again after yielding `None`, and a consumer that
+    // drains the stream (report formats capture the whole exchange) does exactly
+    // that — so both halves are fused before they are handed out.
     match conversion_error {
         Some(slot) => {
             // After the response ends, surface a request-conversion error (if
@@ -351,9 +354,9 @@ fn streaming_response_to_items(
                 let err = slot.lock().unwrap().take();
                 err.map(|e| (Err(e), slot))
             });
-            Box::pin(items.chain(tail))
+            Box::pin(items.fuse().chain(tail.fuse()).fuse())
         }
-        None => Box::pin(items),
+        None => Box::pin(items.fuse()),
     }
 }
 
@@ -621,7 +624,7 @@ mod tests {
     use crate::config::WireProtocol;
 
     #[tokio::test]
-    async fn test_rejects_non_grpc_protocols() {
+    async fn rejects_non_grpc_protocols() {
         for proto in &[WireProtocol::GrpcWeb, WireProtocol::ConnectRpc] {
             let config = GrpcClientConfig {
                 address: "localhost:4770".to_string(),
@@ -641,7 +644,7 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_request_json_ok() {
+    fn convert_request_json_ok() {
         use prost_reflect::ReflectMessage;
         let desc = prost_types::Timestamp::default().descriptor();
         let result = convert_request_json(0, serde_json::json!("2024-06-15T10:30:00Z"), &desc);
@@ -653,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_request_json_error_names_message_index() {
+    fn convert_request_json_error_names_message_index() {
         use prost_reflect::ReflectMessage;
         let desc = prost_types::Timestamp::default().descriptor();
         // A JSON object is not a valid google.protobuf.Timestamp representation.
@@ -668,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tonic_status_to_grpc_error_carries_code_message_details() {
+    fn tonic_status_to_grpc_error_carries_code_message_details() {
         use tonic::{Code, Status};
         // Proto-encoded google.rpc.Status detail bytes (opaque here); the point
         // is they survive verbatim across the boundary.
@@ -688,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_metadata_version() {
+    fn insert_metadata_version() {
         let mut meta = MetadataMap::new();
         insert_metadata(&mut meta, None, "test-version");
         let ua = meta.get("user-agent").unwrap();
@@ -696,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_metadata_with_custom_user_agent() {
+    fn insert_metadata_with_custom_user_agent() {
         let mut meta = MetadataMap::new();
         let mut custom = HashMap::new();
         custom.insert("user-agent".to_string(), "custom-ua/2.0".to_string());

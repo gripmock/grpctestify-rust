@@ -15,7 +15,7 @@ use crate::utils::FileUtils;
 /// - normalize `:TypeName` spacing to stuck-together form (`.x:number` not `.x : number`)
 fn normalize_assertion_lines(raw: &str) -> Vec<String> {
     raw.lines()
-        .map(|line| group_numeric_literals(&normalize_assertion_line(line)))
+        .map(|line| normalize_numeric_literals(&normalize_assertion_line(line), true))
         .collect()
 }
 
@@ -25,6 +25,8 @@ fn normalize_assertion_line(line: &str) -> String {
     if trimmed.starts_with("//") || trimmed.is_empty() {
         return line;
     }
+    // The tokenizer drops escape backslashes, so canonicalising an assertion
+    // that carries one would rewrite the literal into a different string.
     // Try to parse as assertion expression for canonical formatting
     let expr = crate::parser::assertion_ast::parse_assertion(trimmed);
     if matches!(&expr, crate::parser::assertion_ast::AssertionExpr::Raw(_)) {
@@ -71,7 +73,11 @@ fn normalize_hash_comment_line(line: &str) -> Option<String> {
 /// `1000000` -> `1_000_000`, `1_00` -> `100`, `1.000000` -> `1.0`. Only a run
 /// that is a number on both ends, so identifiers, UUIDs, hex, exponents,
 /// string contents and comment prose are left as authored.
-fn group_numeric_literals(text: &str) -> String {
+/// Canonicalise numeric literals. `group_integers` is false inside JSON
+/// payloads: `1_000_000` is neither valid JSON nor JSON5, and a body is read by
+/// other tools too. Fraction trimming (`1.000000` -> `1.0`) applies either way —
+/// it keeps the value and the type.
+fn normalize_numeric_literals(text: &str, group_integers: bool) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
 
@@ -167,7 +173,14 @@ fn group_numeric_literals(text: &str) -> String {
                 continue;
             }
 
-            out.push_str(&group_digits(&int_part));
+            if group_integers {
+                out.push_str(&group_digits(&int_part));
+            } else {
+                // Strip separators rather than pass them through: a payload
+                // written by an older release carries `1_000_000`, which no
+                // JSON parser outside this tool accepts.
+                out.extend(int_part.chars().filter(|c| *c != '_'));
+            }
             if let Some(frac) = frac_part {
                 out.push('.');
                 out.push_str(&trim_fraction(&frac));
@@ -246,6 +259,10 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
     // Offset of a `,` with no value after it yet. JSON5 allows it before the
     // bracket, canonical JSON doesn't, and a comment may sit in between.
     let mut dangling_comma: Option<usize> = None;
+    // A commented-out member sitting after that comma. The comma is then load
+    // bearing: it is what lets the line be uncommented without also having to
+    // put a comma back, so it must survive.
+    let mut comma_holds_a_commented_out_member = false;
 
     macro_rules! open_value {
         () => {
@@ -257,6 +274,7 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
             saw_newline_gap = false;
             need_space = false;
             dangling_comma = None;
+            comma_holds_a_commented_out_member = false;
         };
     }
 
@@ -333,6 +351,11 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
             // Only a newline in the *source* moves a comment to its own line;
             // a break merely owed by `{`/`[`/`,` must not.
             if saw_newline_gap {
+                // A comment on its own line after a comma is a commented-out
+                // member, not a note about the value before it.
+                if dangling_comma.is_some() {
+                    comma_holds_a_commented_out_member = true;
+                }
                 newline_indent(&mut out, indent);
                 pending_break = false;
             } else if !out.is_empty() && !out.ends_with('\n') && !out.ends_with(' ') {
@@ -364,9 +387,12 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
             }
             '}' | ']' => {
                 // By offset, not `ends_with`: a comment may sit in between.
-                if let Some(pos) = dangling_comma.take() {
+                if let Some(pos) = dangling_comma.take()
+                    && !comma_holds_a_commented_out_member
+                {
                     out.remove(pos);
                 }
+                comma_holds_a_commented_out_member = false;
                 let empty = pending_break
                     && ((ch == '}' && out.ends_with('{')) || (ch == ']' && out.ends_with('[')));
                 indent = indent.saturating_sub(1);
@@ -388,6 +414,7 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
             }
             ',' => {
                 dangling_comma = Some(out.len());
+                comma_holds_a_commented_out_member = false;
                 out.push(',');
                 saw_newline_gap = false;
                 need_space = false;
@@ -441,7 +468,7 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
         }
     }
 
-    group_numeric_literals(&out)
+    normalize_numeric_literals(&out, false)
         .lines()
         .map(str::to_string)
         .collect()
@@ -1135,7 +1162,7 @@ mod tests {
     // unquoted key is as valid as an ASCII one, and the numeric forms JSON5
     // adds are the author's notation, not ours to re-mint.
     #[test]
-    fn test_fmt_json5_grammar_round_trip() {
+    fn fmt_json5_grammar_round_trip() {
         let body = concat!(
             "{\n",
             "  \u{438}\u{43c}\u{44f}: 1,\n",
@@ -1170,7 +1197,7 @@ mod tests {
     // It is not one — `inspect`, `explain` and `Workflow::extractions` all
     // report the section, so dropping it changed what those commands saw.
     #[test]
-    fn test_fmt_keeps_an_empty_extract_section() {
+    fn fmt_keeps_an_empty_extract_section() {
         let src = format!("{HDR}--- EXTRACT ---\n\n--- ASSERTS ---\n.a == 1\n");
         let out = assert_idempotent(&src);
         assert!(
@@ -1184,7 +1211,7 @@ mod tests {
     // onto its own line. It belongs where the author put it.
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_fmt_json_comment_after_brace_idempotent() {
+    fn fmt_json_comment_after_brace_idempotent() {
         let src = format!("{}--- RESPONSE ---\n{{ // opener\n  \"a\": 1\n}}\n", HDR);
         let out = assert_idempotent(&src);
         assert!(
@@ -1197,7 +1224,7 @@ mod tests {
     // Regression: a comment trailing a comma was pushed onto the following
     // line, re-attaching it to the *next* array element.
     #[test]
-    fn test_fmt_json_trailing_comment_stays_on_its_line() {
+    fn fmt_json_trailing_comment_stays_on_its_line() {
         let src = format!(
             "{HDR}--- RESPONSE ---\n{{\n  \"ids\": [\n    \"a\", // first\n    \"b\" // second\n  ]\n}}\n"
         );
@@ -1211,7 +1238,7 @@ mod tests {
 
     // Regression: consecutive comment lines were folded onto one physical line.
     #[test]
-    fn test_fmt_json_consecutive_comments_stay_separate() {
+    fn fmt_json_consecutive_comments_stay_separate() {
         let src = format!("{HDR}--- RESPONSE ---\n{{\n  // first\n  // second\n  \"a\": 1\n}}\n");
         let out = assert_idempotent(&src);
         assert!(
@@ -1222,7 +1249,7 @@ mod tests {
 
     // Regression: an empty object/array was blown open across two lines.
     #[test]
-    fn test_fmt_json_empty_containers_stay_compact() {
+    fn fmt_json_empty_containers_stay_compact() {
         let src = format!(
             "{HDR}--- RESPONSE ---\n{{\n  \"o\": {{}},\n  \"a\": [], // none\n  \"b\": 1\n}}\n"
         );
@@ -1237,19 +1264,16 @@ mod tests {
     // Regression: digit grouping ran over comment prose, rewriting `// 1000`
     // to `// 1_000`.
     #[test]
-    fn test_fmt_does_not_group_digits_inside_comments() {
+    fn fmt_does_not_group_digits_inside_comments() {
         let src = format!("{HDR}--- RESPONSE ---\n{{\n  \"a\": 1000000 // limit is 1000000\n}}\n");
         let out = assert_idempotent(&src);
-        assert!(
-            out.contains("\"a\": 1_000_000 // limit is 1000000"),
-            "{out}"
-        );
+        assert!(out.contains("\"a\": 1000000 // limit is 1000000"), "{out}");
     }
 
     // Regression: a UUID's digit runs were regrouped (`00000000-0000-...` ->
     // `00_000_000-0000-...`). Only a run that is a number end to end is one.
     #[test]
-    fn test_fmt_does_not_group_digits_inside_uuids_or_literals() {
+    fn fmt_does_not_group_digits_inside_uuids_or_literals() {
         let src = format!(
             "{HDR}--- RESPONSE ---\n{{\n  // 00000000-0000-0000-0000-000000000000\n  \"id\": 1,\n  \"hex\": 0xFF,\n  \"exp\": 1e3\n}}\n"
         );
@@ -1268,7 +1292,7 @@ mod tests {
     // A redundant fraction normalizes to `1.0`, never to `1` — dropping the
     // fraction would retype a float as an integer.
     #[test]
-    fn test_fmt_trailing_zero_fraction_keeps_one_digit() {
+    fn fmt_trailing_zero_fraction_keeps_one_digit() {
         let src = format!(
             "{HDR}--- RESPONSE ---\n{{\n  \"a\": 1.000000,\n  \"b\": 2.500, // note\n  \"c\": 3.0\n}}\n"
         );
@@ -1281,7 +1305,7 @@ mod tests {
     // Regression: `'…'` wasn't recognized, so a `:` or `#` inside one read as
     // syntax and rewrote the value. Quotes canonicalize; contents don't.
     #[test]
-    fn test_fmt_single_quoted_string_contents_survive() {
+    fn fmt_single_quoted_string_contents_survive() {
         let src = format!("{HDR}--- RESPONSE ---\n{{\n  'url': 'http://x/y#z' // note\n}}\n");
         let out = assert_idempotent(&src);
         assert!(
@@ -1293,7 +1317,7 @@ mod tests {
     // JSON5 escapes re-target when the quotes are doubled: `\'` loses its
     // backslash, a bare `"` gains one.
     #[test]
-    fn test_fmt_single_quoted_string_requoting_escapes() {
+    fn fmt_single_quoted_string_requoting_escapes() {
         let src =
             format!("{HDR}--- RESPONSE ---\n{{\n  'a': 'it\\'s \"x\"', // note\n  'b': 1\n}}\n");
         let out = assert_idempotent(&src);
@@ -1303,7 +1327,7 @@ mod tests {
     // JSON5 trailing commas and unquoted keys canonicalize; the numbers next to
     // them do not.
     #[test]
-    fn test_fmt_json5_canonicalizes_syntax_not_literals() {
+    fn fmt_json5_canonicalizes_syntax_not_literals() {
         let src = format!(
             "{HDR}--- RESPONSE ---\n{{\n  name: 'World', // hi\n  meta: {{ id: 0xFF, }},\n  flag: true,\n}}\n"
         );
@@ -1318,7 +1342,7 @@ mod tests {
     // `0xFF` -> `255`, `1e3` -> `1000.0`, `Infinity`/`NaN` -> `null` — and
     // dropped the first of two duplicate keys, all silently.
     #[test]
-    fn test_fmt_does_not_remint_json_literals() {
+    fn fmt_does_not_remint_json_literals() {
         let src = format!(
             "{HDR}--- RESPONSE ---\n{{\n  \"hex\": 0xFF,\n  \"exp\": 1e3,\n  \"inf\": Infinity,\n  \"nan\": NaN,\n  \"dup\": 1,\n  \"dup\": 2\n}}\n"
         );
@@ -1338,7 +1362,7 @@ mod tests {
     // Regression: an inline `/* … */` fused onto the following key
     // (`/* has */"a"`).
     #[test]
-    fn test_fmt_inline_block_comment_keeps_a_space() {
+    fn fmt_inline_block_comment_keeps_a_space() {
         let src = format!("{HDR}--- RESPONSE ---\n{{\n  /* has */ \"a\": 1\n}}\n");
         let out = assert_idempotent(&src);
         assert!(out.contains("/* has */ \"a\": 1"), "{out}");
@@ -1347,7 +1371,7 @@ mod tests {
     // Regression: a trailing comma was only dropped when it was the last
     // character — a comment after it hid it from the check.
     #[test]
-    fn test_fmt_drops_trailing_comma_behind_a_comment() {
+    fn fmt_drops_trailing_comma_behind_a_comment() {
         let src = format!(
             "{HDR}--- RESPONSE ---\n{{\n  \"a\": [\n    1, // one\n    2, // two\n  ],\n}}\n"
         );
@@ -1359,7 +1383,7 @@ mod tests {
 
     // Strings are opaque: a digit run inside one is data, not a literal.
     #[test]
-    fn test_fmt_does_not_group_digits_inside_strings() {
+    fn fmt_does_not_group_digits_inside_strings() {
         let src = format!(
             "{HDR}--- RESPONSE ---\n{{\n  \"units\": \"1000000\",\n  \"esc\": \"q\\\" 1000000 end\"\n}}\n"
         );
@@ -1370,7 +1394,7 @@ mod tests {
 
     // Regression: key-value sections deleted every comment line outright.
     #[test]
-    fn test_fmt_key_value_section_keeps_comments() {
+    fn fmt_key_value_section_keeps_comments() {
         let src = "--- ENDPOINT ---\ntest.Service/Method\n\n--- REQUEST_HEADERS ---\n// staging only\nauthorization: Bearer x\nx-trace: 1\n\n--- REQUEST ---\n{}\n";
         let out = assert_idempotent(src);
         assert!(
@@ -1382,7 +1406,7 @@ mod tests {
     // Regression: OPTIONS sorts its keys, and a comment must travel with the
     // key it was written above rather than being dropped or stranded.
     #[test]
-    fn test_fmt_options_comment_travels_with_its_key() {
+    fn fmt_options_comment_travels_with_its_key() {
         let src = format!(
             "{HDR}--- OPTIONS ---\n// why we wait\ntimeout: 30\n// retry policy\nretries: 2\n"
         );
@@ -1395,7 +1419,7 @@ mod tests {
     // onto the following key (`/* block */"a"`) because the value token did not
     // honor the pending newline.
     #[test]
-    fn test_fmt_json_block_comment_not_glued() {
+    fn fmt_json_block_comment_not_glued() {
         let src = format!(
             "{}--- RESPONSE ---\n{{\n  /* block */\n  \"a\": 1\n}}\n",
             HDR
@@ -1410,7 +1434,7 @@ mod tests {
     // Regression: a `#` hash comment inside JSON re-indents onto its own line
     // as `//` without a spurious leading blank line.
     #[test]
-    fn test_fmt_json_hash_comment_idempotent() {
+    fn fmt_json_hash_comment_idempotent() {
         let src = format!("{}--- RESPONSE ---\n{{\n  # note\n  \"a\": 1\n}}\n", HDR);
         let out = assert_idempotent(&src);
         assert!(out.contains("{\n  // note\n  \"a\": 1\n}"), "{out}");
@@ -1430,27 +1454,30 @@ mod tests {
     #[test]
     fn group_numeric_literals_leaves_strings_and_identifiers_alone() {
         let input = r#"{"amount": 1000000, "id_1_2": 3, "note": "order_1_000_2"}"#;
-        let out = super::group_numeric_literals(input);
+        let out = super::normalize_numeric_literals(input, true);
         assert_eq!(
             out,
             r#"{"amount": 1_000_000, "id_1_2": 3, "note": "order_1_000_2"}"#
         );
     }
 
+    /// A payload is JSON that other tools also read, and `1_000_000` parses as
+    /// neither JSON nor JSON5, so grouping stops at the section boundary.
     #[test]
-    fn test_fmt_request_response_numbers_get_grouped() {
+    fn fmt_leaves_json_payload_numbers_ungrouped() {
         let src =
             format!("{HDR}--- RESPONSE ---\n{{\n  \"amount\": 1000000,\n  \"code\": 42\n}}\n");
         let out = assert_idempotent(&src);
-        assert!(out.contains("1_000_000"), "expected grouped amount: {out}");
         assert!(
-            out.contains("\"code\": 42"),
-            "small numbers stay ungrouped: {out}"
+            out.contains("\"amount\": 1000000"),
+            "payload digits must stay ungrouped: {out}"
         );
+        assert!(!out.contains("1_000_000"), "{out}");
+        assert!(out.contains("\"code\": 42"), "{out}");
     }
 
     #[test]
-    fn test_fmt_asserts_numeric_literal_grouped() {
+    fn fmt_asserts_numeric_literal_grouped() {
         let src = format!("{HDR}--- ASSERTS ---\n.amount == 1000000\n");
         let out = assert_idempotent(&src);
         assert!(
@@ -1460,7 +1487,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fmt_meta_yaml_hash_comment_preserved() {
+    fn fmt_meta_yaml_hash_comment_preserved() {
         let src = "--- META ---\n# a comment\nname: demo\n\n--- ENDPOINT ---\ntest.Service/Method\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n";
         let out = assert_idempotent(src);
         assert!(
@@ -1477,7 +1504,7 @@ mod tests {
     // cannot read back, so rewriting to it broke idempotency. The formatter now
     // keeps the original form when the canonical form does not round-trip.
     #[test]
-    fn test_fmt_asserts_ternary_idempotent() {
+    fn fmt_asserts_ternary_idempotent() {
         let src = format!(
             "{}--- RESPONSE with_asserts ---\n{{}}\n\n--- ASSERTS ---\nif .x == 1 then true else false end\n",
             HDR
@@ -1491,7 +1518,7 @@ mod tests {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_write_atomic_roundtrip() {
+    fn write_atomic_roundtrip() {
         let dir = std::env::temp_dir().join(format!("fmt_atomic_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("sample.gctf");
@@ -1509,7 +1536,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fmt_hash_comments_to_slashes() {
+    fn fmt_hash_comments_to_slashes() {
         let source = r#"--- ENDPOINT ---
 grpc.health.v1.Health/Check
 
@@ -1546,7 +1573,7 @@ grpc.health.v1.Health/Check
     }
 
     #[test]
-    fn test_fmt_jsonlines_preserves_comments() {
+    fn fmt_jsonlines_preserves_comments() {
         let source = r#"--- ENDPOINT ---
 grpc.health.v1.Health/Watch
 
@@ -1596,7 +1623,7 @@ grpc.health.v1.Health/Watch
     }
 
     #[test]
-    fn test_fmt_hash_inside_string_not_comment() {
+    fn fmt_hash_inside_string_not_comment() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1629,7 +1656,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_fmt_collapses_extra_blank_lines() {
+    fn fmt_collapses_extra_blank_lines() {
         let source = r#"--- ENDPOINT ---
 grpc.health.v1.Health/Check
 
@@ -1675,7 +1702,7 @@ grpc.health.v1.Health/Check
     }
 
     #[test]
-    fn test_fmt_inserts_blank_line_before_asserts() {
+    fn fmt_inserts_blank_line_before_asserts() {
         let source = r#"--- ENDPOINT ---
 grpc.health.v1.Health/Check
 
@@ -1719,7 +1746,7 @@ grpc.health.v1.Health/Check
     }
 
     #[test]
-    fn test_fmt_crlf_to_lf_between_sections() {
+    fn fmt_crlf_to_lf_between_sections() {
         let source_lf = r#"--- ENDPOINT ---
 grpc.health.v1.Health/Check
 
@@ -1764,7 +1791,7 @@ grpc.health.v1.Health/Check
     }
 
     #[test]
-    fn test_fmt_ends_with_newline() {
+    fn fmt_ends_with_newline() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1788,7 +1815,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_fmt_crlf_to_lf_and_ends_with_newline() {
+    fn fmt_crlf_to_lf_and_ends_with_newline() {
         let source_lf = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1814,7 +1841,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_fmt_section_address() {
+    fn fmt_section_address() {
         let source = r#"--- ADDRESS ---
 localhost:4770
 
@@ -1843,7 +1870,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_fmt_section_endpoint() {
+    fn fmt_section_endpoint() {
         let source = r#"--- ENDPOINT ---
 grpc.health.v1.Health/Check
 
@@ -1866,7 +1893,7 @@ grpc.health.v1.Health/Check
     }
 
     #[test]
-    fn test_fmt_section_request() {
+    fn fmt_section_request() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1895,7 +1922,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_fmt_section_response_with_inline_option_with_asserts() {
+    fn fmt_section_response_with_inline_option_with_asserts() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1928,7 +1955,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_fmt_section_response_with_inline_option_partial() {
+    fn fmt_section_response_with_inline_option_partial() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1960,7 +1987,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_fmt_section_response_with_inline_option_tolerance() {
+    fn fmt_section_response_with_inline_option_tolerance() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1988,7 +2015,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_fmt_section_response_with_inline_option_redact() {
+    fn fmt_section_response_with_inline_option_redact() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2020,7 +2047,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_fmt_section_response_with_inline_option_unordered_arrays() {
+    fn fmt_section_response_with_inline_option_unordered_arrays() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2052,7 +2079,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_fmt_section_response_with_multiple_inline_options() {
+    fn fmt_section_response_with_multiple_inline_options() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2086,7 +2113,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_fmt_section_error() {
+    fn fmt_section_error() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2116,7 +2143,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_fmt_section_error_with_inline_options() {
+    fn fmt_section_error_with_inline_options() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2150,7 +2177,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_fmt_section_error_with_partial_and_with_asserts_options() {
+    fn fmt_section_error_with_partial_and_with_asserts_options() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2184,7 +2211,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_fmt_section_request_headers() {
+    fn fmt_section_request_headers() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2215,7 +2242,7 @@ Content-Type: application/json
     }
 
     #[test]
-    fn test_fmt_section_asserts() {
+    fn fmt_section_asserts() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2255,7 +2282,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_fmt_section_proto() {
+    fn fmt_section_proto() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2286,7 +2313,7 @@ import_path: /proto
     }
 
     #[test]
-    fn test_fmt_section_tls() {
+    fn fmt_section_tls() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2319,7 +2346,7 @@ server_name: example.com
     }
 
     #[test]
-    fn test_fmt_section_options() {
+    fn fmt_section_options() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2352,7 +2379,7 @@ timeout: 30
     }
 
     #[test]
-    fn test_fmt_section_extract() {
+    fn fmt_section_extract() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2390,7 +2417,7 @@ auth_token: .token
     }
 
     #[test]
-    fn test_fmt_extract_with_type_annotation() {
+    fn fmt_extract_with_type_annotation() {
         let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2425,7 +2452,7 @@ total:number = .price
     }
 
     #[test]
-    fn test_fmt_all_sections_in_order() {
+    fn fmt_all_sections_in_order() {
         let source = r#"--- ADDRESS ---
 localhost:4770
 
@@ -2513,7 +2540,7 @@ status_code: .status
     }
 
     #[test]
-    fn test_fmt_inline_options_all_boolean_combinations() {
+    fn fmt_inline_options_all_boolean_combinations() {
         let combinations = [
             ("", ""),
             ("with_asserts=true", "with_asserts"),
@@ -2577,7 +2604,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_fmt_detached_comments_preserved() {
+    fn fmt_detached_comments_preserved() {
         let source = r#"// This is a detached comment before the endpoint
 --- ENDPOINT ---
 test.Service/Method
@@ -2610,7 +2637,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_fmt_attribute_between_sections_no_duplicated_or_phantom_lines() {
+    fn fmt_attribute_between_sections_no_duplicated_or_phantom_lines() {
         // Regression: a `#[attr]` line between two sections used to make the
         // *preceding* section's parsed `end_line` overshoot past it, which
         // made `format_gctf_chain`'s block-reassembly re-copy a stray raw
@@ -2642,7 +2669,7 @@ grpc.health.v1.Health/Check
     }
 
     #[test]
-    fn test_fmt_reorders_scrambled_preamble_to_canonical() {
+    fn fmt_reorders_scrambled_preamble_to_canonical() {
         let source = r#"--- META ---
 name: my test
 
@@ -2675,7 +2702,7 @@ mode: fixed
     }
 
     #[test]
-    fn test_fmt_reorders_dataset_before_address_and_endpoint() {
+    fn fmt_reorders_dataset_before_address_and_endpoint() {
         let source = r#"--- OPTIONS ---
 timeout: 5
 
@@ -2708,7 +2735,7 @@ pkg.Svc/Method
     }
 
     #[test]
-    fn test_fmt_preserves_hash_comments_inside_dataset() {
+    fn fmt_preserves_hash_comments_inside_dataset() {
         let source = r#"--- ENDPOINT ---
 pkg.Svc/Method
 
@@ -2735,7 +2762,7 @@ pkg.Svc/Method
     }
 
     #[test]
-    fn test_fmt_reorder_is_idempotent() {
+    fn fmt_reorder_is_idempotent() {
         let source = r#"--- ENDPOINT ---
 pkg.Svc/Method
 
@@ -2762,7 +2789,7 @@ name: my test
     // trailing comment to the preceding section's raw content, not the one
     // it visually precedes).
     #[test]
-    fn test_fmt_reorder_carries_comment_with_its_section() {
+    fn fmt_reorder_carries_comment_with_its_section() {
         let source = r#"--- META ---
 name: my test
 
@@ -2799,7 +2826,7 @@ mode: fixed
     // Regression: BENCH.sources: is a nested YAML list — formatting must not
     // scatter it into sorted, unindented top-level keys.
     #[test]
-    fn test_fmt_bench_sources_nested_yaml_survives() {
+    fn fmt_bench_sources_nested_yaml_survives() {
         let source = r#"--- BENCH ---
 duration: 30s
 mode: fixed
@@ -2831,7 +2858,7 @@ pkg.Svc/Method
     // order (matching `check` and the other BENCH serializer in
     // apif-parser), not alphabetically — `mode` before `duration`, etc.
     #[test]
-    fn test_fmt_bench_keys_sort_canonically_not_alphabetically() {
+    fn fmt_bench_keys_sort_canonically_not_alphabetically() {
         let source = r#"--- BENCH ---
 duration: 30s
 concurrency: 16

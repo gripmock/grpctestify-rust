@@ -201,7 +201,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_semantic_tokens_section_header() {
+    fn semantic_tokens_section_header() {
         let content = "--- ENDPOINT ---\ntest.Service/Method\n\n--- ASSERTS ---\n.id == 123\n";
         let tokens = build_semantic_tokens(content);
         assert!(!tokens.data.is_empty());
@@ -209,28 +209,28 @@ mod tests {
     }
 
     #[test]
-    fn test_semantic_tokens_plugin_call() {
+    fn semantic_tokens_plugin_call() {
         let content = "--- ASSERTS ---\n@len(.items) == 0\n";
         let tokens = build_semantic_tokens(content);
         assert!(tokens.data.iter().any(|t| t.token_type == FUNCTION));
     }
 
     #[test]
-    fn test_semantic_tokens_variable() {
+    fn semantic_tokens_variable() {
         let content = "--- ASSERTS ---\n{{ user_id }} == 42\n";
         let tokens = build_semantic_tokens(content);
         assert!(tokens.data.iter().any(|t| t.token_type == VARIABLE));
     }
 
     #[test]
-    fn test_semantic_tokens_regex_literal() {
+    fn semantic_tokens_regex_literal() {
         let content = "--- ASSERTS ---\n@regex(.name, /hello/i) == true\n";
         let tokens = build_semantic_tokens(content);
         assert!(tokens.data.iter().any(|t| t.token_type == REGEXP));
     }
 
     #[test]
-    fn test_semantic_tokens_ternary_keywords() {
+    fn semantic_tokens_ternary_keywords() {
         let content = "--- ASSERTS ---\nif .x == 1 then true else false end\n";
         let tokens = build_semantic_tokens(content);
         let kw_count = tokens
@@ -242,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn test_semantic_tokens_operators() {
+    fn semantic_tokens_operators() {
         let content = "--- ASSERTS ---\n.x >= 0 and .y != \"hello\"\n";
         let tokens = build_semantic_tokens(content);
         assert!(tokens.data.iter().any(|t| t.token_type == OPERATOR));
@@ -267,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn test_semantic_tokens_indented_line_keeps_column() {
+    fn semantic_tokens_indented_line_keeps_column() {
         // The number `123` sits at column 8 because of the 2-space indent.
         // Tokenizing the trimmed line dropped the indent, mislocating it at 6.
         let content = "--- REQUEST ---\n  \"id\": 123\n";
@@ -280,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn test_semantic_tokens_astral_utf16_column() {
+    fn semantic_tokens_astral_utf16_column() {
         // The emoji key is a single `char` but two UTF-16 code units, so `42`
         // sits at char offset 6 but UTF-16 column 7. Emitting the raw char
         // offset mislocates the highlight by one on every following token.

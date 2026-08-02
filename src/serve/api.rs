@@ -2018,7 +2018,8 @@ mod tests {
     use std::sync::atomic::AtomicU64;
 
     // Regression: reads were contained, writes were not.
-    #[cfg(all(unix, not(miri)))]
+    #[cfg_attr(miri, ignore)]
+    #[cfg(unix)]
     #[test]
     fn write_path_refuses_symlinks_and_traversal() {
         let dir = tempfile::tempdir().unwrap();
@@ -2038,7 +2039,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reject_traversal_valid() {
+    fn reject_traversal_valid() {
         assert!(reject_traversal("foo.gctf").is_ok());
         assert!(reject_traversal("dir/foo.gctf").is_ok());
         assert!(reject_traversal("a/b/c.gctf").is_ok());
@@ -2049,7 +2050,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reject_traversal_invalid() {
+    fn reject_traversal_invalid() {
         assert!(reject_traversal("../foo.gctf").is_err());
         assert!(reject_traversal("dir/../../foo.gctf").is_err());
         assert!(reject_traversal("dir/..").is_err());
@@ -2115,7 +2116,7 @@ mod tests {
 
     #[cfg(not(miri))]
     #[test]
-    fn test_resolve_file_nonexistent() {
+    fn resolve_file_nonexistent() {
         let state = PlayState {
             collections_dir: PathBuf::from("/tmp/nonexistent_XXXX"),
             collections_dirs: vec![PathBuf::from("/tmp/nonexistent_XXXX")],
@@ -2131,7 +2132,7 @@ mod tests {
     #[cfg(not(miri))]
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_get_collection_returns_404_for_directory() {
+    fn get_collection_returns_404_for_directory() {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("emptydir");
         std::fs::create_dir(&sub).unwrap();
@@ -2155,7 +2156,7 @@ mod tests {
     #[cfg(not(miri))]
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_get_collection_ok_for_gctf_file() {
+    fn get_collection_ok_for_gctf_file() {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("test.gctf");
         std::fs::write(
@@ -2176,15 +2177,14 @@ mod tests {
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(get_collection(State(state), Path("test.gctf".to_string())));
-        assert!(result.is_ok());
-        let resp = result.unwrap();
+        let resp = result.expect("get_collection must succeed");
         assert!(resp.path.contains("test.gctf"));
     }
 
     #[cfg(not(miri))]
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_list_collections_includes_empty_dirs() {
+    fn list_collections_includes_empty_dirs() {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("emptydir");
         std::fs::create_dir(&sub).unwrap();
@@ -2206,8 +2206,7 @@ mod tests {
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(list_collections(State(state)));
-        assert!(result.is_ok());
-        let items = result.unwrap();
+        let items = result.expect("list_collections must succeed");
 
         let dir_item = items.iter().find(|i| i.path == "emptydir");
         assert!(dir_item.is_some(), "empty dir must be listed");
@@ -2221,7 +2220,7 @@ mod tests {
     #[cfg(not(miri))]
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_list_collections_empty_dir_with_gitkeep() {
+    fn list_collections_empty_dir_with_gitkeep() {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("projects");
         std::fs::create_dir(&sub).unwrap();
@@ -2239,8 +2238,7 @@ mod tests {
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(list_collections(State(state)));
-        assert!(result.is_ok());
-        let items = result.unwrap();
+        let items = result.expect("list_collections must succeed");
 
         let dir_item = items.iter().find(|i| i.path == "projects");
         assert!(

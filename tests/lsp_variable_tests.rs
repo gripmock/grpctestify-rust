@@ -4,7 +4,7 @@
 use grpctestify::parser::parse_gctf_from_str;
 
 #[test]
-fn test_variable_basic() {
+fn variable_basic() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -34,7 +34,7 @@ auth_token = .token
 }
 
 #[test]
-fn test_variable_multiple() {
+fn variable_multiple() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -68,7 +68,7 @@ user_name = .name
 }
 
 #[test]
-fn test_variable_cross_request() {
+fn variable_cross_request() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -107,7 +107,7 @@ Authorization: Bearer {{ token }}
 }
 
 #[test]
-fn test_variable_in_asserts() {
+fn variable_in_asserts() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -137,7 +137,7 @@ expected_value = .value
 }
 
 #[test]
-fn test_variable_with_jq_functions() {
+fn variable_with_jq_functions() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -169,7 +169,7 @@ item_count = .items | length
 }
 
 #[test]
-fn test_variable_header_extraction() {
+fn variable_header_extraction() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -201,7 +201,7 @@ request_id = @header("x-request-id")
 }
 
 #[test]
-fn test_variable_trailer_extraction() {
+fn variable_trailer_extraction() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---

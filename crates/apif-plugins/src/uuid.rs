@@ -6,59 +6,13 @@ use crate::{
 };
 use apif_assert::engine::AssertionResult;
 
-pub struct UuidPlugin;
-
-impl Plugin for UuidPlugin {
-    fn name(&self) -> &str {
-        "uuid"
-    }
-
-    fn description(&self) -> &str {
-        "Validates if the provided value is a valid UUID string"
-    }
-
-    fn signature(&self) -> PluginSignature {
-        PluginSignature {
-            return_type: TypeInfo::Bool,
-            arg_types: &[ArgTypeInfo {
-                expected: TypeInfo::String,
-                required: true,
-                default: None,
-            }],
-            purity: PluginPurity::Pure,
-            deterministic: true,
-            idempotent: true,
-            safe_for_rewrite: true,
-            arg_names: &["value"],
-            replacement: None,
-        }
-    }
-
-    fn execute(&self, args: &[Value], _context: &PluginContext) -> Result<PluginResult> {
-        if args.len() != 1 {
-            return Ok(PluginResult::Assertion(AssertionResult::Error(
-                "uuid: expects exactly 1 argument".to_string(),
-            )));
-        }
-
-        let arg = &args[0];
-
-        match arg.as_str() {
-            Some(s) => {
-                if uuid::Uuid::parse_str(s).is_ok() {
-                    Ok(PluginResult::Assertion(AssertionResult::Pass))
-                } else {
-                    Ok(PluginResult::Assertion(AssertionResult::fail(format!(
-                        "Expected valid UUID, got '{}'",
-                        s
-                    ))))
-                }
-            }
-            None => Ok(PluginResult::Assertion(AssertionResult::fail(format!(
-                "Expected string for UUID check, got {:?}",
-                arg
-            )))),
-        }
+crate::define_validation_plugin! {
+    struct UuidPlugin {
+        name: "uuid",
+        description: "Validates if the provided value is a valid UUID string",
+        invalid_label: "UUID",
+        type_label: "UUID",
+        validator: |s: &str| uuid::Uuid::parse_str(s).is_ok(),
     }
 }
 
@@ -71,19 +25,19 @@ mod tests {
     }
 
     #[test]
-    fn test_uuid_plugin_name() {
+    fn uuid_plugin_name() {
         let plugin = UuidPlugin;
         assert_eq!(plugin.name(), "uuid");
     }
 
     #[test]
-    fn test_uuid_plugin_description() {
+    fn uuid_plugin_description() {
         let plugin = UuidPlugin;
         assert!(plugin.description().contains("UUID"));
     }
 
     #[test]
-    fn test_uuid_plugin_valid_uuid() {
+    fn uuid_plugin_valid_uuid() {
         let plugin = UuidPlugin;
         let context = create_context();
         let result = plugin.execute(
@@ -92,47 +46,44 @@ mod tests {
             )],
             &context,
         );
-        assert!(result.is_ok());
-        if let PluginResult::Assertion(AssertionResult::Pass) = result.unwrap() {
-            // Pass
-        } else {
-            panic!("Expected Pass assertion result");
-        }
+        assert_eq!(
+            result.expect("uuid plugin must execute"),
+            PluginResult::Assertion(AssertionResult::Pass)
+        );
     }
 
     #[test]
-    fn test_uuid_plugin_invalid_uuid() {
+    fn uuid_plugin_invalid_uuid() {
         let plugin = UuidPlugin;
         let context = create_context();
         let result = plugin.execute(&[Value::String("not-a-uuid".to_string())], &context);
-        assert!(result.is_ok());
-        if let PluginResult::Assertion(AssertionResult::Fail { .. }) = result.unwrap() {
-            // Pass
-        } else {
-            panic!("Expected Fail assertion result");
-        }
+        let got = result.expect("uuid plugin must execute");
+        assert!(
+            matches!(got, PluginResult::Assertion(AssertionResult::Fail { .. })),
+            "expected a Fail assertion, got {got:?}"
+        );
     }
 
     #[test]
-    fn test_uuid_plugin_wrong_type() {
+    fn uuid_plugin_wrong_type() {
         let plugin = UuidPlugin;
         let context = create_context();
         let result = plugin.execute(&[Value::Number(serde_json::Number::from(123))], &context);
-        assert!(result.is_ok());
-        if let PluginResult::Assertion(AssertionResult::Fail { .. }) = result.unwrap() {
-            // Pass
-        } else {
-            panic!("Expected Fail assertion result");
-        }
+        let got = result.expect("uuid plugin must execute");
+        assert!(
+            matches!(got, PluginResult::Assertion(AssertionResult::Fail { .. })),
+            "expected a Fail assertion, got {got:?}"
+        );
     }
 
     #[test]
-    fn test_uuid_plugin_no_args() {
+    fn uuid_plugin_no_args() {
         let plugin = UuidPlugin;
         let context = create_context();
         let result = plugin.execute(&[], &context);
-        assert!(result.is_ok());
-        if let PluginResult::Assertion(AssertionResult::Error(msg)) = result.unwrap() {
+        if let PluginResult::Assertion(AssertionResult::Error(msg)) =
+            result.expect("uuid plugin must execute")
+        {
             assert!(msg.contains("1 argument"));
         } else {
             panic!("Expected Error assertion result");
@@ -140,7 +91,7 @@ mod tests {
     }
 
     #[test]
-    fn test_uuid_plugin_too_many_args() {
+    fn uuid_plugin_too_many_args() {
         let plugin = UuidPlugin;
         let context = create_context();
         let result = plugin.execute(
@@ -150,8 +101,9 @@ mod tests {
             ],
             &context,
         );
-        assert!(result.is_ok());
-        if let PluginResult::Assertion(AssertionResult::Error(msg)) = result.unwrap() {
+        if let PluginResult::Assertion(AssertionResult::Error(msg)) =
+            result.expect("uuid plugin must execute")
+        {
             assert!(msg.contains("1 argument"));
         } else {
             panic!("Expected Error assertion result");

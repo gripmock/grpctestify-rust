@@ -29,7 +29,7 @@ fn explain_contract_view(json: &serde_json::Value) -> serde_json::Value {
 }
 
 #[test]
-fn test_fmt_preserves_comments_and_json5_content() {
+fn fmt_preserves_comments_and_json5_content() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("comments.gctf");
     let content = r#"# file header comment
@@ -69,7 +69,7 @@ example.Service/Call
 }
 
 #[test]
-fn test_fmt_write_rewrites_json_inside_sections() {
+fn fmt_write_rewrites_json_inside_sections() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("rewrite-json.gctf");
     let content = r#"--- ENDPOINT ---
@@ -102,7 +102,7 @@ example.v1.Greeter/SayHello
 }
 
 #[test]
-fn test_fmt_write_preserves_inline_json_comments() {
+fn fmt_write_preserves_inline_json_comments() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("preserve-json-comments.gctf");
     let content = r#"--- ENDPOINT ---
@@ -136,7 +136,7 @@ scalar.FileService/UploadFile
 }
 
 #[test]
-fn test_fmt_write_preserves_blank_line_between_sections() {
+fn fmt_write_preserves_blank_line_between_sections() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("preserve-section-spacing.gctf");
     let content = r#"--- ENDPOINT ---
@@ -166,7 +166,7 @@ weather.WeatherService/GetCurrentForecast
 }
 
 #[test]
-fn test_fmt_write_inserts_blank_line_between_adjacent_sections() {
+fn fmt_write_inserts_blank_line_between_adjacent_sections() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("insert-section-spacing.gctf");
     let content = r#"--- ENDPOINT ---
@@ -194,7 +194,7 @@ weather.WeatherService/GetCurrentForecast
 }
 
 #[test]
-fn test_fmt_write_preserves_response_trailing_hash_comment() {
+fn fmt_write_preserves_response_trailing_hash_comment() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("response-trailing-hash-comment.gctf");
     let content = r#"--- ENDPOINT ---
@@ -228,7 +228,7 @@ scalar.FileService/UploadFile
 }
 
 #[test]
-fn test_fmt_write_preserves_inline_block_comment_in_json() {
+fn fmt_write_preserves_inline_block_comment_in_json() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("preserve-inline-block-comment.gctf");
     let content = r#"--- ENDPOINT ---
@@ -259,7 +259,7 @@ weather.WeatherService/GetCurrentForecast
 }
 
 #[test]
-fn test_fmt_write_formats_json5_to_canonical_json() {
+fn fmt_write_formats_json5_to_canonical_json() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("json5-canonical.gctf");
     let content = r#"--- ENDPOINT ---
@@ -295,7 +295,7 @@ example.v1.Greeter/SayHello
 }
 
 #[test]
-fn test_fmt_write_formats_response_jsonlines() {
+fn fmt_write_formats_response_jsonlines() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("jsonlines-response.gctf");
     let content = r#"--- ENDPOINT ---
@@ -326,7 +326,7 @@ track.StreamService/Read
 }
 
 #[test]
-fn test_fmt_write_formats_jsonc_and_preserves_line_comments() {
+fn fmt_write_formats_jsonc_and_preserves_line_comments() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("jsonc-comments.gctf");
     let content = r#"--- ENDPOINT ---
@@ -360,7 +360,7 @@ weather.WeatherService/GetCurrentForecast
 }
 
 #[test]
-fn test_fmt_write_preserves_hash_inside_string() {
+fn fmt_write_preserves_hash_inside_string() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("hash-in-string.gctf");
     let content = r#"--- ENDPOINT ---
@@ -389,7 +389,7 @@ weather.WeatherService/GetCurrentForecast
 }
 
 #[test]
-fn test_fmt_write_preserves_multiline_block_comment_in_json() {
+fn fmt_write_preserves_multiline_block_comment_in_json() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("multiline-block-comment.gctf");
     let content = r#"--- ENDPOINT ---
@@ -429,7 +429,7 @@ weather.WeatherService/GetCurrentForecast
 }
 
 #[test]
-fn test_fmt_check_mode_reports_each_file_needing_format() {
+fn fmt_check_mode_reports_each_file_needing_format() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file1 = dir.path().join("needs-format-1.gctf");
     let file2 = dir.path().join("needs-format-2.gctf");
@@ -462,7 +462,7 @@ example.v1.Greeter/SayHello
 }
 
 #[test]
-fn test_fmt_check_mode_ignores_crlf_only_diff() {
+fn fmt_check_mode_ignores_crlf_only_diff() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("crlf-formatted.gctf");
     let content = "--- ENDPOINT ---\r\nexample.v1.Greeter/SayHello\r\n\r\n--- REQUEST ---\r\n{\r\n  \"name\": \"World\"\r\n}\r\n\r\n--- RESPONSE ---\r\n{\r\n  \"message\": \"Hello World!\"\r\n}\r\n";
@@ -480,7 +480,7 @@ fn test_fmt_check_mode_ignores_crlf_only_diff() {
 }
 
 #[test]
-fn test_fmt_applies_optimizer_by_default() {
+fn fmt_applies_optimizer_by_default() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("fmt-opt-default.gctf");
     let content = r#"--- ENDPOINT ---
@@ -512,7 +512,7 @@ example.v1.Greeter/SayHello
 }
 
 #[test]
-fn test_fmt_applies_optimizer_with_level_advisory() {
+fn fmt_applies_optimizer_with_level_advisory() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("fmt-opt-advisory.gctf");
     let content = r#"--- ENDPOINT ---
@@ -549,7 +549,7 @@ example.v1.Greeter/SayHello
 }
 
 #[test]
-fn test_fmt_applies_optimizer_with_level_aggressive() {
+fn fmt_applies_optimizer_with_level_aggressive() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("fmt-opt-aggressive.gctf");
     let content = r#"--- ENDPOINT ---
@@ -585,7 +585,7 @@ example.v1.Greeter/SayHello
 }
 
 #[test]
-fn test_fmt_rejects_removed_optimize_flag() {
+fn fmt_rejects_removed_optimize_flag() {
     let file = fixture_path("tests/data/gctf/valid_simple.gctf");
     let output = run_cli(&["fmt", "-o", &file]);
 
@@ -606,7 +606,7 @@ fn test_fmt_rejects_removed_optimize_flag() {
 }
 
 #[test]
-fn test_run_subcommand_uses_dry_run_flag() {
+fn run_subcommand_uses_dry_run_flag() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("dry-run.gctf");
     let content = r#"--- ENDPOINT ---
@@ -639,7 +639,7 @@ example.v1.Greeter/SayHello
 }
 
 #[test]
-fn test_explain_shows_options_section_details() {
+fn explain_shows_options_section_details() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("explain-options.gctf");
     let content = r#"--- ENDPOINT ---
@@ -675,7 +675,7 @@ retry: 2
 }
 
 #[test]
-fn test_inspect_shows_options_overrides_in_flow() {
+fn inspect_shows_options_overrides_in_flow() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("inspect-options.gctf");
     let content = r#"--- ENDPOINT ---
@@ -710,7 +710,7 @@ retry: 2
 }
 
 #[test]
-fn test_check_valid_file_json_output() {
+fn check_valid_file_json_output() {
     let file = fixture_path("tests/data/gctf/valid_simple.gctf");
     let output = run_cli(&["check", &file, "--format", "json"]);
     let json = parse_json_stdout(&output);
@@ -721,7 +721,7 @@ fn test_check_valid_file_json_output() {
 }
 
 #[test]
-fn test_check_missing_file_json_output() {
+fn check_missing_file_json_output() {
     let file = fixture_path("tests/data/gctf/nonexistent.gctf");
     let output = run_cli(&["check", &file, "--format", "json"]);
     assert!(!output.status.success(), "missing file should fail check");
@@ -735,7 +735,7 @@ fn test_check_missing_file_json_output() {
 // emoji instead of the shared `pass_icon()`/`fail_icon()` glyphs (✓/✗)
 // already used by every diagnostic line in the same file.
 #[test]
-fn test_check_text_summary_uses_shared_icons_not_raw_emoji() {
+fn check_text_summary_uses_shared_icons_not_raw_emoji() {
     let file = fixture_path("tests/data/gctf/valid_simple.gctf");
     let output = run_cli(&["check", &file]);
     assert!(output.status.success());
@@ -746,7 +746,7 @@ fn test_check_text_summary_uses_shared_icons_not_raw_emoji() {
 
 // Same regression, for `fmt`'s summary banner.
 #[test]
-fn test_fmt_text_summary_uses_shared_icons_not_raw_emoji() {
+fn fmt_text_summary_uses_shared_icons_not_raw_emoji() {
     let file = fixture_path("tests/data/gctf/valid_simple.gctf");
     let output = run_cli(&["fmt", &file]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -755,7 +755,7 @@ fn test_fmt_text_summary_uses_shared_icons_not_raw_emoji() {
 }
 
 #[test]
-fn test_inspect_valid_file_json_output() {
+fn inspect_valid_file_json_output() {
     let file = fixture_path("tests/data/gctf/valid_simple.gctf");
     let output = run_cli(&["inspect", &file, "--format", "json"]);
     let json = parse_json_stdout(&output);
@@ -769,7 +769,7 @@ fn test_inspect_valid_file_json_output() {
 }
 
 #[test]
-fn test_explain_valid_file_json_output() {
+fn explain_valid_file_json_output() {
     let file = fixture_path("tests/data/gctf/valid_simple.gctf");
     let output = run_cli(&["explain", &file, "--format", "json"]);
     let json = parse_json_stdout(&output);
@@ -779,7 +779,7 @@ fn test_explain_valid_file_json_output() {
 }
 
 #[test]
-fn test_inspect_json_golden_contract() {
+fn inspect_json_golden_contract() {
     let file = fixture_path("tests/data/gctf/valid_simple.gctf");
     let output = run_cli(&["inspect", &file, "--format", "json"]);
     let json = parse_json_stdout(&output);
@@ -819,7 +819,7 @@ fn test_inspect_json_golden_contract() {
 }
 
 #[test]
-fn test_explain_json_golden_contract() {
+fn explain_json_golden_contract() {
     let file = fixture_path("tests/data/gctf/valid_simple.gctf");
     let output = run_cli(&["explain", &file, "--format", "json"]);
     let json = parse_json_stdout(&output);
@@ -850,7 +850,7 @@ fn test_explain_json_golden_contract() {
 }
 
 #[test]
-fn test_inssect_sections_have_required_fields() {
+fn inssect_sections_have_required_fields() {
     let file = fixture_path("tests/data/gctf/valid_simple.gctf");
     let output = run_cli(&["inspect", &file, "--format", "json"]);
     let json = parse_json_stdout(&output);
@@ -867,7 +867,7 @@ fn test_inssect_sections_have_required_fields() {
 }
 
 #[test]
-fn test_fmt_check_mode_ok_output() {
+fn fmt_check_mode_ok_output() {
     let file = fixture_path("tests/data/gctf/valid_simple.gctf");
     let output = run_cli(&["fmt", &file]);
     assert!(
@@ -881,7 +881,7 @@ fn test_fmt_check_mode_ok_output() {
 }
 
 #[test]
-fn test_fmt_check_mode_fails_when_format_needed() {
+fn fmt_check_mode_fails_when_format_needed() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("needs-format.gctf");
     let content = r#"--- ENDPOINT ---
@@ -910,7 +910,7 @@ example.v1.Greeter/SayHello
 }
 
 #[test]
-fn test_fmt_write_then_check_is_idempotent() {
+fn fmt_write_then_check_is_idempotent() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("idempotent.gctf");
     let content = r#"--- ENDPOINT ---
@@ -938,7 +938,7 @@ example.v1.Greeter/SayHello
 }
 
 #[test]
-fn test_fmt_fails_when_check_fails() {
+fn fmt_fails_when_check_fails() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("invalid-plugin.gctf");
     let content = r#"--- ENDPOINT ---
@@ -967,7 +967,7 @@ example.v1.Greeter/SayHello
 }
 
 #[test]
-fn test_list_json_output() {
+fn list_json_output() {
     let dir = fixture_path("tests/data/gctf");
     let output = run_cli(&["list", &dir, "--format", "json"]);
     let json = parse_json_stdout(&output);
@@ -984,7 +984,7 @@ fn test_list_json_output() {
 }
 
 #[test]
-fn test_list_with_range() {
+fn list_with_range() {
     let dir = fixture_path("tests/data/gctf");
     let output = run_cli(&["list", &dir, "--format", "json", "--with-range"]);
     let json = parse_json_stdout(&output);
@@ -1001,7 +1001,7 @@ fn test_list_with_range() {
 
 #[test]
 #[cfg(not(miri))]
-fn test_list_with_range_includes_meta_tags() {
+fn list_with_range_includes_meta_tags() {
     let dir = fixture_path("tests/data/gctf_meta");
     let output = run_cli(&["list", &dir, "--format", "json", "--with-range"]);
     let json = parse_json_stdout(&output);
@@ -1013,7 +1013,7 @@ fn test_list_with_range_includes_meta_tags() {
 }
 
 #[test]
-fn test_inspect_json_contains_effective_runtime_with_source_tracking() {
+fn inspect_json_contains_effective_runtime_with_source_tracking() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("effective-runtime.gctf");
     let content = r#"--- OPTIONS ---
@@ -1081,7 +1081,7 @@ test.Service/Method
 }
 
 #[test]
-fn test_inspect_effective_runtime_section_attribute_overrides_options() {
+fn inspect_effective_runtime_section_attribute_overrides_options() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("attr-override.gctf");
     let content = r#"--- OPTIONS ---
@@ -1119,7 +1119,7 @@ test.Service/Method
 }
 
 #[test]
-fn test_inspect_effective_runtime_no_retry_overrides_retry() {
+fn inspect_effective_runtime_no_retry_overrides_retry() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("no-retry-override.gctf");
     let content = r#"--- OPTIONS ---
@@ -1157,7 +1157,7 @@ test.Service/Method
 }
 
 #[test]
-fn test_inspect_effective_runtime_kebab_alias_normalizes_to_snake_case() {
+fn inspect_effective_runtime_kebab_alias_normalizes_to_snake_case() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("kebab-alias.gctf");
     let content = r#"--- OPTIONS ---
@@ -1198,7 +1198,7 @@ test.Service/Method
 }
 
 #[test]
-fn test_fmt_writes_normalizes_kebab_options_to_snake_case() {
+fn fmt_writes_normalizes_kebab_options_to_snake_case() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("kebab-options.gctf");
     let content = r#"--- OPTIONS ---
@@ -1253,7 +1253,7 @@ test.Service/Method
 }
 
 #[test]
-fn test_fmt_writes_normalizes_kebab_attribute_to_snake_case() {
+fn fmt_writes_normalizes_kebab_attribute_to_snake_case() {
     // Real gap found while scoping gctf-parser-hardening §7: `check` already
     // warned on `#[retry-delay(...)]`/`#[no-retry]`, but `fmt` only
     // canonicalized the OPTIONS-key form, not the `#[...]` attribute form —
@@ -1302,7 +1302,7 @@ test.Service/Method
 }
 
 #[test]
-fn test_check_warns_on_kebab_options_keys() {
+fn check_warns_on_kebab_options_keys() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("kebab-warn.gctf");
     let content = r#"--- OPTIONS ---
@@ -1340,7 +1340,7 @@ test.Service/Method
 }
 
 #[test]
-fn test_check_warns_on_kebab_attribute_keys() {
+fn check_warns_on_kebab_attribute_keys() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("kebab-attr-warn.gctf");
     let content = r#"--- ENDPOINT ---
@@ -1376,7 +1376,7 @@ test.Service/Method
 }
 
 #[test]
-fn test_check_warns_on_deprecated_plugin_call() {
+fn check_warns_on_deprecated_plugin_call() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("deprecated-plugin.gctf");
     let content = r#"--- ENDPOINT ---
@@ -1421,7 +1421,7 @@ test.Service/Method
 }
 
 #[test]
-fn test_check_warns_on_empty_asserts_section() {
+fn check_warns_on_empty_asserts_section() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("empty-asserts.gctf");
     let content = r#"--- ENDPOINT ---
@@ -1459,7 +1459,7 @@ test.Service/Method
 }
 
 #[test]
-fn test_check_reports_no_error_case_coverage_for_suite() {
+fn check_reports_no_error_case_coverage_for_suite() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("happy-path-only.gctf");
     let content = r#"--- ENDPOINT ---
@@ -1494,7 +1494,7 @@ test.Service/Method
 }
 
 #[test]
-fn test_check_no_error_case_coverage_absent_when_error_test_exists() {
+fn check_no_error_case_coverage_absent_when_error_test_exists() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("has-error-case.gctf");
     let content = r#"--- ENDPOINT ---

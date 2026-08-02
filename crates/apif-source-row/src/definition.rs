@@ -14,7 +14,7 @@ pub struct SourceDefinition {
     pub delimiter: Option<u8>,
     #[serde(default)]
     pub header: Option<bool>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_or_seq")]
     pub indexed_by: Option<Vec<String>>,
     #[serde(default)]
     pub index_mode: Option<IndexMode>,
@@ -41,6 +41,29 @@ pub enum IndexMode {
     OnDemand,
     BuildOnce,
     Memory,
+}
+
+/// `indexed_by` takes one column or several. The documented spelling for the
+/// common case is a bare scalar (`indexed_by: user_id`), which a plain
+/// `Vec<String>` rejects — so a file written exactly as the guide shows failed
+/// to parse, and `index` reported the whole `sources` block as invalid YAML.
+/// Both forms are accepted.
+fn deserialize_string_or_seq<'de, D>(de: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    Ok(match Option::<OneOrMany>::deserialize(de)? {
+        None => None,
+        Some(OneOrMany::One(s)) => Some(vec![s]),
+        Some(OneOrMany::Many(v)) => Some(v),
+    })
 }
 
 fn deserialize_format_opt<'de, D>(de: D) -> Result<Option<SourceFormat>, D::Error>
@@ -178,5 +201,37 @@ filter:
         assert_eq!(filter[0].in_values.as_ref().map(Vec::len), Some(2));
         assert_eq!(filter[1].field, "created_at");
         assert_eq!(filter[1].gte.as_deref(), Some("2024-01-01"));
+    }
+}
+
+#[cfg(test)]
+mod indexed_by_tests {
+    use super::*;
+
+    /// `bench-sources.md` documents the single-column case as a bare scalar.
+    #[test]
+    fn indexed_by_accepts_a_scalar() {
+        let def: SourceDefinition =
+            serde_yaml_ng::from_str("file: data/users.csv\nindexed_by: user_id\n").unwrap();
+        assert_eq!(
+            def.indexed_by.as_deref(),
+            Some(&["user_id".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn indexed_by_accepts_a_list() {
+        let def: SourceDefinition =
+            serde_yaml_ng::from_str("file: data/users.csv\nindexed_by: [a, b]\n").unwrap();
+        assert_eq!(
+            def.indexed_by.as_deref(),
+            Some(&["a".to_string(), "b".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn indexed_by_is_optional() {
+        let def: SourceDefinition = serde_yaml_ng::from_str("file: data/users.csv\n").unwrap();
+        assert!(def.indexed_by.is_none());
     }
 }

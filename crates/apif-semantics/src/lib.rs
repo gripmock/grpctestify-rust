@@ -803,7 +803,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_semantics_detects_boolean_vs_number() {
+    fn semantics_detects_boolean_vs_number() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -818,7 +818,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_semantics_multibyte_expression_no_panic() {
+    fn semantics_multibyte_expression_no_panic() {
         // Regression: token spans are char indices, but the expression was
         // byte-sliced — multibyte identifiers panicked on char boundaries.
         let content = "--- ENDPOINT ---\ntest.Service/Method\n\n--- ASSERTS ---\n\u{ef}\u{ef} == 1\n.na\u{ef}ve == \"x\"\n";
@@ -835,7 +835,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_semantics_allows_boolean_compare() {
+    fn semantics_allows_boolean_compare() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -849,7 +849,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_semantics_detects_startswith_non_string() {
+    fn semantics_detects_startswith_non_string() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -865,7 +865,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_semantics_detects_unknown_plugin_calls() {
+    fn semantics_detects_unknown_plugin_calls() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -883,7 +883,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_semantics_allows_known_plugin_calls() {
+    fn semantics_allows_known_plugin_calls() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -899,7 +899,7 @@ test.Service/Method
     // ─── Type cast semantics tests ────────────────────────────────────
 
     #[test]
-    fn test_semantics_type_cast_number_allows_ordering() {
+    fn semantics_type_cast_number_allows_ordering() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -920,7 +920,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_semantics_type_cast_string_allows_contains() {
+    fn semantics_type_cast_string_allows_contains() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -941,7 +941,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_semantics_type_cast_uint_allows_ordering() {
+    fn semantics_type_cast_uint_allows_ordering() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -960,7 +960,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_semantics_type_cast_bool_allows_equal() {
+    fn semantics_type_cast_bool_allows_equal() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -979,7 +979,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_semantics_type_cast_rejects_bool_ordering() {
+    fn semantics_type_cast_rejects_bool_ordering() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -994,7 +994,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_semantics_type_cast_rejects_string_ordering() {
+    fn semantics_type_cast_rejects_string_ordering() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1009,7 +1009,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_semantics_all_types_cast() {
+    fn semantics_all_types_cast() {
         let cases = [
             ("bool", "true"),
             ("uint", "0"),
@@ -1044,7 +1044,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_semantics_type_cast_without_annotation_passes() {
+    fn semantics_type_cast_without_annotation_passes() {
         // Any now supports all operators — no annotation needed for ordering
         let content = r#"--- ENDPOINT ---
 test.Service/Method
@@ -1071,7 +1071,7 @@ test.Service/Method
     // ─── Variable type tracking tests ─────────────────────────────────
 
     #[test]
-    fn test_extract_variable_types_simple() {
+    fn extract_variable_types_simple() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1094,7 +1094,7 @@ name:string = .user.name
     }
 
     #[test]
-    fn test_extract_variable_types_without_type_annotation() {
+    fn extract_variable_types_without_type_annotation() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1117,7 +1117,7 @@ total = .price
     }
 
     #[test]
-    fn test_variable_type_in_assertion() {
+    fn variable_type_in_assertion() {
         // When {{price}} is used and its type is known from EXTRACT,
         // ordering operators should be allowed
         let content = r#"--- ENDPOINT ---
@@ -1146,7 +1146,7 @@ $price >= 0
     }
 
     #[test]
-    fn test_variable_type_without_annotation_passes() {
+    fn variable_type_without_annotation_passes() {
         // Any supports all operators — untyped $var allows ordering
         let content = r#"--- ENDPOINT ---
 test.Service/Method
@@ -1174,7 +1174,7 @@ $price >= 0
     }
 
     #[test]
-    fn test_variable_type_string_contains() {
+    fn variable_type_string_contains() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1201,7 +1201,7 @@ $user_name contains "hello"
     }
 
     #[test]
-    fn test_time_type_ordering() {
+    fn time_type_ordering() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1220,7 +1220,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_time_type_rejects_string_ops() {
+    fn time_type_rejects_string_ops() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1234,7 +1234,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_time_variable_type_in_assertion() {
+    fn time_variable_type_in_assertion() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1260,7 +1260,7 @@ $created > "2024-01-01"
     }
 
     #[test]
-    fn test_bracket_path_with_dot_index() {
+    fn bracket_path_with_dot_index() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1278,7 +1278,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_bracket_path_with_string_key() {
+    fn bracket_path_with_string_key() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1295,7 +1295,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_constant_assertions_always_true() {
+    fn collect_constant_assertions_always_true() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1310,7 +1310,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_constant_assertions_always_false() {
+    fn collect_constant_assertions_always_false() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1324,7 +1324,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_constant_assertions_numeric_equivalence() {
+    fn collect_constant_assertions_numeric_equivalence() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1338,7 +1338,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_constant_assertions_ignores_field_comparisons() {
+    fn collect_constant_assertions_ignores_field_comparisons() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1356,7 +1356,7 @@ $name == "SERVING"
     }
 
     #[test]
-    fn test_collect_duplicate_assertions_flags_exact_repeat() {
+    fn collect_duplicate_assertions_flags_exact_repeat() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1373,7 +1373,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_duplicate_assertions_ignores_distinct_lines() {
+    fn collect_duplicate_assertions_ignores_distinct_lines() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1386,7 +1386,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_duplicate_assertions_ignores_trailing_comment_difference() {
+    fn collect_duplicate_assertions_ignores_trailing_comment_difference() {
         let content = "--- ENDPOINT ---\ntest.Service/Method\n\n--- ASSERTS ---\n.status == \"SERVING\"\n.status == \"SERVING\" // same check\n";
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
         let dups = collect_duplicate_assertions(&doc);
@@ -1394,7 +1394,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_deprecated_plugin_uuid() {
+    fn collect_deprecated_plugin_uuid() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1410,7 +1410,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_deprecated_plugin_email() {
+    fn collect_deprecated_plugin_email() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1424,7 +1424,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_deprecated_plugin_empty() {
+    fn collect_deprecated_plugin_empty() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1438,7 +1438,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_deprecated_plugin_finds_second_document_in_chain() {
+    fn collect_deprecated_plugin_finds_second_document_in_chain() {
         // A chain's 2nd+ document is not `doc.sections` (the head) — this
         // must scan every document via `doc.iter_chain()`, not just the head.
         let content = r#"--- ENDPOINT ---
@@ -1461,7 +1461,7 @@ test.Service/Method2
     }
 
     #[test]
-    fn test_collect_unknown_plugin_calls_finds_second_document_in_chain() {
+    fn collect_unknown_plugin_calls_finds_second_document_in_chain() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1482,7 +1482,7 @@ test.Service/Method2
     }
 
     #[test]
-    fn test_collect_assertion_type_mismatches_finds_second_document_in_chain() {
+    fn collect_assertion_type_mismatches_finds_second_document_in_chain() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1503,7 +1503,7 @@ test.Service/Method2
     }
 
     #[test]
-    fn test_collect_deprecated_plugin_skips_canonical() {
+    fn collect_deprecated_plugin_skips_canonical() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1522,7 +1522,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_redundant_response_assertions_flags_exact_pinned_field() {
+    fn collect_redundant_response_assertions_flags_exact_pinned_field() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1544,7 +1544,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_redundant_response_assertions_ignores_different_value() {
+    fn collect_redundant_response_assertions_ignores_different_value() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1561,7 +1561,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_redundant_response_assertions_ignores_field_comparison() {
+    fn collect_redundant_response_assertions_ignores_field_comparison() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1579,7 +1579,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_redundant_response_assertions_ignores_wildcard_field() {
+    fn collect_redundant_response_assertions_ignores_wildcard_field() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1596,7 +1596,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_redundant_response_assertions_ignores_without_with_asserts() {
+    fn collect_redundant_response_assertions_ignores_without_with_asserts() {
         // RESPONSE (no with_asserts) followed by an unrelated top-level
         // ASSERTS block isn't "attached" the way the runner treats it —
         // must not be treated as redundant.
@@ -1613,7 +1613,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_redundant_response_assertions_ignores_tolerance() {
+    fn collect_redundant_response_assertions_ignores_tolerance() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 

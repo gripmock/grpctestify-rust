@@ -21,7 +21,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.9.3"
+version = "1.9.4"
 edition = "2024"
 authors = ["bavix"]
 license = "MIT"
@@ -119,7 +119,7 @@ jaq-json = { version = "2.0", features = ["serde"] }
 crc32fast = "1.5"
 
 # JSON Schema
-jsonschema = "0.48"
+jsonschema = "0.49"
 
 # Fake data generation
 fake = "5.1"
@@ -136,6 +136,24 @@ axum = "0.8"
 tower-http = { version = "0.7", features = ["cors", "fs", "trace"] }
 rust-embed = "8"
 mime_guess = "2"
+
+# `target/` had grown past 180 GB. The multiplier is this workspace's shape:
+# 54 integration-test files plus 5 benches plus per-crate unittests are each a
+# separate statically linked binary, and with Cargo's defaults every one of them
+# carried full debuginfo for the entire dependency tree (tonic, tokio, rhai,
+# regex, chrono...) — debug data for code nobody here steps through.
+[profile.dev]
+# Enough for backtraces with file/line, without the type and variable records
+# that dominate the size.
+debug = "line-tables-only"
+# Incremental state is per-crate and additive; a workspace of 31 crates whose
+# normal use is full `cargo test --workspace` runs rebuilds wholesale anyway.
+incremental = false
+
+# Dependencies are not debugged from here, so they need no debuginfo at all.
+# This is the single largest saving of the three.
+[profile.dev.package."*"]
+debug = false
 
 [package]
 name = "grpctestify"

@@ -62,6 +62,30 @@ pub fn build_engine() -> Engine {
     engine
 }
 
+/// Read a script, hash it, and compile it — in that order, from one buffer.
+///
+/// The trust gate compares the stored digest against the script that is about
+/// to run, so the digest must cover the exact bytes that were compiled. Both
+/// `RhaiPlugin::load_all` and `RhaiReporter::load` need this, and having them
+/// each spell it out invited the two copies to drift apart; the invariant lives
+/// here instead.
+pub fn compile_with_digest(
+    engine: &Engine,
+    path: &std::path::Path,
+) -> anyhow::Result<(rhai::AST, String)> {
+    use anyhow::Context;
+
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("failed to read plugin script: {}", path.display()))?;
+    let digest = crate::marketplace::sha256_hex(&bytes);
+    let source = String::from_utf8(bytes)
+        .with_context(|| format!("plugin script is not UTF-8: {}", path.display()))?;
+    let ast = engine
+        .compile(&source)
+        .with_context(|| format!("failed to compile plugin script: {}", path.display()))?;
+    Ok((ast, digest))
+}
+
 fn register(engine: &mut Engine) {
     engine.register_fn("log_info", |msg: &str| tracing::info!("{msg}"));
     engine.register_fn("log_warn", |msg: &str| tracing::warn!("{msg}"));
@@ -78,7 +102,7 @@ fn register(engine: &mut Engine) {
         chrono::DateTime::parse_from_rfc3339(s).is_ok()
     });
     engine.register_fn("regex_match", |s: &str, pattern: &str| -> bool {
-        crate::regex::cached_regex(pattern)
+        apif_assert::cached_regex(pattern)
             .map(|re| re.is_match(s))
             .unwrap_or(false)
     });
@@ -104,6 +128,35 @@ mod tests {
                 .contains("too many operations"),
             "expected an operation-limit error, got: {err}"
         );
+    }
+
+    /// The trust gate is only sound if the digest covers the bytes that were
+    /// actually compiled — pin that the returned digest is the file's own
+    /// hash, not something computed from a re-read or a re-encode.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn compile_with_digest_hashes_exactly_what_it_compiled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.rhai");
+        let source = b"fn check(value) { value == 1 }";
+        std::fs::write(&path, source).unwrap();
+
+        let engine = build_engine();
+        let (ast, digest) = compile_with_digest(&engine, &path).unwrap();
+
+        assert_eq!(digest, crate::marketplace::sha256_hex(source));
+        assert!(ast.iter_functions().any(|f| f.name == "check"));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn compile_with_digest_rejects_a_script_that_does_not_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.rhai");
+        std::fs::write(&path, b"fn check(value) { value == }").unwrap();
+
+        let engine = build_engine();
+        assert!(compile_with_digest(&engine, &path).is_err());
     }
 
     #[test]

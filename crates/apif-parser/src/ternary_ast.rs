@@ -44,27 +44,31 @@ fn is_ternary(value: &str) -> bool {
 
 /// Find character that's not inside quotes, parentheses, or brackets
 fn find_top_level_char(expr: &str, target: char) -> Option<usize> {
-    let mut in_quotes = false;
-    let mut quote_char = None;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
     let mut paren_depth = 0;
     let mut bracket_depth = 0;
 
     for (i, c) in expr.char_indices() {
-        match c {
-            '\'' | '"' => {
-                if !in_quotes {
-                    in_quotes = true;
-                    quote_char = Some(c);
-                } else if Some(c) == quote_char {
-                    in_quotes = false;
-                    quote_char = None;
-                }
+        // Everything inside a string literal is opaque — brackets in there are
+        // text, and a `\"` does not end the literal.
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == q {
+                quote = None;
             }
+            continue;
+        }
+        match c {
+            '\'' | '"' => quote = Some(c),
             '(' | '{' => paren_depth += 1,
             ')' | '}' => paren_depth -= 1,
             '[' => bracket_depth += 1,
             ']' => bracket_depth -= 1,
-            _ if c == target && !in_quotes && paren_depth == 0 && bracket_depth == 0 => {
+            _ if c == target && paren_depth == 0 && bracket_depth == 0 => {
                 return Some(i);
             }
             _ => {}
@@ -120,21 +124,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_value_simple() {
+    fn extract_value_simple() {
         let value = ExtractValue::parse(".user.id");
         assert!(matches!(value, ExtractValue::Simple(_)));
         assert_eq!(value.to_jq(), ".user.id");
     }
 
     #[test]
-    fn test_extract_value_jq() {
+    fn extract_value_jq() {
         let value = ExtractValue::parse(".items | length");
         assert!(matches!(value, ExtractValue::JqExpr(_)));
         assert_eq!(value.to_jq(), ".items | length");
     }
 
     #[test]
-    fn test_extract_value_ternary() {
+    fn extract_value_ternary() {
         let value = ExtractValue::parse(".status == 200 ? \"OK\" : \"Error\"");
         assert!(matches!(value, ExtractValue::Ternary(_)));
         assert_eq!(
@@ -144,14 +148,14 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_value_ternary_with_jq() {
+    fn extract_value_ternary_with_jq() {
         let value = ExtractValue::parse("(.items | length) > 0 ? \"yes\" : \"no\"");
         assert!(matches!(value, ExtractValue::Ternary(_)));
         assert!(value.to_jq().starts_with("if"));
     }
 
     #[test]
-    fn test_extract_var_parse() {
+    fn extract_var_parse() {
         let var = ExtractVar::parse("status = .status == 200 ? \"OK\" : \"Error\"").unwrap();
         assert_eq!(var.name, "status");
         assert!(matches!(var.value, ExtractValue::Ternary(_)));
@@ -162,27 +166,27 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_var_simple() {
+    fn extract_var_simple() {
         let var = ExtractVar::parse("token = .access_token").unwrap();
         assert_eq!(var.name, "token");
         assert!(matches!(var.value, ExtractValue::Simple(_)));
     }
 
     #[test]
-    fn test_extract_var_jq() {
+    fn extract_var_jq() {
         let var = ExtractVar::parse("count = .items | length").unwrap();
         assert_eq!(var.name, "count");
         assert!(matches!(var.value, ExtractValue::JqExpr(_)));
     }
 
     #[test]
-    fn test_extract_var_skip_comment() {
+    fn extract_var_skip_comment() {
         let var = ExtractVar::parse("# this is a comment");
         assert!(var.is_none());
     }
 
     #[test]
-    fn test_extract_var_skip_empty() {
+    fn extract_var_skip_empty() {
         let var = ExtractVar::parse("");
         assert!(var.is_none());
     }
@@ -194,13 +198,41 @@ mod tests {
     }
 
     #[test]
-    fn test_find_top_level_in_quotes() {
+    fn find_top_level_in_quotes() {
         let result = find_top_level_char(".text == \"a ? b\" ? \"yes\" : \"no\"", '?');
         assert_eq!(result, Some(17));
     }
 
+    /// A bracket inside a string literal is text, not nesting. Counting it
+    /// left `paren_depth` stuck above zero for the rest of the expression, so
+    /// the real top-level `?` after it was never found and the ternary silently
+    /// stopped being recognised.
     #[test]
-    fn test_find_top_level_in_parens() {
+    fn find_top_level_ignores_brackets_inside_string_literals() {
+        assert_eq!(
+            find_top_level_char(r#".a == "(" ? "yes" : "no""#, '?'),
+            Some(10)
+        );
+        assert_eq!(
+            find_top_level_char(r#".a == "[" ? "yes" : "no""#, '?'),
+            Some(10)
+        );
+    }
+
+    /// An escaped quote does not end the literal. Treating it as a close made
+    /// the rest of the string count as top level, so a `?`/`:` that is really
+    /// part of the text was reported as a ternary operator.
+    #[test]
+    fn find_top_level_respects_escaped_quotes() {
+        assert_eq!(find_top_level_char(r#".a == "x \" ? y : z""#, '?'), None);
+        assert_eq!(
+            find_top_level_char(r#".a == "say \"hi\"" ? 1 : 2"#, '?'),
+            Some(19)
+        );
+    }
+
+    #[test]
+    fn find_top_level_in_parens() {
         assert_eq!(
             find_top_level_char("(.a > 0 ? \"yes\" : \"no\") : \"other\"", '?'),
             None
@@ -208,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_var_nested_ternary() {
+    fn extract_var_nested_ternary() {
         let var = ExtractVar::parse(
             "size = .count == 0 ? \"empty\" : (.count > 10 ? \"large\" : \"small\")",
         )
@@ -223,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_var_with_header_plugin() {
+    fn extract_var_with_header_plugin() {
         let var = ExtractVar::parse("request_id = @header(\"x-request-id\") != null ? @header(\"x-request-id\") : \"unknown\"").unwrap();
         assert_eq!(var.name, "request_id");
         assert!(matches!(var.value, ExtractValue::Ternary(_)));

@@ -71,7 +71,7 @@ links:
 .status == "ok"
 @len(.items) > 0
 @header("x-request-id") != null
-@uuid(.user.id)
+@is_uuid(.user.id)
 .price:number >= 0
 $total >= 0
 ```

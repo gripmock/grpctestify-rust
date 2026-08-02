@@ -348,15 +348,7 @@ impl ExecutionPlan {
             })
             .collect();
 
-        let has_json_lines = response_sections
-            .iter()
-            .any(|s| matches!(&s.content, SectionContent::JsonLines(vals) if vals.len() > 1));
-        let rpc_mode = infer_rpc_mode(
-            &requests,
-            &expectations,
-            error_section.is_some(),
-            has_json_lines,
-        );
+        let rpc_mode = infer_rpc_mode(&requests, &expectations, error_section.is_some());
 
         let rpc_mode_name = match &rpc_mode {
             RpcMode::Unary => "Unary",
@@ -536,21 +528,35 @@ fn check_rpc_mode_compatibility(inferred: &RpcModeInfo, actual: &RpcModeInfo) ->
     }
 }
 
+/// Counts messages, not sections: one json-lines REQUEST/RESPONSE carries N
+/// messages on a single stream, which is the same shape as N separate sections.
+/// Counting sections made this disagree with `Workflow::rpc_mode_name` (which
+/// counts events) for the same file, so `inspect`'s text and JSON output gave
+/// two different modes.
 fn infer_rpc_mode(
     requests: &[RequestInfo],
     expectations: &[ExpectationInfo],
     has_error: bool,
-    has_json_lines: bool,
 ) -> RpcMode {
-    let req_count = requests.len();
-    let resp_count = expectations
+    let req_count: usize = requests
+        .iter()
+        .map(|r| {
+            if r.content_type == "json-lines" {
+                r.content.as_array().map_or(1, |v| v.len().max(1))
+            } else {
+                1
+            }
+        })
+        .sum();
+    let resp_count: usize = expectations
         .iter()
         .filter(|e| e.expectation_type == "response")
-        .count();
+        .map(|e| e.message_count.unwrap_or(1).max(1))
+        .sum();
 
     if has_error {
         RpcMode::UnaryError
-    } else if has_json_lines || resp_count > 1 {
+    } else if resp_count > 1 {
         if req_count > 1 {
             RpcMode::BidirectionalStreaming {
                 request_count: req_count,
@@ -2530,41 +2536,7 @@ impl TestRunner {
     }
 
     fn substitute_variables(&self, value: &mut Value, variables: &HashMap<String, Value>) {
-        match value {
-            Value::String(s) => {
-                if !s.contains("{{") {
-                    return;
-                }
-
-                // Check for exact match "{{ var }}" to preserve type
-                if s.starts_with("{{") && s.ends_with("}}") {
-                    let inner = s[2..s.len() - 2].trim();
-                    // check if inner has more {{ }} which implies complex string
-                    if !inner.contains("{{")
-                        && let Some(val) = variables.get(inner)
-                    {
-                        *value = val.clone();
-                        return;
-                    }
-                }
-
-                // String interpolation "prefix {{ var }} suffix"
-                if let Some(result) = runner_helpers::interpolate_variables(s, variables) {
-                    *value = Value::String(result);
-                }
-            }
-            Value::Array(arr) => {
-                for v in arr {
-                    self.substitute_variables(v, variables);
-                }
-            }
-            Value::Object(obj) => {
-                for v in obj.values_mut() {
-                    self.substitute_variables(v, variables);
-                }
-            }
-            _ => {}
-        }
+        runner_helpers::substitute_variables(value, variables);
     }
 
     #[expect(clippy::too_many_arguments)]
@@ -2981,7 +2953,7 @@ chat.ChatService/SendMessages
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_test_runner_new() {
+    fn runner_new() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
         assert!(!runner.dry_run);
         assert_eq!(runner.timeout_seconds, 30);
@@ -2992,34 +2964,34 @@ chat.ChatService/SendMessages
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_test_runner_with_dry_run() {
+    fn runner_with_dry_run() {
         let runner = TestRunner::new(true, 30, false, false, false, None);
         assert!(runner.dry_run);
     }
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_test_runner_with_timeout() {
+    fn runner_with_timeout() {
         let runner = TestRunner::new(false, 60, false, false, false, None);
         assert_eq!(runner.timeout_seconds, 60);
     }
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_test_runner_with_no_assert() {
+    fn runner_with_no_assert() {
         let runner = TestRunner::new(false, 30, true, false, false, None);
         assert!(runner.no_assert);
     }
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_test_runner_with_write_mode() {
+    fn runner_with_write_mode() {
         let runner = TestRunner::new(false, 30, false, true, false, None);
         assert!(runner.write_mode);
     }
 
     #[test]
-    fn test_parse_bool_flag_truthy_values() {
+    fn parse_bool_flag_truthy_values() {
         assert!(runner_helpers::parse_bool_flag("true"));
         assert!(runner_helpers::parse_bool_flag("1"));
         assert!(runner_helpers::parse_bool_flag("YES"));
@@ -3027,7 +2999,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_parse_bool_flag_falsy_values() {
+    fn parse_bool_flag_falsy_values() {
         assert!(!runner_helpers::parse_bool_flag("false"));
         assert!(!runner_helpers::parse_bool_flag("0"));
         assert!(!runner_helpers::parse_bool_flag("off"));
@@ -3035,7 +3007,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_parse_compression_option_from_options() {
+    fn parse_compression_option_from_options() {
         let mut options = crate::parser::OrderedStringMap::new();
         options.insert("compression".to_string(), "gzip".to_string());
 
@@ -3046,7 +3018,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_parse_compression_option_none_from_options() {
+    fn parse_compression_option_none_from_options() {
         let mut options = crate::parser::OrderedStringMap::new();
         options.insert("compression".to_string(), "none".to_string());
 
@@ -3057,7 +3029,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_parse_compression_option_fallback_to_env() {
+    fn parse_compression_option_fallback_to_env() {
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::set_var(crate::config::ENV_GRPCTESTIFY_COMPRESSION, "gzip");
@@ -3073,7 +3045,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_resolve_tls_path_from_env_uses_cwd() {
+    fn resolve_tls_path_from_env_uses_cwd() {
         if !runtime::supports(runtime::Capability::IsolatedFsIo) {
             return;
         }
@@ -3085,7 +3057,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_resolve_tls_path_from_env_without_fs_capability_returns_relative() {
+    fn resolve_tls_path_from_env_without_fs_capability_returns_relative() {
         if runtime::supports(runtime::Capability::IsolatedFsIo) {
             return;
         }
@@ -3096,7 +3068,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_resolve_tls_path_from_document_uses_document_dir() {
+    fn resolve_tls_path_from_document_uses_document_dir() {
         let document_path = Path::new("tests/fixtures/sample.gctf");
         let resolved = runner_helpers::resolve_tls_path("certs/ca.crt", false, document_path);
         assert_eq!(
@@ -3106,7 +3078,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_tls_env_defaults_uses_grpctestify_prefix() {
+    fn tls_env_defaults_uses_grpctestify_prefix() {
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         unsafe {
@@ -3140,7 +3112,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_tls_env_defaults_ignores_empty_values() {
+    fn tls_env_defaults_ignores_empty_values() {
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         unsafe {
@@ -3163,7 +3135,7 @@ chat.ChatService/SendMessages
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_test_runner_with_verbose() {
+    fn runner_with_verbose() {
         let runner = TestRunner::new(false, 30, false, false, true, None);
         assert!(runner.verbose);
     }
@@ -3180,7 +3152,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_error_matches_expected_message() {
+    fn error_matches_expected_message() {
         let expected = json!({
             "message": "Can't find stub",
             "code": 5
@@ -3190,7 +3162,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_error_matches_expected_code() {
+    fn error_matches_expected_code() {
         let expected = json!({
             "code": 5
         });
@@ -3199,7 +3171,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_error_matches_expected_wrong_code() {
+    fn error_matches_expected_wrong_code() {
         let expected = json!({
             "code": 3
         });
@@ -3208,7 +3180,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_error_matches_expected_wrong_message() {
+    fn error_matches_expected_wrong_message() {
         let expected = json!({
             "message": "Different error"
         });
@@ -3217,14 +3189,14 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_error_matches_expected_string() {
+    fn error_matches_expected_string() {
         let expected = json!("Can't find stub");
         let error_text = "status: NotFound, message: \"Can't find stub\"";
         assert!(TestRunner::error_matches_expected(error_text, &expected));
     }
 
     #[test]
-    fn test_full_service_name() {
+    fn full_service_name() {
         assert_eq!(
             runner_helpers::full_service_name("package", "Service"),
             "package.Service"
@@ -3234,7 +3206,7 @@ chat.ChatService/SendMessages
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_substitute_variables_exact_match_preserves_type() {
+    fn substitute_variables_exact_match_preserves_type() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
         let mut value = json!("{{ count }}");
         let mut vars = HashMap::new();
@@ -3246,7 +3218,7 @@ chat.ChatService/SendMessages
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_substitute_variables_interpolation_single_pass() {
+    fn substitute_variables_interpolation_single_pass() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
         let mut value = json!("id={{id}}, user={{ user }}, ok={{ok}}");
         let mut vars = HashMap::new();
@@ -3260,7 +3232,7 @@ chat.ChatService/SendMessages
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_substitute_variables_keeps_unknown_placeholder() {
+    fn substitute_variables_keeps_unknown_placeholder() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
         let mut value = json!("hello {{known}} and {{unknown}}");
         let mut vars = HashMap::new();
@@ -3291,7 +3263,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_expected_values_for_json_lines() {
+    fn expected_values_for_json_lines() {
         use crate::parser::ast::{InlineOptions, Section, SectionContent, SectionSpan};
 
         let section = Section {
@@ -3313,7 +3285,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_expected_values_for_other_section() {
+    fn expected_values_for_other_section() {
         use crate::parser::ast::{
             InlineOptions, Section, SectionContent, SectionSpan, SectionType,
         };
@@ -3338,7 +3310,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_metadata_map_to_hashmap_extracts_ascii_values() {
+    fn metadata_map_to_hashmap_extracts_ascii_values() {
         let mut metadata = std::collections::HashMap::new();
         metadata.insert(
             "code".to_string(),
@@ -3361,7 +3333,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_assertion_scope_timing_single_message_scope() {
+    fn assertion_scope_timing_single_message_scope() {
         let mut timing = AssertionScopeTimingState::default();
 
         let first = timing.finish_scope(0, 12, 1).unwrap();
@@ -3373,7 +3345,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_assertion_scope_timing_batch_scope_uses_full_section_window() {
+    fn assertion_scope_timing_batch_scope_uses_full_section_window() {
         let mut timing = AssertionScopeTimingState::default();
 
         let batch = timing.finish_scope(0, 27, 2).unwrap();
@@ -3385,7 +3357,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_assertion_scope_timing_accumulates_total_duration() {
+    fn assertion_scope_timing_accumulates_total_duration() {
         let mut timing = AssertionScopeTimingState::default();
 
         let first = timing.finish_scope(0, 10, 1).unwrap();
@@ -3400,7 +3372,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_has_required_followup_asserts_for_error_requires_adjacent_asserts() {
+    fn has_required_followup_asserts_for_error_requires_adjacent_asserts() {
         use crate::parser::ast::{
             InlineOptions, Section, SectionContent, SectionSpan, SectionType,
         };
@@ -3430,7 +3402,7 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    fn test_has_required_followup_asserts_for_error_accepts_adjacent_asserts() {
+    fn has_required_followup_asserts_for_error_accepts_adjacent_asserts() {
         use crate::parser::ast::{
             InlineOptions, Section, SectionContent, SectionSpan, SectionType,
         };
@@ -3470,7 +3442,7 @@ chat.ChatService/SendMessages
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_error_assertions_evaluate_against_error_json_object() {
+    fn error_assertions_evaluate_against_error_json_object() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
         let target = json!({
             "code": 5,

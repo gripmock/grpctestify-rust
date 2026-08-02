@@ -49,15 +49,7 @@ impl RhaiReporter {
             .with_context(|| format!("plugin script has no file name: {}", path.display()))?;
 
         let engine = apif_plugins::rhai_stdlib::build_engine();
-        // Hash what we compile, so the recorded digest is what actually runs.
-        let source = std::fs::read(path)
-            .with_context(|| format!("failed to read plugin script: {}", path.display()))?;
-        let digest = apif_plugins::marketplace::sha256_hex(&source);
-        let source = String::from_utf8(source)
-            .with_context(|| format!("plugin script is not UTF-8: {}", path.display()))?;
-        let ast = engine
-            .compile(&source)
-            .with_context(|| format!("failed to compile plugin script: {}", path.display()))?;
+        let (ast, digest) = apif_plugins::rhai_stdlib::compile_with_digest(&engine, path)?;
 
         let has_on_test_start = ast.iter_functions().any(|f| f.name == "on_test_start");
         let has_on_test_end = ast.iter_functions().any(|f| f.name == "on_test_end");

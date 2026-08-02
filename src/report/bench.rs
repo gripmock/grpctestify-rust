@@ -128,73 +128,6 @@ impl BenchReport {
     pub fn thresholds_passed(&self) -> bool {
         self.threshold_evaluation.iter().all(|t| t.passed)
     }
-
-    pub fn histogram_details(&self, bucket_count: usize) -> Vec<HistogramDetail> {
-        if self.histogram.is_empty() || bucket_count == 0 {
-            return vec![];
-        }
-
-        let total = self.summary.count as f64;
-        if total == 0.0 {
-            return vec![];
-        }
-
-        let mut result = Vec::with_capacity(bucket_count);
-        let step = (self.histogram.len() / bucket_count).max(1);
-        for i in (0..self.histogram.len()).step_by(step).take(bucket_count) {
-            let bucket = &self.histogram[i];
-            result.push(HistogramDetail {
-                bucket_index: i,
-                lower_ns: bucket.lower_ns,
-                upper_ns: bucket.upper_ns,
-                count: bucket.count,
-                cumulative_count: self.histogram[..=i].iter().map(|b| b.count).sum::<u64>(),
-                frequency: bucket.frequency,
-                cumulative_frequency: self.histogram[..=i]
-                    .iter()
-                    .map(|b| b.frequency)
-                    .sum::<f64>(),
-                percentile_estimate: (bucket.frequency * 100.0).min(100.0),
-            });
-        }
-        result
-    }
-
-    pub fn latency_percentile(&self, percentile: f64) -> Option<u64> {
-        if self.latency_distribution.is_empty() {
-            return None;
-        }
-        self.latency_distribution
-            .iter()
-            .find(|p| (p.percentile - percentile).abs() < f64::EPSILON)
-            .map(|p| p.latency_ns)
-    }
-
-    pub fn histogram_bucket_at(&self, percentile: f64) -> Option<&BenchHistogramBucket> {
-        if self.histogram.is_empty() || percentile <= 0.0 || percentile > 100.0 {
-            return None;
-        }
-        let target_cumulative = percentile / 100.0;
-        let mut cumulative = 0.0;
-        for bucket in &self.histogram {
-            cumulative += bucket.frequency;
-            if cumulative >= target_cumulative {
-                return Some(bucket);
-            }
-        }
-        self.histogram.last()
-    }
-}
-
-pub struct HistogramDetail {
-    pub bucket_index: usize,
-    pub lower_ns: u64,
-    pub upper_ns: u64,
-    pub count: u64,
-    pub cumulative_count: u64,
-    pub frequency: f64,
-    pub cumulative_frequency: f64,
-    pub percentile_estimate: f64,
 }
 
 impl BenchReport {
@@ -546,13 +479,13 @@ mod tests {
     }
 
     #[test]
-    fn test_thresholds_passed_true() {
+    fn thresholds_passed_true() {
         let report = sample_report();
         assert!(report.thresholds_passed());
     }
 
     #[test]
-    fn test_to_html_renders_bars_and_escapes_endpoint() {
+    fn to_html_renders_bars_and_escapes_endpoint() {
         let mut report = sample_report();
         report.latency_distribution.push(BenchPercentile {
             percentile: 95.0,
@@ -581,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn test_prometheus_summary_contains_core_metrics() {
+    fn prometheus_summary_contains_core_metrics() {
         let report = sample_report();
         let text = report.to_prometheus_summary();
         assert!(text.contains("grpctestify_bench_count 100"));
@@ -590,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn test_summary_text_contains_ghz_like_sections() {
+    fn summary_text_contains_ghz_like_sections() {
         let mut report = sample_report();
         report.latency_distribution = vec![
             BenchPercentile {
@@ -622,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn test_summary_text_compact_omits_histogram() {
+    fn summary_text_compact_omits_histogram() {
         let report = sample_report();
         let text = report.to_summary_text(true);
         assert!(text.contains("Benchmark Summary"));

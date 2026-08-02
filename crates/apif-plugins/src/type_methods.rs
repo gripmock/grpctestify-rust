@@ -419,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn test_url_scheme() {
+    fn url_scheme() {
         test_plugin_basics!(UrlScheme, "url.scheme");
         let result = UrlScheme
             .execute(&[json!("https://example.com/path")], &ctx())
@@ -428,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn test_url_host() {
+    fn url_host() {
         test_plugin_basics!(UrlHost, "url.host");
         let result = UrlHost
             .execute(&[json!("https://example.com:8080/path")], &ctx())
@@ -437,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn test_url_port() {
+    fn url_port() {
         test_plugin_basics!(UrlPort, "url.port");
         let result = UrlPort
             .execute(&[json!("https://example.com:8080/path")], &ctx())
@@ -451,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn test_url_path() {
+    fn url_path() {
         test_plugin_basics!(UrlPath, "url.path");
         let result = UrlPath
             .execute(&[json!("https://example.com/api/v1")], &ctx())
@@ -460,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn test_url_query() {
+    fn url_query() {
         test_plugin_basics!(UrlQuery, "url.query");
         let result = UrlQuery
             .execute(&[json!("https://example.com/path?q=1&r=2")], &ctx())
@@ -469,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn test_url_fragment() {
+    fn url_fragment() {
         test_plugin_basics!(UrlFragment, "url.fragment");
         let result = UrlFragment
             .execute(&[json!("https://example.com/path#section")], &ctx())
@@ -478,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn test_url_methods_invalid() {
+    fn url_methods_invalid() {
         for method in &[
             &UrlScheme as &dyn Plugin,
             &UrlHost,
@@ -502,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn test_email_local_part() {
+    fn email_local_part() {
         test_plugin_basics!(EmailLocalPart, "email.local_part");
         let result = EmailLocalPart
             .execute(&[json!("user@example.com")], &ctx())
@@ -511,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn test_email_domain() {
+    fn email_domain() {
         test_plugin_basics!(EmailDomain, "email.domain");
         let result = EmailDomain
             .execute(&[json!("user@example.com")], &ctx())
@@ -520,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn test_email_domain_multiple_at() {
+    fn email_domain_multiple_at() {
         // Regression: input with more than one '@'. The domain is everything
         // after the FIRST '@' (consistent with EmailLocalPart taking everything
         // before it), not just the segment between the first two.
@@ -537,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn test_email_methods_invalid() {
+    fn email_methods_invalid() {
         // EmailLocalPart: no @ → split returns [whole], so local part = whole string
         let r = EmailLocalPart.execute(&[], &ctx()).unwrap();
         assert_eq!(r, PluginResult::Value(Value::Null));
@@ -562,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ip_version() {
+    fn ip_version() {
         test_plugin_basics!(IpVersion, "ip.version");
         let r4 = IpVersion.execute(&[json!("192.168.1.1")], &ctx()).unwrap();
         assert_eq!(r4, PluginResult::Value(json!(4)));
@@ -590,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn test_uuid_version() {
+    fn uuid_version() {
         test_plugin_basics!(UuidVersion, "uuid.version");
         let r = UuidVersion
             .execute(&[json!("550e8400-e29b-41d4-a716-446655440000")], &ctx())
@@ -618,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn test_json_key() {
+    fn json_key() {
         test_plugin_basics!(JsonKey, "json.key");
         let r = JsonKey
             .execute(&[json!(r#"{"name":"test"}"#), json!("name")], &ctx())
@@ -650,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn test_type_method_signatures_via_manager() {
+    fn type_method_signatures_via_manager() {
         let manager = PluginManager::new();
         for name in &[
             "url.scheme",
@@ -675,7 +675,7 @@ mod tests {
     }
 
     #[test]
-    fn test_url_str_plugin_empty_args() {
+    fn url_str_plugin_empty_args() {
         assert_eq!(
             url_str_plugin(&[], |_| "".into()).unwrap(),
             PluginResult::Value(Value::Null)

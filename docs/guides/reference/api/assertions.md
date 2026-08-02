@@ -65,12 +65,16 @@ Scope behavior:
 
 ```gctf
 --- ASSERTS ---
-@uuid(.user.id)
-@email(.user.email)
-@url(.profile.website)
-@ip(.client_ip)
-@timestamp(.created_at)
+@is_uuid(.user.id)
+@is_email(.user.email)
+@is_url(.profile.website)
+@is_ip(.client_ip)
+@is_timestamp(.created_at)
 ```
+
+The bare forms (`@uuid`, `@email`, `@url`, `@ip`, `@timestamp`, `@empty`) still
+work but are deprecated: `check` reports `SEM_D001` and `fmt --write` rewrites
+them to the `is_*` names.
 
 ## String helpers
 

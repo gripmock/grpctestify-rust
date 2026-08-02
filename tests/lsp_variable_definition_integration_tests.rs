@@ -7,7 +7,7 @@ use grpctestify::lsp::variable_definition::{
 use tower_lsp::lsp_types::Position;
 
 #[test]
-fn test_lsp_variable_definition_basic() {
+fn lsp_variable_definition_basic() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -40,7 +40,7 @@ auth_token = .token
 }
 
 #[test]
-fn test_lsp_variable_definition_multiple_vars() {
+fn lsp_variable_definition_multiple_vars() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -75,7 +75,7 @@ user_id = .user_id
 }
 
 #[test]
-fn test_lsp_variable_definition_not_on_variable() {
+fn lsp_variable_definition_not_on_variable() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -107,7 +107,7 @@ auth_token = .token
 }
 
 #[test]
-fn test_lsp_variable_references() {
+fn lsp_variable_references() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -135,7 +135,7 @@ token = .token
 }
 
 #[test]
-fn test_lsp_get_all_variables() {
+fn lsp_get_all_variables() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -167,7 +167,7 @@ user_name = .name
 }
 
 #[test]
-fn test_lsp_variable_definition_cross_section() {
+fn lsp_variable_definition_cross_section() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -209,7 +209,7 @@ Authorization: Bearer {{ token }}
 }
 
 #[test]
-fn test_lsp_get_all_variables_empty() {
+fn lsp_get_all_variables_empty() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -233,7 +233,7 @@ test.Service/Method
 }
 
 #[test]
-fn test_lsp_variable_references_empty() {
+fn lsp_variable_references_empty() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---

@@ -11,11 +11,6 @@ const INDEX_MAGIC: u32 = 0x47435449;
 const INDEX_VERSION: u32 = 5; // v5: single-file + typed keys + CRC32 checksum
 pub const COMPOSITE_KEY_SEPARATOR: &str = "\x1F"; // Unit separator for composite keys
 
-/// Build a composite key from multiple column values, joined by COMPOSITE_KEY_SEPARATOR.
-pub fn make_composite_key(parts: &[&str]) -> String {
-    parts.join(COMPOSITE_KEY_SEPARATOR)
-}
-
 fn json_value_to_string(v: Option<&serde_json::Value>) -> String {
     match v {
         None => String::new(),
@@ -532,11 +527,6 @@ impl IndexEntryV4 {
             has_extended_metadata,
         }
     }
-
-    pub fn with_row_length(mut self, row_length: u32) -> Self {
-        self.row_length = row_length;
-        self
-    }
 }
 
 #[derive(Debug)]
@@ -634,15 +624,27 @@ impl SourceIndex {
             }
             KeyStorage::Numeric(vec) => {
                 let key_type = self.header.key_type;
+                // Same diagnostic as the one-at-a-time path: dropping an
+                // unparseable key here would build an index that silently has
+                // no entry for that row.
                 let mut batch: Vec<(KeyValue, String, IndexEntry)> = entries
                     .into_iter()
-                    .filter_map(|(key, offset, row_length)| {
-                        let kv = key_type.parse(&key)?;
-                        Some((kv, key, IndexEntry { offset, row_length }))
+                    .map(|(key, offset, row_length)| match key_type.parse(&key) {
+                        Some(kv) => Ok((kv, key, IndexEntry { offset, row_length })),
+                        None => anyhow::bail!(
+                            "type mismatch at offset {}: key '{}' cannot be parsed as {:?}. \
+                            Consider running `grpctestify index --force` to rebuild with correct type inference.",
+                            offset,
+                            key,
+                            key_type
+                        ),
                     })
-                    .collect();
+                    .collect::<anyhow::Result<Vec<_>>>()?;
 
-                batch.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+                // Stable, so entries that share a key keep the order they
+                // arrived in (ascending offset for the builder) — the property
+                // the one-at-a-time path has and `lookup_all` consumers rely on.
+                batch.sort_by(|a, b| a.0.cmp(&b.0));
 
                 let mut prev_kv: Option<KeyValue> = None;
                 let mut idx = 0usize;
@@ -656,9 +658,16 @@ impl SourceIndex {
                         continue;
                     }
                     if idx < vec.len() && vec[idx].0 <= kv {
-                        idx = vec[idx..]
-                            .binary_search_by(|e| e.0.cmp(&kv))
-                            .unwrap_or_else(|e| idx + e);
+                        // The search runs on `vec[idx..]`, so both outcomes are
+                        // positions relative to `idx` and both need it added
+                        // back. Adding it only on Err put an existing key at a
+                        // relative position, which dropped its entry and left
+                        // the vector unsorted.
+                        let rel = match vec[idx..].binary_search_by(|e| e.0.cmp(&kv)) {
+                            Ok(found) => found,
+                            Err(insert_at) => insert_at,
+                        };
+                        idx += rel;
                     }
                     if idx < vec.len() && vec[idx].0 == kv {
                         vec[idx].2.push(entry);
@@ -1167,12 +1176,61 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    #[cfg(not(miri))]
+    // `batch_insert` is the O(n log n) alternative to inserting one row at a
+    // time, which is O(n^2) for numeric keys because each new key shifts a Vec.
+    // It was never wired into the builder. Before it can be, it has to produce
+    // the *same* index as the one-at-a-time path — including the order of
+    // entries that share a key, which the builder emits in ascending offset
+    // order and any consumer of `lookup_all` may rely on.
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn batch_insert_matches_one_at_a_time_including_duplicate_key_order() {
+        // Numeric keys, out of order, with duplicates whose offsets are NOT in
+        // the same order as the keys — the case a sort-by-key would scramble.
+        let rows: &[(&str, u64, u32)] = &[
+            ("30", 0, 10),
+            ("10", 10, 10),
+            ("30", 20, 10),
+            ("20", 30, 10),
+            ("10", 40, 10),
+            ("30", 50, 10),
+        ];
+
+        let mut one = SourceIndex::with_key_type("id", KeyType::U64);
+        for (k, off, len) in rows {
+            one.insert((*k).into(), *off, *len).unwrap();
+        }
+
+        let mut batch = SourceIndex::with_key_type("id", KeyType::U64);
+        batch
+            .batch_insert(rows.iter().map(|(k, o, l)| (k.to_string(), *o, *l)))
+            .unwrap();
+
+        for key in ["10", "20", "30"] {
+            let a: Vec<u64> = one
+                .lookup_all(key)
+                .unwrap()
+                .iter()
+                .map(|e| e.offset)
+                .collect();
+            let b: Vec<u64> = batch
+                .lookup_all(key)
+                .unwrap()
+                .iter()
+                .map(|e| e.offset)
+                .collect();
+            assert_eq!(
+                a, b,
+                "key {key}: batch and one-at-a-time disagree on entry order"
+            );
+        }
+    }
+
     #[cfg_attr(miri, ignore)]
     #[test]
     fn write_and_read_roundtrip() {
-        let dir = std::env::temp_dir().join("gctf_index_test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
         let path = dir.join("test.gcti");
 
         let mut idx = SourceIndex::new("pvz_id");
@@ -1193,16 +1251,13 @@ mod tests {
         assert_eq!(e2.offset, 51);
 
         assert!(loaded.lookup("missing").is_none());
-
-        std::fs::remove_file(&path).ok();
     }
 
-    #[cfg(not(miri))]
     #[cfg_attr(miri, ignore)]
     #[test]
     fn invalid_magic_fails() {
-        let dir = std::env::temp_dir().join("gctf_index_test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
         let path = dir.join("bad_magic.gcti");
 
         let mut f = std::fs::File::create(&path).unwrap();
@@ -1210,8 +1265,6 @@ mod tests {
 
         let result = SourceIndex::read_from_file(&path);
         assert!(result.is_err());
-
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -1251,12 +1304,11 @@ mod tests {
         assert!(idx.lookup_row(&mut cursor, "99").unwrap().is_none());
     }
 
-    #[cfg(not(miri))]
     #[cfg_attr(miri, ignore)]
     #[test]
     fn empty_index_roundtrip() {
-        let dir = std::env::temp_dir().join("gctf_index_test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
         let path = dir.join("empty.gcti");
 
         let mut idx = SourceIndex::new("id");
@@ -1265,16 +1317,13 @@ mod tests {
         let loaded = SourceIndex::read_from_file(&path).unwrap();
         assert!(loaded.is_empty());
         assert_eq!(loaded.len(), 0);
-
-        std::fs::remove_file(&path).ok();
     }
 
-    #[cfg(not(miri))]
     #[cfg_attr(miri, ignore)]
     #[test]
     fn unicode_keys() {
-        let dir = std::env::temp_dir().join("gctf_index_test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
         let path = dir.join("unicode.gcti");
 
         let mut idx = SourceIndex::new("город");
@@ -1286,16 +1335,13 @@ mod tests {
         assert_eq!(loaded.key_column(), "город");
         assert!(loaded.contains("Москва"));
         assert!(loaded.contains("Санкт-Петербург"));
-
-        std::fs::remove_file(&path).ok();
     }
 
-    #[cfg(not(miri))]
     #[cfg_attr(miri, ignore)]
     #[test]
     fn duplicate_keys_are_preserved() {
-        let dir = std::env::temp_dir().join("gctf_index_dup_test");
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
         let path = dir.join("dup.gcti");
 
         let mut idx = SourceIndex::new("zone_id");
@@ -1312,8 +1358,6 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].offset, 10);
         assert_eq!(all[1].offset, 31);
-
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -1418,5 +1462,63 @@ mod tests {
 
         let results = idx.lookup_range("b", "b");
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn batch_insert_into_a_populated_index_stays_sorted() {
+        // The binary search runs on `vec[idx..]`, so its result is relative to
+        // `idx`. Only the Err branch added `idx` back, so an existing key found
+        // at a non-zero `idx` produced a relative position and the entry landed
+        // in the wrong slot, leaving the vector unsorted and later lookups
+        // wrong. Needs a pre-populated index — batching into an empty one never
+        // takes the Ok branch.
+        let mut one = SourceIndex::with_key_type("id", KeyType::U64);
+        let mut batched = SourceIndex::with_key_type("id", KeyType::U64);
+        for (k, off) in [("10", 0u64), ("20", 10u64)] {
+            one.insert(k.into(), off, 10).unwrap();
+            batched.insert(k.into(), off, 10).unwrap();
+        }
+
+        let more: &[(&str, u64)] = &[("15", 20), ("20", 30), ("25", 40), ("20", 50)];
+        for (k, off) in more {
+            one.insert((*k).into(), *off, 10).unwrap();
+        }
+        batched
+            .batch_insert(more.iter().map(|(k, o)| (k.to_string(), *o, 10u32)))
+            .unwrap();
+
+        for key in ["10", "15", "20", "25"] {
+            let expected: Vec<u64> = one
+                .lookup_all(key)
+                .unwrap_or_default()
+                .iter()
+                .map(|e| e.offset)
+                .collect();
+            let actual: Vec<u64> = batched
+                .lookup_all(key)
+                .unwrap_or_default()
+                .iter()
+                .map(|e| e.offset)
+                .collect();
+            assert_eq!(actual, expected, "key {key} diverged after batch_insert");
+        }
+    }
+
+    #[test]
+    fn batch_insert_reports_a_type_mismatch_like_one_at_a_time() {
+        let mut one = SourceIndex::with_key_type("id", KeyType::U64);
+        let one_err = one.insert("abc".into(), 0, 10).unwrap_err().to_string();
+
+        let mut batched = SourceIndex::with_key_type("id", KeyType::U64);
+        let batch_err = batched
+            .batch_insert([("1".to_string(), 0u64, 10u32), ("abc".to_string(), 10, 10)])
+            .unwrap_err()
+            .to_string();
+
+        assert!(one_err.contains("type mismatch"), "{one_err}");
+        assert!(
+            batch_err.contains("type mismatch") && batch_err.contains("abc"),
+            "batch_insert must not silently drop an unparseable key: {batch_err}"
+        );
     }
 }

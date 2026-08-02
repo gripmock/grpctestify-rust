@@ -7,7 +7,6 @@ pub mod runner;
 pub mod runner_helpers;
 pub mod validator;
 pub mod workflow_events;
-pub mod workflow_graph;
 
 pub use assertion_handler::AssertionHandler;
 pub use error_handler::ErrorHandler;
@@ -21,4 +20,3 @@ pub use runner::{
 #[cfg(test)]
 pub use validator::TestValidator;
 pub use workflow_events::{StreamingPattern, ValidationResult, Workflow, WorkflowEvent};
-pub use workflow_graph::{WorkflowSummary, get_call_type, get_workflow_summary};

@@ -220,7 +220,49 @@ pub fn tokenize_assertion(source: &str) -> Vec<Token> {
                 while i < cs.len() && cs[i] != '"' {
                     if cs[i] == '\\' && i + 1 < cs.len() {
                         i += 1;
-                        v.push(cs[i]);
+                        // The value is compared against a JSON payload decoded
+                        // by json5, so this must decode what json5 decodes.
+                        match cs[i] {
+                            'n' => v.push('\n'),
+                            't' => v.push('\t'),
+                            'r' => v.push('\r'),
+                            'b' => v.push('\u{8}'),
+                            'f' => v.push('\u{c}'),
+                            'v' => v.push('\u{b}'),
+                            '0' => v.push('\0'),
+                            'u' => {
+                                let hex: String = cs[i + 1..].iter().take(4).collect::<String>();
+                                match u32::from_str_radix(&hex, 16)
+                                    .ok()
+                                    .filter(|_| hex.len() == 4)
+                                    .and_then(char::from_u32)
+                                {
+                                    Some(c) => {
+                                        v.push(c);
+                                        i += 4;
+                                    }
+                                    // Not a well-formed `\uXXXX`: keep the
+                                    // source text rather than silently dropping
+                                    // the backslash.
+                                    None => v.push_str("\\u"),
+                                }
+                            }
+                            'x' => {
+                                let hex: String = cs[i + 1..].iter().take(2).collect::<String>();
+                                match u32::from_str_radix(&hex, 16)
+                                    .ok()
+                                    .filter(|_| hex.len() == 2)
+                                    .and_then(char::from_u32)
+                                {
+                                    Some(c) => {
+                                        v.push(c);
+                                        i += 2;
+                                    }
+                                    None => v.push_str("\\x"),
+                                }
+                            }
+                            other => v.push(other),
+                        }
                     } else {
                         v.push(cs[i]);
                     }
@@ -237,8 +279,17 @@ pub fn tokenize_assertion(source: &str) -> Vec<Token> {
             c if c.is_ascii_digit() => {
                 let s = i;
                 let mut v = String::new();
-                while i < cs.len() && (cs[i].is_ascii_digit() || cs[i] == '.') {
-                    v.push(cs[i]);
+                // `_` is a digit separator, not part of the value — `fmt` writes
+                // `1_000_000`, and without this the number lexed as `1` followed
+                // by an identifier and the whole assertion fell back to jq.
+                while i < cs.len()
+                    && (cs[i].is_ascii_digit()
+                        || cs[i] == '.'
+                        || (cs[i] == '_' && cs.get(i + 1).is_some_and(char::is_ascii_digit)))
+                {
+                    if cs[i] != '_' {
+                        v.push(cs[i]);
+                    }
                     i += 1;
                 }
                 out.push(Token::new(
@@ -383,7 +434,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tokenize_simple() {
+    fn tokenize_simple() {
         let tokens = tokenize_assertion(".id == 123");
         assert!(!tokens.is_empty());
         assert!(
@@ -399,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_plugin_call() {
+    fn tokenize_plugin_call() {
         let tokens = tokenize_assertion("@len(.items) == 0");
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::At)));
         assert!(
@@ -410,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_regex() {
+    fn tokenize_regex() {
         let tokens = tokenize_assertion("@regex(.x, /hello/i) == true");
         assert!(tokens.iter().any(
             |t| matches!(&t.kind, TokenKind::RegExpLit { pattern, .. } if pattern == "hello")
@@ -418,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_string_literal() {
+    fn tokenize_string_literal() {
         let tokens = tokenize_assertion(".name == \"hello world\"");
         assert!(
             tokens
@@ -428,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_regex_flags_preserved() {
+    fn tokenize_regex_flags_preserved() {
         // Regression: flags were parsed but dropped (`/Foo/i` lost its `i`).
         let tokens = tokenize_assertion("@regex(.x, /Foo/i) == true");
         assert!(tokens.iter().any(|t| matches!(
@@ -438,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_lone_equals_emitted() {
+    fn tokenize_lone_equals_emitted() {
         // Regression: a lone `=` was silently discarded, so `.x = 5`
         // tokenized as `.x 5` and slipped through as a jq assignment.
         let tokens = tokenize_assertion(".x = 5");
@@ -450,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn test_spans_correct() {
+    fn spans_correct() {
         let tokens = tokenize_assertion(".x == 0");
         // "==" should be at position 3
         if let Some(t) = tokens

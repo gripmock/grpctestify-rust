@@ -160,8 +160,8 @@ mod tests {
 
     // Not driven through `GRPCTESTIFY_HOME`: `cargo test` runs these on threads
     // of one process, so mutating a var production code reads is a data race.
+    #[cfg_attr(miri, ignore)]
     #[test]
-    #[cfg(not(miri))]
     fn an_approval_creates_the_state_dir_and_round_trips() {
         let home = tempfile::tempdir().unwrap();
         let state_dir = home.path().join(".grpctestify");
@@ -176,8 +176,8 @@ mod tests {
     }
 
     // A hand-mangled store must not wedge the gate; it reads as empty.
+    #[cfg_attr(miri, ignore)]
     #[test]
-    #[cfg(not(miri))]
     fn a_corrupt_store_reads_as_empty_rather_than_failing() {
         let dir = tempfile::tempdir().unwrap();
         let path = store_path_in(dir.path());

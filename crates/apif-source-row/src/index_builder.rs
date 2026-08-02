@@ -328,13 +328,12 @@ mod tests {
         assert_eq!(idx, PathBuf::from("data/pvz.csv.region_id.gcti"));
     }
 
-    #[cfg(not(miri))]
     #[cfg_attr(miri, ignore)]
     #[test]
     fn build_and_load_index() {
-        let dir = std::env::temp_dir().join("gctf_idx_build_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        create_temp_csv(&dir, "data.csv", "id,name\n1,Alice\n2,Bob\n3,Charlie\n");
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        create_temp_csv(dir, "data.csv", "id,name\n1,Alice\n2,Bob\n3,Charlie\n");
 
         let defs: Vec<SourceDefinition> =
             serde_yaml_ng::from_str("- file: data.csv\n  name: data\n  indexed_by: [id]\n")
@@ -352,8 +351,6 @@ mod tests {
         assert!(index.contains("1"));
         assert!(index.contains("2"));
         assert!(index.contains("3"));
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Regression (BUG 1): an index built on disk must store offsets/lengths
@@ -362,15 +359,13 @@ mod tests {
     /// the newline the reader already retains) and sized rows by summing
     /// column-NAME lengths, so every stored offset/length was wrong and this
     /// round-trip read out-of-bounds garbage (or bailed) instead of the row.
-    #[cfg(not(miri))]
     #[cfg_attr(miri, ignore)]
     #[test]
     fn index_roundtrip_reads_exact_source_rows() {
-        let dir = std::env::temp_dir().join("gctf_idx_roundtrip_test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
         let src = create_temp_csv(
-            &dir,
+            dir,
             "regions.csv",
             "region_id,region_name\nR01,Moscow\nR02,Saint Petersburg\n",
         );
@@ -402,18 +397,14 @@ mod tests {
         let e = &entries[0];
         let bytes = &mmap.as_ref()[e.offset as usize..e.offset as usize + e.row_length as usize];
         assert_eq!(std::str::from_utf8(bytes).unwrap(), "R02,Saint Petersburg");
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[cfg(not(miri))]
     #[cfg_attr(miri, ignore)]
     #[test]
     fn load_or_build_creates_on_first_call() {
-        let dir = std::env::temp_dir().join("gctf_idx_auto_test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        create_temp_csv(&dir, "items.csv", "code,label\nA,Alpha\nB,Bravo\n");
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        create_temp_csv(dir, "items.csv", "code,label\nA,Alpha\nB,Bravo\n");
 
         let defs: Vec<SourceDefinition> =
             serde_yaml_ng::from_str("- file: items.csv\n  name: items\n  indexed_by: [code]\n")
@@ -432,17 +423,14 @@ mod tests {
         let index = load_or_build_index(&defs[0], &doc_path).unwrap();
         assert!(expected_idx.exists());
         assert_eq!(index.len(), 2);
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[cfg(not(miri))]
     #[cfg_attr(miri, ignore)]
     #[test]
     fn load_or_build_reuses_existing() {
-        let dir = std::env::temp_dir().join("gctf_idx_reuse_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        create_temp_csv(&dir, "data.csv", "id,val\n1,hello\n");
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        create_temp_csv(dir, "data.csv", "id,val\n1,hello\n");
 
         let defs: Vec<SourceDefinition> =
             serde_yaml_ng::from_str("- file: data.csv\n  name: d\n  indexed_by: [id]\n").unwrap();
@@ -452,17 +440,14 @@ mod tests {
 
         let _idx1 = load_or_build_index(&defs[0], &doc_path).unwrap();
         let _idx2 = load_or_build_index(&defs[0], &doc_path).unwrap();
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[cfg(not(miri))]
     #[cfg_attr(miri, ignore)]
     #[test]
     fn build_index_no_key_column_errors() {
-        let dir = std::env::temp_dir().join("gctf_idx_nokey_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        create_temp_csv(&dir, "data.csv", "id,val\n1,hello\n");
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        create_temp_csv(dir, "data.csv", "id,val\n1,hello\n");
 
         let defs: Vec<SourceDefinition> =
             serde_yaml_ng::from_str("- file: data.csv\n  name: d\n").unwrap();
@@ -472,7 +457,5 @@ mod tests {
 
         let result = build_index_for_source(&defs[0], &doc_path);
         assert!(result.is_err());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

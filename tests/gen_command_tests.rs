@@ -1,43 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 #![cfg(not(miri))]
 
-use tonic_health::ServingStatus;
-
 #[path = "support/mod.rs"]
 mod support;
 use support::run_cli;
-
-/// Spawn a real `grpc.health.v1.Health` server plus reflection-v1 on an
-/// ephemeral port, so `gen grpcurl --execute` has a live native target
-/// instead of shelling out to a `grpcurl` binary (see memory
-/// [[native-zero-dependency]]).
-async fn spawn_health_server() -> String {
-    let (reporter, health_service) = tonic_health::server::health_reporter();
-    reporter
-        .set_service_status("", ServingStatus::Serving)
-        .await;
-    let reflection_service = tonic_reflection::server::Builder::configure()
-        .register_encoded_file_descriptor_set(tonic_health::pb::FILE_DESCRIPTOR_SET)
-        .build_v1()
-        .expect("build reflection service");
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind ephemeral port");
-    let addr = listener.local_addr().expect("local addr");
-    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-
-    tokio::spawn(async move {
-        tonic::transport::Server::builder()
-            .add_service(health_service)
-            .add_service(reflection_service)
-            .serve_with_incoming(incoming)
-            .await
-            .expect("health server run");
-    });
-
-    addr.to_string()
-}
+use support::spawn_health_server;
 
 #[test]
 fn gen_grpcurl_defaults_to_stdout() {

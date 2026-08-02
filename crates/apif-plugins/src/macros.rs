@@ -2,11 +2,35 @@
 /// using a closure-based validation function.
 #[macro_export]
 macro_rules! define_validation_plugin {
+    // Labels default to the plugin name; give them explicitly when the
+    // human-readable form differs, so converting a hand-written plugin does not
+    // silently reword the assertion output users read.
     (
         $(#[$attr:meta])*
         struct $name:ident {
             name: $name_str:expr,
             description: $desc_str:expr,
+            validator: $validator:expr,
+        }
+    ) => {
+        $crate::define_validation_plugin! {
+            $(#[$attr])*
+            struct $name {
+                name: $name_str,
+                description: $desc_str,
+                invalid_label: $name_str,
+                type_label: $name_str,
+                validator: $validator,
+            }
+        }
+    };
+    (
+        $(#[$attr:meta])*
+        struct $name:ident {
+            name: $name_str:expr,
+            description: $desc_str:expr,
+            invalid_label: $invalid_label:expr,
+            type_label: $type_label:expr,
             validator: $validator:expr,
         }
     ) => {
@@ -55,13 +79,13 @@ macro_rules! define_validation_plugin {
                         } else {
                             Ok(PluginResult::Assertion(AssertionResult::fail(format!(
                                 "Expected valid {}, got '{}'",
-                                $name_str, s
+                                $invalid_label, s
                             ))))
                         }
                     }
                     None => Ok(PluginResult::Assertion(AssertionResult::fail(format!(
                         "Expected string for {} check, got {:?}",
-                        $name_str, arg
+                        $type_label, arg
                     )))),
                 }
             }
@@ -161,6 +185,72 @@ mod tests {
     }
 
     // Instantiate the exported macros to prove they compile and behave.
+
+    /// The failure text is what a user reads when an assertion fails, so it is
+    /// pinned here. Nothing pinned it before, which is how converting these
+    /// plugins to the macro could have silently reworded every message
+    /// (`Expected valid UUID` -> `Expected valid uuid`).
+    #[test]
+    fn validation_plugin_failure_messages_are_exact() {
+        let ctx = PluginContext::new(&Value::Null);
+        let cases: &[(&dyn Plugin, &str, &str)] = &[
+            (
+                &crate::uuid::UuidPlugin,
+                "Expected valid UUID, got 'nope'",
+                "Expected string for UUID check, got Number(1)",
+            ),
+            (
+                &crate::email::EmailPlugin,
+                "Expected valid email, got 'nope'",
+                "Expected string for email check, got Number(1)",
+            ),
+            (
+                &crate::ip::IpPlugin,
+                "Expected valid IP address, got 'nope'",
+                "Expected string for IP check, got Number(1)",
+            ),
+            (
+                &crate::url::UrlPlugin,
+                "Expected valid URL, got 'nope'",
+                "Expected string for URL check, got Number(1)",
+            ),
+            (
+                &crate::timestamp::TimestampPlugin,
+                "Expected valid RFC3339 timestamp, got 'nope'",
+                "Expected string for timestamp check, got Number(1)",
+            ),
+        ];
+
+        for (plugin, invalid_msg, type_msg) in cases {
+            let got = plugin
+                .execute(&[Value::String("nope".into())], &ctx)
+                .unwrap();
+            match got {
+                PluginResult::Assertion(AssertionResult::Fail { message, .. }) => {
+                    assert_eq!(&message, invalid_msg, "plugin {}", plugin.name())
+                }
+                other => panic!("{}: expected Fail, got {other:?}", plugin.name()),
+            }
+
+            let got = plugin.execute(&[Value::Number(1.into())], &ctx).unwrap();
+            match got {
+                PluginResult::Assertion(AssertionResult::Fail { message, .. }) => {
+                    assert_eq!(&message, type_msg, "plugin {}", plugin.name())
+                }
+                other => panic!("{}: expected Fail, got {other:?}", plugin.name()),
+            }
+
+            let got = plugin.execute(&[], &ctx).unwrap();
+            match got {
+                PluginResult::Assertion(AssertionResult::Error(msg)) => assert_eq!(
+                    msg,
+                    format!("{}: expects exactly 1 argument", plugin.name())
+                ),
+                other => panic!("{}: expected Error, got {other:?}", plugin.name()),
+            }
+        }
+    }
+
     crate::define_validation_plugin! {
         struct NonEmptyPlugin {
             name: "non_empty",

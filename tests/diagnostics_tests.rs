@@ -4,7 +4,7 @@
 use grpctestify::diagnostics::*;
 
 #[test]
-fn test_diagnostic_severity_serialization() {
+fn diagnostic_severity_serialization() {
     let severity = DiagnosticSeverity::Error;
     let json = serde_json::to_string(&severity).unwrap();
     assert_eq!(json, "\"error\"");
@@ -23,7 +23,7 @@ fn test_diagnostic_severity_serialization() {
 }
 
 #[test]
-fn test_diagnostic_code_as_str() {
+fn diagnostic_code_as_str() {
     assert_eq!(DiagnosticCode::JsonParseError.as_str(), "json_parse_error");
     assert_eq!(DiagnosticCode::UnclosedBrace.as_str(), "unclosed_brace");
     assert_eq!(DiagnosticCode::MissingSection.as_str(), "missing_section");
@@ -35,21 +35,21 @@ fn test_diagnostic_code_as_str() {
 }
 
 #[test]
-fn test_position_new() {
+fn position_new() {
     let pos = Position::new(5, 10);
     assert_eq!(pos.line, 5);
     assert_eq!(pos.column, 10);
 }
 
 #[test]
-fn test_position_default() {
+fn position_default() {
     let pos = Position::default();
     assert_eq!(pos.line, 0);
     assert_eq!(pos.column, 0);
 }
 
 #[test]
-fn test_range_new() {
+fn range_new() {
     let range = Range::new(Position::new(1, 0), Position::new(1, 10));
     assert_eq!(range.start.line, 1);
     assert_eq!(range.start.column, 0);
@@ -58,22 +58,21 @@ fn test_range_new() {
 }
 
 #[test]
-fn test_range_at_line() {
+fn range_at_line() {
     let range = Range::at_line(5);
     assert_eq!(range.start.line, 5);
     assert_eq!(range.end.line, 5);
 }
 
 #[test]
-fn test_diagnostic_builder_error() {
-    let diagnostic = DiagnosticBuilder::error(
+fn diagnostic_builder_error() {
+    let diagnostic = Diagnostic::error(
         DiagnosticCode::JsonParseError,
         "Failed to parse JSON",
         Range::at_line(5),
     )
     .with_suggestion("Check syntax")
-    .with_context("{ invalid json")
-    .build();
+    .with_context("{ invalid json");
 
     assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
     assert_eq!(diagnostic.code, DiagnosticCode::JsonParseError);
@@ -83,64 +82,58 @@ fn test_diagnostic_builder_error() {
 }
 
 #[test]
-fn test_diagnostic_builder_warning() {
-    let diagnostic = DiagnosticBuilder::warning(
+fn diagnostic_builder_warning() {
+    let diagnostic = Diagnostic::warning(
         DiagnosticCode::UnusedVariable,
         "Unused variable",
         Range::at_line(10),
-    )
-    .build();
+    );
 
     assert_eq!(diagnostic.severity, DiagnosticSeverity::Warning);
     assert_eq!(diagnostic.code, DiagnosticCode::UnusedVariable);
 }
 
 #[test]
-fn test_diagnostic_builder_info() {
-    let diagnostic = DiagnosticBuilder::info(
+fn diagnostic_builder_info() {
+    let diagnostic = Diagnostic::info(
         DiagnosticCode::EmptySection,
         "Empty section",
         Range::at_line(15),
-    )
-    .build();
+    );
 
     assert_eq!(diagnostic.severity, DiagnosticSeverity::Information);
     assert_eq!(diagnostic.code, DiagnosticCode::EmptySection);
 }
 
 #[test]
-fn test_diagnostic_builder_hint() {
-    let diagnostic = DiagnosticBuilder::hint(
+fn diagnostic_builder_hint() {
+    let diagnostic = Diagnostic::hint(
         DiagnosticCode::DeprecatedSymbol,
         "Deprecated symbol",
         Range::at_line(20),
-    )
-    .build();
+    );
 
     assert_eq!(diagnostic.severity, DiagnosticSeverity::Hint);
     assert_eq!(diagnostic.code, DiagnosticCode::DeprecatedSymbol);
 }
 
 #[test]
-fn test_diagnostic_builder_with_file() {
-    let diagnostic =
-        DiagnosticBuilder::error(DiagnosticCode::JsonParseError, "Error", Range::at_line(1))
-            .with_file("test.gctf")
-            .build();
+fn diagnostic_builder_with_file() {
+    let diagnostic = Diagnostic::error(DiagnosticCode::JsonParseError, "Error", Range::at_line(1))
+        .with_file("test.gctf");
 
     assert_eq!(diagnostic.file, Some("test.gctf".to_string()));
 }
 
 #[test]
-fn test_diagnostic_builder_with_suggestions() {
-    let diagnostic = DiagnosticBuilder::error(
+fn diagnostic_builder_with_suggestions() {
+    let diagnostic = Diagnostic::error(
         DiagnosticCode::UnclosedBrace,
         "Unclosed brace",
         Range::at_line(1),
     )
     .with_suggestion("Add }")
-    .with_suggestion("Check nesting")
-    .build();
+    .with_suggestion("Check nesting");
 
     assert_eq!(diagnostic.suggestions.len(), 2);
     assert_eq!(diagnostic.suggestions[0], "Add }");
@@ -148,7 +141,7 @@ fn test_diagnostic_builder_with_suggestions() {
 }
 
 #[test]
-fn test_gctf_diagnostics_json_parse_error() {
+fn gctf_diagnostics_json_parse_error() {
     let diagnostic = GctfDiagnostics::json_parse_error(5, 10, "unexpected token");
 
     assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
@@ -158,7 +151,7 @@ fn test_gctf_diagnostics_json_parse_error() {
 }
 
 #[test]
-fn test_gctf_diagnostics_json5_parse_error() {
+fn gctf_diagnostics_json5_parse_error() {
     let diagnostic = GctfDiagnostics::json5_parse_error(5, 10, "unexpected token");
 
     assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
@@ -167,7 +160,7 @@ fn test_gctf_diagnostics_json5_parse_error() {
 }
 
 #[test]
-fn test_gctf_diagnostics_unclosed_brace() {
+fn gctf_diagnostics_unclosed_brace() {
     let diagnostic = GctfDiagnostics::unclosed_brace(5, 10);
 
     assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
@@ -177,7 +170,7 @@ fn test_gctf_diagnostics_unclosed_brace() {
 }
 
 #[test]
-fn test_gctf_diagnostics_missing_section() {
+fn gctf_diagnostics_missing_section() {
     let diagnostic = GctfDiagnostics::missing_section("ENDPOINT");
 
     assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
@@ -186,7 +179,7 @@ fn test_gctf_diagnostics_missing_section() {
 }
 
 #[test]
-fn test_gctf_diagnostics_undefined_variable() {
+fn gctf_diagnostics_undefined_variable() {
     let diagnostic = GctfDiagnostics::undefined_variable("myVar", 10, 5);
 
     assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
@@ -195,7 +188,7 @@ fn test_gctf_diagnostics_undefined_variable() {
 }
 
 #[test]
-fn test_gctf_diagnostics_unknown_function() {
+fn gctf_diagnostics_unknown_function() {
     let diagnostic = GctfDiagnostics::unknown_function("@unknown", 10, 5);
 
     assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
@@ -204,7 +197,7 @@ fn test_gctf_diagnostics_unknown_function() {
 }
 
 #[test]
-fn test_diagnostic_collection_push() {
+fn diagnostic_collection_push() {
     let mut collection = DiagnosticCollection::new();
 
     collection.error(DiagnosticCode::JsonParseError, "Error 1", Range::at_line(1));
@@ -220,13 +213,13 @@ fn test_diagnostic_collection_push() {
 }
 
 #[test]
-fn test_diagnostic_collection_is_empty() {
+fn diagnostic_collection_is_empty() {
     let collection = DiagnosticCollection::new();
     assert!(collection.is_empty());
 }
 
 #[test]
-fn test_diagnostic_collection_errors() {
+fn diagnostic_collection_errors() {
     let mut collection = DiagnosticCollection::new();
 
     collection.error(DiagnosticCode::JsonParseError, "Error", Range::at_line(1));
@@ -239,7 +232,7 @@ fn test_diagnostic_collection_errors() {
 }
 
 #[test]
-fn test_diagnostic_collection_warnings() {
+fn diagnostic_collection_warnings() {
     let mut collection = DiagnosticCollection::new();
 
     collection.error(DiagnosticCode::JsonParseError, "Error", Range::at_line(1));

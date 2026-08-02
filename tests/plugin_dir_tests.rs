@@ -10,36 +10,8 @@
 #[path = "support/mod.rs"]
 mod support;
 use support::cli_command;
-
-/// Spawn a real `grpc.health.v1.Health` server (plus reflection) on an
-/// ephemeral port — same pattern as `tests/health_tests.rs`.
-async fn spawn_health_server() -> String {
-    let (reporter, health_service) = tonic_health::server::health_reporter();
-    reporter
-        .set_service_status("", tonic_health::ServingStatus::Serving)
-        .await;
-    let reflection_service = tonic_reflection::server::Builder::configure()
-        .register_encoded_file_descriptor_set(tonic_health::pb::FILE_DESCRIPTOR_SET)
-        .build_v1()
-        .expect("build reflection service");
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind ephemeral port");
-    let addr = listener.local_addr().expect("local addr");
-    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-
-    tokio::spawn(async move {
-        tonic::transport::Server::builder()
-            .add_service(health_service)
-            .add_service(reflection_service)
-            .serve_with_incoming(incoming)
-            .await
-            .expect("health server run");
-    });
-
-    addr.to_string()
-}
+use support::run_isolated;
+use support::spawn_health_server;
 
 /// Write `is_present.rhai` into `<dir>/.grpctestify/plugins/` — the
 /// project-local convention directory.
@@ -73,18 +45,6 @@ grpc.health.v1.Health/Check
     )
     .expect("failed to write test file");
     file
-}
-
-/// Run the CLI with `dir` as both the working directory and `$HOME` —
-/// isolates the project-local and user-global convention dirs to `dir`.
-fn run_isolated(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
-    cli_command()
-        .current_dir(dir)
-        .env("HOME", dir)
-        .env("GRPCTESTIFY_TRUST_PLUGINS", "1")
-        .args(args)
-        .output()
-        .expect("failed to run CLI")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

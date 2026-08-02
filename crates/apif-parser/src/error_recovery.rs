@@ -103,7 +103,8 @@ struct PendingSection {
     attributes: Vec<crate::ast::GctfAttribute>,
 }
 
-/// Parse a single document (no `--- NEW ---` splitting).
+/// Parse the whole content as one flat document; the caller
+/// (`parse_content_with_recovery`) is what splits it on ENDPOINT boundaries.
 ///
 /// Consumes the shared `gctf_tokenizer` token stream — the same one the strict
 /// `core.rs` path uses — instead of hand-rolling raw line scanning, so this
@@ -330,6 +331,13 @@ fn parse_section_content(
 ) -> SectionContent {
     let content_str = content.join("\n");
 
+    // Same early exit as the strict path, so an empty section has one
+    // representation rather than two (`Empty` there, a typed-but-empty value
+    // here).
+    if content_str.trim().is_empty() {
+        return SectionContent::Empty;
+    }
+
     match section_type {
         // Same rule as the strict path: a `//`/`#` line is a comment, never
         // part of the dialed address. This is the path `run` takes.
@@ -349,6 +357,17 @@ fn parse_section_content(
                 // Try to parse as JSON5 (with comments), but don't fail - just add diagnostic
                 match crate::json_mod::from_str(&content_str) {
                     Ok(value) => SectionContent::Json(value),
+                    // Multiple payloads in one section is the streaming form;
+                    // ERROR stays single-value, matching the strict path.
+                    Err(_)
+                        if section_type != SectionType::Error
+                            && let Some(values) =
+                                crate::json_stream_parser::parse_response_json_values(
+                                    &content_str,
+                                ) =>
+                    {
+                        SectionContent::JsonLines(values)
+                    }
                     Err(e) => {
                         // `content_str` is unmodified `content.join("\n")`, so
                         // its line 0 is exactly file line `start_line` — the
@@ -396,7 +415,11 @@ fn parse_section_content(
                             Range::at_line(start_line + i),
                         );
                     }
-                    extractions.insert(name, query);
+                    // Store the jq form, as the strict path does.
+                    let value = crate::ternary_ast::ExtractVar::parse_raw(&name, &query)
+                        .map(|var| var.value.to_jq())
+                        .unwrap_or(query);
+                    extractions.insert(name, value);
                 } else {
                     diagnostics.warning(
                         DiagnosticCode::InvalidSyntax,
@@ -417,8 +440,7 @@ fn parse_section_content(
         SectionType::RequestHeaders
         | SectionType::Tls
         | SectionType::Proto
-        | SectionType::Options
-        | SectionType::Bench => {
+        | SectionType::Options => {
             let mut key_values = crate::ast::OrderedStringMap::new();
             for (i, line) in content.iter().enumerate() {
                 let trimmed = line.trim();
@@ -430,11 +452,7 @@ fn parse_section_content(
                 // tokenizer, same as the strict path's `content_parser.rs` —
                 // this file used to hand-roll its own `.find(':')` here.
                 if let Some((key, value)) = gctf_tokenizer::tokenize_kv_line(line) {
-                    // BENCH excluded: a continuation line for `sources:`'s
-                    // nested YAML list isn't a real re-declaration of the
-                    // key, and this lenient loop (unlike `parse_bench_section`
-                    // in `content_parser.rs`) doesn't distinguish the two.
-                    if section_type != SectionType::Bench && key_values.contains_key(&key) {
+                    if key_values.contains_key(&key) {
                         diagnostics.warning(
                             DiagnosticCode::DuplicateKey,
                             format!("Duplicate key '{key}' — only the last value is kept"),
@@ -451,6 +469,39 @@ fn parse_section_content(
                 }
             }
             SectionContent::KeyValues(key_values)
+        }
+        // `sources:` carries a nested YAML list on continuation lines, which
+        // the flat loop above drops. The strict parser handles it but skips
+        // untokenizable lines silently, so their warning is re-emitted below.
+        SectionType::Bench => {
+            let kv = crate::content_parser::parse_bench_section(&content_str).unwrap_or_else(|e| {
+                diagnostics.warning(
+                    DiagnosticCode::InvalidSectionContent,
+                    format!("Failed to parse BENCH section: {e}"),
+                    Range::at_line(start_line),
+                );
+                crate::ast::OrderedStringMap::new()
+            });
+            for (i, line) in content.iter().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.is_empty()
+                    || trimmed.starts_with('#')
+                    || trimmed.starts_with("//")
+                    // An indented line continues the previous key's value.
+                    || line.starts_with(' ')
+                    || line.starts_with('\t')
+                {
+                    continue;
+                }
+                if gctf_tokenizer::tokenize_kv_line(line).is_none() {
+                    diagnostics.warning(
+                        DiagnosticCode::InvalidSyntax,
+                        "Invalid key-value syntax, expected: key: value",
+                        Range::at_line(start_line + i),
+                    );
+                }
+            }
+            SectionContent::KeyValues(kv)
         }
         SectionType::Meta => {
             // Strip GCTF comment lines before parsing YAML — shared with the
@@ -470,13 +521,34 @@ fn parse_section_content(
             SectionContent::Meta(meta)
         }
         SectionType::Dataset => {
-            // Same comment-stripping approach as META — this module recovers
-            // from malformed content for live editing, it never hard-fails
-            // the way `content_parser::parse_section_content` does.
+            // Same comment-stripping as META; recovers rather than failing,
+            // but still reports — a silent default here meant zero rows.
             let cleaned = gctf_tokenizer::strip_gctf_comment_lines(&content.join("\n"));
-            let rows: Vec<serde_json::Value> =
-                serde_yaml_ng::from_str(&cleaned).unwrap_or_default();
-            SectionContent::Rows(rows)
+            let rows: Vec<serde_json::Value> = match serde_yaml_ng::from_str(&cleaned) {
+                Ok(rows) => rows,
+                Err(e) => {
+                    diagnostics.error(
+                        DiagnosticCode::InvalidSectionContent,
+                        format!("DATASET must be a YAML list of row objects: {e}"),
+                        Range::at_line(start_line),
+                    );
+                    Vec::new()
+                }
+            };
+            // Strict rejects a non-object row; here it is dropped and reported.
+            let mut kept = Vec::with_capacity(rows.len());
+            for (i, row) in rows.into_iter().enumerate() {
+                if row.is_object() {
+                    kept.push(row);
+                } else {
+                    diagnostics.error(
+                        DiagnosticCode::InvalidSectionContent,
+                        format!("DATASET row {i} must be an object, got: {row}"),
+                        Range::at_line(start_line),
+                    );
+                }
+            }
+            SectionContent::Rows(kept)
         }
     }
 }
@@ -553,7 +625,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_parse_with_recovery_unreadable_file_yields_error_diagnostic() {
+    fn parse_with_recovery_unreadable_file_yields_error_diagnostic() {
         // §3.5: a missing/unreadable file must not silently become an empty
         // document with zero diagnostics — it carries an IO-error diagnostic.
         let result = parse_with_recovery(Path::new("/no/such/path/definitely-missing-4f3a.gctf"));
@@ -571,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_with_recovery_invalid_json_yields_empty_content_not_raw_text() {
+    fn parse_with_recovery_invalid_json_yields_empty_content_not_raw_text() {
         // §3.6: an invalid JSON body becomes `SectionContent::Empty` (plus a
         // diagnostic), never the raw unparsed text smuggled as a JSON string
         // — a consumer ignoring diagnostics must not receive garbage as a
@@ -593,7 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_with_recovery_malformed_attribute_warns() {
+    fn parse_with_recovery_malformed_attribute_warns() {
         // §3.4 lenient counterpart: a malformed `#[]` attribute emits a
         // warning instead of being silently dropped.
         let content = "--- ENDPOINT ---\nsvc/Method\n#[]\n--- REQUEST ---\n{}\n";
@@ -610,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_with_recovery_malformed_meta_yields_diagnostic() {
+    fn parse_with_recovery_malformed_meta_yields_diagnostic() {
         // §3.1 lenient counterpart: malformed META YAML emits an error
         // diagnostic (and recovers with a default FileMeta), never silent.
         let content = "--- META ---\nname: [unterminated\n\n--- ENDPOINT ---\nsvc/Method\n\n--- REQUEST ---\n{}\n";
@@ -627,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lenient_section_span_slices_back_to_the_sections_own_source_text() {
+    fn lenient_section_span_slices_back_to_the_sections_own_source_text() {
         let content = "--- ENDPOINT ---\nservice/Method\n\n--- REQUEST ---\n{\"key\": \"value\"}\n\n--- RESPONSE ---\n{\"result\": \"ok\"}\n";
         let result = parse_single_with_recovery(content, "test.gctf");
         let request = result
@@ -648,7 +720,7 @@ mod tests {
     }
 
     #[test]
-    fn test_token_based_recovery_attaches_attributes_and_preserves_content() {
+    fn token_based_recovery_attaches_attributes_and_preserves_content() {
         // After the token-stream rewrite, `#[attr]` blocks between sections
         // must still attach to the *following* section (not the preceding one)
         // and must not leak into any section's content — the same behavior the
@@ -691,7 +763,7 @@ svc/Method
     }
 
     #[test]
-    fn test_parse_with_recovery_valid_file() {
+    fn parse_with_recovery_valid_file() {
         let content = r#"--- ENDPOINT ---
 service/Method
 
@@ -710,7 +782,7 @@ service/Method
     }
 
     #[test]
-    fn test_parse_with_recovery_invalid_json() {
+    fn parse_with_recovery_invalid_json() {
         let content = r#"--- ENDPOINT ---
 service/Method
 
@@ -731,7 +803,7 @@ service/Method
     }
 
     #[test]
-    fn test_parse_with_recovery_invalid_json_points_at_the_actual_line() {
+    fn parse_with_recovery_invalid_json_points_at_the_actual_line() {
         // Line 5 (0-based) is where the malformed token actually is, not
         // line 4 (the REQUEST section's own start) — a JSON parse error used
         // to always report the section start regardless of where inside a
@@ -761,7 +833,7 @@ service/Method
     }
 
     #[test]
-    fn test_parse_with_recovery_multiple_errors() {
+    fn parse_with_recovery_multiple_errors() {
         let content = r#"--- ENDPOINT ---
 service/Method
 
@@ -784,7 +856,7 @@ var = .field
     }
 
     #[test]
-    fn test_parse_with_recovery_unknown_section() {
+    fn parse_with_recovery_unknown_section() {
         let content = r#"--- ENDPOINT ---
 service/Method
 
@@ -802,7 +874,7 @@ content
     }
 
     #[test]
-    fn test_parse_with_recovery_lowercase_section_name_rejected_like_strict_path() {
+    fn parse_with_recovery_lowercase_section_name_rejected_like_strict_path() {
         // Decided: section names are case-sensitive everywhere, not just in
         // the strict path — `check`/`fmt` never recognized `--- endpoint ---`
         // (`gctf_tokenizer::is_section_name_char` is uppercase-only), and
@@ -844,7 +916,7 @@ svc/Method
     }
 
     #[test]
-    fn test_parse_with_recovery_unknown_section_name_not_double_warned() {
+    fn parse_with_recovery_unknown_section_name_not_double_warned() {
         // A genuinely unknown section (not just miscased) must get exactly
         // one diagnostic, not both "should be uppercase" and "unknown
         // section type" for the same line.
@@ -864,7 +936,7 @@ svc/Method
     }
 
     #[test]
-    fn test_parse_with_recovery_invalid_extract() {
+    fn parse_with_recovery_invalid_extract() {
         let content = r#"--- EXTRACT ---
 valid = .field
 invalid line without equals
@@ -878,7 +950,7 @@ another = .field2
     }
 
     #[test]
-    fn test_parse_with_recovery_asserts_double_slash_comments() {
+    fn parse_with_recovery_asserts_double_slash_comments() {
         let content = r#"--- ENDPOINT ---
 grpc.health.v1.Health/Watch
 
@@ -912,7 +984,7 @@ grpc.health.v1.Health/Watch
     }
 
     #[test]
-    fn test_parse_with_recovery_asserts_inline_comments() {
+    fn parse_with_recovery_asserts_inline_comments() {
         let content = r#"--- ENDPOINT ---
 grpc.health.v1.Health/Watch
 
@@ -944,7 +1016,7 @@ grpc.health.v1.Health/Watch
     }
 
     #[test]
-    fn test_parse_with_recovery_headers_deprecated() {
+    fn parse_with_recovery_headers_deprecated() {
         let content = r#"--- ENDPOINT ---
 svc/Method
 
@@ -964,7 +1036,7 @@ content-type: application/grpc
     }
 
     #[test]
-    fn test_parse_with_recovery_tls_section_key_values() {
+    fn parse_with_recovery_tls_section_key_values() {
         let content = r#"--- TLS ---
 enabled: true
 cert_path: /path/to/cert
@@ -995,7 +1067,7 @@ svc/Method
     }
 
     #[test]
-    fn test_parse_with_recovery_options_section() {
+    fn parse_with_recovery_options_section() {
         let content = r#"--- OPTIONS ---
 timeout: 5000
 retries: 3
@@ -1026,7 +1098,7 @@ svc/Method
     }
 
     #[test]
-    fn test_parse_with_recovery_duplicate_options_key_warns_and_last_wins() {
+    fn parse_with_recovery_duplicate_options_key_warns_and_last_wins() {
         let content = r#"--- OPTIONS ---
 timeout: 30
 timeout: 60
@@ -1065,7 +1137,7 @@ svc/Method
     }
 
     #[test]
-    fn test_parse_with_recovery_duplicate_extract_variable_warns() {
+    fn parse_with_recovery_duplicate_extract_variable_warns() {
         let content = r#"--- ENDPOINT ---
 svc/Method
 
@@ -1093,7 +1165,7 @@ total = .b
     }
 
     #[test]
-    fn test_parse_with_recovery_bench_continuation_line_not_flagged_as_duplicate() {
+    fn parse_with_recovery_bench_continuation_line_not_flagged_as_duplicate() {
         // `sources:`'s nested YAML list uses indented continuation lines,
         // not repeated top-level keys — must not warn.
         let content = r#"--- BENCH ---
@@ -1126,7 +1198,7 @@ svc/Method
     }
 
     #[test]
-    fn test_parse_with_recovery_proto_section() {
+    fn parse_with_recovery_proto_section() {
         let content = r#"--- PROTO ---
 protos: ["service.proto"]
 import_dirs: ["/protos"]
@@ -1145,7 +1217,7 @@ svc/Method
     }
 
     #[test]
-    fn test_parse_with_recovery_empty_response() {
+    fn parse_with_recovery_empty_response() {
         let content = r#"--- ENDPOINT ---
 svc/Method
 
@@ -1167,7 +1239,7 @@ svc/Method
     }
 
     #[test]
-    fn test_parse_with_recovery_non_section_header_lines() {
+    fn parse_with_recovery_non_section_header_lines() {
         let content = r#"some random line
 more text
 --- ENDPOINT ---
@@ -1185,7 +1257,7 @@ svc/Method
     }
 
     #[test]
-    fn test_parse_with_recovery_comment_lines() {
+    fn parse_with_recovery_comment_lines() {
         let content = r#"# This is a comment
 // Another comment
 
@@ -1203,7 +1275,7 @@ svc/Method
     }
 
     #[test]
-    fn test_parse_with_recovery_inline_options_invalid_boolean() {
+    fn parse_with_recovery_inline_options_invalid_boolean() {
         let content = r#"--- ENDPOINT with_asserts=maybe ---
 svc/Method
 
@@ -1219,7 +1291,7 @@ svc/Method
     }
 
     #[test]
-    fn test_parse_with_recovery_inline_options_invalid_numeric() {
+    fn parse_with_recovery_inline_options_invalid_numeric() {
         let content = r#"--- ENDPOINT tolerance=abc ---
 svc/Method
 
@@ -1234,7 +1306,7 @@ svc/Method
     }
 
     #[test]
-    fn test_parse_with_recovery_inline_options_unknown() {
+    fn parse_with_recovery_inline_options_unknown() {
         let content = r#"--- ENDPOINT unknown_option=value ---
 svc/Method
 
@@ -1250,7 +1322,7 @@ svc/Method
     }
 
     #[test]
-    fn test_parse_with_recovery_inline_options_valid() {
+    fn parse_with_recovery_inline_options_valid() {
         let content = r#"--- ENDPOINT with_asserts=true unordered_arrays=true partial=false tolerance=0.05 ---
 svc/Method
 
@@ -1265,7 +1337,7 @@ svc/Method
     }
 
     #[test]
-    fn test_parse_with_recovery_request_headers_section() {
+    fn parse_with_recovery_request_headers_section() {
         let content = r#"--- ENDPOINT ---
 svc/Method
 
@@ -1296,7 +1368,7 @@ x-custom: value
     }
 
     #[test]
-    fn test_parse_with_recovery_invalid_key_value_syntax() {
+    fn parse_with_recovery_invalid_key_value_syntax() {
         let content = r#"--- TLS ---
 enabled: true
 invalid line without colon
@@ -1316,7 +1388,7 @@ svc/Method
     }
 
     #[test]
-    fn test_parse_with_recovery_kv_and_extract_recognize_slash_comments() {
+    fn parse_with_recovery_kv_and_extract_recognize_slash_comments() {
         // Regression: this file used to hand-roll `.find(':')`/`.find('=')`
         // for KV/EXTRACT lines, only skipping `#`-comments — a `//` comment
         // (the tokenizer-recognized form `content_parser.rs`'s strict path
@@ -1362,5 +1434,199 @@ status = .status
         } else {
             panic!("expected KeyValues");
         }
+    }
+
+    #[test]
+    fn bench_sources_nested_list_survives_recovery() {
+        let content = "--- ENDPOINT ---\npkg.Svc/Method\n\n--- BENCH ---\nmode: fixed\nsources:\n  - name: users\n    file: data/users.csv\n    indexed_by: id\n\n--- REQUEST ---\n{}\n";
+        let result = parse_content_with_recovery(content, "t.gctf");
+        let bench = result
+            .document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Bench)
+            .expect("BENCH section");
+        let SectionContent::KeyValues(kv) = &bench.content else {
+            panic!("BENCH must be key-values");
+        };
+
+        assert_eq!(kv.get("mode").map(String::as_str), Some("fixed"));
+        let sources = kv.get("sources").expect("sources key must be present");
+        assert!(
+            sources.contains("name: users") && sources.contains("data/users.csv"),
+            "the nested list must stay attached to `sources`, got: {sources:?}"
+        );
+        // The list items must not leak out as top-level keys.
+        assert!(
+            !kv.contains_key("- name"),
+            "nested list leaked a key: {kv:?}"
+        );
+        assert!(!kv.contains_key("file"), "nested list leaked a key: {kv:?}");
+        assert!(
+            !kv.contains_key("indexed_by"),
+            "nested list leaked a key: {kv:?}"
+        );
+    }
+
+    #[test]
+    fn streaming_json_lines_survive_recovery() {
+        let content = "--- ENDPOINT ---\nchat.ChatService/SendMessages\n\n--- REQUEST ---\n{\n  \"text\": \"one\"\n}\n{\n  \"text\": \"two\"\n}\n{\n  \"text\": \"three\"\n}\n\n--- RESPONSE ---\n{\n  \"count\": 3\n}\n";
+        let result = parse_content_with_recovery(content, "t.gctf");
+
+        let request = result
+            .document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Request)
+            .expect("REQUEST section");
+        match &request.content {
+            SectionContent::JsonLines(values) => {
+                assert_eq!(values.len(), 3, "all three messages must survive");
+                assert_eq!(values[0]["text"], "one");
+                assert_eq!(values[2]["text"], "three");
+            }
+            other => panic!("streaming REQUEST must parse as JsonLines, got {other:?}"),
+        }
+
+        let response = result
+            .document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Response)
+            .expect("RESPONSE section");
+        assert!(
+            matches!(&response.content, SectionContent::Json(_)),
+            "a single-value RESPONSE must still be plain Json"
+        );
+
+        assert!(
+            !result
+                .diagnostics
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("Failed to parse JSON")),
+            "a valid streaming section must not report a JSON parse error"
+        );
+    }
+
+    #[test]
+    fn malformed_dataset_is_reported_not_swallowed() {
+        let content = "--- ENDPOINT ---\nsvc.Service/Method\n\n--- DATASET ---\n- id: 1\n - broken indent\n\n--- REQUEST ---\n{}\n";
+        let result = parse_content_with_recovery(content, "t.gctf");
+
+        assert!(
+            result
+                .diagnostics
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("DATASET")),
+            "an unparseable DATASET must produce a diagnostic, got: {:?}",
+            result
+                .diagnostics
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn non_object_dataset_row_is_reported_and_dropped() {
+        let content = "--- ENDPOINT ---\nsvc.Service/Method\n\n--- DATASET ---\n- id: 1\n- 42\n\n--- REQUEST ---\n{}\n";
+        let result = parse_content_with_recovery(content, "t.gctf");
+
+        let dataset = result
+            .document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Dataset)
+            .expect("DATASET section");
+        let SectionContent::Rows(rows) = &dataset.content else {
+            panic!("DATASET must be Rows");
+        };
+        assert_eq!(rows.len(), 1, "the scalar row must be dropped");
+        assert_eq!(rows[0]["id"], 1);
+        assert!(
+            result
+                .diagnostics
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("must be an object")),
+            "dropping a row must be reported"
+        );
+    }
+
+    #[test]
+    fn probe_extract_ternary_divergence() {
+        let content = "--- ENDPOINT ---\nsvc.Service/Method\n\n--- RESPONSE ---\n{}\n\n--- EXTRACT ---\nlabel = .code == 200 ? \"OK\" : \"Error\"\n";
+        let rec = parse_content_with_recovery(content, "t.gctf");
+        let sec = rec
+            .document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Extract)
+            .unwrap();
+        if let SectionContent::Extract(kv) = &sec.content {
+            println!("RECOVERY label => {:?}", kv.get("label"));
+        }
+        let strict = crate::parse_gctf_from_str(content, "t.gctf").unwrap();
+        let sec = strict
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Extract)
+            .unwrap();
+        if let SectionContent::Extract(kv) = &sec.content {
+            println!("STRICT   label => {:?}", kv.get("label"));
+        }
+    }
+
+    #[test]
+    fn malformed_bench_line_is_still_reported() {
+        let content = "--- ENDPOINT ---\nsvc.S/M\n\n--- BENCH ---\nmode fixed\nduration: 30s\nsources:\n  - name: u\n    file: u.csv\n\n--- REQUEST ---\n{}\n";
+        let result = parse_content_with_recovery(content, "t.gctf");
+
+        assert!(
+            result
+                .diagnostics
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("Invalid key-value syntax")),
+            "a BENCH line without a colon must be reported"
+        );
+
+        let bench = result
+            .document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Bench)
+            .expect("BENCH section");
+        let SectionContent::KeyValues(kv) = &bench.content else {
+            panic!("BENCH must be key-values");
+        };
+        assert_eq!(kv.get("duration").map(String::as_str), Some("30s"));
+        let sources = kv.get("sources").expect("sources survives");
+        assert!(sources.contains("name: u"), "got {sources:?}");
+    }
+
+    #[test]
+    fn extract_ternary_is_converted_to_jq_like_the_strict_path() {
+        let content = "--- ENDPOINT ---\nsvc.S/M\n\n--- RESPONSE ---\n{}\n\n--- EXTRACT ---\nlabel = .code == 200 ? \"OK\" : \"Error\"\nplain = .id\n";
+        let result = parse_content_with_recovery(content, "t.gctf");
+        let section = result
+            .document
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Extract)
+            .expect("EXTRACT section");
+        let SectionContent::Extract(kv) = &section.content else {
+            panic!("EXTRACT must be Extract");
+        };
+
+        let label = kv.get("label").expect("label");
+        assert!(
+            label.contains("if") && label.contains("then") && label.contains("else"),
+            "ternary must be converted to the jq form, got {label:?}"
+        );
+        assert_eq!(kv.get("plain").map(String::as_str), Some(".id"));
     }
 }

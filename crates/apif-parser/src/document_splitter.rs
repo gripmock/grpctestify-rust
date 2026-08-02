@@ -100,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn test_split_single_document() {
+    fn split_single_document() {
         let sections = vec![
             section(SectionType::Endpoint, 0),
             section(SectionType::Request, 2),
@@ -112,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn test_split_two_documents_with_preamble() {
+    fn split_two_documents_with_preamble() {
         let sections = vec![
             section(SectionType::Endpoint, 0),
             section(SectionType::Request, 2),
@@ -129,14 +129,14 @@ mod tests {
     }
 
     #[test]
-    fn test_split_empty_input() {
+    fn split_empty_input() {
         let sections: Vec<Section> = vec![];
         let docs = split_sections_by_boundary(&sections);
         assert!(docs.is_empty());
     }
 
     #[test]
-    fn test_split_no_endpoint_single_doc() {
+    fn split_no_endpoint_single_doc() {
         let sections = vec![
             section(SectionType::Address, 0),
             section(SectionType::Request, 2),
@@ -148,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn test_split_only_preamble_sections() {
+    fn split_only_preamble_sections() {
         let sections = vec![
             section(SectionType::Address, 0),
             section(SectionType::Tls, 2),
@@ -160,7 +160,7 @@ mod tests {
     }
 
     #[test]
-    fn test_split_preambles_without_content_no_split() {
+    fn split_preambles_without_content_no_split() {
         // Without content before first endpoint, preambles stay in single doc
         let sections = vec![
             section(SectionType::Address, 0),
@@ -179,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn test_split_endpoint_at_start() {
+    fn split_endpoint_at_start() {
         let sections = vec![
             section(SectionType::Endpoint, 0),
             section(SectionType::Request, 2),
@@ -194,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn test_split_extract_as_terminal() {
+    fn split_extract_as_terminal() {
         let sections = vec![
             section(SectionType::Endpoint, 0),
             section(SectionType::Request, 2),
@@ -208,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn test_split_asserts_as_terminal() {
+    fn split_asserts_as_terminal() {
         let sections = vec![
             section(SectionType::Endpoint, 0),
             section(SectionType::Request, 2),
@@ -221,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn test_split_error_as_terminal() {
+    fn split_error_as_terminal() {
         let sections = vec![
             section(SectionType::Endpoint, 0),
             section(SectionType::Request, 2),
@@ -234,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn test_preamble_selection() {
+    fn preamble_selection() {
         let sections = vec![
             section(SectionType::Endpoint, 0),
             section(SectionType::Request, 2),

@@ -1,5 +1,4 @@
 #[cfg(test)]
-use crate::grpc::GrpcClientConfig;
 #[cfg(test)]
 use crate::parser::ast::SectionType;
 use crate::parser::ast::{Section, SectionContent};
@@ -77,22 +76,6 @@ impl RequestHandler {
                     "Failed to send request at line {}: {}",
                     section_line, e
                 )),
-            },
-        }
-    }
-
-    /// Send implicit empty request (for unary/server-stream when no REQUEST section)
-    pub async fn send_implicit_empty_request(&self, tx: &Sender<Value>) -> RequestSendResult {
-        let empty_request = Value::Object(serde_json::Map::new());
-
-        match tx.send(empty_request).await {
-            Ok(_) => RequestSendResult {
-                success: true,
-                error_message: None,
-            },
-            Err(e) => RequestSendResult {
-                success: false,
-                error_message: Some(format!("Failed to send implicit empty request: {}", e)),
             },
         }
     }
@@ -192,46 +175,6 @@ impl RequestHandler {
             }
         })
     }
-
-    /// Build gRPC client config (test-only)
-    #[cfg(test)]
-    pub fn build_client_config(
-        document: &crate::parser::ast::GctfDocument,
-        document_path: &Path,
-        address: &str,
-    ) -> GrpcClientConfig {
-        let tls_config = Self::build_tls_config(document, document_path);
-        let proto_config = Self::build_proto_config(document, document_path);
-
-        GrpcClientConfig {
-            address: address.to_string(),
-            timeout_seconds: 30,
-            tls_config,
-            proto_config,
-            metadata: document
-                .get_request_headers()
-                .map(|m| m.into_iter().collect()),
-            compression: crate::config::compression_from_env(),
-            connection_id: 0,
-            protocol: document
-                .get_options()
-                .and_then(|o| {
-                    o.get("protocol").map(|s| {
-                        s.parse::<crate::grpc::WireProtocol>()
-                            .unwrap_or(crate::grpc::WireProtocol::Grpc)
-                    })
-                })
-                .unwrap_or(crate::grpc::WireProtocol::Grpc),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            target_service: document.parse_endpoint().map(|(p, s, m)| {
-                if p.is_empty() {
-                    format!("{}/{}", s, m)
-                } else {
-                    format!("{}.{}/{}", p, s, m)
-                }
-            }),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -241,13 +184,13 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_request_handler_new() {
+    fn request_handler_new() {
         let handler = RequestHandler::new(false, false, None);
         assert!(handler.coverage_collector.is_none());
     }
 
     #[test]
-    fn test_build_request_json() {
+    fn build_request_json() {
         let handler = RequestHandler::new(false, false, None);
         let section = Section {
             section_type: SectionType::Request,
@@ -310,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_request_with_variables() {
+    fn build_request_with_variables() {
         let handler = RequestHandler::new(false, false, None);
         let section = Section {
             section_type: SectionType::Request,

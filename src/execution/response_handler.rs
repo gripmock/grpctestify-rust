@@ -335,24 +335,24 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_response_handler_new() {
+    fn response_handler_new() {
         let handler = ResponseHandler::new(false);
         assert!(!handler.no_assert);
     }
 
     #[test]
-    fn test_validate_message_exact_match() {
+    fn validate_message_exact_match() {
         let handler = ResponseHandler::new(false);
         let actual = json!({"id": 123, "name": "test"});
         let expected = json!({"id": 123, "name": "test"});
         let options = InlineOptions::default();
 
         let result = handler.validate_message(&actual, &expected, &options);
-        assert!(result.is_ok());
+        result.expect("a matching message must validate");
     }
 
     #[test]
-    fn test_validate_message_mismatch() {
+    fn validate_message_mismatch() {
         let handler = ResponseHandler::new(false);
         let actual = json!({"id": 123, "name": "test"});
         let expected = json!({"id": 456, "name": "test"});
@@ -363,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_message_partial_match() {
+    fn validate_message_partial_match() {
         let handler = ResponseHandler::new(false);
         let actual = json!({"id": 123, "name": "test", "extra": "field"});
         let expected = json!({"id": 123});
@@ -373,7 +373,7 @@ mod tests {
         };
 
         let result = handler.validate_message(&actual, &expected, &options);
-        assert!(result.is_ok());
+        result.expect("a matching message must validate under these options");
     }
 
     #[test]
@@ -389,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn test_response_handler_no_assert() {
+    fn response_handler_no_assert() {
         let handler = ResponseHandler::new(true);
         let actual = json!({"id": 123});
         let expected = json!({"id": 456});
@@ -397,6 +397,6 @@ mod tests {
 
         // Should always pass when no_assert is true
         let result = handler.validate_message(&actual, &expected, &options);
-        assert!(result.is_ok());
+        result.expect("no_assert must accept any message");
     }
 }

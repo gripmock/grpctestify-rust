@@ -19,5 +19,8 @@ ignore = { workspace = true }
 rand = "0.10"
 minijinja = { workspace = true }
 
+[dev-dependencies]
+tempfile = "3.27"
+
 [lints]
 workspace = true
