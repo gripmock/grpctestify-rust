@@ -271,7 +271,7 @@ apif-parser = { path = "crates/apif-parser", version = "0.2.0" }
 apif-assert = { path = "crates/apif-assert", version = "0.2.1" }
 apif-state = { path = "crates/apif-state", version = "0.1.2" }
 apif-plugins = { path = "crates/apif-plugins", version = "0.2.0" }
-apif-execution = { path = "crates/apif-execution", version = "0.4.0" }
+apif-execution = { path = "crates/apif-execution", version = "0.2.0" }
 apif-utils = { path = "crates/apif-utils", version = "0.2.0" }
 apif-report = { path = "crates/apif-report", version = "0.2.2" }
 apif-semantics = { path = "crates/apif-semantics", version = "0.1.0" }
