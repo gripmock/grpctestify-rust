@@ -73,7 +73,7 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    fn test_rpc_mode_debug() {
+    fn rpc_mode_debug() {
         assert_eq!(format!("{:?}", RpcMode::Unary), "Unary");
         assert_eq!(format!("{:?}", RpcMode::ServerStream), "ServerStream");
         assert_eq!(format!("{:?}", RpcMode::ClientStream), "ClientStream");
@@ -81,7 +81,7 @@ mod tests {
     }
 
     #[test]
-    fn test_call_error_new() {
+    fn call_error_new() {
         let err = CallError {
             code: 5,
             message: "not found".into(),
@@ -91,7 +91,7 @@ mod tests {
     }
 
     #[test]
-    fn test_call_stream_item_message() {
+    fn call_stream_item_message() {
         let item = CallStreamItem::Message(serde_json::json!({"key": "value"}));
         match item {
             CallStreamItem::Message(v) => assert_eq!(v["key"], "value"),
@@ -100,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn test_call_stream_item_trailers() {
+    fn call_stream_item_trailers() {
         let mut h = HashMap::new();
         h.insert("x-status".into(), "ok".into());
         let item = CallStreamItem::Trailers(h);
@@ -111,7 +111,7 @@ mod tests {
     }
 
     #[test]
-    fn test_endpoint_meta_new() {
+    fn endpoint_meta_new() {
         let meta = EndpointMeta {
             rpc_mode: RpcMode::Unary,
             input_type: Some("test.Request".into()),

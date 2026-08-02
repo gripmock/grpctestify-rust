@@ -4,7 +4,7 @@
 use grpctestify::parser::{parse_gctf_from_str, ternary::ternary_to_jq};
 
 #[test]
-fn test_extract_ternary_basic() {
+fn extract_ternary_basic() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -27,14 +27,11 @@ status_label = .status == 200 ? "OK" : "Error"
     let result = parse_gctf_from_str(content, "test.gctf");
 
     // Assert
-    assert!(
-        result.is_ok(),
-        "GCTF with ternary should parse successfully"
-    );
+    result.expect("GCTF with ternary should parse successfully");
 }
 
 #[test]
-fn test_extract_ternary_with_jq() {
+fn extract_ternary_with_jq() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -64,7 +61,7 @@ has_items = (.items | length) > 0 ? "yes" : "no"
 }
 
 #[test]
-fn test_extract_ternary_nested() {
+fn extract_ternary_nested() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -94,7 +91,7 @@ size = .count == 0 ? "empty" : (.count > 10 ? "large" : "small")
 }
 
 #[test]
-fn test_extract_ternary_string_comparison() {
+fn extract_ternary_string_comparison() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -124,7 +121,7 @@ result = .message == "OK" ? "Success" : "Failed"
 }
 
 #[test]
-fn test_extract_mixed_syntax() {
+fn extract_mixed_syntax() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -159,7 +156,7 @@ status_jq = if .status == 200 then "OK" else "Error" end
 }
 
 #[test]
-fn test_ternary_conversion_function() {
+fn ternary_conversion_function() {
     // Arrange
     let input = ".status == 200 ? \"OK\" : \"Error\"";
     let expected = "if .status == 200 then \"OK\" else \"Error\" end";
@@ -172,7 +169,7 @@ fn test_ternary_conversion_function() {
 }
 
 #[test]
-fn test_ternary_with_header_plugin() {
+fn ternary_with_header_plugin() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -202,7 +199,7 @@ request_id = @header("x-request-id") != null ? @header("x-request-id") : "unknow
 }
 
 #[test]
-fn test_ternary_with_trailer_plugin() {
+fn ternary_with_trailer_plugin() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---

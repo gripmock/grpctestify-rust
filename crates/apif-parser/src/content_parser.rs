@@ -389,7 +389,10 @@ fn parse_key_value_section(content: &str) -> Result<crate::ast::OrderedStringMap
 /// Like `parse_key_value_section`, but an indented line is appended (with its
 /// original indentation) to the previous key's value instead of being
 /// tokenized on its own — needed for `sources:`'s nested YAML list.
-fn parse_bench_section(content: &str) -> Result<crate::ast::OrderedStringMap> {
+/// BENCH is the one key-value section whose values may span lines: `sources:`
+/// carries a nested YAML list on indented continuation lines. Shared with the
+/// recovering parser so both paths agree on what `sources` contains.
+pub(crate) fn parse_bench_section(content: &str) -> Result<crate::ast::OrderedStringMap> {
     let mut key_values: crate::ast::OrderedStringMap = crate::ast::OrderedStringMap::new();
     let mut current_key: Option<String> = None;
 
@@ -459,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_bench_section_keeps_nested_sources_as_one_value() {
+    fn parse_bench_section_keeps_nested_sources_as_one_value() {
         let content = "mode: fixed\nsources:\n  - name: users\n    file: data/users.csv\n  - name: orders\n    file: data/orders.csv\n";
         let kv = parse_bench_section(content).unwrap();
         assert_eq!(kv.get("mode").map(String::as_str), Some("fixed"));
@@ -500,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_bench_section_flat_keys_unaffected() {
+    fn parse_bench_section_flat_keys_unaffected() {
         let content = "mode: fixed\nduration: 30s\nconcurrency: 16\n";
         let kv = parse_bench_section(content).unwrap();
         assert_eq!(kv.get("mode").map(String::as_str), Some("fixed"));
@@ -509,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_dataset_section_valid_rows() {
+    fn parse_dataset_section_valid_rows() {
         let content = "- id: \"1\"\n  name: Ada\n- id: \"2\"\n  name: Grace\n";
         let result = parse_section_content(SectionType::Dataset, content).unwrap();
         let SectionContent::Rows(rows) = result else {
@@ -521,20 +524,20 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_dataset_section_rejects_non_object_row() {
+    fn parse_dataset_section_rejects_non_object_row() {
         let content = "- id: \"1\"\n- 42\n";
         let err = parse_section_content(SectionType::Dataset, content).unwrap_err();
         assert!(err.to_string().contains("row 1"), "{err}");
     }
 
     #[test]
-    fn test_parse_dataset_section_rejects_malformed_yaml() {
+    fn parse_dataset_section_rejects_malformed_yaml() {
         let content = "not: [a, list, of, objects";
         assert!(parse_section_content(SectionType::Dataset, content).is_err());
     }
 
     #[test]
-    fn test_parse_dataset_section_preserves_nested_structure() {
+    fn parse_dataset_section_preserves_nested_structure() {
         // Unlike `--data` (CSV/TSV, everything a flat string), DATASET's
         // native YAML keeps real types and nested objects.
         let content = "- id: 1\n  active: true\n  meta:\n    tier: gold\n";
@@ -548,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_options() {
+    fn tokenize_options() {
         let result = tokenize_inline_options("key1=value1 key2=value2");
         assert_eq!(result.len(), 2);
         assert_eq!(result[0], ("key1".into(), "value1".into()));
@@ -564,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_section_content_single_value() {
+    fn parse_section_content_single_value() {
         let result = parse_section_content(SectionType::Address, "localhost:50051").unwrap();
         assert_eq!(
             result,
@@ -573,19 +576,19 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_section_content_empty() {
+    fn parse_section_content_empty() {
         let result = parse_section_content(SectionType::Address, "").unwrap();
         assert_eq!(result, SectionContent::Empty);
     }
 
     #[test]
-    fn test_parse_section_content_whitespace() {
+    fn parse_section_content_whitespace() {
         let result = parse_section_content(SectionType::Address, "   ").unwrap();
         assert_eq!(result, SectionContent::Empty);
     }
 
     #[test]
-    fn test_parse_section_content_endpoint() {
+    fn parse_section_content_endpoint() {
         let result = parse_section_content(SectionType::Endpoint, "pkg.Service/Method").unwrap();
         assert_eq!(
             result,
@@ -594,32 +597,32 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_section_content_request_json() {
+    fn parse_section_content_request_json() {
         let result = parse_section_content(SectionType::Request, r#"{"key": "value"}"#).unwrap();
         assert!(matches!(result, SectionContent::Json(_)));
     }
 
     #[test]
-    fn test_parse_section_content_error_json() {
+    fn parse_section_content_error_json() {
         let result = parse_section_content(SectionType::Error, r#"{"code": 5}"#).unwrap();
         assert!(matches!(result, SectionContent::Json(_)));
     }
 
     #[test]
-    fn test_parse_section_content_response_json() {
+    fn parse_section_content_response_json() {
         let result = parse_section_content(SectionType::Response, r#"{"status": "ok"}"#).unwrap();
         assert!(matches!(result, SectionContent::Json(_)));
     }
 
     #[test]
-    fn test_parse_section_content_response_jsonlines() {
+    fn parse_section_content_response_jsonlines() {
         let input = "{\"a\":1}\n{\"b\":2}";
         let result = parse_section_content(SectionType::Response, input).unwrap();
         assert!(matches!(result, SectionContent::JsonLines(v) if v.len() == 2));
     }
 
     #[test]
-    fn test_parse_section_content_request_jsonlines() {
+    fn parse_section_content_request_jsonlines() {
         // Symmetric with RESPONSE: a REQUEST block of self-delimiting JSON
         // values (client/bidi-streaming) parses into JsonLines, same as a
         // multi-message RESPONSE.
@@ -629,14 +632,14 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_section_content_request_single_value_stays_json() {
+    fn parse_section_content_request_single_value_stays_json() {
         // A single-value REQUEST must stay unary — existing files unchanged.
         let result = parse_section_content(SectionType::Request, r#"{"key": "value"}"#).unwrap();
         assert!(matches!(result, SectionContent::Json(_)));
     }
 
     #[test]
-    fn test_parse_section_content_key_values() {
+    fn parse_section_content_key_values() {
         let input = "ca_cert: /path/to/ca.pem\nserver_name: example.com";
         let result = parse_section_content(SectionType::Tls, input).unwrap();
         if let SectionContent::KeyValues(kv) = result {
@@ -648,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_section_content_key_values_with_comments() {
+    fn parse_section_content_key_values_with_comments() {
         let input = "# comment\nca_cert: /path/ca.pem\n\nkey: value";
         let result = parse_section_content(SectionType::Options, input).unwrap();
         if let SectionContent::KeyValues(kv) = result {
@@ -659,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_section_content_extract() {
+    fn parse_section_content_extract() {
         let input = "total = .response.total\ncount = .items | length";
         let result = parse_section_content(SectionType::Extract, input).unwrap();
         if let SectionContent::Extract(kv) = result {
@@ -671,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_section_content_extract_with_comments() {
+    fn parse_section_content_extract_with_comments() {
         let input = "# ignore\n// ignore\ntotal = .response.total";
         let result = parse_section_content(SectionType::Extract, input).unwrap();
         if let SectionContent::Extract(kv) = result {
@@ -682,14 +685,14 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_section_content_key_values_duplicate_key_is_an_error() {
+    fn parse_section_content_key_values_duplicate_key_is_an_error() {
         let input = "timeout: 30\ntimeout: 60";
         let err = parse_section_content(SectionType::Options, input).unwrap_err();
         assert!(err.to_string().contains("duplicate key 'timeout'"), "{err}");
     }
 
     #[test]
-    fn test_parse_section_content_extract_duplicate_variable_is_an_error() {
+    fn parse_section_content_extract_duplicate_variable_is_an_error() {
         let input = "total = .a\ntotal = .b";
         let err = parse_section_content(SectionType::Extract, input).unwrap_err();
         assert!(
@@ -700,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_section_content_asserts() {
+    fn parse_section_content_asserts() {
         let input = ".x == 1\n.y != \"hello\"";
         let result = parse_section_content(SectionType::Asserts, input).unwrap();
         if let SectionContent::Assertions(asserts) = result {
@@ -712,7 +715,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_section_content_asserts_with_comments() {
+    fn parse_section_content_asserts_with_comments() {
         let input = ".x == 1 # inline\n# full line\n.y == 2 // comment";
         let result = parse_section_content(SectionType::Asserts, input).unwrap();
         if let SectionContent::Assertions(asserts) = result {
@@ -740,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_inline_options_all_fields() {
+    fn parse_inline_options_all_fields() {
         let result = parse_inline_options(
             "with_asserts=true partial=true tolerance=0.5 unordered_arrays=true",
         )
@@ -752,25 +755,25 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_inline_options_redact() {
+    fn parse_inline_options_redact() {
         let result = parse_inline_options(r#"redact=["token","password"]"#).unwrap();
         assert_eq!(result.redact, vec!["token", "password"]);
     }
 
     #[test]
-    fn test_parse_inline_options_empty() {
+    fn parse_inline_options_empty() {
         let result = parse_inline_options("").unwrap();
         assert_eq!(result, InlineOptions::default());
     }
 
     #[test]
-    fn test_parse_inline_options_unknown_key_errors() {
+    fn parse_inline_options_unknown_key_errors() {
         let err = parse_inline_options("unknown_key=value").unwrap_err();
         assert!(err.to_string().contains("unknown_key"));
     }
 
     #[test]
-    fn test_parse_inline_options_invalid_boolean_errors() {
+    fn parse_inline_options_invalid_boolean_errors() {
         // §3.4 fixed this from a silent fallback to a hard error in the strict
         // path — a non-boolean value for a boolean option must not be silently
         // accepted.
@@ -779,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_section_content_meta_malformed_yaml_errors() {
+    fn parse_section_content_meta_malformed_yaml_errors() {
         // §3.1: malformed META YAML must hard-error in the strict path, not
         // silently default to an empty FileMeta.
         let err = parse_section_content(SectionType::Meta, "name: [unterminated").unwrap_err();
@@ -787,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_section_content_meta_unknown_field_errors() {
+    fn parse_section_content_meta_unknown_field_errors() {
         // §3.2: `deny_unknown_fields` — a `tag:` typo (real field is `tags:`)
         // must error, not silently vanish.
         let err = parse_section_content(SectionType::Meta, "tag: oops").unwrap_err();
@@ -795,37 +798,37 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_inline_options_tolerance_negative() {
+    fn parse_inline_options_tolerance_negative() {
         let result = parse_inline_options("tolerance=-0.5").unwrap();
         assert_eq!(result.tolerance, Some(-0.5));
     }
 
     #[test]
-    fn test_parse_inline_options_tolerance_digit_separator() {
+    fn parse_inline_options_tolerance_digit_separator() {
         let result = parse_inline_options("tolerance=1_000.5").unwrap();
         assert_eq!(result.tolerance, Some(1000.5));
     }
 
     #[test]
-    fn test_parse_inline_options_tolerance_invalid() {
+    fn parse_inline_options_tolerance_invalid() {
         let err = parse_inline_options("tolerance=not_a_number").unwrap_err();
         assert!(err.to_string().contains("tolerance"));
     }
 
     #[test]
-    fn test_parse_inline_options_redact_with_spaces() {
+    fn parse_inline_options_redact_with_spaces() {
         let result = parse_inline_options(r#"redact=["token", "password"]"#).unwrap();
         assert_eq!(result.redact, vec!["token", "password"]);
     }
 
     #[test]
-    fn test_parse_inline_options_redact_empty_array() {
+    fn parse_inline_options_redact_empty_array() {
         let result = parse_inline_options("redact=[]").unwrap();
         assert!(result.redact.is_empty());
     }
 
     #[test]
-    fn test_parse_inline_options_redact_malformed() {
+    fn parse_inline_options_redact_malformed() {
         let result = parse_inline_options("redact=not_an_array").unwrap();
         // Current tokenizer splits by spaces, so this becomes tokens
         // This is a known limitation - redact with spaces in value
@@ -833,7 +836,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_section_content_meta_full() {
+    fn parse_section_content_meta_full() {
         let result = parse_section_content(
             SectionType::Meta,
             r#"name: Test
@@ -856,7 +859,7 @@ links:
     }
 
     #[test]
-    fn test_parse_section_content_meta_comments() {
+    fn parse_section_content_meta_comments() {
         let result = parse_section_content(
             SectionType::Meta,
             r#"# comment
@@ -873,7 +876,7 @@ tags: [a]
     }
 
     #[test]
-    fn test_parse_section_content_meta_slash_comments() {
+    fn parse_section_content_meta_slash_comments() {
         // Regression: the strict path used to pass META content straight to
         // the YAML parser, which errors on GCTF's `//` comment (YAML only
         // understands `#`) — so a `//`-commented META parsed fine under the
@@ -892,7 +895,7 @@ tags: [a]
     }
 
     #[test]
-    fn test_parse_dataset_section_slash_comments() {
+    fn parse_dataset_section_slash_comments() {
         let result = parse_section_content(
             SectionType::Dataset,
             "// header comment\n- id: \"1\"\n  name: Ada\n",
@@ -906,7 +909,7 @@ tags: [a]
     }
 
     #[test]
-    fn test_parse_attribute_with_value() {
+    fn parse_attribute_with_value() {
         let attr = parse_attribute("timeout(30)").unwrap();
         assert_eq!(attr.name, "timeout");
         assert_eq!(attr.value, "30");
@@ -914,7 +917,7 @@ tags: [a]
     }
 
     #[test]
-    fn test_parse_attribute_flag() {
+    fn parse_attribute_flag() {
         let attr = parse_attribute("skip").unwrap();
         assert_eq!(attr.name, "skip");
         assert_eq!(attr.value, "true");
@@ -922,34 +925,34 @@ tags: [a]
     }
 
     #[test]
-    fn test_parse_attribute_quoted_value() {
+    fn parse_attribute_quoted_value() {
         let attr = parse_attribute(r#"tag("smoke, slow")"#).unwrap();
         assert_eq!(attr.name, "tag");
         assert_eq!(attr.value, r#""smoke, slow""#);
     }
 
     #[test]
-    fn test_parse_attribute_with_spaces() {
+    fn parse_attribute_with_spaces() {
         let attr = parse_attribute("  retry(3)  ").unwrap();
         assert_eq!(attr.name, "retry");
         assert_eq!(attr.value, "3");
     }
 
     #[test]
-    fn test_parse_attribute_empty() {
+    fn parse_attribute_empty() {
         assert!(parse_attribute("").is_none());
         assert!(parse_attribute("   ").is_none());
     }
 
     #[test]
-    fn test_parse_attribute_no_paren() {
+    fn parse_attribute_no_paren() {
         let attr = parse_attribute("just_a_name").unwrap();
         assert_eq!(attr.name, "just_a_name");
         assert_eq!(attr.value, "true");
     }
 
     #[test]
-    fn test_resolve_attributes_inheritance() {
+    fn resolve_attributes_inheritance() {
         let parent = vec![GctfAttribute::new("timeout", "10")];
         let child = vec![GctfAttribute::new("retry", "3")];
         let resolved = resolve_attributes(&child, &parent);
@@ -962,7 +965,7 @@ tags: [a]
     }
 
     #[test]
-    fn test_resolve_attributes_override() {
+    fn resolve_attributes_override() {
         let parent = vec![GctfAttribute::new("timeout", "10")];
         let child = vec![GctfAttribute::new("timeout", "30")];
         let resolved = resolve_attributes(&child, &parent);
@@ -972,7 +975,7 @@ tags: [a]
     }
 
     #[test]
-    fn test_resolve_attributes_empty() {
+    fn resolve_attributes_empty() {
         let resolved = resolve_attributes(&[], &[]);
         assert!(resolved.is_empty());
 

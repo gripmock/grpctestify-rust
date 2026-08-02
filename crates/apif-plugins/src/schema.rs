@@ -69,7 +69,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_valid() {
+    fn schema_valid() {
         let instance = json!({"name": "Alice", "age": 30});
         let schema = json!({
             "type": "object",
@@ -89,7 +89,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_invalid() {
+    fn schema_invalid() {
         let instance = json!({"name": 42});
         let schema = json!({
             "type": "object",
@@ -107,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_one_arg_uses_response() {
+    fn schema_one_arg_uses_response() {
         let schema = json!({"type": "object"});
         let response = json!({"key": "val"});
         assert_eq!(
@@ -119,7 +119,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_no_args() {
+    fn schema_no_args() {
         let null = Value::Null;
         assert_eq!(
             SchemaPlugin.execute(&[], &make_ctx(&null)).unwrap(),
@@ -128,7 +128,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_string_valid() {
+    fn schema_string_valid() {
         let schema = json!({"type": "string", "minLength": 3});
         let null = Value::Null;
         assert_eq!(
@@ -140,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_string_too_short() {
+    fn schema_string_too_short() {
         let schema = json!({"type": "string", "minLength": 3});
         let null = Value::Null;
         assert_eq!(
@@ -152,12 +152,12 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_name() {
+    fn schema_name() {
         assert_eq!(SchemaPlugin.name(), "schema");
     }
 
     #[test]
-    fn test_schema_signature() {
+    fn schema_signature() {
         let sig = SchemaPlugin.signature();
         assert_eq!(sig.return_type, TypeInfo::Bool);
     }

@@ -5,7 +5,7 @@ use grpctestify::execution::ExecutionPlan;
 use grpctestify::parser::parse_gctf_from_str;
 
 #[test]
-fn test_variable_definition_tracking() {
+fn variable_definition_tracking() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -36,7 +36,7 @@ user_id = .user_id
 }
 
 #[test]
-fn test_variable_usage_in_request_headers() {
+fn variable_usage_in_request_headers() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -74,7 +74,7 @@ Authorization: Bearer {{ token }}
 }
 
 #[test]
-fn test_variable_usage_in_request() {
+fn variable_usage_in_request() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -104,7 +104,7 @@ next_id = .next_id
 }
 
 #[test]
-fn test_variable_usage_in_asserts() {
+fn variable_usage_in_asserts() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -134,7 +134,7 @@ expected_value = .value
 }
 
 #[test]
-fn test_variable_with_ternary() {
+fn variable_with_ternary() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -163,7 +163,7 @@ status_label = .status == 200 ? "OK" : "Error"
 }
 
 #[test]
-fn test_variable_with_header_plugin() {
+fn variable_with_header_plugin() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -192,7 +192,7 @@ request_id = @header("x-request-id")
 }
 
 #[test]
-fn test_variable_with_trailer_plugin() {
+fn variable_with_trailer_plugin() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -221,7 +221,7 @@ checksum = @trailer("x-checksum")
 }
 
 #[test]
-fn test_multiple_variables_same_section() {
+fn multiple_variables_same_section() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -256,7 +256,7 @@ user_name = .name
 }
 
 #[test]
-fn test_variable_cross_section_usage() {
+fn variable_cross_section_usage() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -288,7 +288,7 @@ refresh_token = .refresh_token
 }
 
 #[test]
-fn test_variable_with_jq_expression() {
+fn variable_with_jq_expression() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---

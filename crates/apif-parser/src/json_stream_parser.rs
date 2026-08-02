@@ -125,7 +125,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_trailing_comma_inside_a_streamed_value() {
+    fn trailing_comma_inside_a_streamed_value() {
         // Each chunk is decoded via `json_mod::from_str`, so it should get
         // full JSON5 tolerance, not just strict JSON — confirms the
         // delegation actually works, not just compiles.
@@ -135,14 +135,14 @@ mod tests {
     }
 
     #[test]
-    fn test_line_comment_inside_a_streamed_value() {
+    fn line_comment_inside_a_streamed_value() {
         let content = "{\n  \"a\": 1 // trailing comment\n}\n{\"b\": 2}";
         let values = parse_response_json_values(content).expect("2 values");
         assert_eq!(values, vec![json!({"a": 1}), json!({"b": 2})]);
     }
 
     #[test]
-    fn test_block_comment_with_unbalanced_brace_inside_a_streamed_value() {
+    fn block_comment_with_unbalanced_brace_inside_a_streamed_value() {
         // The depth counter must skip `/* ... */` block comments (like
         // `tokenize_strip_comments` in json_mod.rs already does) — otherwise
         // a stray `}` inside a comment prematurely closes the chunk, or a

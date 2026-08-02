@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 #[test]
-fn test_uuid_plugin() {
+fn uuid_plugin() {
     let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({
         "id": "123e4567-e89b-12d3-a456-426614174000",
@@ -31,7 +31,7 @@ fn test_uuid_plugin() {
 }
 
 #[test]
-fn test_email_plugin() {
+fn email_plugin() {
     let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({
         "email": "test@example.com",
@@ -50,7 +50,7 @@ fn test_email_plugin() {
 }
 
 #[test]
-fn test_ip_plugin() {
+fn ip_plugin() {
     let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({
         "ip": "192.168.1.1",
@@ -67,7 +67,7 @@ fn test_ip_plugin() {
 }
 
 #[test]
-fn test_url_plugin() {
+fn url_plugin() {
     let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({
         "url": "https://example.com",
@@ -86,7 +86,7 @@ fn test_url_plugin() {
 }
 
 #[test]
-fn test_timestamp_plugin() {
+fn timestamp_plugin() {
     let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({
         "ts": "2023-10-01T12:00:00Z",
@@ -105,7 +105,7 @@ fn test_timestamp_plugin() {
 }
 
 #[test]
-fn test_len_plugin() {
+fn len_plugin() {
     let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({
         "list": [1, 2, 3],
@@ -132,7 +132,7 @@ fn test_len_plugin() {
 }
 
 #[test]
-fn test_header_plugin() {
+fn header_plugin() {
     let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({});
     let mut headers = HashMap::new();
@@ -154,7 +154,7 @@ fn test_header_plugin() {
 // ========================================
 
 #[test]
-fn test_uuid_edge_cases() {
+fn uuid_edge_cases() {
     let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
 
     // UUID v4 format
@@ -195,7 +195,7 @@ fn test_uuid_edge_cases() {
 }
 
 #[test]
-fn test_email_edge_cases() {
+fn email_edge_cases() {
     let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
 
     // Email with subdomain
@@ -245,7 +245,7 @@ fn test_email_edge_cases() {
 }
 
 #[test]
-fn test_ip_edge_cases() {
+fn ip_edge_cases() {
     let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
 
     // IPv6 loopback
@@ -285,7 +285,7 @@ fn test_ip_edge_cases() {
 }
 
 #[test]
-fn test_url_edge_cases() {
+fn url_edge_cases() {
     let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
 
     // URL with port
@@ -335,7 +335,7 @@ fn test_url_edge_cases() {
 }
 
 #[test]
-fn test_timestamp_edge_cases() {
+fn timestamp_edge_cases() {
     let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
 
     // Timestamp with timezone offset
@@ -385,7 +385,7 @@ fn test_timestamp_edge_cases() {
 }
 
 #[test]
-fn test_len_edge_cases() {
+fn len_edge_cases() {
     let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
 
     // Empty array
@@ -444,7 +444,7 @@ fn test_len_edge_cases() {
 }
 
 #[test]
-fn test_header_case_insensitive() {
+fn header_case_insensitive() {
     let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({});
     let mut headers = HashMap::new();
@@ -464,7 +464,7 @@ fn test_header_case_insensitive() {
 }
 
 #[test]
-fn test_trailer_plugin_basic() {
+fn trailer_plugin_basic() {
     let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({});
     let mut trailers = HashMap::new();
@@ -487,7 +487,7 @@ fn test_trailer_plugin_basic() {
 }
 
 #[test]
-fn test_multiple_plugins_in_one_assertion() {
+fn multiple_plugins_in_one_assertion() {
     let engine = AssertionEngine::with_registry(Arc::new(PluginManager::new()));
     let response = json!({
         "id": "550e8400-e29b-41d4-a716-446655440000",

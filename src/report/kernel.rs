@@ -76,7 +76,19 @@ fn call_phases(doc: &GctfDocument, call_status: &str) -> Vec<KernelPhase> {
         "passed".to_string()
     };
 
-    let request_count = plan.summary.total_requests;
+    // Labelled `messages=`, so it counts messages: `plan.summary` counts
+    // sections, which reads as "1 message" for a 3-message stream.
+    let request_count: usize = plan
+        .requests
+        .iter()
+        .map(|r| {
+            if r.content_type == "json-lines" {
+                r.content.as_array().map_or(1, |v| v.len().max(1))
+            } else {
+                1
+            }
+        })
+        .sum();
     if request_count > 0 {
         phases.push(KernelPhase {
             kind: "request".to_string(),
@@ -92,7 +104,11 @@ fn call_phases(doc: &GctfDocument, call_status: &str) -> Vec<KernelPhase> {
             details: format!(
                 "sections={}, total_messages={}",
                 response_sections.len(),
-                plan.summary.total_responses
+                plan.expectations
+                    .iter()
+                    .filter(|e| e.expectation_type == "response")
+                    .map(|e| e.message_count.unwrap_or(1).max(1))
+                    .sum::<usize>()
             ),
             status: validation_status(),
         });
@@ -399,7 +415,7 @@ pkg.Service/MethodC
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_chain_has_three_documents() {
+    fn chain_has_three_documents() {
         let (_dir, path) = write_fixture();
         let doc = crate::parser::parse_gctf(std::path::Path::new(&path)).unwrap();
         assert_eq!(doc.document_count(), 3);
@@ -407,7 +423,7 @@ pkg.Service/MethodC
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_failure_attributed_to_actual_document_not_last() {
+    fn failure_attributed_to_actual_document_not_last() {
         let (_dir, path) = write_fixture();
         // Determine an absolute line that falls inside the SECOND document,
         // then craft an error message referencing it.
@@ -442,7 +458,7 @@ pkg.Service/MethodC
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_failure_without_line_falls_back_to_last_document() {
+    fn failure_without_line_falls_back_to_last_document() {
         let (_dir, path) = write_fixture();
         let result = TestResult::fail(path.clone(), "connection refused".to_string(), 10, None);
         let calls = build_kernel_calls(&path, &result).unwrap();
@@ -453,7 +469,7 @@ pkg.Service/MethodC
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_passing_chain_marks_all_passed() {
+    fn passing_chain_marks_all_passed() {
         let (_dir, path) = write_fixture();
         let result = TestResult::pass(path.clone(), 10, None);
         let calls = build_kernel_calls(&path, &result).unwrap();

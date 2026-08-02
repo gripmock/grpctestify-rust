@@ -12,7 +12,7 @@ mod support;
 /// never referenced via `{{var_name}}` in a later document was silently
 /// invisible outside an editor.
 #[test]
-fn test_check_flags_unused_extract_variable() {
+fn check_flags_unused_extract_variable() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("unused.gctf");
     std::fs::write(
@@ -35,7 +35,7 @@ fn test_check_flags_unused_extract_variable() {
 /// A variable that IS referenced via `{{var_name}}` in a later document must
 /// not be flagged — the check is chain-aware, not just single-document.
 #[test]
-fn test_check_does_not_flag_used_extract_variable() {
+fn check_does_not_flag_used_extract_variable() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("used.gctf");
     std::fs::write(
@@ -59,7 +59,7 @@ fn test_check_does_not_flag_used_extract_variable() {
 /// almost always a typo (`.status == "SERVING"` fat-fingered into
 /// `"SERVING" == "SERVING"`). No detection existed for this anywhere.
 #[test]
-fn test_check_flags_constant_assertion() {
+fn check_flags_constant_assertion() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("constant.gctf");
     std::fs::write(
@@ -81,7 +81,7 @@ fn test_check_flags_constant_assertion() {
 
 /// A real field comparison must never be flagged as constant.
 #[test]
-fn test_check_does_not_flag_field_comparison_as_constant() {
+fn check_does_not_flag_field_comparison_as_constant() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("real.gctf");
     std::fs::write(
@@ -102,7 +102,7 @@ fn test_check_does_not_flag_field_comparison_as_constant() {
 }
 
 #[test]
-fn test_check_flags_duplicate_assertion() {
+fn check_flags_duplicate_assertion() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("dup.gctf");
     std::fs::write(
@@ -123,7 +123,7 @@ fn test_check_flags_duplicate_assertion() {
 }
 
 #[test]
-fn test_check_does_not_flag_distinct_assertions_as_duplicate() {
+fn check_does_not_flag_distinct_assertions_as_duplicate() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("distinct.gctf");
     std::fs::write(
@@ -144,7 +144,7 @@ fn test_check_does_not_flag_distinct_assertions_as_duplicate() {
 }
 
 #[test]
-fn test_check_flags_suite_with_zero_asserts_coverage() {
+fn check_flags_suite_with_zero_asserts_coverage() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("a.gctf"),
@@ -164,7 +164,7 @@ fn test_check_flags_suite_with_zero_asserts_coverage() {
 }
 
 #[test]
-fn test_check_does_not_flag_suite_with_asserts_coverage() {
+fn check_does_not_flag_suite_with_asserts_coverage() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("a.gctf"),
@@ -187,7 +187,7 @@ fn test_check_does_not_flag_suite_with_asserts_coverage() {
 /// `check`'s structured JSON output, not just its human-readable text —
 /// and must NOT appear at the default (Safe) level.
 #[test]
-fn test_check_surfaces_advisory_optimizer_hints_in_json() {
+fn check_surfaces_advisory_optimizer_hints_in_json() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("advisory.gctf");
     std::fs::write(
@@ -229,7 +229,7 @@ fn test_check_surfaces_advisory_optimizer_hints_in_json() {
 /// warning mechanism (`GctfDocument::section_uses_deprecated_headers_alias`)
 /// already being wired into `check`/`inspect`/LSP.
 #[test]
-fn test_check_flags_deprecated_headers_section() {
+fn check_flags_deprecated_headers_section() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("headers.gctf");
     std::fs::write(
@@ -252,7 +252,7 @@ fn test_check_flags_deprecated_headers_section() {
 /// `fmt` must canonicalize `--- HEADERS ---` to `--- REQUEST_HEADERS ---`,
 /// and doing so a second time must be a no-op (idempotent).
 #[test]
-fn test_fmt_canonicalizes_deprecated_headers_section() {
+fn fmt_canonicalizes_deprecated_headers_section() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("headers.gctf");
     std::fs::write(
@@ -288,7 +288,7 @@ fn test_fmt_canonicalizes_deprecated_headers_section() {
 /// An ASSERTS `.field == literal` line whose exact value is already pinned
 /// by a `RESPONSE with_asserts` body must be flagged as redundant.
 #[test]
-fn test_check_flags_redundant_response_assertion() {
+fn check_flags_redundant_response_assertion() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("redundant.gctf");
     std::fs::write(
@@ -311,7 +311,7 @@ fn test_check_flags_redundant_response_assertion() {
 /// The same field asserted to a DIFFERENT value than RESPONSE pins must not
 /// be flagged — that's a real (if self-contradictory) check, not redundant.
 #[test]
-fn test_check_does_not_flag_non_matching_response_assertion() {
+fn check_does_not_flag_non_matching_response_assertion() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("not-redundant.gctf");
     std::fs::write(
@@ -337,7 +337,7 @@ fn test_check_does_not_flag_non_matching_response_assertion() {
 /// (`src/commands/fmt.rs::format_options_section`) but had no regression
 /// test anywhere.
 #[test]
-fn test_fmt_canonicalizes_legacy_options_keys_and_order() {
+fn fmt_canonicalizes_legacy_options_keys_and_order() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("options.gctf");
     std::fs::write(
@@ -382,7 +382,7 @@ fn test_fmt_canonicalizes_legacy_options_keys_and_order() {
 /// A duplicate key in a KV section (OPTIONS/TLS/PROTO/REQUEST_HEADERS) used
 /// to silently last-win — `check` must now hard-fail on it instead.
 #[test]
-fn test_check_fails_on_duplicate_options_key() {
+fn check_fails_on_duplicate_options_key() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("dup-options.gctf");
     std::fs::write(
@@ -405,7 +405,7 @@ fn test_check_fails_on_duplicate_options_key() {
 
 /// Same for a duplicate EXTRACT variable name.
 #[test]
-fn test_check_fails_on_duplicate_extract_variable() {
+fn check_fails_on_duplicate_extract_variable() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("dup-extract.gctf");
     std::fs::write(
@@ -431,7 +431,7 @@ fn test_check_fails_on_duplicate_extract_variable() {
 /// JSON-only "structure completeness" view (text mode stays quiet, per its
 /// existing convention of only printing when something needs attention).
 #[test]
-fn test_check_json_reports_per_document_structure() {
+fn check_json_reports_per_document_structure() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("chain.gctf");
     std::fs::write(
@@ -462,7 +462,7 @@ fn test_check_json_reports_per_document_structure() {
 /// Text-mode `check` output must stay unchanged by the new JSON-only
 /// `structure` field — it doesn't print a structure table.
 #[test]
-fn test_check_text_mode_unaffected_by_structure_field() {
+fn check_text_mode_unaffected_by_structure_field() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("a.gctf");
     std::fs::write(
@@ -477,4 +477,32 @@ fn test_check_text_mode_unaffected_by_structure_field() {
         .expect("failed to run check");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.contains("structure"), "{stdout}");
+}
+
+/// Every shipped example must pass `check`. The examples are documentation —
+/// a reader copies them — but nothing verified they stay valid: the only
+/// suite covering the whole directory is `fmt_corpus_tests`, and idempotent
+/// formatting says nothing about whether the file is still a correct `.gctf`.
+/// `check` needs no network, so this stays cheap.
+///
+/// Missing-ADDRESS warnings are expected and fine: examples deliberately leave
+/// the address to `GRPCTESTIFY_ADDRESS` or `--address`.
+#[test]
+fn every_example_passes_check() {
+    let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let output = support::cli_command()
+        .args(["check", &examples.to_string_lossy()])
+        .output()
+        .expect("failed to run check");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "examples/ must stay valid .gctf\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("PASSED"),
+        "expected a PASSED summary, got:\n{stdout}"
+    );
 }

@@ -54,24 +54,24 @@ mod tests {
     }
 
     #[test]
-    fn test_is_json_name() {
+    fn is_json_name() {
         assert_eq!(IsJsonPlugin.name(), "is_json");
     }
 
     #[test]
-    fn test_is_json_description() {
+    fn is_json_description() {
         assert!(!IsJsonPlugin.description().is_empty());
     }
 
     #[test]
-    fn test_is_json_signature() {
+    fn is_json_signature() {
         let sig = IsJsonPlugin.signature();
         assert_eq!(sig.return_type, TypeInfo::Bool);
         assert!(sig.safe_for_rewrite);
     }
 
     #[test]
-    fn test_is_json_valid_object() {
+    fn is_json_valid_object() {
         assert_eq!(
             IsJsonPlugin
                 .execute(&[json!(r#"{"key":"value"}"#)], &ctx())
@@ -81,7 +81,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_json_valid_array() {
+    fn is_json_valid_array() {
         assert_eq!(
             IsJsonPlugin.execute(&[json!("[1,2,3]")], &ctx()).unwrap(),
             PluginResult::Value(Value::Bool(true))
@@ -89,7 +89,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_json_invalid() {
+    fn is_json_invalid() {
         assert_eq!(
             IsJsonPlugin.execute(&[json!("not json")], &ctx()).unwrap(),
             PluginResult::Value(Value::Bool(false))
@@ -97,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_json_non_string() {
+    fn is_json_non_string() {
         assert_eq!(
             IsJsonPlugin.execute(&[json!(42)], &ctx()).unwrap(),
             PluginResult::Value(Value::Bool(false))
@@ -105,7 +105,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_json_no_args() {
+    fn is_json_no_args() {
         assert_eq!(
             IsJsonPlugin.execute(&[], &ctx()).unwrap(),
             PluginResult::Value(Value::Bool(false))

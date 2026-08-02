@@ -59,14 +59,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_yaml_reporter_new() {
+    fn yaml_reporter_new() {
         let reporter = YamlReporter::new(PathBuf::from("test.yaml"));
         assert_eq!(reporter.output_path.to_str(), Some("test.yaml"));
     }
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_yaml_reporter_lifecycle() {
+    fn yaml_reporter_lifecycle() {
         use crate::Reporter;
         use apif_state::TestResult;
         let dir = tempfile::tempdir().unwrap();

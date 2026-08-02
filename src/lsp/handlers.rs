@@ -1414,7 +1414,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_section_hover_all_types() {
+    fn get_section_hover_all_types() {
         assert!(get_section_hover(&SectionType::Address).is_some());
         assert!(get_section_hover(&SectionType::Endpoint).is_some());
         assert!(get_section_hover(&SectionType::Request).is_some());
@@ -1429,7 +1429,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_section_hover_content() {
+    fn get_section_hover_content() {
         let hover = get_section_hover(&SectionType::Address).unwrap();
         assert!(hover.contains("ADDRESS"));
         assert!(hover.contains("host:port"));
@@ -1482,7 +1482,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_address_from_document_with_address() {
+    fn get_address_from_document_with_address() {
         let content = r#"--- ADDRESS ---
 localhost:4770
 
@@ -1494,7 +1494,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_get_address_from_document_no_address() {
+    fn get_address_from_document_no_address() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 "#;
@@ -1520,7 +1520,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_validation_error_to_diagnostic_line_zero() {
+    fn validation_error_to_diagnostic_line_zero() {
         // A section starting at 0-based line 0 must not underflow and must land
         // on line 0 (regression for the `line - 1` underflow bug).
         let error = crate::parser::validator::ValidationError {
@@ -1579,7 +1579,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_create_bench_key_fix_action_returns_none_when_prefix_mismatch() {
+    fn create_bench_key_fix_action_returns_none_when_prefix_mismatch() {
         let uri = Url::parse("file:///test.gctf").unwrap();
         let content = "--- BENCH ---\nretry: 2\n";
         let range = Range::new(Position::new(1, 0), Position::new(1, 8));
@@ -1591,7 +1591,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_parse_deprecated_key_hint_options_form() {
+    fn parse_deprecated_key_hint_options_form() {
         let (unknown, suggested) = parse_deprecated_key_hint(
             "OPTIONS.retry-delay is deprecated; prefer OPTIONS.retry_delay",
         )
@@ -1601,7 +1601,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_parse_deprecated_key_hint_attribute_form() {
+    fn parse_deprecated_key_hint_attribute_form() {
         let (unknown, suggested) =
             parse_deprecated_key_hint("Attribute #[no-retry] is deprecated; prefer #[no_retry]")
                 .unwrap();
@@ -1610,7 +1610,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_create_bench_key_fix_action_on_attribute_syntax() {
+    fn create_bench_key_fix_action_on_attribute_syntax() {
         let uri = Url::parse("file:///test.gctf").unwrap();
         let content = "#[retry-delay(0.2)]\n--- ENDPOINT ---\n";
         let range = Range::new(Position::new(0, 0), Position::new(0, 20));
@@ -1628,7 +1628,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_optimizer_diagnostics_safe_level_rename() {
+    fn collect_optimizer_diagnostics_safe_level_rename() {
         // Safe level: deprecated plugin rename still fires
         let content = r#"--- ENDPOINT ---
 test.Service/Method
@@ -1647,7 +1647,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_snapshot_optimizer_diagnostic_hint() {
+    fn snapshot_optimizer_diagnostic_hint() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1739,7 +1739,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_snapshot_optimizer_quickfix_action() {
+    fn snapshot_optimizer_quickfix_action() {
         let uri = Url::parse("file:///test.gctf").unwrap();
         let range = Range::new(Position::new(4, 0), Position::new(4, 24));
         let action = create_optimizer_rewrite_action(
@@ -1773,7 +1773,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_snapshot_apply_all_optimizer_action() {
+    fn snapshot_apply_all_optimizer_action() {
         let uri = Url::parse("file:///test.gctf").unwrap();
         let edits = vec![
             TextEdit::new(
@@ -1818,7 +1818,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_optimizer_diagnostics_non_boolean_plugin() {
+    fn collect_optimizer_diagnostics_non_boolean_plugin() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1832,7 +1832,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_optimizer_diagnostics_double_negation_rule() {
+    fn collect_optimizer_diagnostics_double_negation_rule() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1851,7 +1851,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_all_diagnostics_includes_optimizer_pass() {
+    fn collect_all_diagnostics_includes_optimizer_pass() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1869,13 +1869,13 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_all_diagnostics_flags_missing_sections() {
+    fn collect_all_diagnostics_flags_missing_sections() {
         let diagnostics = collect_all_diagnostics("", "test.gctf");
         assert!(!diagnostics.is_empty());
     }
 
     #[test]
-    fn test_collect_optimizer_diagnostics_canonical_operator_rule() {
+    fn collect_optimizer_diagnostics_canonical_operator_rule() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1889,7 +1889,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_optimizer_diagnostics_deprecated_plugin_rename() {
+    fn collect_optimizer_diagnostics_deprecated_plugin_rename() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1907,7 +1907,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_optimizer_diagnostics_empty_to_is_empty() {
+    fn collect_optimizer_diagnostics_empty_to_is_empty() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1922,7 +1922,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_semantic_diagnostics_unknown_plugin() {
+    fn collect_semantic_diagnostics_unknown_plugin() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1951,7 +1951,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_get_section_key_completions_proto() {
+    fn get_section_key_completions_proto() {
         let completions = get_section_key_completions(&SectionType::Proto);
         assert!(!completions.is_empty());
 
@@ -1961,7 +1961,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_get_section_key_completions_tls() {
+    fn get_section_key_completions_tls() {
         let completions = get_section_key_completions(&SectionType::Tls);
         assert!(!completions.is_empty());
 
@@ -1971,7 +1971,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_get_section_key_completions_options() {
+    fn get_section_key_completions_options() {
         let completions = get_section_key_completions(&SectionType::Options);
         assert!(!completions.is_empty());
 
@@ -1981,7 +1981,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_get_section_key_completions_bench() {
+    fn get_section_key_completions_bench() {
         let completions = get_section_key_completions(&SectionType::Bench);
         assert!(!completions.is_empty());
 
@@ -1999,13 +1999,13 @@ test.Service/Method
     }
 
     #[test]
-    fn test_get_section_key_completions_others() {
+    fn get_section_key_completions_others() {
         assert!(get_section_key_completions(&SectionType::Address).is_empty());
         assert!(get_section_key_completions(&SectionType::Response).is_empty());
     }
 
     #[test]
-    fn test_get_section_header_option_completions_response() {
+    fn get_section_header_option_completions_response() {
         let completions = get_section_header_option_completions(&SectionType::Response);
         assert!(!completions.is_empty());
 
@@ -2015,13 +2015,13 @@ test.Service/Method
     }
 
     #[test]
-    fn test_get_section_header_option_completions_others() {
+    fn get_section_header_option_completions_others() {
         assert!(get_section_header_option_completions(&SectionType::Address).is_empty());
         assert!(get_section_header_option_completions(&SectionType::Request).is_empty());
     }
 
     #[test]
-    fn test_get_var_hover_multibyte_line_no_panic() {
+    fn get_var_hover_multibyte_line_no_panic() {
         // A REQUEST line with non-ASCII text before `{{ name }}`. Slicing with
         // the UTF-16 cursor offset as a byte offset used to panic here.
         let content = "--- ENDPOINT ---\nsvc.M\n\n--- EXTRACT ---\nname = .n\n\n--- REQUEST ---\n{\"msg\": \"Привет {{ name }}\"}\n";
@@ -2032,7 +2032,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_section_index_at_line_half_open() {
+    fn section_index_at_line_half_open() {
         // Leading comment + blank push the first header off line 0.
         let content = "# note\n\n--- ENDPOINT ---\nsvc.M\n\n--- ASSERTS ---\n.id == 1\n";
         let doc = parser::parse_gctf_from_str(content, "t.gctf").unwrap();
@@ -2060,7 +2060,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_find_document_index_at_line_multidoc_boundaries() {
+    fn find_document_index_at_line_multidoc_boundaries() {
         let content = "--- ENDPOINT ---\nsvc.A\n\n--- ASSERTS ---\n.a == 1\n\n\
 --- ENDPOINT ---\nsvc.B\n\n--- ASSERTS ---\n.b == 2\n";
         let doc = parser::parse_gctf_from_str(content, "t.gctf").unwrap();

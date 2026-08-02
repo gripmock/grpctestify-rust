@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn test_header_plugin_exists() {
+    fn header_plugin_exists() {
         let plugin = HeaderExtractPlugin;
         let context = create_context_with_headers();
 
@@ -184,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn test_header_plugin_case_insensitive() {
+    fn header_plugin_case_insensitive() {
         let plugin = HeaderExtractPlugin;
         let context = create_context_with_headers();
 
@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn test_header_plugin_not_found() {
+    fn header_plugin_not_found() {
         let plugin = HeaderExtractPlugin;
         let context = create_context_with_headers();
 
@@ -218,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn test_header_plugin_no_headers() {
+    fn header_plugin_no_headers() {
         let plugin = HeaderExtractPlugin;
         let context = create_context_no_headers();
 
@@ -230,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn test_header_plugin_no_args() {
+    fn header_plugin_no_args() {
         let plugin = HeaderExtractPlugin;
         let context = create_context_with_headers();
 
@@ -243,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn test_header_plugin_too_many_args() {
+    fn header_plugin_too_many_args() {
         let plugin = HeaderExtractPlugin;
         let context = create_context_with_headers();
 
@@ -264,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn test_header_plugin_wrong_type() {
+    fn header_plugin_wrong_type() {
         let plugin = HeaderExtractPlugin;
         let context = create_context_with_headers();
 
@@ -279,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn test_header_plugin_x_request_id() {
+    fn header_plugin_x_request_id() {
         let plugin = HeaderExtractPlugin;
         let context = create_context_with_headers();
 
@@ -291,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn test_header_plugin_content_type() {
+    fn header_plugin_content_type() {
         let plugin = HeaderExtractPlugin;
         let context = create_context_with_headers();
 
@@ -303,19 +303,19 @@ mod tests {
     }
 
     #[test]
-    fn test_header_plugin_name() {
+    fn header_plugin_name() {
         let plugin = HeaderExtractPlugin;
         assert_eq!(plugin.name(), "header");
     }
 
     #[test]
-    fn test_header_plugin_description() {
+    fn header_plugin_description() {
         let plugin = HeaderExtractPlugin;
         assert!(plugin.description().contains("header"));
     }
 
     #[test]
-    fn test_has_header_plugin_exists() {
+    fn has_header_plugin_exists() {
         let plugin = HasHeaderPlugin;
         let context = create_context_with_headers();
 
@@ -327,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_header_plugin_not_found() {
+    fn has_header_plugin_not_found() {
         let plugin = HasHeaderPlugin;
         let context = create_context_with_headers();
 
@@ -339,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_header_plugin_no_headers() {
+    fn has_header_plugin_no_headers() {
         let plugin = HasHeaderPlugin;
         let context = create_context_no_headers();
 
@@ -351,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_header_plugin_case_insensitive() {
+    fn has_header_plugin_case_insensitive() {
         let plugin = HasHeaderPlugin;
         let context = create_context_with_headers();
 
@@ -368,19 +368,19 @@ mod tests {
     }
 
     #[test]
-    fn test_has_header_plugin_name() {
+    fn has_header_plugin_name() {
         let plugin = HasHeaderPlugin;
         assert_eq!(plugin.name(), "has_header");
     }
 
     #[test]
-    fn test_has_header_plugin_description() {
+    fn has_header_plugin_description() {
         let plugin = HasHeaderPlugin;
         assert!(plugin.description().contains("header"));
     }
 
     #[test]
-    fn test_has_header_plugin_too_many_args() {
+    fn has_header_plugin_too_many_args() {
         let plugin = HasHeaderPlugin;
         let context = create_context_with_headers();
 
@@ -401,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn test_has_header_plugin_wrong_type() {
+    fn has_header_plugin_wrong_type() {
         let plugin = HasHeaderPlugin;
         let context = create_context_with_headers();
 

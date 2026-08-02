@@ -139,7 +139,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_variable_child_range_is_utf16() {
+    fn variable_child_range_is_utf16() {
         // Cyrillic inside `{{ }}`: each char is 2 UTF-8 bytes but 1 UTF-16 unit.
         let content = "--- ENDPOINT ---\nsvc.M\n\n--- ASSERTS ---\n{{ имя }} == 1\n";
         let doc = parser::parse_gctf_from_str(content, "t.gctf").unwrap();
@@ -159,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_symbol_range_is_utf16() {
+    fn extract_symbol_range_is_utf16() {
         // Non-ASCII in the extract expression must not push the range end past
         // the real UTF-16 width of the line.
         let content = "--- EXTRACT ---\nname = .поле\n";

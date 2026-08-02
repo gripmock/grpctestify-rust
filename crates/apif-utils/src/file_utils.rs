@@ -103,27 +103,23 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
-    fn test_collect_test_files_empty_dir() {
-        let dir = std::env::temp_dir().join("gctf_test_empty");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let files = FileUtils::collect_test_files(&dir, &[]);
+    fn collect_test_files_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let files = FileUtils::collect_test_files(dir, &[]);
         assert!(files.is_empty());
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
-    fn test_collect_test_files_with_gctf() {
-        let dir = std::env::temp_dir().join("gctf_test_files");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+    fn collect_test_files_with_gctf() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
         fs::write(dir.join("test.gctf"), "content").unwrap();
         fs::write(dir.join("other.txt"), "content").unwrap();
-        let files = FileUtils::collect_test_files(&dir, &[]);
+        let files = FileUtils::collect_test_files(dir, &[]);
         assert_eq!(files.len(), 1);
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -137,13 +133,11 @@ mod tests {
     #[test]
     #[cfg(not(miri))]
     fn test_get_file_size() {
-        let dir = std::env::temp_dir().join("gctf_test_size");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
         let file = dir.join("test.gctf");
         fs::write(&file, "hello").unwrap();
         assert_eq!(FileUtils::get_file_size(&file).unwrap(), 5);
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -159,7 +153,7 @@ mod tests {
     // Bug 7: `smoke*` (not `**/smoke*`) must exclude matching files anywhere,
     // matching against each path component / basename, not just the full path.
     #[test]
-    fn test_is_excluded_matches_basename_glob() {
+    fn is_excluded_matches_basename_glob() {
         assert!(is_excluded(
             Path::new("tests/smoke_login.gctf"),
             &["smoke*".into()]
@@ -182,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sort_files_by_name() {
+    fn sort_files_by_name() {
         let mut files = vec![
             PathBuf::from("b.gctf"),
             PathBuf::from("a.gctf"),
@@ -195,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sort_files_path_is_deterministic_not_a_no_op() {
+    fn sort_files_path_is_deterministic_not_a_no_op() {
         // Regression: the "path" arm (the CLI's default `--sort` value) used
         // to fall through to a no-op `_ => {}`, silently trusting whatever
         // order `collect_test_files`'s `ignore::Walk` happened to yield —
@@ -207,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sort_files_unsupported_falls_back_to_path_sort() {
+    fn sort_files_unsupported_falls_back_to_path_sort() {
         let mut files = vec![PathBuf::from("b.gctf"), PathBuf::from("a.gctf")];
         FileUtils::sort_files(&mut files, "unsupported");
         assert_eq!(files[0].file_name().unwrap(), "a.gctf");
@@ -215,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_mtime_nonexistent() {
+    fn get_mtime_nonexistent() {
         let result = FileUtils::get_mtime(Path::new("/nonexistent/path.gctf"));
         assert!(result.is_err());
     }

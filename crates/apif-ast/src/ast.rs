@@ -467,12 +467,6 @@ impl SectionType {
         )
     }
 
-    /// Check if section is file-level (not inside documents)
-    #[must_use]
-    pub fn is_file_level(&self) -> bool {
-        matches!(self, SectionType::Meta | SectionType::Bench)
-    }
-
     pub fn supports_inline_options(&self) -> bool {
         matches!(self, SectionType::Response | SectionType::Error)
     }
@@ -666,6 +660,14 @@ impl GctfDocument {
             .find(|s| s.section_type == section_type)
     }
 
+    /// The BENCH section's key-values, if the document has a BENCH section.
+    pub fn bench_key_values(&self) -> Option<&OrderedStringMap> {
+        match &self.first_section(SectionType::Bench)?.content {
+            SectionContent::KeyValues(kv) => Some(kv),
+            _ => None,
+        }
+    }
+
     /// Get address (from ADDRESS section or environment variable)
     pub fn get_address(&self, env_address: Option<&str>) -> Option<String> {
         if let Some(section) = self.first_section(SectionType::Address)
@@ -824,14 +826,14 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_line_start_byte_offsets_lf() {
+    fn line_start_byte_offsets_lf() {
         let source = "abc\nde\nfghi";
         // line 0: "abc" (0..3), line 1: "de" (4..6), line 2: "fghi" (7..11)
         assert_eq!(line_start_byte_offsets(source), vec![0, 4, 7]);
     }
 
     #[test]
-    fn test_line_start_byte_offsets_crlf() {
+    fn line_start_byte_offsets_crlf() {
         // `\r` stays part of the preceding line's byte range — only `\n`
         // advances to the next line's start.
         let source = "ab\r\ncd";
@@ -839,12 +841,12 @@ mod tests {
     }
 
     #[test]
-    fn test_line_start_byte_offsets_empty() {
+    fn line_start_byte_offsets_empty() {
         assert_eq!(line_start_byte_offsets(""), vec![0]);
     }
 
     #[test]
-    fn test_section_span_from_line_range() {
+    fn section_span_from_line_range() {
         let source = "abc\ndefg\nh\n";
         let offsets = line_start_byte_offsets(source);
         // Section spanning lines [1, 2) — just "defg".
@@ -857,7 +859,7 @@ mod tests {
     }
 
     #[test]
-    fn test_section_span_from_line_range_past_eof_falls_back_to_source_len() {
+    fn section_span_from_line_range_past_eof_falls_back_to_source_len() {
         let source = "only one line, no trailing newline";
         let offsets = line_start_byte_offsets(source);
         let span = SectionSpan::from_line_range(&offsets, 0, 1, source.len());
@@ -866,7 +868,7 @@ mod tests {
     }
 
     #[test]
-    fn test_section_type_from_str() {
+    fn section_type_from_str() {
         assert_eq!(
             SectionType::from_keyword("ADDRESS"),
             Some(SectionType::Address)
@@ -879,7 +881,7 @@ mod tests {
     }
 
     #[test]
-    fn test_section_type_multiple_allowed() {
+    fn section_type_multiple_allowed() {
         assert!(SectionType::Request.is_multiple_allowed());
         assert!(SectionType::Response.is_multiple_allowed());
         assert!(SectionType::Asserts.is_multiple_allowed());
@@ -888,7 +890,7 @@ mod tests {
     }
 
     #[test]
-    fn test_section_type_supports_inline_options() {
+    fn section_type_supports_inline_options() {
         assert!(SectionType::Response.supports_inline_options());
         assert!(SectionType::Error.supports_inline_options());
         assert!(!SectionType::Request.supports_inline_options());
@@ -896,7 +898,7 @@ mod tests {
     }
 
     #[test]
-    fn test_section_type_as_str() {
+    fn section_type_as_str() {
         assert_eq!(SectionType::Address.as_str(), "ADDRESS");
         assert_eq!(SectionType::Endpoint.as_str(), "ENDPOINT");
         assert_eq!(SectionType::Request.as_str(), "REQUEST");
@@ -914,7 +916,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dataset_round_trips_through_keyword_and_preamble_rank() {
+    fn dataset_round_trips_through_keyword_and_preamble_rank() {
         assert_eq!(
             SectionType::from_keyword("DATASET"),
             Some(SectionType::Dataset)
@@ -930,7 +932,7 @@ mod tests {
     }
 
     #[test]
-    fn test_section_type_from_keyword_aliases() {
+    fn section_type_from_keyword_aliases() {
         assert_eq!(
             SectionType::from_keyword("HEADERS"),
             Some(SectionType::RequestHeaders)
@@ -943,7 +945,7 @@ mod tests {
     }
 
     #[test]
-    fn test_section_type_from_keyword_case_insensitive() {
+    fn section_type_from_keyword_case_insensitive() {
         // Should be case sensitive based on implementation
         assert_eq!(SectionType::from_keyword("address"), None);
         assert_eq!(
@@ -953,7 +955,7 @@ mod tests {
     }
 
     #[test]
-    fn test_section_type_is_terminal() {
+    fn section_type_is_terminal() {
         assert!(SectionType::Response.is_terminal());
         assert!(SectionType::Error.is_terminal());
         assert!(SectionType::Asserts.is_terminal());
@@ -964,7 +966,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_new() {
+    fn gctf_document_new() {
         let doc = GctfDocument::new("test.gctf".to_string());
         assert_eq!(doc.file_path, "test.gctf");
         assert!(doc.sections.is_empty());
@@ -973,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_sections_by_type() {
+    fn gctf_document_sections_by_type() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -1017,7 +1019,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_first_section() {
+    fn gctf_document_first_section() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -1038,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_get_address() {
+    fn gctf_document_get_address() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Address,
@@ -1066,7 +1068,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_get_endpoint() {
+    fn gctf_document_get_endpoint() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Endpoint,
@@ -1086,7 +1088,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_parse_endpoint() {
+    fn gctf_document_parse_endpoint() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Endpoint,
@@ -1106,7 +1108,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_parse_endpoint_no_package() {
+    fn gctf_document_parse_endpoint_no_package() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Endpoint,
@@ -1126,7 +1128,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_parse_endpoint_invalid() {
+    fn gctf_document_parse_endpoint_invalid() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Endpoint,
@@ -1143,7 +1145,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_get_requests() {
+    fn gctf_document_get_requests() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Request,
@@ -1173,7 +1175,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_get_assertions() {
+    fn gctf_document_get_assertions() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         doc.sections.push(Section {
             section_type: SectionType::Asserts,
@@ -1203,7 +1205,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_get_request_headers() {
+    fn gctf_document_get_request_headers() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         let mut headers = OrderedStringMap::new();
         headers.insert("Authorization".to_string(), "Bearer token".to_string());
@@ -1226,7 +1228,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_get_tls_config() {
+    fn gctf_document_get_tls_config() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         let mut config = OrderedStringMap::new();
         config.insert("ca_cert".to_string(), "/path/to/ca.pem".to_string());
@@ -1246,7 +1248,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_get_options() {
+    fn gctf_document_get_options() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         let mut options = OrderedStringMap::new();
         options.insert("dry_run".to_string(), "true".to_string());
@@ -1268,7 +1270,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_get_tls_config_with_defaults_env_only() {
+    fn gctf_document_get_tls_config_with_defaults_env_only() {
         let doc = GctfDocument::new("test.gctf".to_string());
         let mut defaults = OrderedStringMap::new();
         defaults.insert("server_name".to_string(), "example.com".to_string());
@@ -1278,7 +1280,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_get_tls_config_with_defaults_section_overrides() {
+    fn gctf_document_get_tls_config_with_defaults_section_overrides() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         let mut config = OrderedStringMap::new();
         config.insert("insecure".to_string(), "true".to_string());
@@ -1303,7 +1305,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_get_proto_config() {
+    fn gctf_document_get_proto_config() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         let mut config = OrderedStringMap::new();
         config.insert("files".to_string(), "service.proto".to_string());
@@ -1323,7 +1325,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_has_response_error_conflict() {
+    fn gctf_document_has_response_error_conflict() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         assert!(!doc.has_response_error_conflict());
 
@@ -1353,7 +1355,7 @@ mod tests {
     }
 
     #[test]
-    fn test_inline_options_default() {
+    fn inline_options_default() {
         let options = InlineOptions::default();
         assert!(!options.with_asserts);
         assert!(!options.partial);
@@ -1363,7 +1365,7 @@ mod tests {
     }
 
     #[test]
-    fn test_section_format_header_with_inline_options() {
+    fn section_format_header_with_inline_options() {
         let section = Section {
             section_type: SectionType::Response,
             content: SectionContent::Json(serde_json::json!({"ok": true})),
@@ -1390,7 +1392,7 @@ mod tests {
     }
 
     #[test]
-    fn test_inline_options_extra_round_trips_and_counts_toward_is_empty() {
+    fn inline_options_extra_round_trips_and_counts_toward_is_empty() {
         let mut options = InlineOptions::default();
         assert!(options.is_empty());
 
@@ -1402,14 +1404,14 @@ mod tests {
     }
 
     #[test]
-    fn test_section_content_debug() {
+    fn section_content_debug() {
         let content = SectionContent::Single("test".to_string());
         let debug_str = format!("{:?}", content);
         assert!(debug_str.contains("Single"));
     }
 
     #[test]
-    fn test_section_header_keyword_from_source() {
+    fn section_header_keyword_from_source() {
         let section = Section {
             section_type: SectionType::Response,
             content: SectionContent::Json(serde_json::json!({"ok": true})),
@@ -1426,7 +1428,7 @@ mod tests {
     }
 
     #[test]
-    fn test_document_detects_deprecated_headers_alias() {
+    fn document_detects_deprecated_headers_alias() {
         let mut doc = GctfDocument::new("test.gctf".to_string());
         doc.metadata.source = Some("--- HEADERS ---\nAuthorization: Bearer t\n".to_string());
         doc.sections.push(Section {
@@ -1447,21 +1449,21 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_document_debug() {
+    fn gctf_document_debug() {
         let doc = GctfDocument::new("test.gctf".to_string());
         let debug_str = format!("{:?}", doc);
         assert!(debug_str.contains("test.gctf"));
     }
 
     #[test]
-    fn test_document_chain_single() {
+    fn document_chain_single() {
         let doc = GctfDocument::new("test.gctf".to_string());
         assert!(doc.is_single_document());
         assert_eq!(doc.document_count(), 1);
     }
 
     #[test]
-    fn test_document_chain_two_docs() {
+    fn document_chain_two_docs() {
         let mut doc1 = GctfDocument::new("test.gctf".to_string());
         let doc2 = GctfDocument::new("test.gctf".to_string());
         doc1.next_document = Some(Box::new(doc2));
@@ -1471,7 +1473,7 @@ mod tests {
     }
 
     #[test]
-    fn test_document_chain_three_docs() {
+    fn document_chain_three_docs() {
         let mut doc3 = GctfDocument::new("test.gctf".to_string());
         doc3.file_path = "doc3".to_string();
 
@@ -1493,7 +1495,7 @@ mod tests {
     }
 
     #[test]
-    fn test_document_chain_get_document() {
+    fn document_chain_get_document() {
         let mut doc2 = GctfDocument::new("test.gctf".to_string());
         doc2.file_path = "doc2".to_string();
 
@@ -1507,7 +1509,7 @@ mod tests {
     }
 
     #[test]
-    fn test_document_chain_iter_on_last() {
+    fn document_chain_iter_on_last() {
         let doc = GctfDocument::new("test.gctf".to_string());
         let docs: Vec<_> = doc.iter_chain().collect();
         assert_eq!(docs.len(), 1);
@@ -1515,7 +1517,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_attribute_parse_u64() {
+    fn gctf_attribute_parse_u64() {
         assert_eq!(GctfAttribute::new("timeout", "30").parse_u64(), Some(30));
         assert_eq!(
             GctfAttribute::new("timeout", "  30  ").parse_u64(),
@@ -1527,7 +1529,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_attribute_parse_u32() {
+    fn gctf_attribute_parse_u32() {
         assert_eq!(GctfAttribute::new("retry", "3").parse_u32(), Some(3));
         assert_eq!(GctfAttribute::new("retry", "  5  ").parse_u32(), Some(5));
         assert_eq!(GctfAttribute::new("retry", "0").parse_u32(), Some(0));
@@ -1535,7 +1537,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_attribute_parse_f64() {
+    fn gctf_attribute_parse_f64() {
         assert_eq!(
             GctfAttribute::new("tolerance", "0.1").parse_f64(),
             Some(0.1)
@@ -1548,7 +1550,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_attribute_parse_bool() {
+    fn gctf_attribute_parse_bool() {
         let cases_true = vec!["true", "1", "yes", "on", "True", "TRUE", "YES"];
         for v in cases_true {
             assert_eq!(
@@ -1571,7 +1573,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_attribute_as_str() {
+    fn gctf_attribute_as_str() {
         assert_eq!(GctfAttribute::new("name", "hello").as_str(), "hello");
         assert_eq!(GctfAttribute::flag("skip").as_str(), "true");
     }
@@ -1586,7 +1588,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gctf_attribute_format_directive_canonicalizes_deprecated_names() {
+    fn gctf_attribute_format_directive_canonicalizes_deprecated_names() {
         assert_eq!(
             GctfAttribute::new("retry-delay", "0.5").format_directive(),
             "#[retry_delay(0.5)]"
@@ -1603,7 +1605,7 @@ mod tests {
     }
 
     #[test]
-    fn test_section_get_attribute() {
+    fn section_get_attribute() {
         let section = Section {
             section_type: SectionType::Request,
             content: SectionContent::Empty,
@@ -1627,7 +1629,7 @@ mod tests {
     }
 
     #[test]
-    fn test_section_get_timeout() {
+    fn section_get_timeout() {
         let section = Section {
             section_type: SectionType::Request,
             content: SectionContent::Empty,
@@ -1642,7 +1644,7 @@ mod tests {
     }
 
     #[test]
-    fn test_section_get_timeout_zero() {
+    fn section_get_timeout_zero() {
         let section = Section {
             section_type: SectionType::Request,
             content: SectionContent::Empty,
@@ -1657,13 +1659,13 @@ mod tests {
     }
 
     #[test]
-    fn test_section_get_timeout_missing() {
+    fn section_get_timeout_missing() {
         let section = Section::default();
         assert_eq!(section.get_timeout(), None);
     }
 
     #[test]
-    fn test_section_get_retry() {
+    fn section_get_retry() {
         let section = Section {
             section_type: SectionType::Request,
             content: SectionContent::Empty,
@@ -1678,13 +1680,13 @@ mod tests {
     }
 
     #[test]
-    fn test_section_get_retry_missing() {
+    fn section_get_retry_missing() {
         let section = Section::default();
         assert_eq!(section.get_retry(), None);
     }
 
     #[test]
-    fn test_section_get_skip() {
+    fn section_get_skip() {
         let section = Section {
             section_type: SectionType::Request,
             content: SectionContent::Empty,
@@ -1699,7 +1701,7 @@ mod tests {
     }
 
     #[test]
-    fn test_section_get_skip_explicit() {
+    fn section_get_skip_explicit() {
         let section = Section {
             section_type: SectionType::Request,
             content: SectionContent::Empty,
@@ -1714,13 +1716,13 @@ mod tests {
     }
 
     #[test]
-    fn test_section_get_skip_false() {
+    fn section_get_skip_false() {
         let section = Section::default();
         assert!(!section.get_skip());
     }
 
     #[test]
-    fn test_section_has_tag() {
+    fn section_has_tag() {
         let section = Section {
             section_type: SectionType::Request,
             content: SectionContent::Empty,
@@ -1737,7 +1739,7 @@ mod tests {
     }
 
     #[test]
-    fn test_section_has_tag_single() {
+    fn section_has_tag_single() {
         let section = Section {
             section_type: SectionType::Request,
             content: SectionContent::Empty,
@@ -1753,7 +1755,7 @@ mod tests {
     }
 
     #[test]
-    fn test_section_has_tag_missing() {
+    fn section_has_tag_missing() {
         let section = Section::default();
         assert!(!section.has_tag("smoke"));
     }

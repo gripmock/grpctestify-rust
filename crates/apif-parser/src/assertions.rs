@@ -82,13 +82,13 @@ mod tests {
     use super::strip_assertion_comments;
 
     #[test]
-    fn test_strips_full_line_double_slash_comments() {
+    fn strips_full_line_double_slash_comments() {
         assert_eq!(strip_assertion_comments("// comment"), None);
         assert_eq!(strip_assertion_comments("   // comment"), None);
     }
 
     #[test]
-    fn test_strips_inline_comments() {
+    fn strips_inline_comments() {
         assert_eq!(
             strip_assertion_comments("@elapsed_ms() >= 10 // startup delay"),
             Some("@elapsed_ms() >= 10".to_string())
@@ -100,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn test_preserves_jq_alternative_operator() {
+    fn preserves_jq_alternative_operator() {
         // Regression: ` // ` followed by a jq operand is jq's alternative
         // operator, not a comment.
         assert_eq!(
@@ -114,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn test_preserves_double_slash_between_operands() {
+    fn preserves_double_slash_between_operands() {
         // Regression: `1//2` used to lose a slash and become `1/2`.
         assert_eq!(
             strip_assertion_comments(".a == 1//2"),
@@ -123,7 +123,7 @@ mod tests {
     }
 
     #[test]
-    fn test_keeps_double_slash_inside_string() {
+    fn keeps_double_slash_inside_string() {
         assert_eq!(
             strip_assertion_comments("@regex(.url, \"^https://example.com\")"),
             Some("@regex(.url, \"^https://example.com\")".to_string())

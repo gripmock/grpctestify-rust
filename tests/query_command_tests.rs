@@ -11,7 +11,7 @@ fn test_data_path(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn test_query_direct_file() {
+fn query_direct_file() {
     let csv_path = test_data_path("test.csv");
 
     let args = QueryArgs {
@@ -29,11 +29,11 @@ fn test_query_direct_file() {
     };
 
     let result = handle_query(&args);
-    assert!(result.is_ok());
+    result.expect("handle_query must succeed");
 }
 
 #[test]
-fn test_query_with_limit() {
+fn query_with_limit() {
     let csv_path = test_data_path("test.csv");
 
     let args = QueryArgs {
@@ -51,11 +51,11 @@ fn test_query_with_limit() {
     };
 
     let result = handle_query(&args);
-    assert!(result.is_ok());
+    result.expect("handle_query must succeed");
 }
 
 #[test]
-fn test_query_output_to_file() {
+fn query_output_to_file() {
     let csv_path = test_data_path("test.csv");
     let temp_dir = tempfile::TempDir::new().unwrap();
     let output_path = temp_dir.path().join("output.ndjson");
@@ -75,7 +75,7 @@ fn test_query_output_to_file() {
     };
 
     let result = handle_query(&args);
-    assert!(result.is_ok());
+    result.expect("handle_query must succeed");
 
     let content = std::fs::read_to_string(&output_path).unwrap();
     assert!(content.contains("alice"));
@@ -83,7 +83,7 @@ fn test_query_output_to_file() {
 }
 
 #[test]
-fn test_query_ndjson_file() {
+fn query_ndjson_file() {
     let ndjson_path = test_data_path("test.ndjson");
 
     let args = QueryArgs {
@@ -101,5 +101,5 @@ fn test_query_ndjson_file() {
     };
 
     let result = handle_query(&args);
-    assert!(result.is_ok());
+    result.expect("handle_query must succeed");
 }

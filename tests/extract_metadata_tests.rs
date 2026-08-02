@@ -4,7 +4,7 @@
 use grpctestify::parser::parse_gctf_from_str;
 
 #[test]
-fn test_extract_with_header_plugin_syntax() {
+fn extract_with_header_plugin_syntax() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -36,7 +36,7 @@ content_type = @header("content-type")
 }
 
 #[test]
-fn test_extract_with_trailer_plugin_syntax() {
+fn extract_with_trailer_plugin_syntax() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -68,7 +68,7 @@ checksum = @trailer("x-checksum")
 }
 
 #[test]
-fn test_extract_with_header_and_trailer_syntax() {
+fn extract_with_header_and_trailer_syntax() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---

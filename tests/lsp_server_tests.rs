@@ -6,7 +6,7 @@
 use grpctestify::lsp;
 
 #[test]
-fn test_build_semantic_tokens_section_headers() {
+fn build_semantic_tokens_section_headers() {
     let content = "--- ENDPOINT ---\ntest.Service/Method\n";
     let tokens = lsp::build_semantic_tokens(content);
 
@@ -20,7 +20,7 @@ fn test_build_semantic_tokens_section_headers() {
 }
 
 #[test]
-fn test_build_semantic_tokens_error_with_inline_options() {
+fn build_semantic_tokens_error_with_inline_options() {
     let content = r#"--- ENDPOINT ---
 test.Service/Method
 

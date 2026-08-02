@@ -193,21 +193,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_ternary_basic() {
+    fn ternary_basic() {
         let input = ".status == 200 ? \"OK\" : \"Error\"";
         let expected = "if .status == 200 then \"OK\" else \"Error\" end";
         assert_eq!(ternary_to_jq(input), expected);
     }
 
     #[test]
-    fn test_ternary_with_jq() {
+    fn ternary_with_jq() {
         let input = ".items | length > 0 ? .items[0] : null";
         let expected = "if .items | length > 0 then .items[0] else null end";
         assert_eq!(ternary_to_jq(input), expected);
     }
 
     #[test]
-    fn test_ternary_nested() {
+    fn ternary_nested() {
         // Nested ternary - all levels are recursively converted
         let input = ".a > 0 ? (.a > 10 ? \"big\" : \"medium\") : \"small\"";
         let expected =
@@ -216,20 +216,20 @@ mod tests {
     }
 
     #[test]
-    fn test_not_ternary() {
+    fn not_ternary() {
         let input = ".data | .value";
         assert_eq!(ternary_to_jq(input), input);
     }
 
     #[test]
-    fn test_ternary_in_quotes() {
+    fn ternary_in_quotes() {
         let input = ".text == \"a ? b : c\" ? \"match\" : \"no match\"";
         let expected = "if .text == \"a ? b : c\" then \"match\" else \"no match\" end";
         assert_eq!(ternary_to_jq(input), expected);
     }
 
     #[test]
-    fn test_process_extract_value_ternary() {
+    fn process_extract_value_ternary() {
         let input = ".status == 200 ? \"OK\" : \"Error\"";
         let result = process_extract_value(input);
         assert!(result.starts_with("if"));
@@ -237,21 +237,21 @@ mod tests {
     }
 
     #[test]
-    fn test_process_extract_value_jq() {
+    fn process_extract_value_jq() {
         let input = "if .status == 200 then \"OK\" else \"Error\" end";
         let result = process_extract_value(input);
         assert_eq!(result, input);
     }
 
     #[test]
-    fn test_process_extract_value_simple() {
+    fn process_extract_value_simple() {
         let input = ".value";
         let result = process_extract_value(input);
         assert_eq!(result, input);
     }
 
     #[test]
-    fn test_ternary_nested_deep() {
+    fn ternary_nested_deep() {
         // Deep nested: 3 levels
         let input =
             ".a > 0 ? (.a > 10 ? (.a > 20 ? \"very big\" : \"big\") : \"medium\") : \"small\"";
@@ -263,7 +263,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ternary_multiple_sequential() {
+    fn ternary_multiple_sequential() {
         // Multiple ternaries at same level (not nested)
         let input = ".a > 0 ? .b > 0 ? \"both positive\" : \"a only\" : \"none\"";
         let result = ternary_to_jq(input);
@@ -274,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ternary_jq_validation() {
+    fn ternary_jq_validation() {
         // Verify generated jq is valid by checking structure
         let input = ".a > 0 ? (.a > 10 ? \"big\" : \"medium\") : \"small\"";
         let result = ternary_to_jq(input);
@@ -287,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ternary_paren_inside_string_literal() {
+    fn ternary_paren_inside_string_literal() {
         // Regression: a '(' inside a string literal must not corrupt paren
         // depth and hide the real top-level '?'.
         let input = ".name == \"a(b\" ? \"y\" : \"z\"";
@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ternary_escaped_quote_in_string() {
+    fn ternary_escaped_quote_in_string() {
         // Regression: `\"` inside a string literal must be treated as escaped,
         // so a '?' after it is still inside the string, not top-level.
         let input = ".name == \"a\\\"?b\" ? \"y\" : \"z\"";
@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_ternary_deep_nesting_no_stack_overflow() {
+    fn ternary_deep_nesting_no_stack_overflow() {
         // Regression: pathologically deep paren nesting must not overflow the
         // stack; past the depth limit the input is left unconverted.
         let input = format!("{}.x{}", "(".repeat(100_000), ")".repeat(100_000));
@@ -315,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ternary_with_object_literal_branches() {
+    fn ternary_with_object_literal_branches() {
         // Regression: a ':' inside a jq object literal `{...}` in a ternary
         // branch must not be mistaken for the ternary's ':' separator. Braces
         // must be tracked as nesting like parens/brackets.
@@ -325,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ternary_with_parentheses_preserved() {
+    fn ternary_with_parentheses_preserved() {
         // Verify parentheses are preserved correctly
         let input = ".a > 0 ? (.a > 10 ? \"big\" : \"medium\") : \"small\"";
         let result = ternary_to_jq(input);

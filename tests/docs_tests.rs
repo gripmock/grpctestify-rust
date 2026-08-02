@@ -6,7 +6,7 @@ mod support;
 use support::run_cli;
 
 #[test]
-fn test_docs_generates_index_and_service_page() {
+fn docs_generates_index_and_service_page() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("get-user.gctf");
     let content = r#"--- META ---
@@ -60,7 +60,7 @@ users.UserService/GetUser
 }
 
 #[test]
-fn test_docs_renders_mermaid_diagram_for_multi_document_chain() {
+fn docs_renders_mermaid_diagram_for_multi_document_chain() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("chain.gctf");
     let content = r#"--- ENDPOINT ---
@@ -106,7 +106,7 @@ shop.CartService/Checkout
 }
 
 #[test]
-fn test_docs_embeds_coverage_badge_when_report_given() {
+fn docs_embeds_coverage_badge_when_report_given() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("get-user.gctf");
     std::fs::write(
@@ -161,7 +161,7 @@ users.UserService/GetUser
 }
 
 #[test]
-fn test_docs_on_directory_with_no_endpoint_tests_reports_nothing_to_document() {
+fn docs_on_directory_with_no_endpoint_tests_reports_nothing_to_document() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let file = dir.path().join("no-endpoint.gctf");
     // No ENDPOINT section — e.g. a helper/teardown file — must not crash or
@@ -182,4 +182,112 @@ fn test_docs_on_directory_with_no_endpoint_tests_reports_nothing_to_document() {
         String::from_utf8_lossy(&output.stdout)
     );
     assert!(!out_dir.exists(), "no output directory should be created");
+}
+
+/// Every ```gctf block in the docs must at least parse.
+///
+/// The docs carry 62 of these and a reader copies them verbatim, but nothing
+/// checked them: `docs_tests` covers the `docs` *command*, and
+/// `fmt_corpus_tests` only walks `examples/`. A typo in a section header or a
+/// malformed JSON body would ship unnoticed.
+///
+/// Deliberately syntax-only. Many blocks are fragments illustrating one
+/// section (`--- ENDPOINT ---` alone, an attribute before a `REQUEST`), so
+/// full `check` validation would reject them for missing a RESPONSE — correctly,
+/// but that is not what these snippets claim to be.
+#[test]
+fn every_docs_gctf_block_parses() {
+    let blocks = support::markdown_gctf_blocks();
+    assert!(!blocks.is_empty(), "expected ```gctf blocks in the docs");
+
+    let mut failures = Vec::new();
+    for (path, line, body) in &blocks {
+        let label = format!("{}:{line}", path.display());
+        if let Err(e) = grpctestify::parser::parse_gctf_from_str(body, &label) {
+            failures.push(format!("{label}: {e}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} docs snippets do not parse:\n{}",
+        failures.len(),
+        blocks.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn cli_reference_lists_every_command() {
+    let output = support::cli_command()
+        .arg("--help")
+        .output()
+        .expect("failed to run --help");
+    let help = String::from_utf8_lossy(&output.stdout);
+
+    let commands: Vec<String> = help
+        .split("Commands:")
+        .nth(1)
+        .unwrap_or_default()
+        .split("Options:")
+        .next()
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| {
+            let t = l.strip_prefix("  ")?;
+            let name = t.split_whitespace().next()?;
+            // `help` is clap's own, not a documented feature.
+            (name != "help" && name.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
+                .then(|| name.to_string())
+        })
+        .collect();
+    assert!(
+        commands.len() > 10,
+        "failed to parse the command list from --help: {commands:?}"
+    );
+
+    let reference = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("docs/guides/reference/api/command-line.md"),
+    )
+    .expect("read CLI reference");
+    let listed = reference
+        .split("## Commands")
+        .nth(1)
+        .and_then(|s| s.split("## Global options").next())
+        .expect("Commands section");
+
+    let missing: Vec<&String> = commands
+        .iter()
+        .filter(|c| !listed.contains(&format!("`{c}")))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "commands missing from docs/guides/reference/api/command-line.md: {missing:?}"
+    );
+}
+
+/// Docs must not teach the deprecated plugin spellings. `@uuid`, `@email`,
+/// `@ip`, `@url`, `@timestamp` and `@empty` still work, but `check` reports
+/// `SEM_D001` for them and `fmt --write` rewrites them to the `is_*` names —
+/// so a snippet using them hands the reader code the tool immediately edits.
+/// The API reference taught all five, and `basic-concepts.md` — the
+/// introduction — used `@uuid` too.
+///
+/// Prose *about* the deprecation is fine; this only inspects ```gctf blocks.
+#[test]
+fn docs_snippets_use_canonical_plugin_names() {
+    let deprecated = ["uuid", "email", "ip", "url", "timestamp", "empty"];
+    let mut offenders = Vec::new();
+    for (path, line, body) in support::markdown_gctf_blocks() {
+        for name in deprecated {
+            if body.contains(&format!("@{name}(")) {
+                offenders.push(format!("{}:{line}: @{name}(", path.display()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "docs snippets use deprecated plugin names (use the `is_*` form):\n{}",
+        offenders.join("\n")
+    );
 }

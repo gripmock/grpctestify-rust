@@ -1,6 +1,6 @@
 [package]
 name = "apif-source-row"
-version = "0.2.3"
+version = "0.2.7"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -24,8 +24,11 @@ sysinfo = { workspace = true }
 apif-source-error = { path = "../apif-source-error", version = "0.1.0" }
 apif-twoq-cache = { path = "../apif-twoq-cache", version = "0.1.0" }
 apif-utils = { path = "../apif-utils", version = "0.2.0" }
-apif-ast = { path = "../apif-ast", version = "0.2.0" }
+apif-ast = { path = "../apif-ast", version = "0.3.0" }
 apif-parser = { path = "../apif-parser", version = "0.2.0" }
+
+[dev-dependencies]
+tempfile = "3.27"
 
 [lints]
 workspace = true

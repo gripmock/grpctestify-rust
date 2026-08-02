@@ -280,7 +280,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_junit_reporter_new() {
+    fn junit_reporter_new() {
         let reporter = JunitReporter::new(PathBuf::from("test.xml"));
         assert_eq!(reporter.output_path.to_str(), Some("test.xml"));
     }
@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn test_escape_xml_strips_invalid_control_chars() {
+    fn escape_xml_strips_invalid_control_chars() {
         // NUL, backspace, vertical tab, form feed, unit separator are invalid
         // in XML 1.0 and must be removed so the output stays parseable.
         let input = "a\u{0}b\u{8}c\u{b}d\u{c}e\u{1f}f";
@@ -306,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn test_junit_failure_with_control_chars_is_well_formed() {
+    fn junit_failure_with_control_chars_is_well_formed() {
         // gRPC error text containing control chars must not leak into the XML.
         let tc = TestCaseBuilder {
             name: "ctrl".into(),
@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_case_builder_to_xml_pass() {
+    fn case_builder_to_xml_pass() {
         let tc = TestCaseBuilder {
             name: "test1".into(),
             classname: "suite".into(),
@@ -358,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_case_builder_to_xml_fail() {
+    fn case_builder_to_xml_fail() {
         let tc = TestCaseBuilder {
             name: "test2".into(),
             classname: "suite".into(),
@@ -377,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_case_builder_to_xml_skip() {
+    fn case_builder_to_xml_skip() {
         let tc = TestCaseBuilder {
             name: "test3".into(),
             classname: "suite".into(),
@@ -395,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_case_builder_with_tags() {
+    fn case_builder_with_tags() {
         let tc = TestCaseBuilder {
             name: "test".into(),
             classname: "suite".into(),
@@ -416,7 +416,7 @@ mod tests {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_junit_reporter_lifecycle() {
+    fn junit_reporter_lifecycle() {
         use crate::Reporter;
         use apif_state::TestResult;
         let dir = tempfile::tempdir().unwrap();
@@ -430,7 +430,7 @@ mod tests {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_junit_failure_body_and_meta_properties() {
+    fn junit_failure_body_and_meta_properties() {
         use crate::Reporter;
         use apif_state::{AssertionRecord, TestMeta, TestResult};
         let dir = tempfile::tempdir().unwrap();
@@ -480,7 +480,7 @@ mod tests {
     // stay <failure>. The suite-level errors="N" must no longer be hardcoded 0.
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_junit_splits_errors_from_assertion_failures() {
+    fn junit_splits_errors_from_assertion_failures() {
         use crate::Reporter;
         use apif_state::{AssertionRecord, TestResult};
         let dir = tempfile::tempdir().unwrap();
@@ -530,7 +530,7 @@ mod tests {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_junit_system_out_from_exchange() {
+    fn junit_system_out_from_exchange() {
         use crate::Reporter;
         use apif_state::{CapturedExchange, TestResult};
         use std::collections::BTreeMap;
@@ -555,7 +555,7 @@ mod tests {
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_junit_reporter_with_failure() {
+    fn junit_reporter_with_failure() {
         use crate::Reporter;
         use apif_state::TestResult;
         let dir = tempfile::tempdir().unwrap();

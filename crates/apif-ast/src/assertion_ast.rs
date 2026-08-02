@@ -140,7 +140,11 @@ impl std::fmt::Display for Expr {
             }
             Self::Literal(Literal::Bool(b)) => write!(f, "{}", b),
             Self::Literal(Literal::Number(n)) => write!(f, "{}", n),
-            Self::Literal(Literal::Str(s)) => write!(f, "\"{}\"", s),
+            Self::Literal(Literal::Str(s)) => {
+                let mut buf = String::new();
+                write_escaped_string_literal(&mut buf, s);
+                write!(f, "{buf}")
+            }
             Self::Literal(Literal::Null) => write!(f, "null"),
             Self::RegExp { pattern, flags } => {
                 write!(f, "/{}/", pattern)?;
@@ -761,6 +765,31 @@ fn is_keyword_token(k: &TokenKind) -> bool {
 }
 
 /// Convert AssertionExpr back to string (ternary for if-then-else).
+/// Render a string literal with the escapes the tokenizer decodes on the way in.
+/// Every renderer must use this: an unescaped one rewrites the literal into a
+/// different string.
+pub fn write_escaped_string_literal(out: &mut String, value: &str) {
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            '\u{b}' => out.push_str("\\v"),
+            '\0' => out.push_str("\\0"),
+            // Remaining control characters have no short form; `\uXXXX` is what
+            // the tokenizer reads back.
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+}
+
 pub fn assertion_to_string(expr: &AssertionExpr) -> String {
     let mut out = String::with_capacity(64);
     push_assertion(expr, &mut out, 0);
@@ -784,11 +813,7 @@ fn push_expr(expr: &Expr, out: &mut String) {
         }
         Expr::Literal(Literal::Bool(b)) => out.push_str(if *b { "true" } else { "false" }),
         Expr::Literal(Literal::Number(n)) => out.push_str(n),
-        Expr::Literal(Literal::Str(s)) => {
-            out.push('"');
-            out.push_str(s);
-            out.push('"');
-        }
+        Expr::Literal(Literal::Str(s)) => write_escaped_string_literal(out, s),
         Expr::Literal(Literal::Null) => out.push_str("null"),
         Expr::Variable(n) => {
             out.push('$');
@@ -1000,7 +1025,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_simple_equality() {
+    fn parse_simple_equality() {
         let expr = parse_assertion(".id == 123");
         if let AssertionExpr::Binary { op, left, right } = expr {
             assert_eq!(op, BinaryOp::Eq);
@@ -1015,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_plugin_call() {
+    fn parse_plugin_call() {
         let expr = parse_assertion("@uuid(.user_id) == true");
         if let AssertionExpr::Binary { op, left, .. } = expr {
             assert_eq!(op, BinaryOp::Eq);
@@ -1031,7 +1056,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_negation_bang() {
+    fn parse_negation_bang() {
         let expr = parse_assertion("!@has_header(\"x\")");
         if let AssertionExpr::Not(inner) = expr {
             if let AssertionExpr::Atom(Expr::PluginCall { name, .. }) = &*inner {
@@ -1045,7 +1070,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_pipe_not() {
+    fn parse_pipe_not() {
         let expr = parse_assertion("@empty(.id) | not");
         if let AssertionExpr::Not(inner) = expr {
             if let AssertionExpr::Atom(Expr::PluginCall { name, .. }) = &*inner {
@@ -1059,7 +1084,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_pipe_not_not() {
+    fn parse_pipe_not_not() {
         let expr = parse_assertion("@empty(.id) | not not");
         if let AssertionExpr::Atom(Expr::PluginCall { name, .. }) = expr {
             assert_eq!(name, "empty");
@@ -1072,7 +1097,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_negation_not_keyword() {
+    fn parse_negation_not_keyword() {
         let expr = parse_assertion("not @empty(.id)");
         if let AssertionExpr::Not(inner) = expr {
             if let AssertionExpr::Atom(Expr::PluginCall { name, .. }) = &*inner {
@@ -1113,7 +1138,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_and_or_xor_precedence() {
+    fn parse_and_or_xor_precedence() {
         let expr = parse_assertion("@a or @b xor @c and @d");
         assert!(
             matches!(expr, AssertionExpr::Or { .. }),
@@ -1123,7 +1148,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_paren_or_in_and() {
+    fn parse_paren_or_in_and() {
         let expr = parse_assertion("(@a or @b) and @c");
         if let AssertionExpr::And { left, .. } = expr {
             assert!(
@@ -1136,7 +1161,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_negated_paren_or() {
+    fn parse_negated_paren_or() {
         let expr = parse_assertion("!(@empty(.id) or @uuid(.id))");
         if let AssertionExpr::Not(inner) = expr {
             if let AssertionExpr::Paren(or_expr) = &*inner {
@@ -1150,21 +1175,21 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip_xor() {
+    fn roundtrip_xor() {
         let expr = parse_assertion("@a() xor @b()");
         let s = assertion_to_string(&expr);
         assert!(s.contains(" xor "), "Should contain xor: {}", s);
     }
 
     #[test]
-    fn test_roundtrip_pipe_not() {
+    fn roundtrip_pipe_not() {
         let expr = parse_assertion("@empty(.id) | not");
         let s = assertion_to_string(&expr);
         assert!(s.contains('!'), "Pipe not should serialize as !: {}", s);
     }
 
     #[test]
-    fn test_contains() {
+    fn contains() {
         let expr = parse_assertion(".name contains \"test\"");
         if let AssertionExpr::Binary { op, .. } = expr {
             assert_eq!(op, BinaryOp::Contains);
@@ -1174,7 +1199,7 @@ mod tests {
     }
 
     #[test]
-    fn test_startswith() {
+    fn startswith() {
         let expr = parse_assertion(".name startsWith \"te\"");
         if let AssertionExpr::Binary { op, .. } = expr {
             assert_eq!(op, BinaryOp::StartsWith);
@@ -1184,7 +1209,7 @@ mod tests {
     }
 
     #[test]
-    fn test_matches() {
+    fn matches() {
         let expr = parse_assertion(".name matches \"^te.*t$\"");
         if let AssertionExpr::Binary { op, .. } = expr {
             assert_eq!(op, BinaryOp::Matches);
@@ -1194,7 +1219,7 @@ mod tests {
     }
 
     #[test]
-    fn test_if_then_else() {
+    fn if_then_else() {
         let expr = parse_assertion("if @len(.items) == 0 then true else false end");
         if let AssertionExpr::IfThenElse {
             condition,
@@ -1217,7 +1242,7 @@ mod tests {
     }
 
     #[test]
-    fn test_if_then_else_roundtrips() {
+    fn if_then_else_roundtrips() {
         // Must serialize back to `if..then..else..end` (the only form the parser
         // reads), so the output re-parses to the same AST — required for `fmt`
         // idempotency.
@@ -1232,7 +1257,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nested_if_serializes_correctly() {
+    fn nested_if_serializes_correctly() {
         let expr =
             parse_assertion("if .a == 1 then if .b == 2 then \"A\" else \"B\" end else \"C\" end");
         if let AssertionExpr::IfThenElse {
@@ -1266,21 +1291,21 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip_simple() {
+    fn roundtrip_simple() {
         let original = ".id == 123";
         let expr = parse_assertion(original);
         assert_eq!(assertion_to_string(&expr), original);
     }
 
     #[test]
-    fn test_roundtrip_with_plugin() {
+    fn roundtrip_with_plugin() {
         let original = "@len(.items) == 0";
         let expr = parse_assertion(original);
         assert_eq!(assertion_to_string(&expr), original);
     }
 
     #[test]
-    fn test_parse_and_or() {
+    fn parse_and_or() {
         assert!(matches!(
             parse_assertion(".x == 1 and .y == 2"),
             AssertionExpr::And { .. }
@@ -1292,7 +1317,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_not_not() {
+    fn parse_not_not() {
         if let AssertionExpr::NotNot(inner) = parse_assertion("not not .x") {
             assert!(matches!(*inner, AssertionExpr::Atom(Expr::JqPath(_))));
         } else {
@@ -1301,7 +1326,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_double_bang() {
+    fn parse_double_bang() {
         if let AssertionExpr::NotNot(inner) = parse_assertion("!!.x") {
             assert!(matches!(*inner, AssertionExpr::Atom(Expr::JqPath(_))));
         } else {
@@ -1310,7 +1335,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_regex_literal() {
+    fn parse_regex_literal() {
         let expr = parse_assertion("@regex(.name, /^hello/i) == true");
         if let AssertionExpr::Binary { op, left, .. } = expr {
             assert_eq!(op, BinaryOp::Eq);
@@ -1336,14 +1361,14 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_trailing_colon_no_panic() {
+    fn parse_trailing_colon_no_panic() {
         // Regression: a trailing `:` used to index past the token list and panic.
         let expr = parse_assertion(".x:");
         assert_eq!(expr, AssertionExpr::Raw(".x:".to_string()));
     }
 
     #[test]
-    fn test_parse_unknown_operator_falls_back_to_raw() {
+    fn parse_unknown_operator_falls_back_to_raw() {
         // Regression: unknown operators in binary position used to silently
         // parse as `endsWith`. They must fall back to Raw (jq path) instead.
         assert_eq!(
@@ -1357,7 +1382,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_lone_equals_falls_back_to_raw() {
+    fn parse_lone_equals_falls_back_to_raw() {
         // Regression: `.x = 5` (typo for `==`) used to drop the `=` and parse
         // as `.x 5`. It must not parse as a valid assertion.
         assert_eq!(
@@ -1367,7 +1392,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_known_binary_operators_still_parse() {
+    fn parse_known_binary_operators_still_parse() {
         for (src, op) in [
             (".x == 1", BinaryOp::Eq),
             (".x != 1", BinaryOp::Ne),
@@ -1388,14 +1413,14 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_regex_serializes_correctly() {
+    fn parse_regex_serializes_correctly() {
         let expr = parse_assertion("@regex(.x, /\\d{4}/gi) == true");
         let s = assertion_to_string(&expr);
         assert!(s.contains("/\\d{4}/"), "Should contain regex: {}", s);
     }
 
     #[test]
-    fn test_parse_json_literal() {
+    fn parse_json_literal() {
         let expr = parse_assertion("@json(.data) == {\"key\": \"value\"}");
         if let AssertionExpr::Binary { op, right, .. } = expr {
             assert_eq!(op, BinaryOp::Eq);
@@ -1411,7 +1436,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nested_ternary_roundtrip() {
+    fn nested_ternary_roundtrip() {
         let original = "if .x == 1 then if .y == 2 then true else false end else false end";
         let expr = parse_assertion(original);
         let s = assertion_to_string(&expr);
@@ -1423,7 +1448,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_type_cast_number() {
+    fn parse_type_cast_number() {
         let expr = parse_assertion(".price:number >= 0");
         if let AssertionExpr::Binary { op, left, right } = expr {
             assert_eq!(op, BinaryOp::Ge);
@@ -1441,7 +1466,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_type_cast_string() {
+    fn parse_type_cast_string() {
         let expr = parse_assertion(".name:string contains \"hello\"");
         assert!(matches!(
             expr,
@@ -1453,7 +1478,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_type_cast_uint() {
+    fn parse_type_cast_uint() {
         let expr = parse_assertion("@len(.items):uint > 0");
         if let AssertionExpr::Binary { op, left, .. } = expr {
             assert_eq!(op, BinaryOp::Gt);
@@ -1464,7 +1489,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_type_cast_bool() {
+    fn parse_type_cast_bool() {
         let expr = parse_assertion(".active:bool == true");
         if let AssertionExpr::Binary { op, left, right } = expr {
             assert_eq!(op, BinaryOp::Eq);
@@ -1479,7 +1504,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_type_cast_all_types_parsed() {
+    fn parse_type_cast_all_types_parsed() {
         let types = [
             "bool", "uint", "number", "string", "json", "yaml", "uuid", "email", "url", "ip",
         ];
@@ -1496,7 +1521,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_type_cast_roundtrip() {
+    fn parse_type_cast_roundtrip() {
         let original = ".price:number >= 0";
         let expr = parse_assertion(original);
         let s = assertion_to_string(&expr);
@@ -1504,7 +1529,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_type_cast_compound() {
+    fn parse_type_cast_compound() {
         let expr =
             parse_assertion(r#".ips_to_decorations["10.0.0.1"].environment == "production""#);
         assert_eq!(
@@ -1523,7 +1548,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_type_cast_jq_path_preserved() {
+    fn parse_type_cast_jq_path_preserved() {
         let expr = parse_assertion(".user.name:string == \"alice\"");
         if let AssertionExpr::Binary { left, .. } = &expr {
             if let AssertionExpr::Atom(Expr::As(inner, tn)) = &**left {
@@ -1538,7 +1563,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_type_cast_assertion_to_string_preserves_cast() {
+    fn parse_type_cast_assertion_to_string_preserves_cast() {
         let cases = [
             ".x:number > 0",
             ".x:string == \"hello\"",
@@ -1553,7 +1578,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bracket_with_template_string() {
+    fn bracket_with_template_string() {
         let expr = parse_assertion(r#".x["{{var}}"] == "val""#);
         if let AssertionExpr::Binary { left, .. } = &expr {
             if let AssertionExpr::Atom(Expr::JqPath(p)) = &**left {
@@ -1569,7 +1594,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bracket_with_var_index() {
+    fn bracket_with_var_index() {
         let expr = parse_assertion(r#".x[.idx] == 0"#);
         if let AssertionExpr::Binary { left, .. } = &expr {
             if let AssertionExpr::Atom(Expr::JqPath(p)) = &**left {
@@ -1585,7 +1610,7 @@ mod tests {
     }
 
     #[test]
-    fn test_type_method_syntax() {
+    fn type_method_syntax() {
         let expr = parse_assertion(r#"@url.scheme(.webhook) == "https""#);
         if let AssertionExpr::Binary { left, .. } = &expr {
             if let AssertionExpr::Atom(Expr::PluginCall { name, args }) = &**left {
@@ -1602,7 +1627,7 @@ mod tests {
     }
 
     #[test]
-    fn test_type_method_roundtrip() {
+    fn type_method_roundtrip() {
         let cases = [
             "@email.domain(.x) == \"example.com\"",
             "@json.key(.config, \"timeout\") == 30",
@@ -1617,7 +1642,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_deeply_nested_parens_does_not_overflow() {
+    fn deeply_nested_parens_does_not_overflow() {
         // Regression: unbounded recursion on deeply nested `(` aborted the
         // process with a stack overflow. It must now terminate and fall back
         // to `Raw` instead of crashing.
@@ -1628,14 +1653,14 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_deeply_nested_bang_does_not_overflow() {
+    fn deeply_nested_bang_does_not_overflow() {
         let src = "!".repeat(100_000);
         let expr = parse_assertion(&src);
         assert_eq!(expr, AssertionExpr::Raw(src));
     }
 
     #[test]
-    fn test_moderate_paren_nesting_still_parses() {
+    fn moderate_paren_nesting_still_parses() {
         // Nesting well under the depth limit must still parse normally.
         let src = format!("{}.x == 1{}", "(".repeat(20), ")".repeat(20));
         let expr = parse_assertion(&src);
@@ -1647,7 +1672,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_type_cast_with_plugin() {
+    fn parse_type_cast_with_plugin() {
         let expr = parse_assertion("@len(.items):number >= 0");
         if let AssertionExpr::Binary { left, .. } = &expr {
             if let AssertionExpr::Atom(Expr::As(inner, tn)) = &**left {
@@ -1658,6 +1683,133 @@ mod tests {
             }
         } else {
             panic!("Expected Binary, got: {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn string_literals_round_trip_losslessly() {
+        for src in [
+            r#".msg == "a\nb""#,
+            r#".p == "a\\b""#,
+            r#".q == "tab\there""#,
+            r#".m == "say \"hi\"""#,
+            r#".plain == "abc""#,
+        ] {
+            let once = assertion_to_string(&parse_assertion(src));
+            let twice = assertion_to_string(&parse_assertion(&once));
+            assert_eq!(once, twice, "unstable render for {src}");
+        }
+    }
+
+    #[test]
+    fn escapes_decode_to_the_characters_they_denote() {
+        let AssertionExpr::Binary { right, .. } = parse_assertion(r#".msg == "a\nb""#) else {
+            panic!("expected a comparison");
+        };
+        let AssertionExpr::Atom(Expr::Literal(Literal::Str(value))) = &*right else {
+            panic!("expected a string literal");
+        };
+        assert_eq!(value, "a\nb", "an escaped newline must be a real newline");
+    }
+
+    #[test]
+    fn escapes_decode_to_the_same_values_json5_produces() {
+        for (src, expected) in [
+            (r#".a == "caf\u00e9""#, "café"),
+            (r#".a == "x\bY""#, "x\u{8}Y"),
+            (r#".a == "x\fY""#, "x\u{c}Y"),
+            (r#".a == "x\vY""#, "x\u{b}Y"),
+            (r#".a == "x\x41Y""#, "xAY"),
+            (r#".a == "a\\b""#, "a\\b"),
+            (r#".a == "tab\there""#, "tab\there"),
+        ] {
+            let AssertionExpr::Binary { right, .. } = parse_assertion(src) else {
+                panic!("expected a comparison for {src}");
+            };
+            let AssertionExpr::Atom(Expr::Literal(Literal::Str(v))) = &*right else {
+                panic!("expected a string literal for {src}");
+            };
+            assert_eq!(v, expected, "decoding {src}");
+        }
+    }
+
+    #[test]
+    fn every_decoded_string_re_renders_to_the_same_value() {
+        for src in [
+            r#".a == "caf\u00e9""#,
+            r#".a == "x\bY""#,
+            r#".a == "x\fY""#,
+            r#".a == "a\\b""#,
+            r#".a == "tab\there""#,
+            r#".a == "say \"hi\"""#,
+            r#".a == "nul\0end""#,
+        ] {
+            let first = assertion_to_string(&parse_assertion(src));
+            let second = assertion_to_string(&parse_assertion(&first));
+            assert_eq!(first, second, "unstable render for {src}");
+        }
+    }
+
+    #[test]
+    fn grouped_number_literals_parse_as_numbers() {
+        let AssertionExpr::Binary { right, .. } = parse_assertion(".amount == 1_000_000") else {
+            panic!("expected a comparison, got Raw — the separator broke the lexer");
+        };
+        let AssertionExpr::Atom(Expr::Literal(Literal::Number(n))) = &*right else {
+            panic!("expected a number literal");
+        };
+        assert_eq!(n, "1000000");
+    }
+
+    #[test]
+    fn a_trailing_underscore_is_not_part_of_a_number() {
+        // `1_` is not grouping; the `_` must stay outside the literal.
+        let ast = parse_assertion(".a == 1_");
+        assert!(
+            !matches!(&ast, AssertionExpr::Binary { right, .. }
+                if matches!(&**right, AssertionExpr::Atom(Expr::Literal(Literal::Number(n))) if n == "1_")),
+            "got {ast:?}"
+        );
+    }
+
+    #[test]
+    fn encoder_and_decoder_are_inverses_over_every_char_class() {
+        // Exhaustive over the ranges where the two tables can disagree: every
+        // control char, the ASCII printables, and a sample of higher planes.
+        // A sequence added to one table and not the other fails here rather
+        // than surfacing as a silently unmatchable assertion.
+        let mut values: Vec<String> = (0u32..0x80)
+            .filter_map(char::from_u32)
+            .map(|c| format!("x{c}y"))
+            .collect();
+        values.extend(
+            [
+                "café",
+                "日本",
+                "emoji 🌍",
+                "\u{7f}",
+                "\u{9f}",
+                "a\\b",
+                "q\"q",
+            ]
+            .map(String::from),
+        );
+
+        for value in values {
+            let mut rendered = String::new();
+            write_escaped_string_literal(&mut rendered, &value);
+
+            let AssertionExpr::Binary { right, .. } = parse_assertion(&format!(".a == {rendered}"))
+            else {
+                panic!("{rendered:?} did not re-parse as a comparison");
+            };
+            let AssertionExpr::Atom(Expr::Literal(Literal::Str(back))) = &*right else {
+                panic!("{rendered:?} did not re-parse as a string literal");
+            };
+            assert_eq!(
+                *back, value,
+                "encode/decode disagree for {value:?} (rendered as {rendered})"
+            );
         }
     }
 }

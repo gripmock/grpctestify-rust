@@ -6,7 +6,7 @@ use grpctestify::parser::{parse_gctf, parse_gctf_from_str};
 use std::path::Path;
 
 #[test]
-fn test_extract_basic_jq_paths() {
+fn extract_basic_jq_paths() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -45,7 +45,7 @@ value = .value
 }
 
 #[test]
-fn test_extract_string_functions() {
+fn extract_string_functions() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -86,7 +86,7 @@ joined = .tags | split(",") | join("-")
 }
 
 #[test]
-fn test_extract_numeric_aggregations() {
+fn extract_numeric_aggregations() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -127,7 +127,7 @@ sum = [.items[].price] | add
 }
 
 #[test]
-fn test_extract_array_operations() {
+fn extract_array_operations() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -168,7 +168,7 @@ unique_names = [.users[].name] | unique
 }
 
 #[test]
-fn test_extract_conditional() {
+fn extract_conditional() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -207,7 +207,7 @@ default_port = .port // 8080
 }
 
 #[test]
-fn test_extract_datetime() {
+fn extract_datetime() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -245,7 +245,7 @@ time_only = .created_at | split("T")[1] | split("Z")[0]
 }
 
 #[test]
-fn test_extract_json5_syntax() {
+fn extract_json5_syntax() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -266,7 +266,7 @@ test.Service/Method
 }
 
 #[test]
-fn test_extract_workflow_events() {
+fn extract_workflow_events() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -306,7 +306,7 @@ token = .token
 }
 
 #[test]
-fn test_extract_chained_operations() {
+fn extract_chained_operations() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -353,7 +353,7 @@ expensive = [.items[] | select(.price > 15) | .name]
 }
 
 #[test]
-fn test_extract_from_example_file() {
+fn extract_from_example_file() {
     // Arrange
     let path = "examples/advanced/extract-jq-functions.gctf";
 
@@ -379,7 +379,7 @@ fn test_extract_from_example_file() {
 }
 
 #[test]
-fn test_extract_variable_in_asserts() {
+fn extract_variable_in_asserts() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---

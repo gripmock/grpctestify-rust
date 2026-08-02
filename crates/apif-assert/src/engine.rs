@@ -811,13 +811,13 @@ mod tests {
     }
 
     #[test]
-    fn test_find_lone_equals_detects_typo() {
+    fn find_lone_equals_detects_typo() {
         assert_eq!(find_lone_equals(".x = 5"), Some(3));
         assert_eq!(find_lone_equals(".name = \"a\""), Some(6));
     }
 
     #[test]
-    fn test_find_lone_equals_ignores_comparisons() {
+    fn find_lone_equals_ignores_comparisons() {
         assert_eq!(find_lone_equals(".x == 5"), None);
         assert_eq!(find_lone_equals(".x != 5"), None);
         assert_eq!(find_lone_equals(".x <= 5"), None);
@@ -825,14 +825,14 @@ mod tests {
     }
 
     #[test]
-    fn test_find_lone_equals_ignores_string_contents() {
+    fn find_lone_equals_ignores_string_contents() {
         // `=` inside a string literal is not a typo'd operator
         assert_eq!(find_lone_equals(".x == \"a=b\""), None);
         assert_eq!(find_lone_equals(".x == \"a\\\"=b\""), None);
     }
 
     #[test]
-    fn test_lone_equals_assertion_fails_not_passes() {
+    fn lone_equals_assertion_fails_not_passes() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
         // `.id = 123` is a typo for `==`; must be a diagnosed failure, not a
@@ -846,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn test_assertion_result_fail() {
+    fn assertion_result_fail() {
         let result = AssertionResult::fail("test message");
         if let AssertionResult::Fail { message, .. } = result {
             assert_eq!(message, "test message");
@@ -856,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    fn test_assertion_result_fail_with_diff() {
+    fn assertion_result_fail_with_diff() {
         let result = AssertionResult::fail_with_diff("mismatch", "expected", "actual");
         if let AssertionResult::Fail {
             message,
@@ -873,14 +873,14 @@ mod tests {
     }
 
     #[test]
-    fn test_assertion_result_debug() {
+    fn assertion_result_debug() {
         let result = AssertionResult::Pass;
         let debug_str = format!("{:?}", result);
         assert!(debug_str.contains("Pass"));
     }
 
     #[test]
-    fn test_evaluate_equality_operator() {
+    fn evaluate_equality_operator() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -895,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_bracket_index_assertion() {
+    fn evaluate_bracket_index_assertion() {
         let engine = AssertionEngine::new();
         let response = serde_json::json!({
             "ipsToDecorations": {
@@ -938,7 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_equality_operator_fail() {
+    fn evaluate_equality_operator_fail() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -953,7 +953,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_inequality_operator() {
+    fn evaluate_inequality_operator() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -968,7 +968,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_contains_operator() {
+    fn evaluate_contains_operator() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -983,7 +983,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_contains_operator_array() {
+    fn evaluate_contains_operator_array() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -998,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_starts_with_operator() {
+    fn evaluate_starts_with_operator() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -1013,7 +1013,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_ends_with_operator() {
+    fn evaluate_ends_with_operator() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -1028,7 +1028,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_numeric_greater_than() {
+    fn evaluate_numeric_greater_than() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -1041,7 +1041,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_numeric_less_than() {
+    fn evaluate_numeric_less_than() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -1054,7 +1054,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_numeric_gte() {
+    fn evaluate_numeric_gte() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -1069,7 +1069,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_numeric_lte() {
+    fn evaluate_numeric_lte() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -1084,7 +1084,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_matches_regex() {
+    fn evaluate_matches_regex() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -1099,7 +1099,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_matches_regex_fail() {
+    fn evaluate_matches_regex_fail() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -1114,7 +1114,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_nested_path() {
+    fn evaluate_nested_path() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -1129,7 +1129,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_boolean_path() {
+    fn evaluate_boolean_path() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -1144,7 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_array_index() {
+    fn evaluate_array_index() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -1159,14 +1159,14 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_unsupported_syntax() {
+    fn evaluate_unsupported_syntax() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
         // This should fall through to JQ evaluation
         let result = engine.evaluate("some_unknown_function()", &response, None, None);
         // Should not panic, should return Error or handle gracefully
-        assert!(result.is_ok());
+        result.expect("assertion must evaluate");
     }
 
     #[test]
@@ -1182,7 +1182,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_all_with_failure() {
+    fn evaluate_all_with_failure() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -1195,7 +1195,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_type_cast_number() {
+    fn evaluate_type_cast_number() {
         let engine = AssertionEngine::new();
         let response = json!({
             "price": 42
@@ -1217,7 +1217,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_type_cast_string() {
+    fn evaluate_type_cast_string() {
         let engine = AssertionEngine::new();
         let response = json!({
             "name": "hello world"
@@ -1239,7 +1239,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_type_cast_is_noop() {
+    fn evaluate_type_cast_is_noop() {
         let engine = AssertionEngine::new();
         let response = json!({
             "value": 123
@@ -1256,7 +1256,7 @@ mod tests {
     }
 
     #[test]
-    fn test_jq_fallback_truthy_non_bool_output() {
+    fn jq_fallback_truthy_non_bool_output() {
         // Regression: jq truthiness — any output except false/null passes,
         // so `.tags | length` returning 3 must be a Pass.
         let engine = AssertionEngine::new();
@@ -1273,7 +1273,7 @@ mod tests {
     }
 
     #[test]
-    fn test_jq_fallback_false_output_shows_value() {
+    fn jq_fallback_false_output_shows_value() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -1289,7 +1289,7 @@ mod tests {
     }
 
     #[test]
-    fn test_jq_fallback_null_output_fails() {
+    fn jq_fallback_null_output_fails() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -1305,7 +1305,7 @@ mod tests {
     }
 
     #[test]
-    fn test_query_jq_simple() {
+    fn query_jq_simple() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -1315,7 +1315,7 @@ mod tests {
     }
 
     #[test]
-    fn test_query_jq_nested() {
+    fn query_jq_nested() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -1325,7 +1325,7 @@ mod tests {
     }
 
     #[test]
-    fn test_query_jq_array() {
+    fn query_jq_array() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -1337,7 +1337,7 @@ mod tests {
     }
 
     #[test]
-    fn test_query_jq_filter() {
+    fn query_jq_filter() {
         let engine = AssertionEngine::new();
         let response = json!([1, 2, 3, 4, 5]);
 
@@ -1348,7 +1348,7 @@ mod tests {
     }
 
     #[test]
-    fn test_query_jq_length() {
+    fn query_jq_length() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -1358,7 +1358,7 @@ mod tests {
     }
 
     #[test]
-    fn test_query_invalid_expression() {
+    fn query_invalid_expression() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
 
@@ -1367,68 +1367,68 @@ mod tests {
     }
 
     #[test]
-    fn test_jaq_to_json_dec_number() {
+    fn jaq_to_json_dec_number() {
         let dec = JaqVal::Num(JaqNum::Dec(JaqRc::new("2.5".to_string())));
         assert_eq!(jaq_to_json(&dec), json!(2.5));
     }
 
     #[test]
-    fn test_jaq_to_json_invalid_dec_number() {
+    fn jaq_to_json_invalid_dec_number() {
         let dec = JaqVal::Num(JaqNum::Dec(JaqRc::new("not-a-number".to_string())));
         assert_eq!(jaq_to_json(&dec), Value::Null);
     }
 
     #[test]
-    fn test_json_to_jaq_null() {
+    fn json_to_jaq_null() {
         let result = json_to_jaq(&json!(null));
         assert!(matches!(result, JaqVal::Null));
     }
 
     #[test]
-    fn test_json_to_jaq_bool() {
+    fn json_to_jaq_bool() {
         let result = json_to_jaq(&json!(true));
         assert!(matches!(result, JaqVal::Bool(true)));
     }
 
     #[test]
-    fn test_json_to_jaq_number_int() {
+    fn json_to_jaq_number_int() {
         let result = json_to_jaq(&json!(42));
         assert!(matches!(result, JaqVal::Num(JaqNum::Int(42))));
     }
 
     #[test]
-    fn test_json_to_jaq_number_float() {
+    fn json_to_jaq_number_float() {
         let result = json_to_jaq(&json!(4.14));
         assert!(matches!(result, JaqVal::Num(JaqNum::Float(f)) if (f - 4.14).abs() < 0.001));
     }
 
     #[test]
-    fn test_json_to_jaq_string() {
+    fn json_to_jaq_string() {
         let result = json_to_jaq(&json!("hello"));
         assert!(matches!(result, JaqVal::TStr(_)));
     }
 
     #[test]
-    fn test_json_to_jaq_array() {
+    fn json_to_jaq_array() {
         let result = json_to_jaq(&json!([1, 2, 3]));
         assert!(matches!(result, JaqVal::Arr(_)));
     }
 
     #[test]
-    fn test_json_to_jaq_object() {
+    fn json_to_jaq_object() {
         let result = json_to_jaq(&json!({"key": "value"}));
         assert!(matches!(result, JaqVal::Obj(_)));
     }
 
     #[test]
-    fn test_jaq_filter_cache_returns_same_arc() {
+    fn jaq_filter_cache_returns_same_arc() {
         let expr = ".__cache_test_sentinel__";
         let first = AssertionEngine::get_or_compile_jaq_filter(expr).unwrap();
         let second = AssertionEngine::get_or_compile_jaq_filter(expr).unwrap();
         assert!(Arc::ptr_eq(&first, &second));
     }
     #[test]
-    fn test_assertion_result_negate() {
+    fn assertion_result_negate() {
         let pass = AssertionResult::Pass;
         assert!(matches!(pass.negate(), AssertionResult::Fail { .. }));
 
@@ -1440,7 +1440,7 @@ mod tests {
     }
 
     #[test]
-    fn test_assertion_engine_get_failures() {
+    fn assertion_engine_get_failures() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
         let assertions = vec![".id == 123".to_string(), ".id == 999".to_string()];
@@ -1450,7 +1450,7 @@ mod tests {
     }
 
     #[test]
-    fn test_assertion_engine_has_failures() {
+    fn assertion_engine_has_failures() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
         let result = engine.evaluate_all(&[".id == 999".to_string()], &response, None, None);
@@ -1458,7 +1458,7 @@ mod tests {
     }
 
     #[test]
-    fn test_assertion_engine_no_failures() {
+    fn assertion_engine_no_failures() {
         let engine = AssertionEngine::new();
         let response = create_test_response();
         let result = engine.evaluate_all(&[".id == 123".to_string()], &response, None, None);
@@ -1466,7 +1466,7 @@ mod tests {
     }
 
     #[test]
-    fn test_assertion_engine_default() {
+    fn assertion_engine_default() {
         let engine = AssertionEngine::default();
         let response = create_test_response();
         let result = engine
@@ -1476,7 +1476,7 @@ mod tests {
     }
 
     #[test]
-    fn test_assertion_result_fail_with_diff_fields() {
+    fn assertion_result_fail_with_diff_fields() {
         let result = AssertionResult::fail_with_diff("mismatch", "{\"a\":1}", "{\"a\":2}");
         match result {
             AssertionResult::Fail {
@@ -1493,7 +1493,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_url_scheme_parse_only() {
+    fn evaluate_url_scheme_parse_only() {
         use apif_ast::assertion_ast::{AssertionExpr, assertion_to_string, parse_assertion};
         let expr = parse_assertion("@url.scheme(\"https://example.com\") == \"https\"");
         assert!(
@@ -1509,7 +1509,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rewrite_plugin_calls_basic() {
+    fn rewrite_plugin_calls_basic() {
         assert_eq!(
             rewrite_plugin_calls("@len(.items) == .n").unwrap(),
             "__plugin(\"len\"; [.items]) == .n"
@@ -1517,7 +1517,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rewrite_plugin_calls_multiple_args() {
+    fn rewrite_plugin_calls_multiple_args() {
         assert_eq!(
             rewrite_plugin_calls("@regex(.name, \"^A\")").unwrap(),
             "__plugin(\"regex\"; [.name, \"^A\"])"
@@ -1525,7 +1525,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rewrite_plugin_calls_nested() {
+    fn rewrite_plugin_calls_nested() {
         assert_eq!(
             rewrite_plugin_calls(".x | map(@is_email(.)) | all").unwrap(),
             ".x | map(__plugin(\"is_email\"; [.])) | all"
@@ -1533,7 +1533,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rewrite_plugin_calls_leaves_format_strings() {
+    fn rewrite_plugin_calls_leaves_format_strings() {
         // `@base64` is a jq format string (not followed by `(`) — must be untouched.
         assert_eq!(
             rewrite_plugin_calls(".x | @base64").unwrap(),
@@ -1542,7 +1542,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rewrite_plugin_calls_ignores_at_in_string() {
+    fn rewrite_plugin_calls_ignores_at_in_string() {
         // A `@name(` sequence inside a string literal is not a plugin call.
         assert_eq!(
             rewrite_plugin_calls(".x == \"@len(a)\"").unwrap(),
@@ -1551,7 +1551,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rewrite_plugin_calls_rejects_context_plugin() {
+    fn rewrite_plugin_calls_rejects_context_plugin() {
         let err = rewrite_plugin_calls("@header(\"x\") | length").unwrap_err();
         assert!(
             err.to_string().contains("not available in jq expressions"),
@@ -1561,7 +1561,7 @@ mod tests {
     }
 
     #[test]
-    fn test_jaq_context_plugin_reports_clear_error() {
+    fn jaq_context_plugin_reports_clear_error() {
         // A context-dependent plugin used inside a jq pipe (so the AST engine can't
         // handle it and it falls to jaq) must yield a clear message, not a parse error.
         let engine = AssertionEngine::new();

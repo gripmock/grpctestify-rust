@@ -46,29 +46,8 @@ fn scrub(text: &str, tmp_root: &Path) -> String {
     s
 }
 
-fn golden_path(name: &str) -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/golden/inspect_explain_graph")
-        .join(format!("{name}.golden"))
-}
-
 fn assert_golden(name: &str, actual: &str) {
-    let path = golden_path(name);
-    if std::env::var("UPDATE_GOLDEN").is_ok() {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, actual).unwrap();
-        return;
-    }
-    let expected = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
-            "failed to read golden file {}: {e}\nrun with UPDATE_GOLDEN=1 to create it\nactual output was:\n{actual}",
-            path.display()
-        )
-    });
-    assert_eq!(
-        expected, actual,
-        "golden mismatch for '{name}' (rerun with UPDATE_GOLDEN=1 if this change is intentional)"
-    );
+    support::assert_golden(&format!("inspect_explain_graph/{name}.golden"), actual);
 }
 
 fn write_chain(dir: &Path) -> std::path::PathBuf {

@@ -1106,41 +1106,54 @@ fn suggest_condition_inversion(expr: &str, level: OptimizeLevel) -> Option<(Rule
 }
 
 /// Boolean identity/absorption: A or true = true, A and false = false
+/// The boolean value of an operand, if it is literally `true`/`false`.
+fn bool_literal(expr: &parser::assertion_ast::AssertionExpr) -> Option<bool> {
+    use parser::assertion_ast::{AssertionExpr, Expr, Literal};
+    match expr {
+        AssertionExpr::Atom(Expr::Literal(Literal::Bool(b))) => Some(*b),
+        AssertionExpr::Paren(inner) => bool_literal(inner),
+        _ => None,
+    }
+}
+
 fn suggest_boolean_identity_laws(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
     if !level.is_enabled(OptimizeLevel::Advisory) {
         return None;
     }
-    let expr = expr.trim();
+    use parser::assertion_ast::{AssertionExpr, assertion_to_string};
 
-    // Only the operator that actually joins the expression may be folded:
-    // `.a or .b and false` is `.a or (.b and false)`, so folding on the `and`
-    // used to collapse the whole thing to `false`.
-    let (left, op, right) = top_level_split(expr)?;
-
-    if op == "or" {
-        if right == "true" || left == "true" {
-            return Some((rule_ids::B009, "true".to_string()));
+    // The parse tree already applied precedence, so only the operator that
+    // actually joins the expression is at the top: `.a or .b and false` is
+    // `Or(.a, And(.b, false))`, so the fold looks at the `or`, never the `and`
+    // it used to collapse the whole thing on.
+    let ast = parser::assertion_ast::parse_assertion(expr.trim());
+    match &ast {
+        AssertionExpr::Or { left, right } => {
+            if bool_literal(left) == Some(true) || bool_literal(right) == Some(true) {
+                return Some((rule_ids::B009, "true".to_string()));
+            }
+            if bool_literal(right) == Some(false) {
+                return Some((rule_ids::B009, assertion_to_string(left)));
+            }
+            if bool_literal(left) == Some(false) {
+                return Some((rule_ids::B009, assertion_to_string(right)));
+            }
+            None
         }
-        if right == "false" {
-            return Some((rule_ids::B009, left.to_string()));
+        AssertionExpr::And { left, right } => {
+            if bool_literal(left) == Some(true) {
+                return Some((rule_ids::B010, assertion_to_string(right)));
+            }
+            if bool_literal(right) == Some(true) {
+                return Some((rule_ids::B010, assertion_to_string(left)));
+            }
+            if bool_literal(left) == Some(false) || bool_literal(right) == Some(false) {
+                return Some((rule_ids::B010, "false".to_string()));
+            }
+            None
         }
-        if left == "false" {
-            return Some((rule_ids::B009, right.to_string()));
-        }
-        return None;
+        _ => None,
     }
-
-    if left == "true" {
-        return Some((rule_ids::B010, right.to_string()));
-    }
-    if right == "true" {
-        return Some((rule_ids::B010, left.to_string()));
-    }
-    if left == "false" || right == "false" {
-        return Some((rule_ids::B010, "false".to_string()));
-    }
-
-    None
 }
 
 /// Plugin-specific: @len(.x) == 0 → @is_empty(.x)
@@ -1305,19 +1318,6 @@ fn top_level_positions(expr: &str, op: &str) -> Vec<usize> {
     out
 }
 
-/// The lowest-precedence operator actually joining `expr`, if any. `and` binds
-/// tighter than `or`, so an `and` is not the top-level operator whenever a
-/// top-level `or` is present — and the split must be at the LAST occurrence,
-/// both being left-associative.
-fn top_level_split(expr: &str) -> Option<(&str, &str, &str)> {
-    for op in [" or ", " and "] {
-        if let Some(&at) = top_level_positions(expr, op).last() {
-            return Some((expr[..at].trim(), op.trim(), expr[at + op.len()..].trim()));
-        }
-    }
-    None
-}
-
 /// Arguments of a call whose `(` has already been consumed, plus whatever
 /// follows the matching `)`. Returns `None` if the parenthesis never closes.
 fn split_call_args(after_open_paren: &str) -> Option<(&str, &str)> {
@@ -1358,24 +1358,39 @@ fn suggest_comparison_negation(expr: &str, level: OptimizeLevel) -> Option<(Rule
     if !level.is_enabled(OptimizeLevel::Safe) {
         return None;
     }
-    let expr = expr.trim();
+    use parser::assertion_ast::{AssertionExpr, BinaryOp};
 
-    let inner = if expr.starts_with("not (") && expr.ends_with(')') {
-        expr[5..expr.len() - 1].trim()
-    } else if expr.starts_with("!(") && expr.ends_with(')') {
-        expr[2..expr.len() - 1].trim()
-    } else {
+    // `!(…)` / `not (…)` parse to `Not`; unwrap a single wrapping `Paren`.
+    let ast = parser::assertion_ast::parse_assertion(expr.trim());
+    let AssertionExpr::Not(inner) = &ast else {
         return None;
     };
-
-    // `!(A and B)` is `!A or !B`, not `!A and B`. Negating a compound
-    // expression needs De Morgan; this rule only knows how to flip a single
-    // comparison, so it declines the rest.
-    if top_level_split(inner).is_some() {
+    let inner = match &**inner {
+        AssertionExpr::Paren(p) => &**p,
+        other => other,
+    };
+    // Only a single comparison flips. A compound (`And`/`Or`/…) needs De
+    // Morgan, which this rule doesn't do, so it declines — the parse tree makes
+    // that a shape mismatch instead of a hand-rolled top-level-operator scan.
+    let AssertionExpr::Binary { op, left, right } = inner else {
         return None;
-    }
-
-    negate_comparison_expr(inner).map(|rewritten| (rule_ids::N002, rewritten))
+    };
+    let negated = match op {
+        BinaryOp::Eq => BinaryOp::Ne,
+        BinaryOp::Ne => BinaryOp::Eq,
+        BinaryOp::Gt => BinaryOp::Le,
+        BinaryOp::Lt => BinaryOp::Ge,
+        BinaryOp::Ge => BinaryOp::Lt,
+        BinaryOp::Le => BinaryOp::Gt,
+        // Contains/Matches/StartsWith/EndsWith have no single-operator negation.
+        _ => return None,
+    };
+    let rewritten = parser::assertion_ast::assertion_to_string(&AssertionExpr::Binary {
+        op: negated,
+        left: left.clone(),
+        right: right.clone(),
+    });
+    Some((rule_ids::N002, rewritten))
 }
 
 fn negate_comparison_expr(inner: &str) -> Option<String> {
@@ -1647,10 +1662,6 @@ fn rewrite_assertion_expression_fixed_point_with_mode(
     current.into_owned()
 }
 
-pub fn rewrite_assertion_expression(expr: &str) -> Option<(&'static str, String)> {
-    rewrite_assertion_expression_with_level(expr, OptimizeLevel::Advisory)
-}
-
 pub fn rewrite_assertion_expression_with_level(
     expr: &str,
     level: OptimizeLevel,
@@ -1871,7 +1882,7 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_assertion_optimizations_detects_boolean_rewrite() {
+    fn collect_assertion_optimizations_detects_boolean_rewrite() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1887,7 +1898,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_assertion_optimizations_finds_second_document_in_chain() {
+    fn collect_assertion_optimizations_finds_second_document_in_chain() {
         // A chain's 2nd+ document is not `doc.sections` (the head) — this
         // must scan every document via `doc.iter_chain()`, not just the head.
         let content = r#"--- ENDPOINT ---
@@ -1911,7 +1922,7 @@ test.Service/Method2
     }
 
     #[test]
-    fn test_collect_assertion_optimizations_detects_double_negation_rewrite() {
+    fn collect_assertion_optimizations_detects_double_negation_rewrite() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1931,7 +1942,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_assertion_optimizations_detects_operator_canonicalization() {
+    fn collect_assertion_optimizations_detects_operator_canonicalization() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1951,7 +1962,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_assertion_optimizations_no_double_negation_for_non_boolean_plugin() {
+    fn collect_assertion_optimizations_no_double_negation_for_non_boolean_plugin() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1965,7 +1976,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_assertion_optimizations_constant_fold_numeric_compare() {
+    fn collect_assertion_optimizations_constant_fold_numeric_compare() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1985,7 +1996,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_assertion_optimizations_constant_fold_string_equality() {
+    fn collect_assertion_optimizations_constant_fold_string_equality() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2001,7 +2012,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_rewrite_rule_metadata_is_complete() {
+    fn rewrite_rule_metadata_is_complete() {
         let expected = [
             rule_ids::B001,
             rule_ids::B002,
@@ -2042,7 +2053,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_optimization_hint_contains_rule_metadata() {
+    fn optimization_hint_contains_rule_metadata() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2059,7 +2070,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_assertion_optimizations_reflexive_idempotent_path() {
+    fn collect_assertion_optimizations_reflexive_idempotent_path() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2076,7 +2087,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_assertion_optimizations_no_reflexive_for_non_idempotent_plugin() {
+    fn collect_assertion_optimizations_no_reflexive_for_non_idempotent_plugin() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2091,7 +2102,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_assertion_optimizations_reflexive_idempotent_inequality() {
+    fn collect_assertion_optimizations_reflexive_idempotent_inequality() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2129,7 +2140,7 @@ $user_id != $user_id
     }
 
     #[test]
-    fn test_collect_assertion_optimizations_ignores_inline_comments() {
+    fn collect_assertion_optimizations_ignores_inline_comments() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2145,7 +2156,7 @@ true == @has_header("x-request-id") // comment should be ignored
     }
 
     #[test]
-    fn test_likely_needs_assertion_rewrite_fast_path() {
+    fn likely_needs_assertion_rewrite_fast_path() {
         // Both old and new scope syntax trigger rewrite (contains @ and ==)
         assert!(likely_needs_assertion_rewrite("@scope_message_count()"));
         assert!(likely_needs_assertion_rewrite(
@@ -2160,7 +2171,7 @@ true == @has_header("x-request-id") // comment should be ignored
     // === If-then-else optimization tests ===
 
     #[test]
-    fn test_dead_branch_elimination_true() {
+    fn dead_branch_elimination_true() {
         let (rule_id, rewritten) = suggest_dead_branch_elimination(
             "if true then \"yes\" else \"no\" end",
             OptimizeLevel::Advisory,
@@ -2171,7 +2182,7 @@ true == @has_header("x-request-id") // comment should be ignored
     }
 
     #[test]
-    fn test_dead_branch_elimination_false() {
+    fn dead_branch_elimination_false() {
         let (rule_id, rewritten) = suggest_dead_branch_elimination(
             "if false then \"yes\" else \"no\" end",
             OptimizeLevel::Advisory,
@@ -2182,7 +2193,7 @@ true == @has_header("x-request-id") // comment should be ignored
     }
 
     #[test]
-    fn test_branch_merging() {
+    fn branch_merging() {
         let (rule_id, rewritten) = suggest_branch_merging(
             "if .x > 0 then \"same\" else \"same\" end",
             OptimizeLevel::Advisory,
@@ -2193,7 +2204,7 @@ true == @has_header("x-request-id") // comment should be ignored
     }
 
     #[test]
-    fn test_nested_if_simplification() {
+    fn nested_if_simplification() {
         // Pattern: if A then (if A then X else Y end) else Z end
         // Simplified: if A then X else Z end
         let input =
@@ -2206,7 +2217,7 @@ true == @has_header("x-request-id") // comment should be ignored
     }
 
     #[test]
-    fn test_parse_if_then_else_simple() {
+    fn parse_if_then_else_simple() {
         let (cond, then_expr, else_expr) =
             parse_if_then_else("if .x > 0 then \"yes\" else \"no\" end").unwrap();
         assert_eq!(cond, ".x > 0");
@@ -2215,7 +2226,7 @@ true == @has_header("x-request-id") // comment should be ignored
     }
 
     #[test]
-    fn test_parse_if_then_else_nested() {
+    fn parse_if_then_else_nested() {
         let (cond, then_expr, else_expr) = parse_if_then_else(
             "if .a > 0 then (if .b > 0 then \"both\" else \"a only\" end) else \"none\" end",
         )
@@ -2226,7 +2237,7 @@ true == @has_header("x-request-id") // comment should be ignored
     }
 
     #[test]
-    fn test_collect_optimizations_detects_dead_branch() {
+    fn collect_optimizations_detects_dead_branch() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2242,7 +2253,7 @@ if true then "always" else "never" end
     }
 
     #[test]
-    fn test_collect_optimizations_detects_branch_merging() {
+    fn collect_optimizations_detects_branch_merging() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2258,7 +2269,7 @@ if .x > 0 then "same" else "same" end
     }
 
     #[test]
-    fn test_boolean_simplification() {
+    fn boolean_simplification() {
         let (rule_id, rewritten) = suggest_boolean_simplification(
             "if .x > 0 then true else false end",
             OptimizeLevel::Advisory,
@@ -2269,7 +2280,7 @@ if .x > 0 then "same" else "same" end
     }
 
     #[test]
-    fn test_condition_inversion() {
+    fn condition_inversion() {
         let (rule_id, rewritten) = suggest_condition_inversion(
             "if .x > 0 then false else true end",
             OptimizeLevel::Advisory,
@@ -2280,7 +2291,7 @@ if .x > 0 then "same" else "same" end
     }
 
     #[test]
-    fn test_condition_inversion_contains_needs_parens() {
+    fn condition_inversion_contains_needs_parens() {
         let (rule_id, rewritten) = suggest_condition_inversion(
             "if .name contains \"foo\" then false else true end",
             OptimizeLevel::Advisory,
@@ -2291,7 +2302,7 @@ if .x > 0 then "same" else "same" end
     }
 
     #[test]
-    fn test_condition_inversion_simple_plugin_call_no_parens() {
+    fn condition_inversion_simple_plugin_call_no_parens() {
         let (rule_id, rewritten) = suggest_condition_inversion(
             "if @has_header(\"x\") then false else true end",
             OptimizeLevel::Advisory,
@@ -2302,7 +2313,7 @@ if .x > 0 then "same" else "same" end
     }
 
     #[test]
-    fn test_condition_inversion_not_keyword_gets_grouped() {
+    fn condition_inversion_not_keyword_gets_grouped() {
         let (rule_id, rewritten) = suggest_condition_inversion(
             "if not @has_header(\"x\") then false else true end",
             OptimizeLevel::Advisory,
@@ -2313,7 +2324,7 @@ if .x > 0 then "same" else "same" end
     }
 
     #[test]
-    fn test_condition_inversion_bang_gets_grouped() {
+    fn condition_inversion_bang_gets_grouped() {
         let (rule_id, rewritten) = suggest_condition_inversion(
             "if !@has_header(\"x\") then false else true end",
             OptimizeLevel::Advisory,
@@ -2324,7 +2335,7 @@ if .x > 0 then "same" else "same" end
     }
 
     #[test]
-    fn test_condition_inversion_matches_gets_grouped() {
+    fn condition_inversion_matches_gets_grouped() {
         let (rule_id, rewritten) = suggest_condition_inversion(
             "if .name matches /foo.*/ then false else true end",
             OptimizeLevel::Advisory,
@@ -2335,7 +2346,7 @@ if .x > 0 then "same" else "same" end
     }
 
     #[test]
-    fn test_collect_optimizations_boolean_simplification() {
+    fn collect_optimizations_boolean_simplification() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2351,7 +2362,7 @@ if @has_header("x") then true else false end
     }
 
     #[test]
-    fn test_collect_optimizations_condition_inversion() {
+    fn collect_optimizations_condition_inversion() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2367,7 +2378,7 @@ if .status == 200 then false else true end
     }
 
     #[test]
-    fn test_parse_if_then_else_string_with_else_keyword() {
+    fn parse_if_then_else_string_with_else_keyword() {
         let (cond, then_expr, else_expr) =
             parse_if_then_else(r#"if true then " else " else "no" end"#).unwrap();
         assert_eq!(cond, "true");
@@ -2376,7 +2387,7 @@ if .status == 200 then false else true end
     }
 
     #[test]
-    fn test_parse_if_then_else_then_in_string_condition() {
+    fn parse_if_then_else_then_in_string_condition() {
         let (cond, then_expr, else_expr) =
             parse_if_then_else(r#"if .x == "then" then "yes" else "no" end"#).unwrap();
         assert_eq!(cond, r#".x == "then""#);
@@ -2387,7 +2398,7 @@ if .status == 200 then false else true end
     // === New optimization rules tests ===
 
     #[test]
-    fn test_boolean_identity_or() {
+    fn boolean_identity_or() {
         // A or true = true
         let (rule_id, rewritten) =
             suggest_boolean_identity_laws(".x or true", OptimizeLevel::Advisory).unwrap();
@@ -2408,7 +2419,7 @@ if .status == 200 then false else true end
     }
 
     #[test]
-    fn test_boolean_absorption_and() {
+    fn boolean_absorption_and() {
         // A and true = A
         let (rule_id, rewritten) =
             suggest_boolean_identity_laws(".x and true", OptimizeLevel::Advisory).unwrap();
@@ -2429,7 +2440,7 @@ if .status == 200 then false else true end
     }
 
     #[test]
-    fn test_plugin_length_simplification() {
+    fn plugin_length_simplification() {
         // @len(.x) == 0 → @is_empty(.x)
         let (rule_id, rewritten) =
             suggest_plugin_length_simplification("@len(.items) == 0", OptimizeLevel::Advisory)
@@ -2458,7 +2469,7 @@ if .status == 200 then false else true end
     }
 
     #[test]
-    fn test_plugin_length_le_zero_is_operand_side_aware() {
+    fn plugin_length_le_zero_is_operand_side_aware() {
         // @len(x) <= 0 is `@is_empty(x)` (len is unsigned, so <= 0 means == 0).
         let (rule_id, rewritten) =
             suggest_plugin_length_simplification("@len(.items) <= 0", OptimizeLevel::Advisory)
@@ -2476,7 +2487,7 @@ if .status == 200 then false else true end
     }
 
     #[test]
-    fn test_comparison_negation() {
+    fn comparison_negation() {
         // not (.x == 5) → .x != 5
         let (rule_id, rewritten) =
             suggest_comparison_negation("not (.x == 5)", OptimizeLevel::Advisory).unwrap();
@@ -2512,7 +2523,7 @@ if .status == 200 then false else true end
     }
 
     #[test]
-    fn test_collect_optimizations_boolean_identity() {
+    fn collect_optimizations_boolean_identity() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2528,7 +2539,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_optimizations_plugin_length() {
+    fn collect_optimizations_plugin_length() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2544,7 +2555,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_optimizations_type_aware_uint_gte_zero() {
+    fn collect_optimizations_type_aware_uint_gte_zero() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2560,7 +2571,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_optimizations_comparison_negation() {
+    fn collect_optimizations_comparison_negation() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2576,7 +2587,7 @@ not (.status == 200)
     }
 
     #[test]
-    fn test_collect_optimizations_b002_expr_equals_false() {
+    fn collect_optimizations_b002_expr_equals_false() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2591,7 +2602,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_optimizations_b004_false_equals_expr() {
+    fn collect_optimizations_b004_false_equals_expr() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2606,7 +2617,7 @@ false == @has_header("x")
     }
 
     #[test]
-    fn test_collect_optimizations_b013_inequality_true() {
+    fn collect_optimizations_b013_inequality_true() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2621,7 +2632,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_optimizations_b014_inequality_false() {
+    fn collect_optimizations_b014_inequality_false() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2636,7 +2647,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_collect_optimizations_b015_true_inequality() {
+    fn collect_optimizations_b015_true_inequality() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2651,7 +2662,7 @@ true != @has_header("x")
     }
 
     #[test]
-    fn test_collect_optimizations_b016_false_inequality() {
+    fn collect_optimizations_b016_false_inequality() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2666,7 +2677,7 @@ false != @has_header("x")
     }
 
     #[test]
-    fn test_collect_optimizations_b017_double_not_word() {
+    fn collect_optimizations_b017_double_not_word() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -2681,7 +2692,7 @@ not not @has_header("x")
     }
 
     #[test]
-    fn test_collect_optimizations_p002_redundant_parens() {
+    fn collect_optimizations_p002_redundant_parens() {
         let result = rewrite_assertion_expression_fixed_point("(@has_header(\"x\"))");
         if ast_mode_active_for_tests() {
             assert_eq!(result, "(@has_header(\"x\"))");
@@ -2691,7 +2702,7 @@ not not @has_header("x")
     }
 
     #[test]
-    fn test_boolean_plugins_contains_uuid() {
+    fn boolean_plugins_contains_uuid() {
         let bp = boolean_plugins();
         assert!(bp.contains("uuid"));
         assert!(bp.contains("email"));
@@ -2699,7 +2710,7 @@ not not @has_header("x")
     }
 
     #[test]
-    fn test_plugin_signatures_returns_map() {
+    fn plugin_signatures_returns_map() {
         let sigs = plugin_signatures();
         assert!(!sigs.is_empty());
         assert!(sigs.contains_key("uuid"));
@@ -2714,7 +2725,7 @@ not not @has_header("x")
     }
 
     #[test]
-    fn test_suggest_constant_folding_string_equality() {
+    fn suggest_constant_folding_string_equality() {
         let result = suggest_constant_folding("\"foo\" == \"foo\"", OptimizeLevel::Aggressive);
         assert!(result.is_some());
         let (rule_id, after) = result.unwrap();
@@ -2723,7 +2734,7 @@ not not @has_header("x")
     }
 
     #[test]
-    fn test_suggest_constant_folding_mixed_types() {
+    fn suggest_constant_folding_mixed_types() {
         let result = suggest_constant_folding("\"foo\" == 123", OptimizeLevel::Aggressive);
         assert!(result.is_some());
         let (_rule_id, after) = result.unwrap();
@@ -2731,18 +2742,18 @@ not not @has_header("x")
     }
 
     #[test]
-    fn test_suggest_constant_folding_invalid_json() {
+    fn suggest_constant_folding_invalid_json() {
         let result = suggest_constant_folding("@len(.x) == 5", OptimizeLevel::Aggressive);
         assert!(result.is_none());
     }
 
     #[test]
-    fn test_normalization_mode_is_ast_canonical() {
+    fn normalization_mode_is_ast_canonical() {
         assert_eq!(normalization_mode(), NormalizationMode::AstCanonical);
     }
 
     #[test]
-    fn test_ast_mode_can_change_first_matching_rule() {
+    fn ast_mode_can_change_first_matching_rule() {
         let signatures = plugin_signatures();
         let bool_plugins = boolean_plugins();
         let expr = "((@has_header(\"x\"))) == true";
@@ -2767,7 +2778,7 @@ not not @has_header("x")
     }
 
     #[test]
-    fn test_ast_canonical_mode_preserves_execution_result() {
+    fn ast_canonical_mode_preserves_execution_result() {
         use apif_assert::engine::{AssertionEngine, AssertionResult};
         use serde_json::json;
 
@@ -2890,7 +2901,7 @@ not not @has_header("x")
     }
 
     #[test]
-    fn test_optimizer_hints_preserve_execution_result() {
+    fn optimizer_hints_preserve_execution_result() {
         use apif_assert::engine::{AssertionEngine, AssertionResult};
         use serde_json::json;
 
@@ -2986,7 +2997,7 @@ not (.status == 200)
     // ─── Redundant type cast tests ───────────────────────────────────
 
     #[test]
-    fn test_suggest_redundant_type_cast_len_uint() {
+    fn suggest_redundant_type_cast_len_uint() {
         let expr = "@len(.items):uint >= 0";
         let signatures = plugin_signatures();
         let result = suggest_redundant_type_cast(expr, signatures, OptimizeLevel::Advisory);
@@ -2998,7 +3009,7 @@ not (.status == 200)
     }
 
     #[test]
-    fn test_suggest_redundant_type_cast_header_string() {
+    fn suggest_redundant_type_cast_header_string() {
         // @header returns String, so :string is redundant
         let expr = "@header(\"x\"):string != null";
         let signatures = plugin_signatures();
@@ -3014,7 +3025,7 @@ not (.status == 200)
     }
 
     #[test]
-    fn test_suggest_redundant_type_cast_len_to_number() {
+    fn suggest_redundant_type_cast_len_to_number() {
         // @len returns UInt, :number is numeric-compatible → redundant
         let expr = "@len(.items):number >= 0";
         let signatures = plugin_signatures();
@@ -3029,7 +3040,7 @@ not (.status == 200)
     }
 
     #[test]
-    fn test_suggest_non_redundant_type_cast_number() {
+    fn suggest_non_redundant_type_cast_number() {
         // .price:number is NOT redundant because .price is Any
         let expr = ".price:number >= 0";
         let signatures = plugin_signatures();
@@ -3041,7 +3052,7 @@ not (.status == 200)
     }
 
     #[test]
-    fn test_suggest_non_redundant_type_cast_string() {
+    fn suggest_non_redundant_type_cast_string() {
         // .name:string is NOT redundant because .name is Any
         let expr = ".name:string contains \"hello\"";
         let signatures = plugin_signatures();
@@ -3053,7 +3064,7 @@ not (.status == 200)
     }
 
     #[test]
-    fn test_collect_redundant_type_cast_optimization() {
+    fn collect_redundant_type_cast_optimization() {
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -3068,7 +3079,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_operator_canonicalization_skips_string_literals() {
+    fn operator_canonicalization_skips_string_literals() {
         // Regression: `startswith`/`endswith` inside a string literal must NOT
         // be rewritten (previously a blind str::replace corrupted the value).
         assert_eq!(
@@ -3090,7 +3101,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_len_zero_simplification_requires_whole_lhs() {
+    fn len_zero_simplification_requires_whole_lhs() {
         // Regression: the @len(...) call must span the entire compared side.
         // `@len(a) and @len(b) == 0` must not become `@is_empty(a) and @len(b)`.
         assert_eq!(
@@ -3113,7 +3124,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_deprecated_rename_no_panic_on_unclosed_paren() {
+    fn deprecated_rename_no_panic_on_unclosed_paren() {
         // Regression: `!@<deprecated>(` with no closing paren must not panic
         // on the slice `rest[1..rest.len()-1]`.
         assert_eq!(

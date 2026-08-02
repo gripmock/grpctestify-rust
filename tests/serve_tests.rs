@@ -1,4 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
+#[path = "support/mod.rs"]
+mod support;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -109,7 +112,7 @@ async fn delete_req(url: &str, path: &str) -> u16 {
 // ─── Basic ──────────────────────────────────────────────────
 
 #[tokio::test]
-async fn test_health() {
+async fn health() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let resp = reqwest::get(&format!("{}/api/health", url)).await.unwrap();
     assert_eq!(resp.status().as_u16(), 200);
@@ -122,7 +125,7 @@ async fn test_health() {
 }
 
 #[tokio::test]
-async fn test_version() {
+async fn version() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let (status, body) = get_json(&url, "/api/version").await;
     assert_eq!(status, 200);
@@ -132,7 +135,7 @@ async fn test_version() {
 // ─── Collections ────────────────────────────────────────────
 
 #[tokio::test]
-async fn test_list_collections() {
+async fn list_collections() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let (status, body) = get_json(&url, "/api/collections").await;
     assert_eq!(status, 200);
@@ -150,7 +153,7 @@ async fn test_list_collections() {
 }
 
 #[tokio::test]
-async fn test_get_collection_ok() {
+async fn get_collection_ok() {
     let url = start_server(test_app(PathBuf::from("."))).await;
     let (status, body) = get_json(&url, "/api/collections/examples/basic/unary.gctf").await;
     assert_eq!(status, 200);
@@ -164,7 +167,7 @@ async fn test_get_collection_ok() {
 }
 
 #[tokio::test]
-async fn test_get_collection_404() {
+async fn get_collection_404() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let (status, _) = get_json(&url, "/api/collections/nonexistent.gctf").await;
     assert_eq!(status, 404);
@@ -173,10 +176,9 @@ async fn test_get_collection_404() {
 // ─── Save ───────────────────────────────────────────────────
 
 #[tokio::test]
-async fn test_save_and_read_back() {
-    let dir = std::env::temp_dir().join("grpctestify-srv-save");
-    let _ = std::fs::create_dir_all(&dir);
-    let url = start_server(test_app(dir.clone())).await;
+async fn save_and_read_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = start_server(test_app(dir.path().to_path_buf())).await;
 
     let content = serde_json::json!({"path": "t.gctf", "content": "--- ENDPOINT ---\ntest.Svc/M\n--- REQUEST ---\n{}\n"});
     let (status, _) = post_json(&url, "/api/save", &content).await;
@@ -189,15 +191,12 @@ async fn test_save_and_read_back() {
             .unwrap_or("")
             .contains("test.Svc/M")
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
-async fn test_save_structured() {
-    let dir = std::env::temp_dir().join("grpctestify-srv-str");
-    let _ = std::fs::create_dir_all(&dir);
-    let url = start_server(test_app(dir.clone())).await;
+async fn save_structured() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = start_server(test_app(dir.path().to_path_buf())).await;
 
     let req = serde_json::json!({"path":"s.gctf","endpoint":"svc.M/C","bodies":["{\"x\":1}"],"address":"h:9"});
     let (status, _) = post_json(&url, "/api/save-structured", &req).await;
@@ -206,12 +205,10 @@ async fn test_save_structured() {
     let (_, body) = get_json(&url, "/api/collections/s.gctf").await;
     assert_eq!(body["parsed"]["endpoint"], "svc.M/C");
     assert_eq!(body["parsed"]["address"], "h:9");
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
-async fn test_save_traversal() {
+async fn save_traversal() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let req = serde_json::json!({"path":"../bad.gctf","content":""});
     let (status, _) = post_json(&url, "/api/save", &req).await;
@@ -221,7 +218,7 @@ async fn test_save_traversal() {
 // ─── Import grpcurl ─────────────────────────────────────────
 
 #[tokio::test]
-async fn test_import_grpcurl() {
+async fn import_grpcurl() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let req = serde_json::json!({"args":["grpcurl","-plaintext","-d","{\"name\":\"W\"}","h:4770","svc.G/S"]});
     let (status, body) = post_json(&url, "/api/import-grpcurl", &req).await;
@@ -232,7 +229,7 @@ async fn test_import_grpcurl() {
 }
 
 #[tokio::test]
-async fn test_import_grpcurl_empty() {
+async fn import_grpcurl_empty() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let req = serde_json::json!({});
     let (status, _) = post_json(&url, "/api/import-grpcurl", &req).await;
@@ -246,7 +243,7 @@ async fn test_import_grpcurl_empty() {
 // ─── Generate grpcurl ───────────────────────────────────────
 
 #[tokio::test]
-async fn test_generate_grpcurl() {
+async fn generate_grpcurl() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let req = serde_json::json!({"endpoint":"s.C/m","body":{"k":1}});
     let (status, body) = post_json(&url, "/api/grpcurl", &req).await;
@@ -258,7 +255,7 @@ async fn test_generate_grpcurl() {
 // ─── Call (no server) ───────────────────────────────────────
 
 #[tokio::test]
-async fn test_call_no_server() {
+async fn call_no_server() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let req = serde_json::json!({"endpoint":"x.Y/z","body":{},"address":"127.0.0.1:1"});
     let (status, body) = post_json(&url, "/api/call", &req).await;
@@ -270,10 +267,9 @@ async fn test_call_no_server() {
 // ─── Edge cases ─────────────────────────────────────────────
 
 #[tokio::test]
-async fn test_save_empty_content() {
-    let dir = std::env::temp_dir().join("grpctestify-srv-empty");
-    let _ = std::fs::create_dir_all(&dir);
-    let url = start_server(test_app(dir.clone())).await;
+async fn save_empty_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = start_server(test_app(dir.path().to_path_buf())).await;
 
     let req = serde_json::json!({"path":"e.gctf","content":""});
     let (status, _) = post_json(&url, "/api/save", &req).await;
@@ -283,15 +279,12 @@ async fn test_save_empty_content() {
     assert!(body["content"].as_str().unwrap_or("").is_empty());
     assert_eq!(body["parsed"]["endpoint"], "");
     assert_eq!(body["parsed"]["bodies"][0], "{}");
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
-async fn test_save_structured_no_endpoint() {
-    let dir = std::env::temp_dir().join("grpctestify-srv-noep");
-    let _ = std::fs::create_dir_all(&dir);
-    let url = start_server(test_app(dir.clone())).await;
+async fn save_structured_no_endpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = start_server(test_app(dir.path().to_path_buf())).await;
 
     let req = serde_json::json!({"path":"x.gctf","endpoint":""});
     let (status, _) = post_json(&url, "/api/save-structured", &req).await;
@@ -299,12 +292,10 @@ async fn test_save_structured_no_endpoint() {
 
     let (_, body) = get_json(&url, "/api/collections/x.gctf").await;
     assert_eq!(body["parsed"]["endpoint"], "");
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
-async fn test_import_grpcurl_invalid_flag() {
+async fn import_grpcurl_invalid_flag() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let req = serde_json::json!({"args":["grpcurl","--unknown-flag"]});
     let (status, _) = post_json(&url, "/api/import-grpcurl", &req).await;
@@ -312,7 +303,7 @@ async fn test_import_grpcurl_invalid_flag() {
 }
 
 #[tokio::test]
-async fn test_call_missing_endpoint() {
+async fn call_missing_endpoint() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let req = serde_json::json!({"endpoint":"","body":{}});
     let (status, _) = post_json(&url, "/api/call", &req).await;
@@ -323,7 +314,7 @@ async fn test_call_missing_endpoint() {
 
 /// Verify that `bodies_raw` is accepted and parsed correctly.
 #[tokio::test]
-async fn test_execute_call_uses_bodies_raw() {
+async fn execute_call_uses_bodies_raw() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
 
     // Send raw JSON via reqwest to avoid serde_json! macro truncation
@@ -354,7 +345,7 @@ async fn test_execute_call_uses_bodies_raw() {
 
 /// Test that serde_json can round-trip u64::MAX through a raw string.
 #[test]
-fn test_serde_json_u64_roundtrip() {
+fn serde_json_u64_roundtrip() {
     let raw = r#"{"id":18446744073709551615}"#;
     let val: serde_json::Value = serde_json::from_str(raw).unwrap();
     assert_eq!(val["id"].as_u64(), Some(18446744073709551615u64));
@@ -369,7 +360,7 @@ fn test_serde_json_u64_roundtrip() {
 
 /// Test that JavaScript-style truncation does NOT happen on our backend.
 #[test]
-fn test_no_javascript_truncation() {
+fn no_javascript_truncation() {
     // JavaScript would truncate 18446744073709551615 to 18446744073709552000
     let raw = r#"{"id":18446744073709551615}"#;
     let val: serde_json::Value = serde_json::from_str(raw).unwrap();
@@ -381,7 +372,7 @@ fn test_no_javascript_truncation() {
 
 /// Test that serde_json in Rust preserves int64 from raw JSON strings.
 #[test]
-fn test_serde_json_preserves_int64() {
+fn serde_json_preserves_int64() {
     // This is a compile-time + runtime test: serde_json should preserve u64::MAX
     let raw = r#"{"id":18446744073709551615}"#;
     let val: serde_json::Value = serde_json::from_str(raw).unwrap();
@@ -415,7 +406,7 @@ fn setup_project_dir(label: &str) -> PathBuf {
 }
 
 #[tokio::test]
-async fn test_project_info_active() {
+async fn project_info_active() {
     let dir = setup_project_dir("info");
     let url = start_server(test_app_project(dir.clone())).await;
 
@@ -430,7 +421,7 @@ async fn test_project_info_active() {
 }
 
 #[tokio::test]
-async fn test_project_settings_get() {
+async fn project_settings_get() {
     let dir = setup_project_dir("settings-get");
     let url = start_server(test_app_project(dir.clone())).await;
 
@@ -444,7 +435,7 @@ async fn test_project_settings_get() {
 }
 
 #[tokio::test]
-async fn test_project_settings_put() {
+async fn project_settings_put() {
     let dir = setup_project_dir("settings-put");
     let url = start_server(test_app_project(dir.clone())).await;
 
@@ -467,7 +458,7 @@ async fn test_project_settings_put() {
 }
 
 #[tokio::test]
-async fn test_project_env_list_with_example() {
+async fn project_env_list_with_example() {
     let dir = setup_project_dir("env-list");
     let url = start_server(test_app_project(dir.clone())).await;
 
@@ -483,7 +474,7 @@ async fn test_project_env_list_with_example() {
 }
 
 #[tokio::test]
-async fn test_project_env_crud() {
+async fn project_env_crud() {
     let dir = setup_project_dir("env-crud");
     let url = start_server(test_app_project(dir.clone())).await;
 
@@ -529,7 +520,7 @@ async fn test_project_env_crud() {
 }
 
 #[tokio::test]
-async fn test_project_info_not_active_without_project() {
+async fn project_info_not_active_without_project() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let (status, body) = get_json(&url, "/api/project/info").await;
     assert_eq!(status, 200);
@@ -540,21 +531,21 @@ async fn test_project_info_not_active_without_project() {
 }
 
 #[tokio::test]
-async fn test_project_settings_get_without_project_returns_404() {
+async fn project_settings_get_without_project_returns_404() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let (status, _) = get_json(&url, "/api/project/settings").await;
     assert_eq!(status, 404, "settings should 404 without project");
 }
 
 #[tokio::test]
-async fn test_project_env_list_without_project_returns_404() {
+async fn project_env_list_without_project_returns_404() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let (status, _) = get_json(&url, "/api/project/env/list").await;
     assert_eq!(status, 404, "env list should 404 without project");
 }
 
 #[tokio::test]
-async fn test_project_create_directory_and_move() {
+async fn project_create_directory_and_move() {
     let dir = setup_project_dir("dir-move");
     let url = start_server(test_app_project(dir.clone())).await;
 
@@ -597,43 +588,19 @@ async fn test_project_create_directory_and_move() {
 
 // ─── /api/run — full ASSERTS evaluation via the shared runner ─────────
 
-async fn spawn_health_server_for_run() -> String {
-    let (reporter, health_service) = tonic_health::server::health_reporter();
-    reporter
-        .set_service_status("", tonic_health::ServingStatus::Serving)
-        .await;
-    let reflection_service = tonic_reflection::server::Builder::configure()
-        .register_encoded_file_descriptor_set(tonic_health::pb::FILE_DESCRIPTOR_SET)
-        .build_v1()
-        .unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-    tokio::spawn(async move {
-        tonic::transport::Server::builder()
-            .add_service(health_service)
-            .add_service(reflection_service)
-            .serve_with_incoming(incoming)
-            .await
-            .unwrap();
-    });
-    addr.to_string()
-}
-
 #[tokio::test]
-async fn test_run_passing_gctf_reports_success_and_assertion_detail() {
-    let address = spawn_health_server_for_run().await;
-    let dir = std::env::temp_dir().join("grpctestify-srv-run-pass");
-    let _ = std::fs::create_dir_all(&dir);
+async fn run_passing_gctf_reports_success_and_assertion_detail() {
+    let address = support::spawn_health_server().await;
+    let dir = tempfile::tempdir().unwrap();
     std::fs::write(
-        dir.join("pass.gctf"),
+        dir.path().join("pass.gctf"),
         format!(
             "--- ADDRESS ---\n{address}\n\n--- ENDPOINT ---\ngrpc.health.v1.Health/Check\n\n--- REQUEST ---\n{{}}\n\n--- ASSERTS ---\n.status == \"SERVING\"\n"
         ),
     )
     .unwrap();
 
-    let url = start_server(test_app(dir.clone())).await;
+    let url = start_server(test_app(dir.path().to_path_buf())).await;
     let req = serde_json::json!({"collection_path": "pass.gctf"});
     let (status, body) = post_json(&url, "/api/run", &req).await;
 
@@ -644,27 +611,24 @@ async fn test_run_passing_gctf_reports_success_and_assertion_detail() {
         body["assertions"][0]["expression"],
         ".status == \"SERVING\""
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Regression: the ASSERTS stream handler consumed messages without pushing
 /// them into `captured_response`, so ASSERTS-only tests returned zero
 /// `response_messages` and the playground showed "No response messages".
 #[tokio::test]
-async fn test_run_asserts_only_gctf_returns_response_messages() {
-    let address = spawn_health_server_for_run().await;
-    let dir = std::env::temp_dir().join("grpctestify-srv-run-msgs");
-    let _ = std::fs::create_dir_all(&dir);
+async fn run_asserts_only_gctf_returns_response_messages() {
+    let address = support::spawn_health_server().await;
+    let dir = tempfile::tempdir().unwrap();
     std::fs::write(
-        dir.join("msgs.gctf"),
+        dir.path().join("msgs.gctf"),
         format!(
             "--- ADDRESS ---\n{address}\n\n--- ENDPOINT ---\ngrpc.health.v1.Health/Check\n\n--- REQUEST ---\n{{}}\n\n--- ASSERTS ---\n.status == \"SERVING\"\n"
         ),
     )
     .unwrap();
 
-    let url = start_server(test_app(dir.clone())).await;
+    let url = start_server(test_app(dir.path().to_path_buf())).await;
     let req = serde_json::json!({"collection_path": "msgs.gctf"});
     let (status, body) = post_json(&url, "/api/run", &req).await;
 
@@ -675,17 +639,14 @@ async fn test_run_asserts_only_gctf_returns_response_messages() {
         serde_json::json!([{"status": "SERVING"}]),
         "{body:#}"
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
-async fn test_proto_source_renders_service_schema_via_reflection() {
-    let address = spawn_health_server_for_run().await;
-    let dir = std::env::temp_dir().join("grpctestify-srv-proto-src");
-    let _ = std::fs::create_dir_all(&dir);
+async fn proto_source_renders_service_schema_via_reflection() {
+    let address = support::spawn_health_server().await;
+    let dir = tempfile::tempdir().unwrap();
 
-    let url = start_server(test_app(dir.clone())).await;
+    let url = start_server(test_app(dir.path().to_path_buf())).await;
     let req = serde_json::json!({
         "address": address,
         "endpoint": "grpc.health.v1.Health/Check",
@@ -702,24 +663,21 @@ async fn test_proto_source_renders_service_schema_via_reflection() {
     );
     assert!(source.contains("message HealthCheckRequest"), "{body:#}");
     assert!(source.contains("status ServingStatus"), "{body:#}");
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
-async fn test_run_failing_gctf_reports_expected_and_actual() {
-    let address = spawn_health_server_for_run().await;
-    let dir = std::env::temp_dir().join("grpctestify-srv-run-fail");
-    let _ = std::fs::create_dir_all(&dir);
+async fn run_failing_gctf_reports_expected_and_actual() {
+    let address = support::spawn_health_server().await;
+    let dir = tempfile::tempdir().unwrap();
     std::fs::write(
-        dir.join("fail.gctf"),
+        dir.path().join("fail.gctf"),
         format!(
             "--- ADDRESS ---\n{address}\n\n--- ENDPOINT ---\ngrpc.health.v1.Health/Check\n\n--- REQUEST ---\n{{}}\n\n--- ASSERTS ---\n.status == \"NOT_SERVING\"\n"
         ),
     )
     .unwrap();
 
-    let url = start_server(test_app(dir.clone())).await;
+    let url = start_server(test_app(dir.path().to_path_buf())).await;
     let req = serde_json::json!({"collection_path": "fail.gctf"});
     let (status, body) = post_json(&url, "/api/run", &req).await;
 
@@ -732,13 +690,11 @@ async fn test_run_failing_gctf_reports_expected_and_actual() {
             .unwrap_or("")
             .contains("SERVING")
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
-async fn test_run_with_session_id_appends_project_history() {
-    let address = spawn_health_server_for_run().await;
+async fn run_with_session_id_appends_project_history() {
+    let address = support::spawn_health_server().await;
     let dir = setup_project_dir("run-history");
     let collections_dir = dir.join(".grpctestify").join("collections");
     std::fs::write(
@@ -772,7 +728,7 @@ async fn test_run_with_session_id_appends_project_history() {
 // ─── Diagnostics (unsaved editor content, no file I/O) ─────────
 
 #[tokio::test]
-async fn test_diagnostics_reports_optimizer_finding() {
+async fn diagnostics_reports_optimizer_finding() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let req = serde_json::json!({
         "content": "--- ENDPOINT ---\ntest.Service/Method\n\n--- ASSERTS ---\n!!@has_header(\"x\")\n"
@@ -789,7 +745,7 @@ async fn test_diagnostics_reports_optimizer_finding() {
 }
 
 #[tokio::test]
-async fn test_diagnostics_clean_file_reports_nothing() {
+async fn diagnostics_clean_file_reports_nothing() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let req = serde_json::json!({
         "content": "--- ADDRESS ---\nlocalhost:50051\n\n--- ENDPOINT ---\ntest.Service/Method\n\n--- REQUEST ---\n{}\n\n--- ASSERTS ---\n.status == \"ok\"\n"
@@ -801,7 +757,7 @@ async fn test_diagnostics_clean_file_reports_nothing() {
 }
 
 #[tokio::test]
-async fn test_run_missing_file_404s() {
+async fn run_missing_file_404s() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let req = serde_json::json!({"collection_path": "does-not-exist.gctf"});
     let (status, _) = post_json(&url, "/api/run", &req).await;
@@ -809,7 +765,7 @@ async fn test_run_missing_file_404s() {
 }
 
 #[tokio::test]
-async fn test_run_rejects_path_traversal() {
+async fn run_rejects_path_traversal() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let req = serde_json::json!({"collection_path": "../../../etc/passwd"});
     let (status, _) = post_json(&url, "/api/run", &req).await;
@@ -824,7 +780,7 @@ async fn test_run_rejects_path_traversal() {
 /// dropped the way they were before (`client_cert_path: None` was
 /// hardcoded at every playground call site).
 #[tokio::test]
-async fn test_execute_call_honors_client_cert_fields() {
+async fn execute_call_honors_client_cert_fields() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let req = serde_json::json!({
         "endpoint": "x.Y/z",
@@ -846,7 +802,7 @@ async fn test_execute_call_honors_client_cert_fields() {
 }
 
 #[tokio::test]
-async fn test_reflect_honors_client_cert_fields() {
+async fn reflect_honors_client_cert_fields() {
     let url = start_server(test_app(PathBuf::from("examples"))).await;
     let req = serde_json::json!({
         "address": "127.0.0.1:1",

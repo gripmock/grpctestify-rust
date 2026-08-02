@@ -496,14 +496,14 @@ mod tests {
     }
 
     #[test]
-    fn test_console_mode_debug() {
+    fn console_mode_debug() {
         assert_eq!(format!("{:?}", ConsoleMode::Dots), "Dots");
         assert_eq!(format!("{:?}", ConsoleMode::Verbose), "Verbose");
         assert_eq!(format!("{:?}", ConsoleMode::Silent), "Silent");
     }
 
     #[test]
-    fn test_console_reporter_new() {
+    fn console_reporter_new() {
         let reporter = ConsoleReporter::new(ConsoleMode::Silent, 10, env_info());
         assert_matches!(reporter.mode, ConsoleMode::Silent);
     }
@@ -634,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn test_console_reporter_lifecycle_silent() {
+    fn console_reporter_lifecycle_silent() {
         let reporter = ConsoleReporter::new(ConsoleMode::Silent, 2, env_info());
         reporter.on_test_start("test1");
         reporter.on_test_end("test1", &TestResult::pass("test1.gctf", 100, Some(50)));
@@ -647,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn test_console_reporter_empty_results() {
+    fn console_reporter_empty_results() {
         let reporter = ConsoleReporter::new(ConsoleMode::Dots, 0, env_info());
         let results = apif_state::TestResults::new();
         assert!(reporter.on_suite_end(&results).is_ok());

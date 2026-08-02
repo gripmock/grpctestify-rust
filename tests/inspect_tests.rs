@@ -16,7 +16,7 @@ mod support;
 /// diagnostics got reported twice (and an Nth document N-times) instead of
 /// once.
 #[test]
-fn test_inspect_json_does_not_duplicate_diagnostics_across_a_chain() {
+fn inspect_json_does_not_duplicate_diagnostics_across_a_chain() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("chain.gctf");
     std::fs::write(
@@ -51,7 +51,7 @@ fn test_inspect_json_does_not_duplicate_diagnostics_across_a_chain() {
 
 /// Test inspect returns correct section count
 #[test]
-fn test_inspect_section_count() {
+fn inspect_section_count() {
     let test_cases = vec![
         ("examples/basic/unary.gctf", 3), // ENDPOINT + REQUEST + RESPONSE
         ("examples/basic/with-headers.gctf", 6), // ENDPOINT + REQUEST_HEADERS + REQUEST + RESPONSE + ASSERTS + (extra)
@@ -77,7 +77,7 @@ fn test_inspect_section_count() {
 
 /// Test inspect detects endpoint correctly
 #[test]
-fn test_inspect_endpoint_detection() {
+fn inspect_endpoint_detection() {
     let path = "examples/basic/unary.gctf";
 
     if !Path::new(path).exists() {
@@ -97,7 +97,7 @@ fn test_inspect_endpoint_detection() {
 
 /// Test inspect parses endpoint components
 #[test]
-fn test_inspect_endpoint_components() {
+fn inspect_endpoint_components() {
     let path = "examples/basic/unary.gctf";
 
     if !Path::new(path).exists() {
@@ -117,7 +117,7 @@ fn test_inspect_endpoint_components() {
 
 /// Test inspect detects requests
 #[test]
-fn test_inspect_request_detection() {
+fn inspect_request_detection() {
     let path = "examples/basic/unary.gctf";
 
     if !Path::new(path).exists() {
@@ -137,7 +137,7 @@ fn test_inspect_request_detection() {
 
 /// Test inspect detects headers
 #[test]
-fn test_inspect_header_detection() {
+fn inspect_header_detection() {
     let path = "examples/basic/with-headers.gctf";
 
     if !Path::new(path).exists() {
@@ -164,7 +164,7 @@ fn test_inspect_header_detection() {
 
 /// Test inspect detects extractions
 #[test]
-fn test_inspect_extraction_detection() {
+fn inspect_extraction_detection() {
     let path = "examples/variables/extract-basic.gctf";
 
     if !Path::new(path).exists() {
@@ -181,7 +181,7 @@ fn test_inspect_extraction_detection() {
 
 /// Test inspect with diagnostics
 #[test]
-fn test_inspect_with_diagnostics() {
+fn inspect_with_diagnostics() {
     let path = "examples/basic/unary.gctf";
 
     if !Path::new(path).exists() {
@@ -204,7 +204,7 @@ fn test_inspect_with_diagnostics() {
 
 /// Test inspect detects inline options
 #[test]
-fn test_inspect_inline_options() {
+fn inspect_inline_options() {
     let path = "examples/basic/partial-match.gctf";
 
     if !Path::new(path).exists() {
@@ -228,7 +228,7 @@ fn test_inspect_inline_options() {
 
 /// Test inspect detects tolerance option
 #[test]
-fn test_inspect_tolerance_option() {
+fn inspect_tolerance_option() {
     let path = "examples/basic/tolerance.gctf";
 
     if !Path::new(path).exists() {
@@ -255,7 +255,7 @@ fn test_inspect_tolerance_option() {
 
 /// Test inspect detects redact option
 #[test]
-fn test_inspect_redact_option() {
+fn inspect_redact_option() {
     let path = "examples/advanced/redact-sensitive.gctf";
 
     if !Path::new(path).exists() {
@@ -291,7 +291,7 @@ fn test_inspect_redact_option() {
 
 /// Test inspect detects with_asserts option
 #[test]
-fn test_inspect_with_asserts_option() {
+fn inspect_with_asserts_option() {
     let path = "examples/assertions/response-with-asserts.gctf";
 
     if !Path::new(path).exists() {
@@ -312,7 +312,7 @@ fn test_inspect_with_asserts_option() {
 }
 
 #[test]
-fn test_inspect_error_inline_options_partial_and_with_asserts() {
+fn inspect_error_inline_options_partial_and_with_asserts() {
     let content = r#"--- ENDPOINT ---
 test.Service/Method
 

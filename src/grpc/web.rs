@@ -1870,7 +1870,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_build_http_client_with_ca_cert() {
+    fn build_http_client_with_ca_cert() {
         let dir = tempfile::tempdir().unwrap();
         let ca_path = dir.path().join("ca.pem");
         std::fs::write(&ca_path, TEST_CERT_PEM).unwrap();
@@ -1889,7 +1889,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_build_http_client_with_client_identity() {
+    fn build_http_client_with_client_identity() {
         let dir = tempfile::tempdir().unwrap();
         let cert_path = dir.path().join("client.pem");
         let key_path = dir.path().join("client.key");
@@ -1911,7 +1911,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_build_http_client_unreadable_ca_fails() {
+    fn build_http_client_unreadable_ca_fails() {
         let config = tls_test_config(crate::grpc::client::TlsConfig {
             ca_cert_path: Some("/nonexistent/ca.pem".to_string()),
             ..Default::default()
@@ -1926,7 +1926,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_build_http_client_invalid_ca_fails() {
+    fn build_http_client_invalid_ca_fails() {
         let dir = tempfile::tempdir().unwrap();
         let ca_path = dir.path().join("ca.pem");
         // PEM framing with corrupt base64 payload.
@@ -1953,7 +1953,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_build_http_client_cert_without_key_fails() {
+    fn build_http_client_cert_without_key_fails() {
         let config = tls_test_config(crate::grpc::client::TlsConfig {
             client_cert_path: Some("/tmp/whatever.pem".to_string()),
             ..Default::default()
@@ -1969,12 +1969,12 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_build_http_client_insecure_ok() {
+    fn build_http_client_insecure_ok() {
         let config = tls_test_config(crate::grpc::client::TlsConfig {
             insecure_skip_verify: true,
             ..Default::default()
         });
-        assert!(build_http_client(&config).is_ok());
+        build_http_client(&config).expect("client build must succeed");
     }
 
     #[test]
@@ -2035,7 +2035,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_encode_connect_envelope_data() {
+    fn encode_connect_envelope_data() {
         let data = b"hello";
         let framed = encode_connect_envelope(data, false);
         assert_eq!(framed.len(), 10);
@@ -2046,14 +2046,14 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_encode_connect_envelope_end_stream() {
+    fn encode_connect_envelope_end_stream() {
         let data = b"x";
         let framed = encode_connect_envelope(data, true);
         assert_eq!(framed[0], 0x02);
     }
 
     #[test]
-    fn test_encode_connect_envelope_empty() {
+    fn encode_connect_envelope_empty() {
         let framed = encode_connect_envelope(b"", true);
         assert_eq!(framed.len(), 5);
         assert_eq!(framed[0], 0x02);
@@ -2062,7 +2062,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_grpc_web_frame_header_basic() {
+    fn parse_grpc_web_frame_header_basic() {
         let data = vec![0x80, 0x00, 0x00, 0x00, 0x05, b'h', b'e', b'l', b'l', b'o'];
         let mut offset = 0;
         let result = parse_grpc_web_frame_header(&data, &mut offset);
@@ -2074,7 +2074,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_grpc_web_frame_header_too_short() {
+    fn parse_grpc_web_frame_header_too_short() {
         let data = vec![0x00, 0x00, 0x00];
         let mut offset = 0;
         let result = parse_grpc_web_frame_header(&data, &mut offset);
@@ -2083,7 +2083,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_grpc_web_frame_header_truncated_payload() {
+    fn parse_grpc_web_frame_header_truncated_payload() {
         let data = vec![0x00, 0x00, 0x00, 0x00, 0x0A, b'h'];
         let mut offset = 0;
         let result = parse_grpc_web_frame_header(&data, &mut offset);
@@ -2092,7 +2092,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_grpc_web_framed_json_single() {
+    fn parse_grpc_web_framed_json_single() {
         let msg = json!({"key": "value"});
         let body = serde_json::to_vec(&msg).unwrap();
         let len = body.len() as u32;
@@ -2108,7 +2108,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_grpc_web_framed_json_multiple() {
+    fn parse_grpc_web_framed_json_multiple() {
         let msg1 = json!({"seq": 1});
         let msg2 = json!({"seq": 2});
         let mut data = Vec::new();
@@ -2127,7 +2127,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_grpc_web_framed_json_empty() {
+    fn parse_grpc_web_framed_json_empty() {
         let (messages, trailers, error) = parse_grpc_web_framed_json(b"");
         assert!(messages.is_empty());
         assert!(trailers.is_empty());
@@ -2135,7 +2135,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_grpc_web_framed_json_only_trailers() {
+    fn parse_grpc_web_framed_json_only_trailers() {
         let trailer_data = b"grpc-status: 5\ngrpc-message: not found";
         let len = trailer_data.len() as u32;
         let mut data = vec![0x80];
@@ -2152,7 +2152,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_grpc_web_framed_json_data_then_trailers() {
+    fn parse_grpc_web_framed_json_data_then_trailers() {
         let msg = json!({"done": true});
         let body = serde_json::to_vec(&msg).unwrap();
         let mut data = Vec::new();
@@ -2172,7 +2172,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_grpc_web_trailers_case_folding() {
+    fn parse_grpc_web_trailers_case_folding() {
         let mut trailers = HashMap::new();
         let mut error = None;
         let payload = b"Grpc-Status: 3\nGRPC-MESSAGE: bad";
@@ -2183,7 +2183,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_grpc_web_trailers_mixed_case() {
+    fn parse_grpc_web_trailers_mixed_case() {
         let mut trailers = HashMap::new();
         let mut error = None;
         let payload = b"Grpc-Status: 4\nGrpc-Message: deadline exceeded";
@@ -2193,7 +2193,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_grpc_web_trailers_success() {
+    fn parse_grpc_web_trailers_success() {
         let mut trailers = HashMap::new();
         let mut error = None;
         let payload = b"grpc-status: 0";
@@ -2202,7 +2202,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_grpc_web_trailers_custom_metadata() {
+    fn parse_grpc_web_trailers_custom_metadata() {
         let mut trailers = HashMap::new();
         let mut error = None;
         let payload = b"custom-key: custom-value\nx-trace-id: abc123";
@@ -2213,7 +2213,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_grpc_web_framed_proto_data_frame() {
+    fn parse_grpc_web_framed_proto_data_frame() {
         let pool = make_test_descriptor_pool();
         let output = pool.get_message_by_name("test.TestResponse").unwrap();
         let msg = make_test_message(&pool.get_message_by_name("test.TestRequest").unwrap());
@@ -2230,7 +2230,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_grpc_web_framed_proto_empty() {
+    fn parse_grpc_web_framed_proto_empty() {
         let pool = make_test_descriptor_pool();
         let output = pool.get_message_by_name("test.TestResponse").unwrap();
         let (messages, trailers, error) = parse_grpc_web_framed_proto(b"", &output);
@@ -2240,7 +2240,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_grpc_web_framed_proto_trailers() {
+    fn parse_grpc_web_framed_proto_trailers() {
         let pool = make_test_descriptor_pool();
         let output = pool.get_message_by_name("test.TestResponse").unwrap();
         let trailer_data = b"grpc-status: 3\ngrpc-message: bad";
@@ -2256,7 +2256,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_connect_framed_data_json() {
+    fn parse_connect_framed_data_json() {
         let msg = json!({"key": "val"});
         let body = serde_json::to_vec(&msg).unwrap();
         let framed = encode_connect_envelope(&body, false);
@@ -2270,7 +2270,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_connect_framed_end_stream_error_json() {
+    fn parse_connect_framed_end_stream_error_json() {
         let err = json!({"code": "unavailable", "message": "service down"});
         let body = serde_json::to_vec(&err).unwrap();
         let framed = encode_connect_envelope(&body, true);
@@ -2285,7 +2285,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_connect_framed_end_stream_empty_with_header_error() {
+    fn parse_connect_framed_end_stream_empty_with_header_error() {
         let framed = encode_connect_envelope(b"", true);
         let mut headers = HashMap::new();
         headers.insert("grpc-status".to_string(), "5".to_string());
@@ -2298,7 +2298,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_connect_framed_end_stream_empty_no_error() {
+    fn parse_connect_framed_end_stream_empty_no_error() {
         let framed = encode_connect_envelope(b"", true);
         let headers = HashMap::new();
 
@@ -2309,7 +2309,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_connect_framed_multiple_data_frames() {
+    fn parse_connect_framed_multiple_data_frames() {
         let headers = HashMap::new();
         let mut all_framed = Vec::new();
         for i in 0..3 {
@@ -2328,7 +2328,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_dynamic_message_to_json_empty_message() {
+    fn dynamic_message_to_json_empty_message() {
         let pool = make_test_descriptor_pool();
         let desc = pool.get_message_by_name("test.TestResponse").unwrap();
         let val = dynamic_message_to_json(&DynamicMessage::new(desc));
@@ -2337,7 +2337,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_extract_headers_normalizes_case() {
+    fn extract_headers_normalizes_case() {
         use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
         let mut hm = HeaderMap::new();
         hm.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -2357,7 +2357,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_serialize_message_produces_valid_proto() {
+    fn serialize_message_produces_valid_proto() {
         let pool = make_test_descriptor_pool();
         let input = pool.get_message_by_name("test.TestRequest").unwrap();
         let val = json!({"name": "hello"});
@@ -2369,21 +2369,24 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         assert_eq!(json["name"], "hello");
     }
 
+    // Was a byte-for-byte copy of the test above, so it asserted nothing new.
+    // The behaviour its name reached for — a field the descriptor doesn't know
+    // is refused rather than silently dropped — had no coverage at all.
     #[test]
-    fn test_serialize_message_with_known_field() {
+    fn serialize_message_rejects_an_unknown_field() {
         let pool = make_test_descriptor_pool();
         let input = pool.get_message_by_name("test.TestRequest").unwrap();
-        let val = json!({"name": "hello"});
-        let bytes = serialize_message(&val, &input).unwrap();
-        assert!(!bytes.is_empty());
-
-        let decoded = DynamicMessage::decode(input.clone(), &bytes[..]).unwrap();
-        let json = dynamic_message_to_json(&decoded);
-        assert_eq!(json["name"], "hello");
+        let err = serialize_message(&json!({"nope": "hello"}), &input)
+            .expect_err("an unknown field must not be silently dropped");
+        assert!(
+            err.to_string()
+                .contains("Failed to serialize JSON to protobuf"),
+            "unexpected error: {err:#}"
+        );
     }
 
     #[test]
-    fn test_base64_decode_roundtrip_all_pad_widths() {
+    fn base64_decode_roundtrip_all_pad_widths() {
         for payload in [&b""[..], b"a", b"ab", b"abc", b"abcd", b"abcde", b"abcdef"] {
             let enc = base64_encode(payload);
             assert_eq!(
@@ -2396,7 +2399,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_base64_decode_ignores_whitespace() {
+    fn base64_decode_ignores_whitespace() {
         let enc = base64_encode(b"hello world");
         let with_newlines = format!("{}\n{}", &enc[..4], &enc[4..]);
         assert_eq!(
@@ -2406,14 +2409,14 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_base64_decode_rejects_invalid() {
+    fn base64_decode_rejects_invalid() {
         assert!(base64_decode(b"@@@@").is_none()); // invalid alphabet
         assert!(base64_decode(b"abc").is_none()); // truncated (not multiple of 4)
         assert!(base64_decode(b"ab=c").is_none()); // data after padding
     }
 
     #[test]
-    fn test_decode_grpc_web_text_body_frames() {
+    fn decode_grpc_web_text_body_frames() {
         // Build a binary gRPC-Web stream: one JSON data frame + a trailer frame,
         // then base64 the whole thing as `application/grpc-web-text` does.
         let msg = json!({"reply": "hi"});
@@ -2443,7 +2446,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_decode_grpc_web_body_passthrough_binary() {
+    fn decode_grpc_web_body_passthrough_binary() {
         let raw = vec![0x00, 0x00, 0x00, 0x00, 0x01, 0x42];
         let mut headers = HashMap::new();
         headers.insert(
@@ -2455,7 +2458,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_connect_end_stream_error_and_metadata() {
+    fn parse_connect_end_stream_error_and_metadata() {
         // Connect streaming end-of-stream: error nested under "error",
         // trailers carried in "metadata" (values are arrays of strings).
         let end = json!({
@@ -2488,7 +2491,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_connect_end_stream_metadata_only_no_error() {
+    fn parse_connect_end_stream_metadata_only_no_error() {
         let end = json!({"metadata": {"trace-id": ["abc123"]}});
         let mut trailers = HashMap::new();
         let mut error = None;
@@ -2502,7 +2505,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_parse_connect_framed_streaming_end_stream_surfaces_trailers_and_error() {
+    fn parse_connect_framed_streaming_end_stream_surfaces_trailers_and_error() {
         let headers = HashMap::new();
         // A data frame, then a Connect end-of-stream frame with nested error + metadata.
         let mut framed =
@@ -2526,7 +2529,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
-    fn test_public_response_headers_strips_framing_headers() {
+    fn public_response_headers_strips_framing_headers() {
         let mut headers = HashMap::new();
         headers.insert("grpc-status".to_string(), "0".to_string());
         headers.insert("grpc-message".to_string(), "ok".to_string());

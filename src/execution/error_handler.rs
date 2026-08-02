@@ -614,7 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn test_error_matches_expected_message() {
+    fn error_matches_expected_message() {
         let error_text = "Error: status: NotFound, message: Resource not found";
         let expected = json!({"message": "Resource not found"});
 
@@ -622,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn test_error_matches_expected_code() {
+    fn error_matches_expected_code() {
         let error_text = "Error: status: NotFound, message: Resource not found";
         let expected = json!({"code": 5});
 
@@ -630,7 +630,7 @@ mod tests {
     }
 
     #[test]
-    fn test_error_matches_expected_both() {
+    fn error_matches_expected_both() {
         let error_text = "Error: status: NotFound, message: Resource not found";
         let expected = json!({"code": 5, "message": "Resource not found"});
 
@@ -638,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn test_error_matches_expected_wrong_message() {
+    fn error_matches_expected_wrong_message() {
         let error_text = "Error: status: NotFound, message: Resource not found";
         let expected = json!({"message": "Wrong message"});
 
@@ -646,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn test_error_matches_expected_wrong_code() {
+    fn error_matches_expected_wrong_code() {
         let error_text = "Error: status: NotFound, message: Resource not found";
         let expected = json!({"code": 3});
 
@@ -699,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn test_error_matches_expected_string() {
+    fn error_matches_expected_string() {
         let error_text = "Error: Resource not found";
         let expected = json!("Resource not found");
 
@@ -707,7 +707,7 @@ mod tests {
     }
 
     #[test]
-    fn test_status_matches_expected_with_details() {
+    fn status_matches_expected_with_details() {
         let status = status_with_details();
         let expected = json!({
             "code": 3,
@@ -738,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn test_status_matches_expected_with_wrong_details() {
+    fn status_matches_expected_with_wrong_details() {
         let status = status_with_details();
         let expected = json!({
             "details": [
@@ -753,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn test_status_matches_expected_fails_when_actual_has_unexpected_details() {
+    fn status_matches_expected_fails_when_actual_has_unexpected_details() {
         let status = status_with_details();
         let expected = json!({
             "code": 3,
@@ -764,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn test_status_matches_expected_fails_when_expected_requires_details() {
+    fn status_matches_expected_fails_when_expected_requires_details() {
         let status = status_without_details();
         let expected = json!({
             "code": 3,
@@ -781,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn test_status_matches_expected_passes_when_no_details_on_both_sides() {
+    fn status_matches_expected_passes_when_no_details_on_both_sides() {
         let status = status_without_details();
         let expected = json!({
             "code": 3,
@@ -792,7 +792,7 @@ mod tests {
     }
 
     #[test]
-    fn test_status_matches_expected_rejects_partial_message_match() {
+    fn status_matches_expected_rejects_partial_message_match() {
         let status = status_without_details();
         let expected = json!({
             "code": 3,
@@ -806,7 +806,7 @@ mod tests {
     }
 
     #[test]
-    fn test_status_matches_expected_partial_allows_subset_top_level_fields() {
+    fn status_matches_expected_partial_allows_subset_top_level_fields() {
         let status = status_with_details();
         let expected = json!({
             "code": 3
@@ -818,7 +818,7 @@ mod tests {
     }
 
     #[test]
-    fn test_status_matches_expected_partial_allows_subset_details_payload() {
+    fn status_matches_expected_partial_allows_subset_details_payload() {
         let status = status_with_details();
         let expected = json!({
             "code": 3,
@@ -836,7 +836,7 @@ mod tests {
     }
 
     #[test]
-    fn test_status_matches_expected_partial_fails_when_expected_detail_item_missing() {
+    fn status_matches_expected_partial_fails_when_expected_detail_item_missing() {
         let status = status_with_details();
         let expected = json!({
             "code": 3,
@@ -857,7 +857,7 @@ mod tests {
     }
 
     #[test]
-    fn test_status_matches_expected_strict_fails_when_message_omitted() {
+    fn status_matches_expected_strict_fails_when_message_omitted() {
         let status = status_without_details();
         let expected = json!({
             "code": 3
@@ -873,7 +873,7 @@ mod tests {
     }
 
     #[test]
-    fn test_status_matches_expected_partial_passes_when_message_omitted() {
+    fn status_matches_expected_partial_passes_when_message_omitted() {
         let status = status_without_details();
         let expected = json!({
             "code": 3
@@ -885,7 +885,7 @@ mod tests {
     }
 
     #[test]
-    fn test_status_matches_expected_strict_allows_missing_details_when_not_present_in_actual() {
+    fn status_matches_expected_strict_allows_missing_details_when_not_present_in_actual() {
         let status = status_without_details();
         let expected = json!({
             "code": 3,
@@ -898,7 +898,7 @@ mod tests {
     }
 
     #[test]
-    fn test_status_mismatch_reason_for_unexpected_details() {
+    fn status_mismatch_reason_for_unexpected_details() {
         let status = status_with_details();
         let expected = json!({
             "code": 3,
@@ -912,7 +912,7 @@ mod tests {
     }
 
     #[test]
-    fn test_status_mismatch_reason_for_missing_required_details() {
+    fn status_mismatch_reason_for_missing_required_details() {
         let status = status_without_details();
         let expected = json!({
             "code": 3,
@@ -927,7 +927,7 @@ mod tests {
     }
 
     #[test]
-    fn test_status_to_json_contains_details() {
+    fn status_to_json_contains_details() {
         let status = status_with_details();
         let json = ErrorHandler::status_to_json(&status);
         assert_eq!(json["code"], 3);
@@ -936,7 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn test_status_matches_expected_fails_when_details_field_is_missing_in_expected_object() {
+    fn status_matches_expected_fails_when_details_field_is_missing_in_expected_object() {
         let status = status_with_details();
         let expected = json!({
             "code": 3,

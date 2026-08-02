@@ -158,7 +158,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_type_info_is_numeric() {
+    fn type_info_is_numeric() {
         assert!(TypeInfo::UInt.is_numeric());
         assert!(TypeInfo::Number.is_numeric());
         assert!(!TypeInfo::Bool.is_numeric());
@@ -167,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn test_type_info_is_stringy() {
+    fn type_info_is_stringy() {
         assert!(TypeInfo::String.is_stringy());
         assert!(!TypeInfo::Bool.is_stringy());
         assert!(!TypeInfo::UInt.is_stringy());
@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn test_type_info_is_temporal() {
+    fn type_info_is_temporal() {
         assert!(TypeInfo::Time.is_temporal());
         assert!(!TypeInfo::Bool.is_temporal());
         assert!(!TypeInfo::String.is_temporal());
@@ -184,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn test_type_info_is_nullable() {
+    fn type_info_is_nullable() {
         assert!(TypeInfo::Any.is_nullable());
         assert!(!TypeInfo::Bool.is_nullable());
         assert!(!TypeInfo::String.is_nullable());
@@ -210,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn test_base_type_is_self() {
+    fn base_type_is_self() {
         assert_eq!(TypeInfo::Bool.base_type(), TypeInfo::Bool);
         assert_eq!(TypeInfo::UInt.base_type(), TypeInfo::UInt);
         assert_eq!(TypeInfo::Number.base_type(), TypeInfo::Number);
@@ -263,7 +263,7 @@ mod tests {
     }
 
     #[test]
-    fn test_typed_plugin_signature_valid_arg_count() {
+    fn typed_plugin_signature_valid_arg_count() {
         let sig = TypedPluginSignature {
             return_type: TypeInfo::Bool,
             arg_types: &[
@@ -291,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn test_typed_plugin_signature_count() {
+    fn typed_plugin_signature_count() {
         let sig = TypedPluginSignature {
             return_type: TypeInfo::Bool,
             arg_types: &[

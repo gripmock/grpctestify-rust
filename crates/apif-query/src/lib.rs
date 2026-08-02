@@ -584,7 +584,7 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    fn test_simple_query() {
+    fn simple_query() {
         let result = parse_query("users status=active").unwrap();
         assert_eq!(result.source, "users");
         assert_eq!(result.filters.len(), 1);
@@ -592,28 +592,28 @@ mod tests {
     }
 
     #[test]
-    fn test_query_with_multiple_filters() {
+    fn query_with_multiple_filters() {
         let result = parse_query("users status=active age>=18").unwrap();
         assert_eq!(result.source, "users");
         assert_eq!(result.filters.len(), 2);
     }
 
     #[test]
-    fn test_query_with_like() {
+    fn query_with_like() {
         let result = parse_query(r#"users name~glob"*John*"#).unwrap();
         assert_eq!(result.source, "users");
         assert_eq!(result.filters.len(), 1);
     }
 
     #[test]
-    fn test_query_with_regex() {
+    fn query_with_regex() {
         let result = parse_query(r#"users msg~re:"error|warn""#).unwrap();
         assert_eq!(result.source, "users");
         assert_eq!(result.filters.len(), 1);
     }
 
     #[test]
-    fn test_filter_matches() {
+    fn filter_matches() {
         let row: HashMap<String, String> = HashMap::from([
             ("status".into(), "active".into()),
             ("age".into(), "25".into()),
@@ -627,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn test_in_operator() {
+    fn in_operator() {
         let row: HashMap<String, String> = HashMap::from([("status".into(), "active".into())]);
 
         let query = parse_query("users status=active,pending,waiting").unwrap();
@@ -639,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    fn test_comparison_operators() {
+    fn comparison_operators() {
         let row: HashMap<String, String> = HashMap::from([("age".into(), "25".into())]);
 
         let query = parse_query("users age>=18").unwrap();
@@ -674,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_matches_like() {
+    fn filter_matches_like() {
         let query = parse_query(r#"users name~glob"*John*""#).unwrap();
         assert_eq!(query.filters.len(), 1);
         assert_eq!(query.filters[0].column, "name");
@@ -688,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_matches_regex() {
+    fn filter_matches_regex() {
         let query = parse_query(r#"users msg~re:"error|warn""#).unwrap();
         assert_eq!(query.filters.len(), 1);
         match &query.filters[0].op {
@@ -701,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_matches_between() {
+    fn filter_matches_between() {
         let row: std::collections::HashMap<String, String> =
             std::collections::HashMap::from([("age".into(), "25".into())]);
         let query = parse_query("users age>=18 age<=30").unwrap();
@@ -723,7 +723,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_filters() {
+    fn multiple_filters() {
         let row: HashMap<String, String> = HashMap::from([
             ("status".into(), "active".into()),
             ("age".into(), "25".into()),
@@ -736,37 +736,37 @@ mod tests {
     }
 
     #[test]
-    fn test_like_match_literal_starts_with() {
+    fn like_match_literal_starts_with() {
         assert!(like_match("foo*", "foobar"));
         assert!(!like_match("foo*", "barfoo"));
     }
 
     #[test]
-    fn test_like_match_literal_ends_with() {
+    fn like_match_literal_ends_with() {
         assert!(like_match("*bar", "foobar"));
         assert!(!like_match("*bar", "foobaz"));
     }
 
     #[test]
-    fn test_like_match_literal_contains() {
+    fn like_match_literal_contains() {
         assert!(like_match("*oba*", "foobar"));
         assert!(!like_match("*xyz*", "foobar"));
     }
 
     #[test]
-    fn test_like_match_exact() {
+    fn like_match_exact() {
         assert!(like_match("hello", "hello"));
         assert!(!like_match("hello", "world"));
     }
 
     #[test]
-    fn test_like_match_wildcard_all() {
+    fn like_match_wildcard_all() {
         assert!(like_match("*", "anything"));
         assert!(like_match("*", ""));
     }
 
     #[test]
-    fn test_like_match_regex_fallback() {
+    fn like_match_regex_fallback() {
         // Patterns with wildcards in the middle need regex
         assert!(like_match("te*t", "test"));
         assert!(like_match("te*t", "tent"), "te*t matches tent (te+n+t)");
@@ -778,7 +778,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_values_numeric() {
+    fn compare_values_numeric() {
         assert!(compare_values("500", ">=", "100"));
         assert!(!compare_values("50", ">=", "100"));
         assert!(compare_values("100", "<=", "100"));
@@ -787,13 +787,13 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_values_string_fallback() {
+    fn compare_values_string_fallback() {
         assert!(compare_values("xyz", ">=", "abc"));
         assert!(!compare_values("abc", ">=", "xyz"));
     }
 
     #[test]
-    fn test_compare_values_bad_op() {
+    fn compare_values_bad_op() {
         assert!(!compare_values("1", "??", "2"));
     }
 
@@ -809,7 +809,7 @@ mod tests {
     }
 
     #[test]
-    fn test_selectivity_rank_ordering() {
+    fn selectivity_rank_ordering() {
         assert!(
             FilterOp::Eq("".into()).selectivity_rank() < FilterOp::Ne("".into()).selectivity_rank()
         );
@@ -830,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn test_query_optimize_reorders_filters() {
+    fn query_optimize_reorders_filters() {
         let mut q = parse_query("users name~glob\"*abc*\" status=active age>=18").unwrap();
         assert_eq!(q.filters[0].column, "name");
         assert_eq!(q.filters[1].column, "status");
@@ -843,7 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn test_query_matches_all() {
+    fn query_matches_all() {
         let row: HashMap<String, String> = HashMap::from([
             ("status".into(), "active".into()),
             ("age".into(), "25".into()),
@@ -855,21 +855,21 @@ mod tests {
     }
 
     #[test]
-    fn test_missing_column_returns_false() {
+    fn missing_column_returns_false() {
         let row: HashMap<String, String> = HashMap::new();
         let q = parse_query("users missing=value").unwrap();
         assert!(!q.filters[0].matches(&row));
     }
 
     #[test]
-    fn test_parse_query_source_only() {
+    fn parse_query_source_only() {
         let q = parse_query("users").unwrap();
         assert_eq!(q.source, "users");
         assert!(q.filters.is_empty());
     }
 
     #[test]
-    fn test_parse_query_string_literal_source() {
+    fn parse_query_string_literal_source() {
         let q = parse_query(r#""my source" status=active"#).unwrap();
         assert_eq!(q.source, "my source");
     }
@@ -877,7 +877,7 @@ mod tests {
     // Bug 1: decimal / leading-digit values must lex as a single NumberLit,
     // not be truncated by the identifier branch.
     #[test]
-    fn test_decimal_value_not_truncated() {
+    fn decimal_value_not_truncated() {
         let q = parse_query("users age>=1.5").unwrap();
         assert_eq!(q.filters.len(), 1);
         match &q.filters[0].op {
@@ -891,7 +891,7 @@ mod tests {
     }
 
     #[test]
-    fn test_number_lexes_as_single_token() {
+    fn number_lexes_as_single_token() {
         let mut lexer = Lexer::new("3.14");
         let tok = lexer.next_token().unwrap();
         assert_eq!(tok.kind, TokenKind::NumberLit("3.14".into()));
@@ -900,7 +900,7 @@ mod tests {
 
     // Bug 2: a comma inside a quoted value must not be split into an In-list.
     #[test]
-    fn test_quoted_value_with_comma_not_split() {
+    fn quoted_value_with_comma_not_split() {
         let q = parse_query(r#"users name="Doe, John""#).unwrap();
         assert_eq!(q.filters.len(), 1);
         match &q.filters[0].op {
@@ -914,7 +914,7 @@ mod tests {
 
     // Bug 3: glob-to-regex fallback must escape regex metacharacters.
     #[test]
-    fn test_glob_escapes_regex_metacharacters() {
+    fn glob_escapes_regex_metacharacters() {
         // '.' is literal in a glob; must not match an arbitrary character.
         assert!(like_match("a.c*e", "a.cZe"));
         assert!(!like_match("a.c*e", "axcZe"));
@@ -926,14 +926,14 @@ mod tests {
     }
 
     #[test]
-    fn test_glob_to_regex_anchored_and_escaped() {
+    fn glob_to_regex_anchored_and_escaped() {
         assert_eq!(glob_to_regex("a.c*e"), r"^(?:a\.c.*e)$");
         assert_eq!(glob_to_regex("(x*y)"), r"^(?:\(x.*y\))$");
     }
 
     // Bug 4: spans use the token start (not the post-lookahead lexer position).
     #[test]
-    fn test_filter_span_starts_at_column() {
+    fn filter_span_starts_at_column() {
         let q = parse_query("users age>=1.5").unwrap();
         // "users age>=1.5" — 'a' of age is at char index 6.
         assert_eq!(q.filters[0].span.start, 6, "span starts at column token");
@@ -943,7 +943,7 @@ mod tests {
     }
 
     #[test]
-    fn test_source_span_string_literal_covers_quotes() {
+    fn source_span_string_literal_covers_quotes() {
         let q = parse_query(r#""my source" status=active"#).unwrap();
         // Char-based span covering the quoted source token, quotes included.
         assert_eq!(q.source_span, Span::new(0, 11));

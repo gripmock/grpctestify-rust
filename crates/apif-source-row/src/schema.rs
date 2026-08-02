@@ -27,17 +27,12 @@ pub const BENCH_DIRECT_KEYS: &[&str] = &[
 
 pub const BENCH_COMPOUND_KEYS: &[&str] = &["sources"];
 
+/// The BENCH key list, owned by `apif_parser::validator` — the format-level
+/// validator is the single source of truth. This crate keeps the grouped
+/// constants below for presentation (rank, detail text), not as a second list;
+/// `grouped_bench_keys_match_the_parser` pins the two together.
 pub fn supported_bench_keys() -> Vec<&'static str> {
-    let mut keys: Vec<&'static str> = Vec::new();
-    keys.extend_from_slice(BENCH_DIRECT_KEYS);
-    keys.extend_from_slice(BENCH_NUMERIC_KEYS);
-    keys.extend_from_slice(BENCH_DURATION_KEYS);
-    keys.extend_from_slice(BENCH_BOOLEAN_KEYS);
-    keys.extend_from_slice(BENCH_COMPOUND_KEYS);
-    keys.push("thresholds.*");
-    keys.sort_unstable();
-    keys.dedup();
-    keys
+    apif_parser::validator::supported_bench_keys()
 }
 
 pub fn bench_keys_canonical_order() -> Vec<&'static str> {
@@ -114,13 +109,6 @@ pub fn bench_key_detail(key: &str) -> String {
 
 pub fn bench_aliases(_key: &str) -> &'static [&'static str] {
     &[]
-}
-
-pub fn is_known_bench_key(key: &str) -> bool {
-    if key == "thresholds" || key.starts_with("thresholds.") {
-        return true;
-    }
-    canonical_bench_key(key).is_some()
 }
 
 pub fn suggest_bench_key(raw_key: &str) -> Option<&'static str> {
@@ -378,6 +366,22 @@ mod tests {
         assert!(keys.contains(&"load_schedule"));
         assert!(keys.contains(&"progress_interval"));
         assert!(keys.contains(&"thresholds.*"));
+    }
+
+    /// The grouped constants are presentation metadata, but they used to *be*
+    /// the key list. If a key is added to the parser and not to a group here,
+    #[test]
+    fn grouped_bench_keys_match_the_parser() {
+        let mut grouped: Vec<&'static str> = Vec::new();
+        grouped.extend_from_slice(BENCH_DIRECT_KEYS);
+        grouped.extend_from_slice(BENCH_NUMERIC_KEYS);
+        grouped.extend_from_slice(BENCH_DURATION_KEYS);
+        grouped.extend_from_slice(BENCH_BOOLEAN_KEYS);
+        grouped.extend_from_slice(BENCH_COMPOUND_KEYS);
+        grouped.push("thresholds.*");
+        grouped.sort_unstable();
+        grouped.dedup();
+        assert_eq!(grouped, supported_bench_keys());
     }
 
     #[test]

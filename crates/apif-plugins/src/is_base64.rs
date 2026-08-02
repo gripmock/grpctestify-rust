@@ -99,23 +99,23 @@ mod tests {
     }
 
     #[test]
-    fn test_is_base64_name() {
+    fn is_base64_name() {
         assert_eq!(IsBase64Plugin.name(), "is_base64");
     }
 
     #[test]
-    fn test_is_base64_description() {
+    fn is_base64_description() {
         assert!(!IsBase64Plugin.description().is_empty());
     }
 
     #[test]
-    fn test_is_base64_signature() {
+    fn is_base64_signature() {
         let sig = IsBase64Plugin.signature();
         assert_eq!(sig.return_type, TypeInfo::Bool);
     }
 
     #[test]
-    fn test_is_base64_valid() {
+    fn is_base64_valid() {
         assert_eq!(
             IsBase64Plugin
                 .execute(&[json!("dGVzdA==")], &ctx())
@@ -125,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_base64_url_safe() {
+    fn is_base64_url_safe() {
         assert_eq!(
             IsBase64Plugin.execute(&[json!("dGVzdA")], &ctx()).unwrap(),
             PluginResult::Value(Value::Bool(true))
@@ -133,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_base64_invalid_chars() {
+    fn is_base64_invalid_chars() {
         assert_eq!(
             IsBase64Plugin
                 .execute(&[json!("hello!world")], &ctx())
@@ -143,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_base64_empty_string() {
+    fn is_base64_empty_string() {
         assert_eq!(
             IsBase64Plugin.execute(&[json!("")], &ctx()).unwrap(),
             PluginResult::Value(Value::Bool(false))
@@ -151,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_base64_non_string() {
+    fn is_base64_non_string() {
         assert_eq!(
             IsBase64Plugin.execute(&[json!(42)], &ctx()).unwrap(),
             PluginResult::Value(Value::Bool(false))
@@ -159,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_base64_rejects_single_char() {
+    fn is_base64_rejects_single_char() {
         // Regression: a lone char cannot encode any byte; must be rejected.
         assert_eq!(
             IsBase64Plugin.execute(&[json!("A")], &ctx()).unwrap(),
@@ -168,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_base64_rejects_padding_only() {
+    fn is_base64_rejects_padding_only() {
         // Regression: padding with no data must be rejected.
         assert_eq!(
             IsBase64Plugin.execute(&[json!("====")], &ctx()).unwrap(),
@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_base64_rejects_bad_length_with_padding() {
+    fn is_base64_rejects_bad_length_with_padding() {
         // Length not a multiple of 4 while padded is invalid.
         assert_eq!(
             IsBase64Plugin.execute(&[json!("dGVzdA=")], &ctx()).unwrap(),
@@ -186,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_base64_rejects_interior_padding() {
+    fn is_base64_rejects_interior_padding() {
         assert_eq!(
             IsBase64Plugin
                 .execute(&[json!("dG=VzdA==")], &ctx())
@@ -196,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_base64_no_args() {
+    fn is_base64_no_args() {
         assert_eq!(
             IsBase64Plugin.execute(&[], &ctx()).unwrap(),
             PluginResult::Value(Value::Bool(false))

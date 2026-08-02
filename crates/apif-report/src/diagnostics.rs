@@ -183,7 +183,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_diagnostic_error() {
+    fn diagnostic_error() {
         let d = Diagnostic::error("test.gctf", "E001", "error msg", 5);
         assert_eq!(d.severity, DiagnosticSeverity::Error);
         assert_eq!(d.file, "test.gctf");
@@ -192,31 +192,31 @@ mod tests {
     }
 
     #[test]
-    fn test_diagnostic_warning() {
+    fn diagnostic_warning() {
         let d = Diagnostic::warning("test.gctf", "W001", "warning msg", 10);
         assert_eq!(d.severity, DiagnosticSeverity::Warning);
     }
 
     #[test]
-    fn test_diagnostic_info() {
+    fn diagnostic_info() {
         let d = Diagnostic::info("test.gctf", "I001", "info msg", 15);
         assert_eq!(d.severity, DiagnosticSeverity::Info);
     }
 
     #[test]
-    fn test_diagnostic_hint() {
+    fn diagnostic_hint() {
         let d = Diagnostic::hint("test.gctf", "H001", "hint msg", 20);
         assert_eq!(d.severity, DiagnosticSeverity::Hint);
     }
 
     #[test]
-    fn test_diagnostic_with_hint() {
+    fn diagnostic_with_hint() {
         let d = Diagnostic::error("test.gctf", "E001", "msg", 1).with_hint("try fixing X");
         assert_eq!(d.hint, Some("try fixing X".into()));
     }
 
     #[test]
-    fn test_diagnostic_serialization() {
+    fn diagnostic_serialization() {
         let d = Diagnostic::error("test.gctf", "E001", "msg", 5).with_hint("hint");
         let json = serde_json::to_string(&d).unwrap();
         assert!(json.contains("E001"));
@@ -224,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn test_diagnostic_deserialization() {
+    fn diagnostic_deserialization() {
         let json = r#"{
             "file": "test.gctf",
             "range": {
@@ -242,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn test_check_report() {
+    fn check_report() {
         let report = CheckReport {
             diagnostics: vec![Diagnostic::error("f.gctf", "E1", "msg", 1)],
             summary: CheckSummary {
@@ -264,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn test_inspect_report() {
+    fn inspect_report() {
         let report = InspectReport {
             file: "test.gctf".into(),
             parse_time_ms: 1.5,
@@ -283,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn test_range_and_position() {
+    fn range_and_position() {
         let range = DiagnosticRange {
             start: Position { line: 1, column: 5 },
             end: Position {

@@ -61,7 +61,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_json_reporter_new() {
+    fn json_reporter_new() {
         let reporter = JsonReporter::new(PathBuf::from("test.json"));
         assert_eq!(reporter.output_path.to_str(), Some("test.json"));
     }
@@ -69,7 +69,7 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
-    fn test_json_reporter_lifecycle() {
+    fn json_reporter_lifecycle() {
         use crate::Reporter;
         use apif_state::TestResult;
         let dir = tempfile::tempdir().unwrap();
@@ -83,7 +83,7 @@ mod tests {
     }
 
     #[test]
-    fn test_json_report_serialize() {
+    fn json_report_serialize() {
         let results = TestResults::new();
         let ctx = JsonReportContext {
             tool: "apif".into(),

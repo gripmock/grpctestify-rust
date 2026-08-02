@@ -12,7 +12,7 @@ use std::assert_matches;
 // ============================================================================
 
 #[test]
-fn test_extract_value_ast_simple_path() {
+fn extract_value_ast_simple_path() {
     // Arrange
     let input = ".user.id";
 
@@ -25,7 +25,7 @@ fn test_extract_value_ast_simple_path() {
 }
 
 #[test]
-fn test_extract_value_ast_jq_pipe() {
+fn extract_value_ast_jq_pipe() {
     // Arrange
     let input = ".items | length";
 
@@ -38,7 +38,7 @@ fn test_extract_value_ast_jq_pipe() {
 }
 
 #[test]
-fn test_extract_value_ast_ternary_basic() {
+fn extract_value_ast_ternary_basic() {
     // Arrange
     let input = ".status == 200 ? \"OK\" : \"Error\"";
 
@@ -56,7 +56,7 @@ fn test_extract_value_ast_ternary_basic() {
 }
 
 #[test]
-fn test_extract_value_ast_ternary_with_parens() {
+fn extract_value_ast_ternary_with_parens() {
     // Arrange
     let input = "(.items | length) > 0 ? \"yes\" : \"no\"";
 
@@ -72,7 +72,7 @@ fn test_extract_value_ast_ternary_with_parens() {
 }
 
 #[test]
-fn test_extract_value_ast_ternary_nested() {
+fn extract_value_ast_ternary_nested() {
     // Arrange
     let input = ".a > 0 ? (.a > 10 ? \"big\" : \"small\") : \"zero\"";
 
@@ -87,7 +87,7 @@ fn test_extract_value_ast_ternary_nested() {
 }
 
 #[test]
-fn test_extract_value_ast_ternary_with_header() {
+fn extract_value_ast_ternary_with_header() {
     // Arrange
     let input = "@header(\"x-request-id\") != null ? @header(\"x-request-id\") : \"unknown\"";
 
@@ -99,7 +99,7 @@ fn test_extract_value_ast_ternary_with_header() {
 }
 
 #[test]
-fn test_extract_value_ast_ternary_with_trailer() {
+fn extract_value_ast_ternary_with_trailer() {
     // Arrange
     let input = "@trailer(\"x-cache\") == \"HIT\" ? \"cached\" : \"fresh\"";
 
@@ -115,7 +115,7 @@ fn test_extract_value_ast_ternary_with_trailer() {
 // ============================================================================
 
 #[test]
-fn test_extract_var_ast_simple() {
+fn extract_var_ast_simple() {
     // Arrange
     let input = "token = .access_token";
 
@@ -129,7 +129,7 @@ fn test_extract_var_ast_simple() {
 }
 
 #[test]
-fn test_extract_var_ast_jq() {
+fn extract_var_ast_jq() {
     // Arrange
     let input = "count = .items | length";
 
@@ -142,7 +142,7 @@ fn test_extract_var_ast_jq() {
 }
 
 #[test]
-fn test_extract_var_ast_ternary() {
+fn extract_var_ast_ternary() {
     // Arrange
     let input = "status = .status == 200 ? \"OK\" : \"Error\"";
 
@@ -158,7 +158,7 @@ fn test_extract_var_ast_ternary() {
 }
 
 #[test]
-fn test_extract_var_ast_skip_comment() {
+fn extract_var_ast_skip_comment() {
     // Arrange
     let input = "# this is a comment";
 
@@ -170,7 +170,7 @@ fn test_extract_var_ast_skip_comment() {
 }
 
 #[test]
-fn test_extract_var_ast_skip_empty() {
+fn extract_var_ast_skip_empty() {
     // Arrange
     let input = "";
 
@@ -182,7 +182,7 @@ fn test_extract_var_ast_skip_empty() {
 }
 
 #[test]
-fn test_extract_var_ast_skip_whitespace() {
+fn extract_var_ast_skip_whitespace() {
     // Arrange
     let input = "   ";
 
@@ -194,7 +194,7 @@ fn test_extract_var_ast_skip_whitespace() {
 }
 
 #[test]
-fn test_extract_var_ast_with_spaces() {
+fn extract_var_ast_with_spaces() {
     // Arrange
     let input = "  token  =  .access_token  ";
 
@@ -211,7 +211,7 @@ fn test_extract_var_ast_with_spaces() {
 // ============================================================================
 
 #[test]
-fn test_ternary_conversion_to_jq() {
+fn ternary_conversion_to_jq() {
     // Test basic ternary converts to if-then-else
     let value = ExtractValue::parse(".status == 200 ? \"OK\" : \"Error\"");
     assert_matches!(value, ExtractValue::Ternary(_));
@@ -222,7 +222,7 @@ fn test_ternary_conversion_to_jq() {
 }
 
 #[test]
-fn test_ternary_conversion_nested() {
+fn ternary_conversion_nested() {
     // Test nested ternary converts recursively
     let value = ExtractValue::parse(".a > 0 ? (.a > 10 ? \"big\" : \"small\") : \"zero\"");
     let jq = value.to_jq();
@@ -232,7 +232,7 @@ fn test_ternary_conversion_nested() {
 }
 
 #[test]
-fn test_ternary_conversion_with_plugins() {
+fn ternary_conversion_with_plugins() {
     // Test ternary with plugin calls
     let value = ExtractValue::parse("@header(\"x\") != null ? @header(\"x\") : \"default\"");
     let jq = value.to_jq();
@@ -244,37 +244,7 @@ fn test_ternary_conversion_with_plugins() {
 // ============================================================================
 
 #[test]
-fn test_full_gctf_with_ternary() {
-    // Arrange
-    let content = r#"
---- ENDPOINT ---
-test.Service/Method
-
---- REQUEST ---
-{"id": 123}
-
---- RESPONSE ---
-{"status": 200}
-
---- EXTRACT ---
-status_label = .status == 200 ? "OK" : "Error"
-
---- ASSERTS ---
-.status_label == "OK"
-"#;
-
-    // Act
-    let result = parse_gctf_from_str(content, "test.gctf");
-
-    // Assert
-    assert!(
-        result.is_ok(),
-        "GCTF with ternary should parse successfully"
-    );
-}
-
-#[test]
-fn test_full_gctf_with_multiple_ternary() {
+fn full_gctf_with_multiple_ternary() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---
@@ -306,7 +276,7 @@ size = .count > 10 ? "large" : "small"
 }
 
 #[test]
-fn test_full_gctf_mixed_syntax() {
+fn full_gctf_mixed_syntax() {
     // Arrange
     let content = r#"
 --- ENDPOINT ---

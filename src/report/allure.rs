@@ -880,7 +880,7 @@ pkg.Service/M
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_build_grpc_steps_marks_unreached_document_skipped() {
+    fn build_grpc_steps_marks_unreached_document_skipped() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chain.gctf");
         std::fs::write(&path, CHAIN_FIXTURE).unwrap();
@@ -915,7 +915,7 @@ pkg.Service/M
     // must use them instead of splitting the total span evenly.
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_build_grpc_steps_uses_real_document_durations() {
+    fn build_grpc_steps_uses_real_document_durations() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chain.gctf");
         std::fs::write(&path, CHAIN_FIXTURE).unwrap();
@@ -961,7 +961,7 @@ pkg.Service/M
     // must still produce a valid, monotonic set of steps.
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_build_grpc_steps_falls_back_to_even_split_without_real_durations() {
+    fn build_grpc_steps_falls_back_to_even_split_without_real_durations() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chain.gctf");
         std::fs::write(&path, CHAIN_FIXTURE).unwrap();
@@ -1005,7 +1005,7 @@ pkg.Service/M
     // test-level failure trace — not be dropped like it was before.
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_allure_emits_assertion_steps_and_diff_trace() {
+    fn allure_emits_assertion_steps_and_diff_trace() {
         let dir = tempfile::tempdir().unwrap();
         let gctf = dir.path().join("t.gctf");
         std::fs::write(&gctf, SINGLE_FIXTURE).unwrap();
@@ -1070,7 +1070,7 @@ pkg.Service/M
     // stable testCaseId must be emitted.
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_allure_emits_suite_behavior_trees_and_test_case_id() {
+    fn allure_emits_suite_behavior_trees_and_test_case_id() {
         let dir = tempfile::tempdir().unwrap();
         let gctf = dir.path().join("t.gctf");
         std::fs::write(&gctf, SINGLE_FIXTURE).unwrap();
@@ -1108,7 +1108,7 @@ pkg.Service/M
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_allure_emits_host_and_thread_labels_for_timeline() {
+    fn allure_emits_host_and_thread_labels_for_timeline() {
         let dir = tempfile::tempdir().unwrap();
         let gctf = dir.path().join("t.gctf");
         std::fs::write(&gctf, SINGLE_FIXTURE).unwrap();
@@ -1148,7 +1148,7 @@ pkg.Service/M
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_allure_thread_label_reflects_real_concurrency() {
+    fn allure_thread_label_reflects_real_concurrency() {
         // Two tests run on genuinely different OS threads must get distinct
         // `thread` label values — proves the label reflects real execution,
         // not a hardcoded/constant placeholder.
@@ -1206,7 +1206,7 @@ pkg.Service/M
     // reruns) for one specific row so its own flaky/history trend works.
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_allure_test_case_id_differs_per_row_but_stable_for_reruns() {
+    fn allure_test_case_id_differs_per_row_but_stable_for_reruns() {
         let dir = tempfile::tempdir().unwrap();
         let gctf = dir.path().join("t.gctf");
         std::fs::write(&gctf, SINGLE_FIXTURE).unwrap();
@@ -1265,7 +1265,7 @@ pkg.Service/M
     }
 
     #[test]
-    fn test_executor_json_from_github_actions_env() {
+    fn executor_json_from_github_actions_env() {
         let env = |k: &str| -> Option<String> {
             match k {
                 "GITHUB_ACTIONS" => Some("true".to_string()),
@@ -1287,7 +1287,7 @@ pkg.Service/M
     }
 
     #[test]
-    fn test_executor_json_none_outside_ci() {
+    fn executor_json_none_outside_ci() {
         assert!(build_executor_json_from(|_| None).is_none());
     }
 
@@ -1295,7 +1295,7 @@ pkg.Service/M
     // the defect-categories and environment widgets.
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_allure_writes_categories_and_environment_sidecars() {
+    fn allure_writes_categories_and_environment_sidecars() {
         let dir = tempfile::tempdir().unwrap();
         let out_dir = dir.path().join("allure-results");
         let reporter =
@@ -1332,7 +1332,7 @@ pkg.Service/M
     // flaky in the Allure UI — otherwise it looks identical to a clean pass.
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_allure_flags_retried_pass_as_flaky() {
+    fn allure_flags_retried_pass_as_flaky() {
         let dir = tempfile::tempdir().unwrap();
         let gctf = dir.path().join("t.gctf");
         std::fs::write(&gctf, SINGLE_FIXTURE).unwrap();
@@ -1359,7 +1359,7 @@ pkg.Service/M
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_allure_clean_pass_has_no_flaky_flag() {
+    fn allure_clean_pass_has_no_flaky_flag() {
         let dir = tempfile::tempdir().unwrap();
         let gctf = dir.path().join("t.gctf");
         std::fs::write(&gctf, SINGLE_FIXTURE).unwrap();
@@ -1390,7 +1390,7 @@ pkg.Service/M
     // directory's container.
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_allure_fixture_writes_container_not_result() {
+    fn allure_fixture_writes_container_not_result() {
         let dir = tempfile::tempdir().unwrap();
         let out_dir = dir.path().join("allure-results");
         let reporter = AllureReporter::new(out_dir.clone());
@@ -1424,7 +1424,7 @@ pkg.Service/M
     // respectively — one container ties the whole directory together.
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_allure_container_links_children_and_fixtures() {
+    fn allure_container_links_children_and_fixtures() {
         let dir = tempfile::tempdir().unwrap();
         let gctf = dir.path().join("t.gctf");
         std::fs::write(&gctf, SINGLE_FIXTURE).unwrap();
@@ -1473,7 +1473,7 @@ pkg.Service/M
     // container at all — nothing meaningful to report beyond the labels.
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_allure_no_container_without_fixtures() {
+    fn allure_no_container_without_fixtures() {
         let dir = tempfile::tempdir().unwrap();
         let gctf = dir.path().join("t.gctf");
         std::fs::write(&gctf, SINGLE_FIXTURE).unwrap();
@@ -1498,7 +1498,7 @@ pkg.Service/M
 
     #[cfg_attr(miri, ignore)]
     #[test]
-    fn test_allure_result_written_atomically_as_valid_json() {
+    fn allure_result_written_atomically_as_valid_json() {
         let dir = tempfile::tempdir().unwrap();
         let gctf = dir.path().join("t.gctf");
         std::fs::write(&gctf, SINGLE_FIXTURE).unwrap();

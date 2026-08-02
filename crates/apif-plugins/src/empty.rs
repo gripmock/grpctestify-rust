@@ -62,13 +62,13 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_plugin_name() {
+    fn empty_plugin_name() {
         let plugin = EmptyPlugin;
         assert_eq!(plugin.name(), "empty");
     }
 
     #[test]
-    fn test_empty_plugin_empty_string() {
+    fn empty_plugin_empty_string() {
         let plugin = EmptyPlugin;
         let context = create_context();
         let result = plugin
@@ -78,7 +78,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_plugin_non_empty_string() {
+    fn empty_plugin_non_empty_string() {
         let plugin = EmptyPlugin;
         let context = create_context();
         let result = plugin
@@ -88,7 +88,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_plugin_empty_array() {
+    fn empty_plugin_empty_array() {
         let plugin = EmptyPlugin;
         let context = create_context();
         let result = plugin.execute(&[Value::Array(vec![])], &context).unwrap();
@@ -96,7 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_plugin_null() {
+    fn empty_plugin_null() {
         let plugin = EmptyPlugin;
         let context = create_context();
         let result = plugin.execute(&[Value::Null], &context).unwrap();
@@ -104,7 +104,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_plugin_empty_object() {
+    fn empty_plugin_empty_object() {
         let plugin = EmptyPlugin;
         let context = create_context();
         let result = plugin
@@ -114,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_plugin_non_empty_object() {
+    fn empty_plugin_non_empty_object() {
         let plugin = EmptyPlugin;
         let context = create_context();
         let obj = serde_json::json!({"key": "value"});
@@ -123,7 +123,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_plugin_non_empty_array() {
+    fn empty_plugin_non_empty_array() {
         let plugin = EmptyPlugin;
         let context = create_context();
         let arr = Value::Array(vec![Value::Number(serde_json::Number::from(1))]);
@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_plugin_number_type() {
+    fn empty_plugin_number_type() {
         let plugin = EmptyPlugin;
         let context = create_context();
         let result = plugin
@@ -142,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_plugin_bool_type() {
+    fn empty_plugin_bool_type() {
         let plugin = EmptyPlugin;
         let context = create_context();
         let result = plugin.execute(&[Value::Bool(true)], &context).unwrap();
@@ -150,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_plugin_no_args() {
+    fn empty_plugin_no_args() {
         let plugin = EmptyPlugin;
         let context = create_context();
         let result = plugin.execute(&[], &context).unwrap();
@@ -162,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_plugin_too_many_args() {
+    fn empty_plugin_too_many_args() {
         let plugin = EmptyPlugin;
         let context = create_context();
         let result = plugin
@@ -182,13 +182,13 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_plugin_description() {
+    fn empty_plugin_description() {
         let plugin = EmptyPlugin;
         assert!(plugin.description().contains("empty"));
     }
 
     #[test]
-    fn test_empty_plugin_signature() {
+    fn empty_plugin_signature() {
         let plugin = EmptyPlugin;
         let sig = plugin.signature();
         assert_eq!(sig.arg_names, &["value"]);

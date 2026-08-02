@@ -690,7 +690,7 @@ impl SourceCollection {
                 .to_string()
         });
 
-        let resolved = resolve_relative_path(doc_path, &def.file);
+        let resolved = crate::utils::file::FileUtils::resolve_relative_path(doc_path, &def.file);
 
         let source: Box<dyn QuerySource> = if def.indexed_by.is_some() {
             let idx_path = resolved.with_extension("gcti");
@@ -969,14 +969,6 @@ fn row_to_map(headers: &[String], row: &SourceRow) -> HashMap<String, String> {
         }
     }
     map
-}
-
-fn resolve_relative_path(doc_path: &Path, file: &str) -> PathBuf {
-    if Path::new(file).is_absolute() {
-        PathBuf::from(file)
-    } else {
-        doc_path.parent().unwrap_or(Path::new(".")).join(file)
-    }
 }
 
 fn print_rows(

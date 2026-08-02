@@ -96,7 +96,7 @@ When enabled, the LSP shows return types of assertion expressions inline:
 
 ```gctf
 --- ASSERTS ---
-@uuid(.id)                    → bool
+@is_uuid(.id)                 → bool
 @len(.items) > 0              → bool
 .elapsed_ms < 1000            → bool
 ```

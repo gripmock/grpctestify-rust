@@ -6,13 +6,13 @@ use grpctestify::report::{Reporter, console::ConsoleReporter, json::JsonReporter
 use grpctestify::state::{ConfigSummary, TestMeta, TestResult, TestResults, TestStatus};
 
 #[test]
-fn test_progress_mode_from_str_dots() {
+fn progress_mode_from_str_dots() {
     let mode = ConsoleMode::Dots;
     assert!(matches!(mode, ConsoleMode::Dots));
 }
 
 #[test]
-fn test_progress_mode_debug() {
+fn progress_mode_debug() {
     // Arrange
     let mode = ConsoleMode::Dots;
 
@@ -24,14 +24,14 @@ fn test_progress_mode_debug() {
 }
 
 #[test]
-fn test_progress_mode_clone() {
+fn progress_mode_clone() {
     let mode = ConsoleMode::Dots;
     let mode_clone = mode;
     assert!(matches!(mode_clone, ConsoleMode::Dots));
 }
 
 #[test]
-fn test_junit_reporter_on_suite_end() {
+fn junit_reporter_on_suite_end() {
     // Arrange
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let path = temp_dir.path().join("junit.xml");
@@ -42,7 +42,7 @@ fn test_junit_reporter_on_suite_end() {
     let result = reporter.on_suite_end(&results);
 
     // Assert
-    assert!(result.is_ok());
+    result.expect("JUnit reporter on_suite_end must succeed");
     assert!(path.exists());
 
     // Verify XML content
@@ -53,7 +53,7 @@ fn test_junit_reporter_on_suite_end() {
 }
 
 #[test]
-fn test_junit_reporter_xml_escaping() {
+fn junit_reporter_xml_escaping() {
     // Arrange
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let path = temp_dir.path().join("junit.xml");
@@ -73,7 +73,7 @@ fn test_junit_reporter_xml_escaping() {
     let result = reporter.on_suite_end(&results);
 
     // Assert
-    assert!(result.is_ok());
+    result.expect("JUnit reporter on_suite_end must succeed");
     let content = std::fs::read_to_string(&path).expect("Failed to read JUnit file");
 
     // Verify XML escaping
@@ -84,7 +84,7 @@ fn test_junit_reporter_xml_escaping() {
 }
 
 #[test]
-fn test_junit_reporter_skipped_test() {
+fn junit_reporter_skipped_test() {
     // Arrange
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let path = temp_dir.path().join("junit.xml");
@@ -113,13 +113,13 @@ fn test_junit_reporter_skipped_test() {
     let result = reporter.on_suite_end(&results);
 
     // Assert
-    assert!(result.is_ok());
+    result.expect("JUnit reporter on_suite_end must succeed");
     let content = std::fs::read_to_string(&path).expect("Failed to read JUnit file");
     assert!(content.contains("<skipped"));
 }
 
 #[test]
-fn test_json_reporter_on_suite_end() {
+fn json_reporter_on_suite_end() {
     // Arrange
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let path = temp_dir.path().join("results.json");
@@ -147,7 +147,7 @@ fn test_json_reporter_on_suite_end() {
     let result = reporter.on_suite_end(&results);
 
     // Assert
-    assert!(result.is_ok());
+    result.expect("JSON reporter on_suite_end must succeed");
     assert!(path.exists());
 
     let content = std::fs::read_to_string(&path).expect("Failed to read JSON file");
@@ -163,7 +163,7 @@ fn test_json_reporter_on_suite_end() {
 }
 
 #[test]
-fn test_json_reporter_with_failure() {
+fn json_reporter_with_failure() {
     // Arrange
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let path = temp_dir.path().join("results.json");
@@ -182,7 +182,7 @@ fn test_json_reporter_with_failure() {
     let result = reporter.on_suite_end(&results);
 
     // Assert
-    assert!(result.is_ok());
+    result.expect("JSON reporter on_suite_end must succeed");
     let content = std::fs::read_to_string(&path).expect("Failed to read JSON file");
     let json: serde_json::Value = serde_json::from_str(&content).expect("Invalid JSON");
 
@@ -190,7 +190,7 @@ fn test_json_reporter_with_failure() {
 }
 
 #[test]
-fn test_json_reporter_round_trip() {
+fn json_reporter_round_trip() {
     // Arrange
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let path = temp_dir.path().join("roundtrip.json");
@@ -239,7 +239,7 @@ fn test_json_reporter_round_trip() {
 }
 
 #[test]
-fn test_console_reporter_verbose_mode() {
+fn console_reporter_verbose_mode() {
     // Arrange
     let env_info = grpctestify::report::console::EnvironmentInfo {
         address: "localhost:50051".to_string(),
@@ -270,7 +270,7 @@ fn test_console_reporter_verbose_mode() {
 }
 
 #[test]
-fn test_console_reporter_dots_mode() {
+fn console_reporter_dots_mode() {
     // Arrange
     let env_info = grpctestify::report::console::EnvironmentInfo {
         address: "localhost:50051".to_string(),
@@ -302,7 +302,7 @@ fn test_console_reporter_dots_mode() {
 }
 
 #[test]
-fn test_console_reporter_print_summary() {
+fn console_reporter_print_summary() {
     // Arrange
     let env_info = grpctestify::report::console::EnvironmentInfo {
         address: "localhost:50051".to_string(),
@@ -326,7 +326,7 @@ fn test_console_reporter_print_summary() {
 }
 
 #[test]
-fn test_console_reporter_print_slowest_tests() {
+fn console_reporter_print_slowest_tests() {
     // Arrange
     let env_info = grpctestify::report::console::EnvironmentInfo {
         address: "localhost:50051".to_string(),
@@ -374,7 +374,7 @@ fn test_console_reporter_print_slowest_tests() {
 }
 
 #[test]
-fn test_coverage_collector_new() {
+fn coverage_collector_new() {
     let collector = grpctestify::report::coverage::CoverageCollector::new();
     let report = collector.generate_json_report();
     assert_eq!(report.files.len(), 0);
@@ -384,7 +384,7 @@ fn test_coverage_collector_new() {
 }
 
 #[test]
-fn test_coverage_collector_record_call() {
+fn coverage_collector_record_call() {
     let collector = grpctestify::report::coverage::CoverageCollector::new();
     collector.record_call("TestService", "TestMethod");
     collector.record_call("TestService", "TestMethod");
@@ -396,7 +396,7 @@ fn test_coverage_collector_record_call() {
 }
 
 #[test]
-fn test_coverage_collector_extract_fields() {
+fn coverage_collector_extract_fields() {
     let collector = grpctestify::report::coverage::CoverageCollector::new();
     let json = serde_json::json!({
         "name": "test",
@@ -412,7 +412,7 @@ fn test_coverage_collector_extract_fields() {
 }
 
 #[test]
-fn test_coverage_stats() {
+fn coverage_stats() {
     let stats = grpctestify::report::coverage::CoverageStats {
         covered: 5,
         total: 10,
@@ -422,7 +422,7 @@ fn test_coverage_stats() {
 }
 
 #[test]
-fn test_coverage_file() {
+fn coverage_file() {
     let file = grpctestify::report::coverage::CoverageFile {
         uri: "grpc://test.Service".to_string(),
         statements: grpctestify::report::coverage::CoverageStats {
@@ -442,7 +442,7 @@ fn test_coverage_file() {
 }
 
 #[test]
-fn test_message_field_coverage() {
+fn message_field_coverage() {
     let msg = grpctestify::report::coverage::MessageFieldCoverage {
         message_type: "User".to_string(),
         covered_fields: vec!["name".to_string(), "email".to_string()],
@@ -454,14 +454,14 @@ fn test_message_field_coverage() {
 }
 
 #[test]
-fn test_coverage_text_report_empty() {
+fn coverage_text_report_empty() {
     let collector = grpctestify::report::coverage::CoverageCollector::new();
     let text = collector.generate_text_report();
     assert!(text.contains("No services found"));
 }
 
 #[test]
-fn test_junit_reporter_tags_in_properties() {
+fn junit_reporter_tags_in_properties() {
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let path = temp_dir.path().join("junit.xml");
     let reporter = grpctestify::report::junit::JunitReporter::new(path.clone());
@@ -488,7 +488,7 @@ fn test_junit_reporter_tags_in_properties() {
     });
 
     let result = reporter.on_suite_end(&results);
-    assert!(result.is_ok());
+    result.expect("JUnit reporter on_suite_end must succeed");
 
     let content = std::fs::read_to_string(&path).expect("Failed to read JUnit file");
     assert!(content.contains(r#"property name="tag" value="smoke""#));
@@ -497,7 +497,7 @@ fn test_junit_reporter_tags_in_properties() {
 }
 
 #[test]
-fn test_json_reporter_includes_meta() {
+fn json_reporter_includes_meta() {
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let path = temp_dir.path().join("results.json");
     let reporter = JsonReporter::new(path.clone());
@@ -526,7 +526,7 @@ fn test_json_reporter_includes_meta() {
     });
 
     let result = reporter.on_suite_end(&results);
-    assert!(result.is_ok());
+    result.expect("JSON reporter on_suite_end must succeed");
 
     let content = std::fs::read_to_string(&path).expect("Failed to read JSON file");
     let json: serde_json::Value = serde_json::from_str(&content).unwrap();

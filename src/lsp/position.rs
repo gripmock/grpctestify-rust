@@ -43,7 +43,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_ascii_roundtrip() {
+    fn ascii_roundtrip() {
         let line = "hello world";
         assert_eq!(utf16_col_to_byte(line, 0), 0);
         assert_eq!(utf16_col_to_byte(line, 6), 6);
@@ -53,7 +53,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multibyte_bmp() {
+    fn multibyte_bmp() {
         // "café" — 'é' is 2 bytes in UTF-8 but 1 UTF-16 code unit.
         let line = "café x";
         // UTF-16 col 4 is the space after 'é'; byte index is 5 (c,a,f=3 + é=2).
@@ -64,7 +64,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multibyte_cyrillic() {
+    fn multibyte_cyrillic() {
         // Each Cyrillic char is 2 bytes / 1 UTF-16 unit.
         let line = "Привет {{ x }}";
         let byte = utf16_col_to_byte(line, 7); // start of "{{"
@@ -73,7 +73,7 @@ mod tests {
     }
 
     #[test]
-    fn test_astral_char() {
+    fn astral_char() {
         // "😀" is 4 bytes in UTF-8 and 2 UTF-16 code units (a surrogate pair).
         let line = "😀ab";
         assert_eq!(utf16_col_to_byte(line, 2), 4); // after the emoji

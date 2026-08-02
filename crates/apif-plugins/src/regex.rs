@@ -2,41 +2,12 @@
 // Usage: @regex(field, "pattern")
 
 use anyhow::Result;
-use regex::Regex;
 use serde_json::Value;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
 
 use crate::{
     ArgTypeInfo, Plugin, PluginContext, PluginPurity, PluginResult, PluginSignature, TypeInfo,
 };
 use apif_assert::engine::AssertionResult;
-
-thread_local! {
-    static REGEX_CACHE: RefCell<HashMap<String, std::result::Result<Rc<Regex>, String>>> =
-        RefCell::new(HashMap::new());
-}
-
-/// `pub(crate)` so `rhai_stdlib::regex_match` shares this cache instead of
-/// keeping a second, independent one.
-pub(crate) fn cached_regex(pattern: &str) -> std::result::Result<Rc<Regex>, String> {
-    if let Some(cached) = REGEX_CACHE.with(|cache| cache.borrow().get(pattern).cloned()) {
-        return cached;
-    }
-
-    let compiled = Regex::new(pattern)
-        .map(Rc::new)
-        .map_err(|err| err.to_string());
-
-    REGEX_CACHE.with(|cache| {
-        cache
-            .borrow_mut()
-            .insert(pattern.to_string(), compiled.clone());
-    });
-
-    compiled
-}
 
 /// Regex plugin for pattern matching
 #[derive(Debug, Clone, Default)]
@@ -106,7 +77,7 @@ impl Plugin for RegexPlugin {
             }
         };
 
-        match cached_regex(pattern) {
+        match apif_assert::cached_regex(pattern) {
             Ok(re) => {
                 if re.is_match(field_value) {
                     Ok(PluginResult::Assertion(AssertionResult::Pass))
@@ -134,7 +105,7 @@ mod tests {
     }
 
     #[test]
-    fn test_regex_plugin_valid_email() {
+    fn regex_plugin_valid_email() {
         let plugin = RegexPlugin;
         let result = plugin
             .execute(
@@ -153,7 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn test_regex_plugin_invalid_email() {
+    fn regex_plugin_invalid_email() {
         let plugin = RegexPlugin;
         let result = plugin
             .execute(
@@ -172,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn test_regex_plugin_uuid() {
+    fn regex_plugin_uuid() {
         let plugin = RegexPlugin;
         let result = plugin
             .execute(
@@ -194,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn test_regex_plugin_invalid_pattern() {
+    fn regex_plugin_invalid_pattern() {
         let plugin = RegexPlugin;
         let result = plugin
             .execute(
@@ -213,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn test_regex_plugin_wrong_arg_count() {
+    fn regex_plugin_wrong_arg_count() {
         let plugin = RegexPlugin;
         let result = plugin
             .execute(&[Value::String("test".to_string())], &create_context())
@@ -226,13 +197,13 @@ mod tests {
     }
 
     #[test]
-    fn test_regex_plugin_name() {
+    fn regex_plugin_name() {
         let plugin = RegexPlugin;
         assert_eq!(plugin.name(), "regex");
     }
 
     #[test]
-    fn test_regex_plugin_description() {
+    fn regex_plugin_description() {
         let plugin = RegexPlugin;
         assert!(plugin.description().contains("regex"));
     }

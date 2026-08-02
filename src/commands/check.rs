@@ -638,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn test_check_preamble_order_clean() {
+    fn check_preamble_order_clean() {
         let doc = doc_with_sections(vec![
             kv_section(SectionType::Meta, &[]),
             kv_section(SectionType::Bench, &[("mode", "fixed")]),
@@ -655,7 +655,7 @@ mod tests {
     }
 
     #[test]
-    fn test_check_preamble_order_violation_options_before_bench() {
+    fn check_preamble_order_violation_options_before_bench() {
         let doc = doc_with_sections(vec![
             kv_section(SectionType::Options, &[]),
             kv_section(SectionType::Bench, &[("mode", "fixed")]),
@@ -667,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn test_check_preamble_order_violation_address_before_bench() {
+    fn check_preamble_order_violation_address_before_bench() {
         let doc = doc_with_sections(vec![
             kv_section(SectionType::Address, &[]),
             kv_section(SectionType::Bench, &[]),
@@ -678,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn test_check_preamble_order_multiple_violations() {
+    fn check_preamble_order_multiple_violations() {
         let doc = doc_with_sections(vec![
             kv_section(SectionType::Options, &[]),
             kv_section(SectionType::Address, &[]),
@@ -689,7 +689,7 @@ mod tests {
     }
 
     #[test]
-    fn test_check_preamble_order_body_sections_unaffected() {
+    fn check_preamble_order_body_sections_unaffected() {
         let doc = doc_with_sections(vec![
             kv_section(SectionType::Meta, &[]),
             kv_section(SectionType::Options, &[]),
@@ -711,7 +711,7 @@ mod tests {
     // `fmt --write` really does reorder the preamble (format_gctf_chain sorts
     // blocks by preamble_rank), so this hint must keep promising it.
     #[test]
-    fn test_section_order_hint_promises_fmt_autofix() {
+    fn section_order_hint_promises_fmt_autofix() {
         let doc = doc_with_sections(vec![
             kv_section(SectionType::Address, &[]),
             kv_section(SectionType::Bench, &[]),

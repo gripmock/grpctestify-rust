@@ -151,14 +151,14 @@ mod tests {
     use apif_state::TestResult;
 
     #[test]
-    fn test_streaming_reporter_new() {
+    fn streaming_reporter_new() {
         let reporter = StreamingJsonReporter::new(5);
         assert_eq!(reporter.test_count, 5);
         assert!(!reporter.suite_started.is_completed());
     }
 
     #[test]
-    fn test_streaming_reporter_lifecycle() {
+    fn streaming_reporter_lifecycle() {
         let reporter = StreamingJsonReporter::new(2);
         // These should not panic — emit writes to stdout but swallows errors
         reporter.on_test_start("test1");
@@ -172,11 +172,11 @@ mod tests {
 
         let results = TestResults::new();
         let r = reporter.on_suite_end(&results);
-        assert!(r.is_ok());
+        r.expect("on_suite_end must succeed");
     }
 
     #[test]
-    fn test_streaming_reporter_on_test_end_with_error_message() {
+    fn streaming_reporter_on_test_end_with_error_message() {
         let reporter = StreamingJsonReporter::new(1);
         reporter.on_test_start("test");
 
@@ -188,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn test_streaming_test_end_includes_assertion_outcomes() {
+    fn streaming_test_end_includes_assertion_outcomes() {
         use apif_state::AssertionRecord;
         let reporter = StreamingJsonReporter::new(1);
         let result = TestResult::fail("t.gctf", "1 assertion failed".into(), 5, None)
@@ -219,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn test_streaming_test_end_omits_assertions_when_none_recorded() {
+    fn streaming_test_end_omits_assertions_when_none_recorded() {
         let reporter = StreamingJsonReporter::new(1);
         let result = TestResult::pass("t.gctf", 5, None);
         reporter.on_test_end("t", &result);
@@ -234,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn test_streaming_reporter_suite_start_once() {
+    fn streaming_reporter_suite_start_once() {
         let reporter = StreamingJsonReporter::new(1);
         reporter.on_test_start("t1");
         assert!(reporter.suite_started.is_completed());
@@ -249,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn test_streaming_suite_start_precedes_test_start_under_parallelism() {
+    fn streaming_suite_start_precedes_test_start_under_parallelism() {
         use std::sync::Arc;
         let reporter = Arc::new(StreamingJsonReporter::new(16));
         let mut handles = Vec::new();

@@ -45,6 +45,8 @@ grpctestify [OPTIONS] [TEST_PATHS]... [COMMAND]
 - `index <SOURCES...>` - build/rebuild data source indexes
 - `query [FILES...]` - interactive shell or CLI query for data sources
 - `gen grpcurl [--execute] <grpcurl-args>` - generate a `.gctf` file from a grpcurl invocation
+- `docs [PATH]...` - generate Markdown API docs from `.gctf` test files (`--output`, `--coverage`)
+- `plugins <COMMAND>` - install/manage `.rhai` plugins from a git host
 - `play` - launch the web UI playground (proto reflection, saved requests, history, environments)
 - `scaffold --endpoint <SERVICE/METHOD>` - generate a runnable `.gctf` test from a proto file, descriptor, or server reflection
 

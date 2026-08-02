@@ -336,14 +336,14 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_variable_at_position_not_on_variable() {
+    fn extract_variable_at_position_not_on_variable() {
         let line = "Authorization: Bearer {{ token }}";
         let result = extract_variable_at_position(line, 0);
         assert!(result.is_none());
     }
 
     #[test]
-    fn test_extract_variable_at_position_non_ascii_utf16() {
+    fn extract_variable_at_position_non_ascii_utf16() {
         // The `references` handler receives an LSP UTF-16 column and must
         // convert it to a byte offset before slicing; a raw UTF-16 index on a
         // non-ASCII line mislocates (or panics mid-multibyte).
@@ -381,7 +381,7 @@ user_id = .user_id
     }
 
     #[test]
-    fn test_find_variable_not_found() {
+    fn find_variable_not_found() {
         let content = r#"
 --- ENDPOINT ---
 test.Service/Method
@@ -461,7 +461,7 @@ $token != null
     }
 
     #[test]
-    fn test_find_variable_definition_full() {
+    fn find_variable_definition_full() {
         let content = r#"
 --- ENDPOINT ---
 test.Service/Method
@@ -511,7 +511,7 @@ auth_token = .token
     }
 
     #[test]
-    fn test_build_rename_edits_whole_word_and_definition() {
+    fn build_rename_edits_whole_word_and_definition() {
         let content = r#"--- ENDPOINT ---
 svc.M
 
@@ -566,7 +566,7 @@ $token_extra != null
     }
 
     #[test]
-    fn test_find_variable_references_whole_word_dollar() {
+    fn find_variable_references_whole_word_dollar() {
         // `$token` must not match `$token_extra`.
         let content = r#"--- ENDPOINT ---
 svc.M

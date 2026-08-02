@@ -1,13 +1,16 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
 use grpctestify::serialize_gctf;
 
+#[path = "support/mod.rs"]
+mod support;
+
 fn format_with_serializer(content: &str) -> String {
     let doc = grpctestify::parser::parse_gctf_from_str(content, "test.gctf").unwrap();
     serialize_gctf(&doc)
 }
 
 #[test]
-fn test_fmt_unary_strict() {
+fn fmt_unary_strict() {
     let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -43,7 +46,7 @@ test.Service/Method
 }
 
 #[test]
-fn test_fmt_preamble_sections_sorted_canonically() {
+fn fmt_preamble_sections_sorted_canonically() {
     let source = r#"--- ENDPOINT ---
 svc/Method
 
@@ -93,7 +96,7 @@ timeout: 10
 }
 
 #[test]
-fn test_fmt_preamble_body_boundary_preserved() {
+fn fmt_preamble_body_boundary_preserved() {
     let source = r#"--- ENDPOINT ---
 svc/Method
 
@@ -117,7 +120,7 @@ authorization: Bearer token
 }
 
 #[test]
-fn test_fmt_bench_keys_canonical_order() {
+fn fmt_bench_keys_canonical_order() {
     let source = r#"--- ENDPOINT ---
 svc/Method
 
@@ -157,7 +160,7 @@ requests: 5000
 }
 
 #[test]
-fn test_fmt_bench_after_meta_in_preamble() {
+fn fmt_bench_after_meta_in_preamble() {
     let source = r#"--- ENDPOINT ---
 svc/Method
 
@@ -189,7 +192,7 @@ timeout: 10
 }
 
 #[test]
-fn test_fmt_preserves_type_cast_in_asserts() {
+fn fmt_preserves_type_cast_in_asserts() {
     let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -214,7 +217,7 @@ test.Service/Method
 }
 
 #[test]
-fn test_fmt_preserves_type_cast_string_contains() {
+fn fmt_preserves_type_cast_string_contains() {
     let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -235,7 +238,7 @@ test.Service/Method
 }
 
 #[test]
-fn test_fmt_preserves_type_cast_plugin() {
+fn fmt_preserves_type_cast_plugin() {
     let source = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -256,7 +259,7 @@ test.Service/Method
 }
 
 #[test]
-fn test_fmt_keeps_attribute_on_request_not_endpoint() {
+fn fmt_keeps_attribute_on_request_not_endpoint() {
     let source = r#"--- ENDPOINT ---
 extended.DesignService/GetThemeColor
 
@@ -299,4 +302,111 @@ extended.DesignService/GetThemeColor
 "#;
 
     assert_eq!(formatted, expected);
+}
+
+#[test]
+fn fmt_preserves_escapes_in_assertion_string_literals() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("esc.gctf");
+    let asserts = [
+        r#"!(.p == "a\\b")"#,
+        r#"!(.q == "tab\there")"#,
+        r#"!(.r == "line\nbreak")"#,
+        r#".m == "say \"hi\"""#,
+    ];
+    let content = format!(
+        "--- ENDPOINT ---\nsvc.S/M\n\n--- REQUEST ---\n{{}}\n\n--- RESPONSE ---\n{{ \"p\": \"x\" }}\n\n--- ASSERTS ---\n{}\n",
+        asserts.join("\n")
+    );
+    std::fs::write(&file, &content).unwrap();
+
+    let output = support::cli_command()
+        .args(["fmt", "--write", &file.to_string_lossy()])
+        .output()
+        .expect("failed to run fmt");
+    assert!(
+        output.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The literals must survive byte-for-byte. The surrounding expression may
+    // legitimately be rewritten (`!(x == y)` folding to `x != y`), so this pins
+    // the payloads, not the layout.
+    let after = std::fs::read_to_string(&file).unwrap();
+    let literals = [
+        r#""a\\b""#,
+        r#""tab\there""#,
+        r#""line\nbreak""#,
+        r#""say \"hi\"""#,
+    ];
+    for literal in literals {
+        assert!(
+            after.contains(literal),
+            "fmt altered a string literal: {literal} missing from\n{after}"
+        );
+    }
+}
+
+#[test]
+fn fmt_still_rewrites_assertions_without_escapes() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("plain.gctf");
+    std::fs::write(
+        &file,
+        "--- ENDPOINT ---\nsvc.S/M\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{ \"p\": \"x\" }\n\n--- ASSERTS ---\n!(.plain == \"abc\")\n",
+    )
+    .unwrap();
+
+    let output = support::cli_command()
+        .args(["fmt", "--write", &file.to_string_lossy()])
+        .output()
+        .expect("failed to run fmt");
+    assert!(output.status.success());
+
+    let after = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        after.contains(r#".plain != "abc""#),
+        "the negation rule must still apply:\n{after}"
+    );
+}
+
+#[test]
+fn fmt_groups_digits_in_assertions_but_not_in_payloads() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("g.gctf");
+    std::fs::write(
+        &file,
+        "--- ENDPOINT ---\nsvc.S/M\n\n--- REQUEST ---\n{ \"n\": 6000000 }\n\n--- RESPONSE ---\n{ \"product\": 1000000, \"ratio\": 1.500000 }\n\n--- ASSERTS ---\n.count == 1000000\n",
+    )
+    .unwrap();
+
+    let output = support::cli_command()
+        .args(["fmt", "--write", &file.to_string_lossy()])
+        .output()
+        .expect("failed to run fmt");
+    assert!(output.status.success());
+    let after = std::fs::read_to_string(&file).unwrap();
+
+    assert!(
+        after.contains("\"n\": 6000000") && after.contains("\"product\": 1000000"),
+        "payload digits must stay ungrouped:\n{after}"
+    );
+    assert!(
+        after.contains(".count == 1_000_000"),
+        "assertion digits are still grouped:\n{after}"
+    );
+    assert!(
+        after.contains("\"ratio\": 1.5"),
+        "fraction trimming still applies inside payloads:\n{after}"
+    );
+
+    // The payload must be readable by a plain JSON parser.
+    let body = after
+        .split("--- RESPONSE ---\n")
+        .nth(1)
+        .and_then(|s| s.split("\n\n").next())
+        .expect("response body");
+    serde_json::from_str::<serde_json::Value>(body)
+        .unwrap_or_else(|e| panic!("formatted payload is not valid JSON: {e}\n{body}"));
 }

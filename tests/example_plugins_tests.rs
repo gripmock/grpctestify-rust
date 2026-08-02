@@ -15,7 +15,8 @@
 
 #[path = "support/mod.rs"]
 mod support;
-use support::cli_command;
+use support::run_isolated;
+use support::spawn_health_server;
 
 fn examples_plugins_source_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/plugins")
@@ -35,36 +36,6 @@ fn setup_project_plugin_dir(cwd: &std::path::Path) {
     }
 }
 
-/// Spawn a real `grpc.health.v1.Health` server (plus reflection) on an
-/// ephemeral port — same pattern used throughout this test suite.
-async fn spawn_health_server() -> String {
-    let (reporter, health_service) = tonic_health::server::health_reporter();
-    reporter
-        .set_service_status("", tonic_health::ServingStatus::Serving)
-        .await;
-    let reflection_service = tonic_reflection::server::Builder::configure()
-        .register_encoded_file_descriptor_set(tonic_health::pb::FILE_DESCRIPTOR_SET)
-        .build_v1()
-        .expect("build reflection service");
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind ephemeral port");
-    let addr = listener.local_addr().expect("local addr");
-    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-
-    tokio::spawn(async move {
-        tonic::transport::Server::builder()
-            .add_service(health_service)
-            .add_service(reflection_service)
-            .serve_with_incoming(incoming)
-            .await
-            .expect("health server run");
-    });
-
-    addr.to_string()
-}
-
 fn write_test_file(dir: &std::path::Path, address: &str, asserts: &str) -> std::path::PathBuf {
     let file = dir.join("t.gctf");
     std::fs::write(
@@ -76,20 +47,6 @@ fn write_test_file(dir: &std::path::Path, address: &str, asserts: &str) -> std::
     .expect("failed to write test file");
     file
 }
-
-fn run_in(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
-    cli_command()
-        .current_dir(dir)
-        .env("HOME", dir)
-        // Script plugins only execute once the user has agreed to run them
-        // (`apif_plugins::trust`); a non-interactive test can't answer the
-        // prompt, so it takes the same explicit opt-in CI uses.
-        .env("GRPCTESTIFY_TRUST_PLUGINS", "1")
-        .args(args)
-        .output()
-        .expect("failed to run CLI")
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn assertion_plugins_pass_on_valid_input() {
     let address = spawn_health_server().await;
@@ -109,7 +66,7 @@ async fn assertion_plugins_pass_on_valid_input() {
 @flexible_match("ABC123", "^[A-Z]{3}[0-9]{3}$")"#,
     );
 
-    let output = run_in(dir.path(), &["run", &file.to_string_lossy(), "--verbose"]);
+    let output = run_isolated(dir.path(), &["run", &file.to_string_lossy(), "--verbose"]);
     assert!(
         output.status.success(),
         "stdout:\n{}\nstderr:\n{}",
@@ -125,7 +82,7 @@ async fn assertion_plugins_fail_on_invalid_input() {
     setup_project_plugin_dir(dir.path());
     let file = write_test_file(dir.path(), &address, r#"@is_even(3)"#);
 
-    let output = run_in(dir.path(), &["run", &file.to_string_lossy()]);
+    let output = run_isolated(dir.path(), &["run", &file.to_string_lossy()]);
     assert!(!output.status.success(), "@is_even(3) must fail — 3 is odd");
 }
 
@@ -137,7 +94,7 @@ async fn luhn_valid_rejects_a_bad_checksum() {
     // Same digits as the valid example, last digit changed — breaks the checksum.
     let file = write_test_file(dir.path(), &address, r#"@luhn_valid("4532015112830367")"#);
 
-    let output = run_in(dir.path(), &["run", &file.to_string_lossy()]);
+    let output = run_isolated(dir.path(), &["run", &file.to_string_lossy()]);
     assert!(!output.status.success(), "bad Luhn checksum must fail");
 }
 
@@ -148,7 +105,7 @@ async fn stdlib_demo_rejects_a_non_uuid_and_logs_a_warning() {
     setup_project_plugin_dir(dir.path());
     let file = write_test_file(dir.path(), &address, r#"@stdlib_demo("not-a-uuid")"#);
 
-    let output = run_in(dir.path(), &["run", &file.to_string_lossy(), "--verbose"]);
+    let output = run_isolated(dir.path(), &["run", &file.to_string_lossy(), "--verbose"]);
     assert!(
         !output.status.success(),
         "a non-UUID value must fail @stdlib_demo"
@@ -172,7 +129,7 @@ async fn reporter_scripts_emit_expected_output() {
     setup_project_plugin_dir(dir.path());
     let file = write_test_file(dir.path(), &address, r#".status == "SERVING""#);
 
-    let output = run_in(dir.path(), &["run", &file.to_string_lossy()]);
+    let output = run_isolated(dir.path(), &["run", &file.to_string_lossy()]);
     assert!(
         output.status.success(),
         "stdout:\n{}\nstderr:\n{}",
@@ -216,7 +173,7 @@ async fn slow_test_alert_fires_when_duration_exceeds_threshold() {
     setup_project_plugin_dir(dir.path());
     let file = write_test_file(dir.path(), &address, r#".status == "SERVING""#);
 
-    let output = run_in(dir.path(), &["run", &file.to_string_lossy()]);
+    let output = run_isolated(dir.path(), &["run", &file.to_string_lossy()]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         !stdout.contains("SLOW ("),
@@ -225,13 +182,13 @@ async fn slow_test_alert_fires_when_duration_exceeds_threshold() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_shape_report_prints_config_summary() {
+async fn shape_report_prints_config_summary() {
     let address = spawn_health_server().await;
     let dir = tempfile::tempdir().unwrap();
     setup_project_plugin_dir(dir.path());
     let file = write_test_file(dir.path(), &address, r#".status == "SERVING""#);
 
-    let output = run_in(dir.path(), &["run", &file.to_string_lossy()]);
+    let output = run_isolated(dir.path(), &["run", &file.to_string_lossy()]);
     assert!(
         output.status.success(),
         "stdout:\n{}\nstderr:\n{}",
@@ -253,7 +210,7 @@ async fn flexible_match_dispatches_by_arity() {
 
     // 1-arg overload: present-value check — a missing field must fail.
     let missing_field = write_test_file(dir.path(), &address, r#"@flexible_match(.nope)"#);
-    let output = run_in(dir.path(), &["run", &missing_field.to_string_lossy()]);
+    let output = run_isolated(dir.path(), &["run", &missing_field.to_string_lossy()]);
     assert!(
         !output.status.success(),
         "@flexible_match(.nope) must fail — the field doesn't exist"
@@ -265,7 +222,7 @@ async fn flexible_match_dispatches_by_arity() {
         &address,
         r#"@flexible_match(.status, "^NOPE$")"#,
     );
-    let output = run_in(dir.path(), &["run", &file.to_string_lossy()]);
+    let output = run_isolated(dir.path(), &["run", &file.to_string_lossy()]);
     assert!(
         !output.status.success(),
         "@flexible_match(.status, \"^NOPE$\") must fail — SERVING doesn't match"

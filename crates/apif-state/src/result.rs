@@ -392,7 +392,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_test_result_pass() {
+    fn result_pass() {
         let result = TestResult::pass("test.gctf", 100, Some(50));
         assert_eq!(result.name, "test.gctf");
         assert_eq!(result.status, TestStatus::Pass);
@@ -402,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_result_retried_defaults_false_and_is_settable() {
+    fn result_retried_defaults_false_and_is_settable() {
         let result = TestResult::pass("test.gctf", 100, Some(50));
         assert!(!result.retried);
 
@@ -411,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_result_retried_false_not_serialized() {
+    fn result_retried_false_not_serialized() {
         let result = TestResult::pass("test.gctf", 100, Some(50));
         let json = serde_json::to_string(&result).unwrap();
         assert!(
@@ -425,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_result_document_durations_settable_and_empty_omitted() {
+    fn result_document_durations_settable_and_empty_omitted() {
         let result = TestResult::pass("test.gctf", 100, Some(50));
         assert!(result.document_durations_ms.is_empty());
         let json = serde_json::to_string(&result).unwrap();
@@ -445,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_result_pass_no_grpc() {
+    fn result_pass_no_grpc() {
         let result = TestResult::pass("test.gctf", 100, None);
         assert_eq!(result.name, "test.gctf");
         assert_eq!(result.status, TestStatus::Pass);
@@ -453,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_result_fail() {
+    fn result_fail() {
         let result = TestResult::fail("test.gctf", "error message".to_string(), 100, Some(50));
         assert_eq!(result.name, "test.gctf");
         assert_eq!(result.status, TestStatus::Fail);
@@ -463,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_result_clone() {
+    fn result_clone() {
         let result = TestResult::pass("test.gctf", 100, Some(50));
         let cloned = result.clone();
         assert_eq!(result.name, cloned.name);
@@ -471,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_result_debug() {
+    fn result_debug() {
         let result = TestResult::pass("test.gctf", 100, Some(50));
         let debug_str = format!("{:?}", result);
         assert!(debug_str.contains("test.gctf"));
@@ -479,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_result_pass_with_meta() {
+    fn result_pass_with_meta() {
         let meta = TestMeta {
             name: Some("display".into()),
             summary: Some("test summary".into()),
@@ -493,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_result_fail_with_meta() {
+    fn result_fail_with_meta() {
         let meta = TestMeta {
             name: Some("display".into()),
             ..Default::default()
@@ -511,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_meta_is_empty() {
+    fn meta_is_empty() {
         let meta = TestMeta::default();
         assert!(meta.is_empty());
 
@@ -523,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_meta_is_empty_checks_owner_and_links() {
+    fn meta_is_empty_checks_owner_and_links() {
         // Regression: `is_empty()` (drives `skip_serializing_if` on
         // `TestResult.meta`) only checked name/summary/tags — a META with
         // only `owner:`/`links:` set was misclassified as empty and its
@@ -543,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_meta_from_file_meta() {
+    fn meta_from_file_meta() {
         let file_meta = apif_ast::FileMeta {
             name: Some("test.gctf".into()),
             summary: Some("desc".into()),
@@ -559,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn test_test_result_serialization() {
+    fn result_serialization() {
         let result = TestResult::pass("test.gctf", 100, Some(50));
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("Pass"));

@@ -9,36 +9,9 @@
 
 #[path = "support/mod.rs"]
 mod support;
+use support::spawn_health_server;
 
 use std::path::Path;
-
-async fn spawn_health_server() -> String {
-    let (reporter, health_service) = tonic_health::server::health_reporter();
-    reporter
-        .set_service_status("", tonic_health::ServingStatus::Serving)
-        .await;
-    let reflection_service = tonic_reflection::server::Builder::configure()
-        .register_encoded_file_descriptor_set(tonic_health::pb::FILE_DESCRIPTOR_SET)
-        .build_v1()
-        .expect("build reflection service");
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind ephemeral port");
-    let addr = listener.local_addr().expect("local addr");
-    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-
-    tokio::spawn(async move {
-        tonic::transport::Server::builder()
-            .add_service(health_service)
-            .add_service(reflection_service)
-            .serve_with_incoming(incoming)
-            .await
-            .expect("health server run");
-    });
-
-    addr.to_string()
-}
 
 /// One passing and one failing `.gctf`, same shape as `plugin_dir_tests.rs`'s
 /// fixtures — `a_`/`b_` prefixes make file-path sort order (the CLI's
@@ -225,32 +198,8 @@ fn sort_bar_rows(text: &str) -> String {
     out
 }
 
-fn golden_path(name: &str) -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/golden/output_forms")
-        .join(format!("{name}.golden"))
-}
-
 fn assert_golden(name: &str, actual: &str) {
-    let path = golden_path(name);
-    if std::env::var("DEBUG_GOLDEN").is_ok() {
-        std::fs::write(format!("/tmp/{name}.actual"), actual).unwrap();
-    }
-    if std::env::var("UPDATE_GOLDEN").is_ok() {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, actual).unwrap();
-        return;
-    }
-    let expected = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
-            "failed to read golden file {}: {e}\nrun with UPDATE_GOLDEN=1 to create it\nactual output was:\n{actual}",
-            path.display()
-        )
-    });
-    assert_eq!(
-        expected, actual,
-        "golden mismatch for '{name}' (rerun with UPDATE_GOLDEN=1 if this change is intentional)"
-    );
+    support::assert_golden(&format!("output_forms/{name}.golden"), actual);
 }
 
 async fn run_console_form(name: &str, progress: &str, stream: bool) {

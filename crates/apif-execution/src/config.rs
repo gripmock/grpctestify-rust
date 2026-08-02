@@ -25,7 +25,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tls_config_default() {
+    fn tls_config_default() {
         let tls = TlsConfig::default();
         assert!(tls.ca_cert.is_none());
         assert!(tls.client_cert.is_none());
@@ -33,7 +33,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tls_config_custom() {
+    fn tls_config_custom() {
         let tls = TlsConfig {
             ca_cert: Some("/path/to/ca.pem".into()),
             insecure: true,
@@ -44,7 +44,7 @@ mod tests {
     }
 
     #[test]
-    fn test_call_client_config_default() {
+    fn call_client_config_default() {
         let cfg = CallClientConfig::default();
         assert!(cfg.address.is_empty());
         assert_eq!(cfg.timeout_seconds, 0);
@@ -53,7 +53,7 @@ mod tests {
     }
 
     #[test]
-    fn test_call_client_config_custom() {
+    fn call_client_config_custom() {
         let mut meta = HashMap::new();
         meta.insert("authorization".into(), "token123".into());
         let cfg = CallClientConfig {

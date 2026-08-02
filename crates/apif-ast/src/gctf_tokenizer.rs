@@ -518,13 +518,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tokenize_empty() {
+    fn tokenize_empty() {
         let tokens = tokenize_gctf("");
         assert!(tokens.is_empty());
     }
 
     #[test]
-    fn test_tokenize_blank_lines() {
+    fn tokenize_blank_lines() {
         let tokens = tokenize_gctf("\n\n  \n");
         assert_eq!(tokens.len(), 3);
         assert!(matches!(tokens[0].kind, GctfTokenKind::Blank));
@@ -533,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_comments() {
+    fn tokenize_comments() {
         let tokens = tokenize_gctf("# hello\n// world");
         assert_eq!(tokens.len(), 2);
         assert!(matches!(&tokens[0].kind, GctfTokenKind::Comment(t) if t == "# hello"));
@@ -577,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_miscased_section_header_name_rejects_non_headers() {
+    fn scan_miscased_section_header_name_rejects_non_headers() {
         // Genuine content, pure-dash rules, and headers missing their trailing
         // `---` must not be treated as header attempts.
         assert_eq!(scan_miscased_section_header_name("some random line"), None);
@@ -588,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_section_headers() {
+    fn tokenize_section_headers() {
         let tokens = tokenize_gctf("--- ENDPOINT ---\n--- RESPONSE partial=true ---");
         assert_eq!(tokens.len(), 2);
 
@@ -610,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_content() {
+    fn tokenize_content() {
         let tokens = tokenize_gctf("hello world\n{\"key\": \"value\"}");
         assert_eq!(tokens.len(), 2);
         assert!(matches!(&tokens[0].kind, GctfTokenKind::Content(t) if t == "hello world"));
@@ -620,14 +620,14 @@ mod tests {
     }
 
     #[test]
-    fn test_tokenize_not_section_header() {
+    fn tokenize_not_section_header() {
         let tokens = tokenize_gctf("--- not uppercase ---\n---ABC");
         assert!(matches!(tokens[0].kind, GctfTokenKind::Content(_)));
         assert!(matches!(tokens[1].kind, GctfTokenKind::Content(_)));
     }
 
     #[test]
-    fn test_tokenize_full_document() {
+    fn tokenize_full_document() {
         let input = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -652,7 +652,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_tokenize_section_header_with_multiple_options() {
+    fn tokenize_section_header_with_multiple_options() {
         let tokens = tokenize_gctf("--- RESPONSE partial=true tolerance=0.1 ---");
         match &tokens[0].kind {
             GctfTokenKind::SectionHeader { name, raw_options } => {
@@ -664,56 +664,56 @@ test.Service/Method
     }
 
     #[test]
-    fn test_kv_line_basic() {
+    fn kv_line_basic() {
         let (key, value) = tokenize_kv_line("Authorization: Bearer token").unwrap();
         assert_eq!(key, "Authorization");
         assert_eq!(value, "Bearer token");
     }
 
     #[test]
-    fn test_kv_line_with_whitespace() {
+    fn kv_line_with_whitespace() {
         let (key, value) = tokenize_kv_line("  key  :  value  ").unwrap();
         assert_eq!(key, "key");
         assert_eq!(value, "value");
     }
 
     #[test]
-    fn test_kv_line_comment() {
+    fn kv_line_comment() {
         assert_eq!(tokenize_kv_line("# comment"), None);
         assert_eq!(tokenize_kv_line("// comment"), None);
     }
 
     #[test]
-    fn test_kv_line_empty() {
+    fn kv_line_empty() {
         assert_eq!(tokenize_kv_line(""), None);
         assert_eq!(tokenize_kv_line("   "), None);
     }
 
     #[test]
-    fn test_kv_line_no_colon() {
+    fn kv_line_no_colon() {
         assert_eq!(tokenize_kv_line("no colon here"), None);
     }
 
     #[test]
-    fn test_extract_line_basic() {
+    fn extract_line_basic() {
         let (name, value) = tokenize_extract_line("total = .response.total").unwrap();
         assert_eq!(name, "total");
         assert_eq!(value, ".response.total");
     }
 
     #[test]
-    fn test_extract_line_comment() {
+    fn extract_line_comment() {
         assert_eq!(tokenize_extract_line("# comment"), None);
         assert_eq!(tokenize_extract_line("// comment"), None);
     }
 
     #[test]
-    fn test_extract_line_empty() {
+    fn extract_line_empty() {
         assert_eq!(tokenize_extract_line(""), None);
     }
 
     #[test]
-    fn test_tokenize_inline_options_basic() {
+    fn tokenize_inline_options_basic() {
         let opts = tokenize_inline_options("key1=value1 key2=value2");
         assert_eq!(opts.len(), 2);
         assert_eq!(opts[0], ("key1".into(), "value1".into()));
@@ -721,21 +721,21 @@ test.Service/Method
     }
 
     #[test]
-    fn test_tokenize_inline_options_quoted() {
+    fn tokenize_inline_options_quoted() {
         let opts = tokenize_inline_options(r#"key="hello world""#);
         assert_eq!(opts.len(), 1);
         assert_eq!(opts[0], ("key".into(), "hello world".into()));
     }
 
     #[test]
-    fn test_tokenize_inline_options_boolean_short_form() {
+    fn tokenize_inline_options_boolean_short_form() {
         let opts = tokenize_inline_options("partial");
         assert_eq!(opts.len(), 1);
         assert_eq!(opts[0], ("partial".into(), "true".into()));
     }
 
     #[test]
-    fn test_tokenize_inline_options_complex() {
+    fn tokenize_inline_options_complex() {
         let opts = tokenize_inline_options("with_asserts=true partial=false tolerance=0.1");
         assert_eq!(opts.len(), 3);
         assert_eq!(opts[0], ("with_asserts".into(), "true".into()));
@@ -744,7 +744,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_line_numbers() {
+    fn line_numbers() {
         let tokens = tokenize_gctf("line0\nline1\nline2");
         assert_eq!(tokens[0].line, 0);
         assert_eq!(tokens[1].line, 1);
@@ -752,7 +752,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_section_header_meta() {
+    fn section_header_meta() {
         let tokens = tokenize_gctf("--- META ---\nname: Test");
         let GctfTokenKind::SectionHeader { name, .. } = &tokens[0].kind else {
             panic!()
@@ -761,19 +761,19 @@ test.Service/Method
     }
 
     #[test]
-    fn test_section_header_no_closing_dashes() {
+    fn section_header_no_closing_dashes() {
         let tokens = tokenize_gctf("--- ENDPOINT");
         assert!(matches!(tokens[0].kind, GctfTokenKind::Content(_)));
     }
 
     #[test]
-    fn test_section_header_only_dashes() {
+    fn section_header_only_dashes() {
         let tokens = tokenize_gctf("------");
         assert!(matches!(tokens[0].kind, GctfTokenKind::Content(_)));
     }
 
     #[test]
-    fn test_section_header_leading_whitespace() {
+    fn section_header_leading_whitespace() {
         let tokens = tokenize_gctf("  --- ENDPOINT ---");
         match &tokens[0].kind {
             GctfTokenKind::SectionHeader { name, .. } => assert_eq!(name, "ENDPOINT"),
@@ -782,7 +782,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_section_header_extra_whitespace() {
+    fn section_header_extra_whitespace() {
         let tokens = tokenize_gctf("---   RESPONSE   partial=true   ---");
         match &tokens[0].kind {
             GctfTokenKind::SectionHeader { name, raw_options } => {
@@ -794,13 +794,13 @@ test.Service/Method
     }
 
     #[test]
-    fn test_section_header_lowercase_rejected() {
+    fn section_header_lowercase_rejected() {
         let tokens = tokenize_gctf("--- endpoint ---");
         assert!(matches!(tokens[0].kind, GctfTokenKind::Content(_)));
     }
 
     #[test]
-    fn test_section_header_mixed_case_treated_as_partial_name() {
+    fn section_header_mixed_case_treated_as_partial_name() {
         let tokens = tokenize_gctf("--- Endpoint ---");
         match &tokens[0].kind {
             GctfTokenKind::SectionHeader { name, .. } => assert_eq!(name, "E"),
@@ -809,13 +809,13 @@ test.Service/Method
     }
 
     #[test]
-    fn test_section_header_fully_lowercase_rejected() {
+    fn section_header_fully_lowercase_rejected() {
         let tokens = tokenize_gctf("--- endpoint ---");
         assert!(matches!(tokens[0].kind, GctfTokenKind::Content(_)));
     }
 
     #[test]
-    fn test_section_header_with_underscore() {
+    fn section_header_with_underscore() {
         let tokens = tokenize_gctf("--- REQUEST_HEADERS ---");
         match &tokens[0].kind {
             GctfTokenKind::SectionHeader { name, .. } => assert_eq!(name, "REQUEST_HEADERS"),
@@ -824,13 +824,13 @@ test.Service/Method
     }
 
     #[test]
-    fn test_three_dashes_in_content() {
+    fn three_dashes_in_content() {
         let tokens = tokenize_gctf("---ABC");
         assert!(matches!(tokens[0].kind, GctfTokenKind::Content(_)));
     }
 
     #[test]
-    fn test_comment_with_leading_whitespace() {
+    fn comment_with_leading_whitespace() {
         let tokens = tokenize_gctf("  # indented comment");
         assert!(
             matches!(&tokens[0].kind, GctfTokenKind::Comment(t) if t == "  # indented comment")
@@ -838,47 +838,47 @@ test.Service/Method
     }
 
     #[test]
-    fn test_slash_slash_not_at_start_is_content() {
+    fn slash_slash_not_at_start_is_content() {
         let tokens = tokenize_gctf("foo // bar");
         assert!(matches!(&tokens[0].kind, GctfTokenKind::Content(t) if t == "foo // bar"));
     }
 
     #[test]
-    fn test_tab_only_line_is_blank() {
+    fn tab_only_line_is_blank() {
         let tokens = tokenize_gctf("\t\t");
         assert!(matches!(tokens[0].kind, GctfTokenKind::Blank));
     }
 
     #[test]
-    fn test_kv_line_empty_value() {
+    fn kv_line_empty_value() {
         let (key, value) = tokenize_kv_line("key:").unwrap();
         assert_eq!(key, "key");
         assert_eq!(value, "");
     }
 
     #[test]
-    fn test_kv_line_colon_in_value() {
+    fn kv_line_colon_in_value() {
         let (key, value) = tokenize_kv_line("url: http://host:8080").unwrap();
         assert_eq!(key, "url");
         assert_eq!(value, "http://host:8080");
     }
 
     #[test]
-    fn test_kv_line_value_with_spaces() {
+    fn kv_line_value_with_spaces() {
         let (key, value) = tokenize_kv_line("  cert  :  /path/to/cert.pem  ").unwrap();
         assert_eq!(key, "cert");
         assert_eq!(value, "/path/to/cert.pem");
     }
 
     #[test]
-    fn test_kv_line_tab_separator() {
+    fn kv_line_tab_separator() {
         let (key, value) = tokenize_kv_line("key\t:\tvalue").unwrap();
         assert_eq!(key, "key");
         assert_eq!(value, "value");
     }
 
     #[test]
-    fn test_kv_line_only_whitespace_key_produces_empty_key() {
+    fn kv_line_only_whitespace_key_produces_empty_key() {
         let result = tokenize_kv_line("   : value");
         assert!(result.is_some());
         let (key, value) = result.unwrap();
@@ -887,64 +887,64 @@ test.Service/Method
     }
 
     #[test]
-    fn test_extract_line_with_spaces() {
+    fn extract_line_with_spaces() {
         let (name, value) = tokenize_extract_line("  total  =  .response.total  ").unwrap();
         assert_eq!(name, "total");
         assert_eq!(value, ".response.total");
     }
 
     #[test]
-    fn test_extract_line_empty_value() {
+    fn extract_line_empty_value() {
         let (name, value) = tokenize_extract_line("name=").unwrap();
         assert_eq!(name, "name");
         assert_eq!(value, "");
     }
 
     #[test]
-    fn test_extract_line_no_equals() {
+    fn extract_line_no_equals() {
         assert_eq!(tokenize_extract_line(".just.a.path"), None);
     }
 
     #[test]
-    fn test_extract_line_whitespace_only() {
+    fn extract_line_whitespace_only() {
         assert_eq!(tokenize_extract_line("   "), None);
     }
 
     #[test]
-    fn test_extract_line_only_whitespace_value() {
+    fn extract_line_only_whitespace_value() {
         let (name, value) = tokenize_extract_line("name=   ").unwrap();
         assert_eq!(name, "name");
         assert_eq!(value, "");
     }
 
     #[test]
-    fn test_tokenize_options_empty() {
+    fn tokenize_options_empty() {
         let opts = tokenize_inline_options("");
         assert!(opts.is_empty());
     }
 
     #[test]
-    fn test_tokenize_options_only_spaces() {
+    fn tokenize_options_only_spaces() {
         let opts = tokenize_inline_options("   ");
         assert!(opts.is_empty());
     }
 
     #[test]
-    fn test_tokenize_options_escaped_char() {
+    fn tokenize_options_escaped_char() {
         let opts = tokenize_inline_options(r#"key=va\"lue"#);
         assert_eq!(opts.len(), 1);
         assert_eq!(opts[0].0, "key");
     }
 
     #[test]
-    fn test_tokenize_options_single_quotes_not_special() {
+    fn tokenize_options_single_quotes_not_special() {
         let opts = tokenize_inline_options("key='hello world'");
         assert_eq!(opts.len(), 2);
         assert_eq!(opts[0], ("key".into(), "'hello".into()));
     }
 
     #[test]
-    fn test_tokenize_options_array_value() {
+    fn tokenize_options_array_value() {
         let opts = tokenize_inline_options(r#"redact=["field1","field2"]"#);
         assert_eq!(opts.len(), 1);
         assert_eq!(opts[0].0, "redact");
@@ -952,7 +952,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_tokenize_options_array_value_with_spaces() {
+    fn tokenize_options_array_value_with_spaces() {
         let opts = tokenize_inline_options(r#"redact=["field1", "field2"]"#);
         assert_eq!(opts.len(), 1);
         assert_eq!(opts[0].0, "redact");
@@ -961,7 +961,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_tokenize_options_multiple_spaces() {
+    fn tokenize_options_multiple_spaces() {
         let opts = tokenize_inline_options("  a=1   b=2  ");
         assert_eq!(opts.len(), 2);
         assert_eq!(opts[0], ("a".into(), "1".into()));
@@ -969,27 +969,27 @@ test.Service/Method
     }
 
     #[test]
-    fn test_tokenize_options_tab_separated() {
+    fn tokenize_options_tab_separated() {
         let opts = tokenize_inline_options("a=1\tb=2");
         assert_eq!(opts.len(), 2);
     }
 
     #[test]
-    fn test_tokenize_options_quoted_key() {
+    fn tokenize_options_quoted_key() {
         let opts = tokenize_inline_options(r#""key"=value"#);
         assert_eq!(opts.len(), 1);
         assert_eq!(opts[0].0, "key");
     }
 
     #[test]
-    fn test_tokenize_options_empty_value() {
+    fn tokenize_options_empty_value() {
         let opts = tokenize_inline_options("key=");
         assert_eq!(opts.len(), 1);
         assert_eq!(opts[0], ("key".into(), "".into()));
     }
 
     #[test]
-    fn test_span_tracking() {
+    fn span_tracking() {
         let tokens = tokenize_gctf("# comment\n--- ENDPOINT ---\nhello");
         assert_eq!(tokens[0].span, Span { start: 0, end: 9 });
         assert_eq!(tokens[1].span, Span { start: 0, end: 16 });
@@ -997,7 +997,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_gctf_token_kind_equality() {
+    fn gctf_token_kind_equality() {
         let t1 = GctfToken {
             kind: GctfTokenKind::Blank,
             line: 0,
@@ -1012,7 +1012,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_tokenize_attribute_block() {
+    fn tokenize_attribute_block() {
         let tokens = tokenize_gctf("#[timeout(30)]");
         assert_eq!(tokens.len(), 1);
         match &tokens[0].kind {
@@ -1024,7 +1024,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_tokenize_attribute_block_with_spaces() {
+    fn tokenize_attribute_block_with_spaces() {
         let tokens = tokenize_gctf("#[  retry(3)  ]");
         assert_eq!(tokens.len(), 1);
         match &tokens[0].kind {
@@ -1036,7 +1036,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_tokenize_attribute_block_flag() {
+    fn tokenize_attribute_block_flag() {
         let tokens = tokenize_gctf("#[skip]");
         assert_eq!(tokens.len(), 1);
         match &tokens[0].kind {
@@ -1048,7 +1048,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_tokenize_attribute_block_empty() {
+    fn tokenize_attribute_block_empty() {
         let tokens = tokenize_gctf("#[]");
         assert_eq!(tokens.len(), 1);
         match &tokens[0].kind {
@@ -1060,7 +1060,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_tokenize_attribute_block_quoted_value() {
+    fn tokenize_attribute_block_quoted_value() {
         let tokens = tokenize_gctf(r#"#[tag("smoke, slow")]"#);
         assert_eq!(tokens.len(), 1);
         match &tokens[0].kind {
@@ -1072,7 +1072,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_tokenize_attribute_block_bracket_inside_quotes() {
+    fn tokenize_attribute_block_bracket_inside_quotes() {
         // Regression: a `]` inside a quoted value used to truncate the block at
         // the first `]`, yielding `tag("a` instead of the full value.
         let tokens = tokenize_gctf(r#"#[tag("a]b")]"#);
@@ -1086,7 +1086,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_tokenize_attribute_block_escaped_quote_inside_quotes() {
+    fn tokenize_attribute_block_escaped_quote_inside_quotes() {
         // An escaped quote must not flip quote state, so a following `]` inside
         // the string is still treated as literal content.
         let tokens = tokenize_gctf(r#"#[tag("a\"]b")]"#);
@@ -1100,7 +1100,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_tokenize_attribute_before_section() {
+    fn tokenize_attribute_before_section() {
         let tokens = tokenize_gctf("#[timeout(30)]\n--- REQUEST ---");
         assert_eq!(tokens.len(), 2);
         match &tokens[0].kind {
@@ -1118,7 +1118,7 @@ test.Service/Method
     }
 
     #[test]
-    fn test_tokenize_attribute_after_section() {
+    fn tokenize_attribute_after_section() {
         let tokens = tokenize_gctf("--- REQUEST ---\n{}\n#[skip]");
         assert_eq!(tokens.len(), 3);
         match &tokens[0].kind {

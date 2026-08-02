@@ -8,7 +8,7 @@ use std::path::Path;
 
 /// Test workflow generation for basic unary calls
 #[test]
-fn test_workflow_from_unary_plan() {
+fn workflow_from_unary_plan() {
     let test_cases = vec![
         "examples/basic/unary.gctf",
         "examples/basic/partial-match.gctf",
@@ -53,7 +53,7 @@ fn test_workflow_from_unary_plan() {
 
 /// Test workflow for streaming
 #[test]
-fn test_workflow_from_streaming_plan() {
+fn workflow_from_streaming_plan() {
     let test_cases = vec![
         ("examples/streaming/server-streaming.gctf", "Server"),
         ("examples/streaming/client-streaming.gctf", "Client"),
@@ -80,12 +80,9 @@ fn test_workflow_from_streaming_plan() {
     }
 }
 
-/// A single REQUEST block with several self-delimiting JSON values (the
-/// symmetric counterpart to RESPONSE's own multi-message JsonLines form)
-/// must plan as one `json-lines` request carrying all 3 values, not an
-/// empty placeholder — this is the same shape `explain`/`workflow` read.
+/// A single REQUEST block with several self-delimiting JSON values (the symmetric counterpart to RESPONSE's own multi-message JsonLines form) must plan as one `json-lines` request carrying all 3 values, not an empty placeholder — this is the same shape `explain`/`workflow` read.
 #[test]
-fn test_workflow_from_jsonlines_request_plan() {
+fn workflow_from_jsonlines_request_plan() {
     let path = "examples/streaming/client-streaming-jsonlines.gctf";
     if !Path::new(path).exists() {
         return;
@@ -107,7 +104,7 @@ fn test_workflow_from_jsonlines_request_plan() {
 
 /// Test workflow for error cases
 #[test]
-fn test_workflow_from_error_plan() {
+fn workflow_from_error_plan() {
     let test_cases = vec!["examples/error-handling/expected-error.gctf"];
 
     for path in test_cases {
@@ -132,7 +129,7 @@ fn test_workflow_from_error_plan() {
 
 /// Test workflow validation
 #[test]
-fn test_workflow_validate() {
+fn workflow_validate() {
     let test_cases = vec![
         "examples/basic/unary.gctf",
         "examples/basic/with-headers.gctf",
@@ -161,7 +158,7 @@ fn test_workflow_validate() {
 
 /// Test workflow with extractions
 #[test]
-fn test_workflow_with_extractions() {
+fn workflow_with_extractions() {
     let path = "examples/variables/extract-basic.gctf";
 
     if !Path::new(path).exists() {
@@ -179,7 +176,7 @@ fn test_workflow_with_extractions() {
 
 /// Test workflow with assertions
 #[test]
-fn test_workflow_with_assertions() {
+fn workflow_with_assertions() {
     let path = "examples/assertions/response-with-asserts.gctf";
 
     if !Path::new(path).exists() {
@@ -197,7 +194,7 @@ fn test_workflow_with_assertions() {
 
 /// Test workflow event sequence
 #[test]
-fn test_workflow_event_sequence() {
+fn workflow_event_sequence() {
     let path = "examples/basic/unary.gctf";
 
     if !Path::new(path).exists() {
@@ -226,7 +223,7 @@ fn test_workflow_event_sequence() {
 
 /// Test workflow summary accuracy
 #[test]
-fn test_workflow_summary_accuracy() {
+fn workflow_summary_accuracy() {
     let test_cases = vec![
         ("examples/basic/unary.gctf", 1, 1),
         ("examples/basic/with-headers.gctf", 1, 1),
@@ -256,7 +253,7 @@ fn test_workflow_summary_accuracy() {
 
 /// Test workflow inline options
 #[test]
-fn test_workflow_inline_options() {
+fn workflow_inline_options() {
     // Test partial option
     let doc = parse_gctf(Path::new("examples/basic/partial-match.gctf")).unwrap();
     let plan = ExecutionPlan::from_document(&doc);
@@ -286,7 +283,7 @@ fn test_workflow_inline_options() {
 
 /// Test workflow with headers
 #[test]
-fn test_workflow_with_headers() {
+fn workflow_with_headers() {
     let path = "examples/basic/with-headers.gctf";
 
     if !Path::new(path).exists() {
@@ -307,7 +304,7 @@ fn test_workflow_with_headers() {
 
 /// Test multiple requests workflow
 #[test]
-fn test_workflow_multiple_requests() {
+fn workflow_multiple_requests() {
     let path = "examples/streaming/client-streaming.gctf";
 
     if !Path::new(path).exists() {
@@ -329,7 +326,7 @@ fn test_workflow_multiple_requests() {
 
 /// Test multiple responses workflow
 #[test]
-fn test_workflow_multiple_responses() {
+fn workflow_multiple_responses() {
     let path = "examples/streaming/server-streaming.gctf";
 
     if !Path::new(path).exists() {
@@ -351,7 +348,7 @@ fn test_workflow_multiple_responses() {
 
 /// Test workflow events by type filtering
 #[test]
-fn test_workflow_events_by_type() {
+fn workflow_events_by_type() {
     let path = "examples/basic/unary.gctf";
 
     if !Path::new(path).exists() {
@@ -386,7 +383,7 @@ fn test_workflow_events_by_type() {
 
 /// Test workflow extract and assert events
 #[test]
-fn test_workflow_extract_and_assert_events() {
+fn workflow_extract_and_assert_events() {
     let path = "examples/variables/extract-with-asserts.gctf";
 
     if !Path::new(path).exists() {
@@ -416,7 +413,7 @@ fn test_workflow_extract_and_assert_events() {
 
 /// Test workflow validation with invalid workflow
 #[test]
-fn test_workflow_validate_invalid() {
+fn workflow_validate_invalid() {
     use grpctestify::execution::workflow_events::{Workflow, WorkflowEvent, WorkflowSummary};
 
     // Create a workflow with missing required events
@@ -456,4 +453,137 @@ fn test_workflow_validate_invalid() {
         "Expected error about missing Connect event, got: {:?}",
         result.errors
     );
+}
+
+#[test]
+fn jsonlines_request_is_reported_as_client_streaming() {
+    let path = "examples/streaming/client-streaming-jsonlines.gctf";
+    if !Path::new(path).exists() {
+        return;
+    }
+
+    let doc = parse_gctf(Path::new(path)).expect("parse");
+    let workflow = Workflow::from_document_with_analysis(&doc);
+    assert_eq!(
+        workflow.rpc_mode_name(),
+        "Client Streaming",
+        "a REQUEST section with several messages is a client stream"
+    );
+}
+
+#[test]
+fn jsonlines_request_keeps_send_and_sent_events_balanced() {
+    let path = "examples/streaming/client-streaming-jsonlines.gctf";
+    if !Path::new(path).exists() {
+        return;
+    }
+    let doc = parse_gctf(Path::new(path)).expect("parse");
+    let workflow = Workflow::from_document_with_analysis(&doc);
+
+    let result = workflow.validate();
+    assert!(
+        result.passed,
+        "a valid client-streaming file must validate: {:?}",
+        result.errors
+    );
+    assert_eq!(workflow.rpc_mode_name(), "Client Streaming");
+}
+
+#[test]
+fn rpc_mode_is_classified_for_every_streaming_shape() {
+    fn mode(request: &str, response: &str) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("m.gctf");
+        std::fs::write(
+            &file,
+            format!("--- ENDPOINT ---\nsvc.S/M\n\n--- REQUEST ---\n{request}\n\n--- RESPONSE ---\n{response}\n"),
+        )
+        .unwrap();
+        let doc = parse_gctf(&file).expect("parse");
+        Workflow::from_document_with_analysis(&doc)
+            .rpc_mode_name()
+            .to_string()
+    }
+
+    assert_eq!(mode("{}", "{}"), "Unary");
+    assert_eq!(mode("{ \"m\": 1 }\n{ \"m\": 2 }", "{}"), "Client Streaming");
+    assert_eq!(mode("{}", "{ \"n\": 1 }\n{ \"n\": 2 }"), "Server Streaming");
+    assert_eq!(
+        mode("{ \"m\": 1 }\n{ \"m\": 2 }", "{ \"n\": 1 }\n{ \"n\": 2 }"),
+        "Bidi Streaming"
+    );
+}
+
+#[test]
+fn plan_summary_and_workflow_agree_on_rpc_mode() {
+    fn both(request: &str, response: &str) -> (String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("m.gctf");
+        std::fs::write(
+            &file,
+            format!("--- ENDPOINT ---\nsvc.S/M\n\n--- REQUEST ---\n{request}\n\n--- RESPONSE ---\n{response}\n"),
+        )
+        .unwrap();
+        let doc = parse_gctf(&file).expect("parse");
+        let plan = ExecutionPlan::from_document(&doc);
+        let workflow = Workflow::from_document_with_analysis(&doc);
+        (
+            plan.summary.rpc_mode_name.clone(),
+            workflow.rpc_mode_name().to_string(),
+        )
+    }
+
+    for (req, resp) in [
+        ("{}", "{}"),
+        ("{ \"m\": 1 }\n{ \"m\": 2 }", "{}"),
+        ("{}", "{ \"n\": 1 }\n{ \"n\": 2 }"),
+        ("{ \"m\": 1 }\n{ \"m\": 2 }", "{ \"n\": 1 }\n{ \"n\": 2 }"),
+    ] {
+        let (summary, workflow) = both(req, resp);
+        let normalized = summary.replace("Bidirectional Streaming", "Bidi Streaming");
+        assert_eq!(
+            normalized, workflow,
+            "plan summary and workflow disagree for request={req:?} response={resp:?}"
+        );
+    }
+}
+
+#[test]
+fn validate_passes_for_every_streaming_shape() {
+    // `validate` compares send/sent and receive/received counts, so a fan-out
+    // applied to one half of either pair fails here — the asymmetry that made
+    // every server-streaming file report as structurally invalid.
+    fn check(request: &str, response: &str) -> (bool, Vec<String>) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("m.gctf");
+        std::fs::write(
+            &file,
+            format!("--- ENDPOINT ---\nsvc.S/M\n\n--- REQUEST ---\n{request}\n\n--- RESPONSE ---\n{response}\n"),
+        )
+        .unwrap();
+        let doc = parse_gctf(&file).expect("parse");
+        // Both builders are checked: they are near-duplicate bodies, so a
+        // fan-out fixed in one and not the other passes a single-path test.
+        let analysed = Workflow::from_document_with_analysis(&doc).validate();
+        let from_plan = Workflow::from_plan(&ExecutionPlan::from_document(&doc)).validate();
+        assert_eq!(
+            analysed.passed, from_plan.passed,
+            "the two workflow builders disagree: {:?} vs {:?}",
+            analysed.errors, from_plan.errors
+        );
+        (
+            analysed.passed && from_plan.passed,
+            [analysed.errors, from_plan.errors].concat(),
+        )
+    }
+
+    for (req, resp) in [
+        ("{}", "{}"),
+        ("{ \"m\": 1 }\n{ \"m\": 2 }", "{}"),
+        ("{}", "{ \"n\": 1 }\n{ \"n\": 2 }"),
+        ("{ \"m\": 1 }\n{ \"m\": 2 }", "{ \"n\": 1 }\n{ \"n\": 2 }"),
+    ] {
+        let (passed, errors) = check(req, resp);
+        assert!(passed, "request={req:?} response={resp:?} -> {errors:?}");
+    }
 }

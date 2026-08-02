@@ -112,7 +112,44 @@ pub fn extract_plugin_call_name(expr: &str) -> Option<String> {
         return None;
     }
 
+    // The whole expression has to BE the call. Accepting anything that merely
+    // starts with `@` and ends with `)` classified
+    // `@is_empty(.a) and @is_empty(.b)` as one plugin call, and the boolean
+    // rules built on this then rewrote the wrong operand.
+    if !call_closes_at_end(&e[open + 1..]) {
+        return None;
+    }
+
     Some(e[1..open].trim().to_string())
+}
+
+/// Whether the opening parenthesis just consumed closes at the very end,
+/// ignoring parentheses inside string literals.
+fn call_closes_at_end(after_open: &str) -> bool {
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+
+    for (i, ch) in after_open.char_indices() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '(' => depth += 1,
+            ')' if depth == 0 => return i == after_open.len() - 1,
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    false
 }
 
 pub fn plugin_signature_map() -> HashMap<String, PluginSignature> {
@@ -342,7 +379,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_plugin_manager_new() {
+    fn plugin_manager_new() {
         let manager = PluginManager::new();
         // PluginManager registers defaults on creation
         let plugins = manager.plugins.read().unwrap();
@@ -350,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn test_plugin_manager_register() {
+    fn plugin_manager_register() {
         let mut manager = PluginManager::new();
         let plugin = Arc::new(crate::uuid::UuidPlugin);
         manager.register(plugin);
@@ -359,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn test_plugin_manager_get() {
+    fn plugin_manager_get() {
         let manager = PluginManager::new();
         let plugin = manager.get("uuid");
         assert!(plugin.is_some());
@@ -367,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn test_plugin_manager_get_accepts_at_prefix() {
+    fn plugin_manager_get_accepts_at_prefix() {
         let manager = PluginManager::new();
         let plugin = manager.get("@uuid");
         assert!(plugin.is_some());
@@ -375,23 +412,23 @@ mod tests {
     }
 
     #[test]
-    fn test_plugin_manager_list() {
+    fn plugin_manager_list() {
         let manager = PluginManager::new();
         let plugins = manager.list();
         assert!(plugins.len() >= 8); // uuid, email, ip, url, timestamp, header, trailer, len
     }
 
     #[test]
-    fn test_plugin_manager_execute_plugin() {
+    fn plugin_manager_execute_plugin() {
         let manager = PluginManager::new();
         let plugin = manager.get("uuid").unwrap();
         let context = PluginContext::new(&Value::Null);
         let result = plugin.execute(&[Value::String("test".to_string())], &context);
-        assert!(result.is_ok());
+        result.expect("plugin call must succeed");
     }
 
     #[test]
-    fn test_plugin_manager_has_header_registered() {
+    fn plugin_manager_has_header_registered() {
         let manager = PluginManager::new();
         let plugin = manager.get("has_header");
         assert!(plugin.is_some(), "has_header plugin should be registered");
@@ -399,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn test_plugin_manager_empty_registered() {
+    fn plugin_manager_empty_registered() {
         let manager = PluginManager::new();
         let plugin = manager.get("empty");
         assert!(plugin.is_some(), "empty plugin should be registered");
@@ -407,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn test_plugin_manager_has_trailer_registered() {
+    fn plugin_manager_has_trailer_registered() {
         let manager = PluginManager::new();
         let plugin = manager.get("has_trailer");
         assert!(plugin.is_some(), "has_trailer plugin should be registered");
@@ -415,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn test_signature_metadata_empty() {
+    fn signature_metadata_empty() {
         let manager = PluginManager::new();
         let signature = manager.get("empty").unwrap().signature();
         assert_eq!(signature.return_type, TypeInfo::Bool);
@@ -426,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn test_signature_metadata_env() {
+    fn signature_metadata_env() {
         let manager = PluginManager::new();
         let signature = manager.get("env").unwrap().signature();
         assert_eq!(signature.return_type, TypeInfo::String);
@@ -437,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn test_all_plugin_contracts() {
+    fn all_plugin_contracts() {
         let manager = PluginManager::new();
         let plugins = manager.list();
         assert!(!plugins.is_empty(), "should have registered plugins");
@@ -480,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn test_plugin_api_wrapper() {
+    fn plugin_api_wrapper() {
         use apif_assert::registry::PluginRegistry;
 
         let manager = PluginManager::new();
@@ -511,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn test_plugin_manager_get_plugin_via_registry() {
+    fn plugin_manager_get_plugin_via_registry() {
         use apif_assert::registry::PluginRegistry;
 
         let manager = PluginManager::new();
@@ -526,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn test_plugin_manager_get_plugin_returns_none_for_unknown() {
+    fn plugin_manager_get_plugin_returns_none_for_unknown() {
         use apif_assert::registry::PluginRegistry;
 
         let manager = PluginManager::new();
@@ -534,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn test_renamed_plugin_description() {
+    fn renamed_plugin_description() {
         let manager = PluginManager::new();
 
         // Both old and new names should have the same description
@@ -544,14 +581,14 @@ mod tests {
     }
 
     #[test]
-    fn test_plugin_manager_default() {
+    fn plugin_manager_default() {
         let manager = PluginManager::default();
         let plugins = manager.list();
         assert!(!plugins.is_empty());
     }
 
     #[test]
-    fn test_plugin_signature_map_has_entries() {
+    fn plugin_signature_map_has_entries() {
         let map = plugin_signature_map();
         assert!(!map.is_empty(), "plugin signature map should not be empty");
 
@@ -569,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_plugin_call_name_various() {
+    fn extract_plugin_call_name_various() {
         // Valid calls
         assert_eq!(extract_plugin_call_name("@uuid(.x)").unwrap(), "uuid");
         assert_eq!(
@@ -586,6 +623,22 @@ mod tests {
             extract_plugin_call_name("uuid(.x)").is_none(),
             "missing @ prefix"
         );
+        // A compound expression is not one plugin call. Accepting it made the
+        // optimizer's boolean rules rewrite the wrong operand:
+        // `@is_empty(.a) and @is_empty(.b) == false` became
+        // `!@is_empty(.a) and @is_empty(.b)`.
+        assert!(extract_plugin_call_name("@is_empty(.a) and @is_empty(.b)").is_none());
+        assert!(extract_plugin_call_name("@is_empty(.a) == false").is_none());
+        // Nested parens and parens inside strings still resolve to one call.
+        assert_eq!(
+            extract_plugin_call_name("@len(f(.a, g(.b)))").unwrap(),
+            "len"
+        );
+        assert_eq!(
+            extract_plugin_call_name(r#"@regex(.x, ")")"#).unwrap(),
+            "regex"
+        );
+
         assert!(
             extract_plugin_call_name("@uuid").is_none(),
             "missing parens"

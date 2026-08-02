@@ -3107,7 +3107,7 @@ mod tests {
     // indented continuation lines), so `sources` parsed to an empty string
     // and the actual list items landed under bogus keys like `"- name"`.
     #[test]
-    fn test_bench_sources_survives_real_parsing() {
+    fn bench_sources_survives_real_parsing() {
         let src = "--- BENCH ---\nmode: fixed\nsources:\n  - name: users\n    file: data/users.csv\n  - name: orders\n    file: data/orders.csv\n\n--- ENDPOINT ---\npkg.Svc/Method\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n";
         let doc = crate::parser::parse_gctf_from_str(src, "test.gctf").unwrap();
         let bench = extract_bench_section(&doc).expect("BENCH section");
@@ -3118,7 +3118,7 @@ mod tests {
     }
 
     #[test]
-    fn test_exec_model_dispatch() {
+    fn exec_model_dispatch() {
         assert_eq!(exec_model_for("open"), ExecModel::Open);
         assert_eq!(exec_model_for("adaptive"), ExecModel::Open);
         assert_eq!(exec_model_for(" OPEN "), ExecModel::Open);
@@ -3131,7 +3131,7 @@ mod tests {
     }
 
     #[test]
-    fn test_open_schedule_count_exactly_n() {
+    fn open_schedule_count_exactly_n() {
         // Request-count open mode schedules exactly N arrivals.
         let arrivals: Vec<Duration> =
             ArrivalSchedule::new(|_| 100.0, RunBound::Count(500)).collect();
@@ -3142,7 +3142,7 @@ mod tests {
     }
 
     #[test]
-    fn test_open_schedule_duration_arrival_count() {
+    fn open_schedule_duration_arrival_count() {
         // Fixed rate + duration produces ≈ rate * duration arrivals.
         let rate = 50.0;
         let dur = Duration::from_secs(2);
@@ -3157,7 +3157,7 @@ mod tests {
     }
 
     #[test]
-    fn test_open_schedule_ramp_from_zero_terminates() {
+    fn open_schedule_ramp_from_zero_terminates() {
         // Zero-rate window at the start must idle-advance (not spin) and still
         // terminate on the duration bound once the rate turns positive.
         let arrivals: Vec<Duration> = ArrivalSchedule::new(
@@ -3177,7 +3177,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_latency_measured_from_arrival() {
+    fn latency_measured_from_arrival() {
         // A request whose permit acquisition is delayed still reports latency
         // ≥ the induced delay (coordinated-omission correctness).
         let arrival = Instant::now();
@@ -3207,31 +3207,31 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_duration_seconds() {
+    fn parse_duration_seconds() {
         let d = parse_duration("30s").unwrap();
         assert_eq!(d.as_secs(), 30);
     }
 
     #[test]
-    fn test_parse_duration_minutes() {
+    fn parse_duration_minutes() {
         let d = parse_duration("5m").unwrap();
         assert_eq!(d.as_secs(), 300);
     }
 
     #[test]
-    fn test_parse_duration_hours() {
+    fn parse_duration_hours() {
         let d = parse_duration("1h").unwrap();
         assert_eq!(d.as_secs(), 3600);
     }
 
     #[test]
-    fn test_parse_duration_milliseconds() {
+    fn parse_duration_milliseconds() {
         let d = parse_duration("500ms").unwrap();
         assert_eq!(d.as_millis(), 500);
     }
 
     #[test]
-    fn test_parse_duration_invalid() {
+    fn parse_duration_invalid() {
         assert!(parse_duration("").is_err());
         assert!(parse_duration("abc").is_err());
         assert!(parse_duration("30x").is_err());
@@ -3239,7 +3239,7 @@ mod tests {
 
     // Bug 4: "ms" must be parsed before the single-char "s" suffix.
     #[test]
-    fn test_parse_duration_sec_units() {
+    fn parse_duration_sec_units() {
         assert_eq!(parse_duration_sec("500ms"), Some(0.5));
         assert_eq!(parse_duration_sec("2s"), Some(2.0));
         assert_eq!(parse_duration_sec("1m"), Some(60.0));
@@ -3249,7 +3249,7 @@ mod tests {
 
     // Bug 4: load_profile points with "ms" durations must not be dropped.
     #[test]
-    fn test_parse_custom_profile_with_ms() {
+    fn parse_custom_profile_with_ms() {
         let points = parse_custom_profile("500ms:10, 2s:100").expect("should parse");
         assert_eq!(points.len(), 2);
         assert_eq!(points[0], (0.5, 10.0));
@@ -3267,7 +3267,7 @@ mod tests {
 
     // Bug 1: near-equal latencies must not cause a divide-by-zero panic.
     #[test]
-    fn test_to_histogram_zero_width_no_panic() {
+    fn to_histogram_zero_width_no_panic() {
         let metrics = metrics_with_latencies(&[10, 10, 11, 12, 12]);
         // (max-min)/bucket_count = (12-10)/10 = 0 in integer math -> was a panic.
         let buckets = metrics.to_histogram(10);
@@ -3290,7 +3290,7 @@ mod tests {
 
     // Bug 3: `--requests` is the TOTAL budget across all docs.
     #[test]
-    fn test_request_passes_honours_total_budget() {
+    fn request_passes_honours_total_budget() {
         // 100 total requests over 3 docs -> ~33 passes (33*3 = 99 requests).
         assert_eq!(request_passes(100, 3), 33);
         // Single doc: passes == requests (unchanged behaviour).
@@ -3301,7 +3301,7 @@ mod tests {
 
     // Bug 2: unit-suffixed thresholds must parse, not silently become 0.0.
     #[test]
-    fn test_evaluate_thresholds_percent_suffix() {
+    fn evaluate_thresholds_percent_suffix() {
         let mut metrics = BenchMetrics {
             count: 100,
             errors: 2,
@@ -3318,7 +3318,7 @@ mod tests {
 
     // Bug 2: unparsable thresholds must error instead of defaulting to 0.0.
     #[test]
-    fn test_evaluate_thresholds_invalid_value_errors() {
+    fn evaluate_thresholds_invalid_value_errors() {
         let metrics = BenchMetrics {
             count: 100,
             ..Default::default()
@@ -3337,7 +3337,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bench_config_defaults() {
+    fn bench_config_defaults() {
         let config = BenchConfigResolved::default();
         assert_eq!(config.profile, "functional");
         assert_eq!(config.mode, "fixed");
@@ -3381,7 +3381,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bench_config_cli_override() {
+    fn bench_config_cli_override() {
         let args = BenchArgs {
             protocol: "grpc".to_string(),
             test_paths: vec![],
@@ -3452,7 +3452,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bench_config_bench_section() {
+    fn bench_config_bench_section() {
         let mut bench_section = crate::parser::OrderedStringMap::new();
         bench_section.insert("profile".to_string(), "stress".to_string());
         bench_section.insert("concurrency".to_string(), "50".to_string());
@@ -3517,7 +3517,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bench_config_cli_overrides_bench_section() {
+    fn bench_config_cli_overrides_bench_section() {
         let mut bench_section = crate::parser::OrderedStringMap::new();
         bench_section.insert("profile".to_string(), "stress".to_string());
         bench_section.insert("concurrency".to_string(), "50".to_string());
@@ -3574,7 +3574,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bench_option_sources_track_cli_bench_default() {
+    fn bench_option_sources_track_cli_bench_default() {
         let mut bench_section = crate::parser::OrderedStringMap::new();
         bench_section.insert("concurrency".to_string(), "20".to_string());
         bench_section.insert("load_schedule".to_string(), "step".to_string());
@@ -3641,7 +3641,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bench_config_from_bench_section_tracks_sources() {
+    fn bench_config_from_bench_section_tracks_sources() {
         let mut bench_section = crate::parser::OrderedStringMap::new();
         bench_section.insert("concurrency".to_string(), "7".to_string());
         bench_section.insert("load_schedule".to_string(), "step".to_string());
@@ -3667,7 +3667,7 @@ mod tests {
     }
 
     #[test]
-    fn test_duration_mode_ignores_requests() {
+    fn duration_mode_ignores_requests() {
         let args = BenchArgs {
             protocol: "grpc".to_string(),
             test_paths: vec![],
@@ -3720,7 +3720,7 @@ mod tests {
     }
 
     #[test]
-    fn test_connections_must_not_exceed_concurrency() {
+    fn connections_must_not_exceed_concurrency() {
         let args = BenchArgs {
             protocol: "grpc".to_string(),
             test_paths: vec![],
@@ -3771,7 +3771,7 @@ mod tests {
     }
 
     #[test]
-    fn test_duration_stop_invalid_value_fails() {
+    fn duration_stop_invalid_value_fails() {
         let args = BenchArgs {
             protocol: "grpc".to_string(),
             test_paths: vec![],
@@ -3822,7 +3822,7 @@ mod tests {
     }
 
     #[test]
-    fn test_should_record_after_deadline_modes() {
+    fn should_record_after_deadline_modes() {
         let start = Instant::now();
         let deadline = start + Duration::from_millis(1);
         let finished_after = deadline + Duration::from_millis(1);
@@ -3859,7 +3859,7 @@ mod tests {
     // Percentiles are accurate over a wide, dense distribution (1..=100_000).
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_histogram_percentile_accuracy() {
+    fn histogram_percentile_accuracy() {
         let mut h = LatencyHistogram::default();
         for v in 1..=100_000u64 {
             h.record(v);
@@ -3880,7 +3880,7 @@ mod tests {
     // histogram weights every sample equally, so p50 stays in the low mode.
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_histogram_not_biased_toward_late_samples() {
+    fn histogram_not_biased_toward_late_samples() {
         let mut h = LatencyHistogram::default();
         // 90k low samples recorded first, then 10k high samples.
         for _ in 0..90_000 {
@@ -3901,7 +3901,7 @@ mod tests {
     // histogram fed all the samples (exactly — no loss on merge).
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_histogram_merge_is_lossless() {
+    fn histogram_merge_is_lossless() {
         let mut whole = LatencyHistogram::default();
         let mut a = LatencyHistogram::default();
         let mut b = LatencyHistogram::default();
@@ -3927,7 +3927,7 @@ mod tests {
     // old 100k cap never grows the fixed bucket array, and every sample counts.
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_histogram_memory_is_bounded() {
+    fn histogram_memory_is_bounded() {
         let mut metrics = BenchMetrics::default();
         let n = MAX_LATENCY_SAMPLES + 10;
         for i in 0..n {
@@ -3940,7 +3940,7 @@ mod tests {
 
     // mean is computed exactly from the running sum/count, not the histogram.
     #[test]
-    fn test_mean_is_exact() {
+    fn mean_is_exact() {
         let mut m = BenchMetrics::default();
         for v in [10u64, 20, 30, 40, 100] {
             m.record(v, "OK", None, "e");
@@ -3950,7 +3950,7 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_end_reason_variants() {
+    fn derive_end_reason_variants() {
         assert_eq!(
             derive_end_reason(true, None, Duration::from_secs(5), false),
             "duration_reached"
@@ -3994,7 +3994,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_metric_error_rate_pct() {
+    fn resolve_metric_error_rate_pct() {
         let mut metrics = BenchMetrics::default();
         metrics.record(1_000_000, "OK", None, "test");
         metrics.record(1_000_000, "ERROR", Some("boom"), "test");
@@ -4004,7 +4004,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unknown_threshold_metric_fails_with_reason() {
+    fn unknown_threshold_metric_fails_with_reason() {
         let mut metrics = BenchMetrics::default();
         metrics.record(1_000_000, "OK", None, "test");
 
@@ -4025,7 +4025,7 @@ mod tests {
     }
 
     #[test]
-    fn test_target_rps_step_schedule() {
+    fn target_rps_step_schedule() {
         let cfg = BenchConfigResolved {
             load_schedule: "step".to_string(),
             load_start: Some(50.0),
@@ -4041,7 +4041,7 @@ mod tests {
     }
 
     #[test]
-    fn test_target_rps_line_schedule_down() {
+    fn target_rps_line_schedule_down() {
         let cfg = BenchConfigResolved {
             load_schedule: "line".to_string(),
             load_start: Some(200.0),
@@ -4058,7 +4058,7 @@ mod tests {
     // skip_first: hold back the first N sampled latencies (warm-up outliers)
     // from the global distribution as they are recorded.
     #[test]
-    fn test_skip_first_discards_leading_samples() {
+    fn skip_first_discards_leading_samples() {
         let mut m = BenchMetrics {
             skip_first_remaining: 2,
             ..Default::default()
@@ -4076,7 +4076,7 @@ mod tests {
     }
 
     #[test]
-    fn test_skip_first_saturates_without_panic() {
+    fn skip_first_saturates_without_panic() {
         let mut m = BenchMetrics {
             skip_first_remaining: 10,
             ..Default::default()
@@ -4095,7 +4095,7 @@ mod tests {
     // count_errors_in_latency=false (default): error latencies are EXCLUDED from
     // the latency distribution, but still counted in throughput and overall timing.
     #[test]
-    fn test_count_errors_excluded_from_latency_by_default() {
+    fn count_errors_excluded_from_latency_by_default() {
         let mut m = BenchMetrics::default();
         m.record(100, "OK", None, "e");
         m.record(9999, "ERROR", Some("boom"), "e");
@@ -4111,7 +4111,7 @@ mod tests {
 
     // count_errors_in_latency=true: error latencies are INCLUDED in the distribution.
     #[test]
-    fn test_count_errors_included_when_flag_set() {
+    fn count_errors_included_when_flag_set() {
         let mut m = BenchMetrics {
             count_errors_in_latency: true,
             ..Default::default()
@@ -4136,7 +4136,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sample_rate_records_every_nth() {
+    fn sample_rate_records_every_nth() {
         let mut m = BenchMetrics {
             sample_stride: sample_stride_from_rate(0.5),
             ..Default::default()
@@ -4153,7 +4153,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sample_rate_full_records_all() {
+    fn sample_rate_full_records_all() {
         let mut m = BenchMetrics {
             sample_stride: sample_stride_from_rate(1.0),
             ..Default::default()
@@ -4167,7 +4167,7 @@ mod tests {
     // ramp_up: linearly scale the target load from ~0 to the steady-state target
     // over the first `ramp_up` seconds.
     #[test]
-    fn test_ramp_up_scales_target_rps() {
+    fn ramp_up_scales_target_rps() {
         let cfg = BenchConfigResolved {
             load_schedule: "const".to_string(),
             max_rps: Some(100.0),
@@ -4183,7 +4183,7 @@ mod tests {
 
     // count_errors_in_latency / skip_first are also settable via the BENCH section.
     #[test]
-    fn test_bench_section_parses_skip_first_and_count_errors() {
+    fn bench_section_parses_skip_first_and_count_errors() {
         let mut bench_section = crate::parser::OrderedStringMap::new();
         bench_section.insert("skip_first".to_string(), "7".to_string());
         bench_section.insert("count_errors_in_latency".to_string(), "true".to_string());
@@ -4195,7 +4195,7 @@ mod tests {
     // Feature 1: each closed-loop worker maps to `worker % connections`, so
     // `connections` workers cycle over exactly `connections` distinct channels.
     #[test]
-    fn test_worker_connection_id_assignment() {
+    fn worker_connection_id_assignment() {
         // 4 workers, pool of 2 -> ids 0,1,0,1.
         let ids: Vec<u64> = (0..4).map(|w| worker_connection_id(w, 2)).collect();
         assert_eq!(ids, vec![0, 1, 0, 1]);
@@ -4212,7 +4212,7 @@ mod tests {
 
     // Feature 1: the open-model round-robin sends task k to runners[k % N].
     #[test]
-    fn test_round_robin_index_picks_k_mod_n() {
+    fn round_robin_index_picks_k_mod_n() {
         let picks: Vec<usize> = (0..7).map(|k| round_robin_index(k, 3)).collect();
         assert_eq!(picks, vec![0, 1, 2, 0, 1, 2, 0]);
         assert_eq!(round_robin_index(5, 0), 0);
@@ -4221,7 +4221,7 @@ mod tests {
     // Feature 2: the real numeric gRPC code maps to its canonical status bucket;
     // OK and errored codes land in distinct buckets.
     #[test]
-    fn test_grpc_status_label_mapping() {
+    fn grpc_status_label_mapping() {
         assert_eq!(grpc_status_label(Some(0), true), "OK");
         assert_eq!(grpc_status_label(Some(14), false), "Unavailable");
         assert_eq!(grpc_status_label(Some(5), true), "NotFound");
@@ -4233,7 +4233,7 @@ mod tests {
     // Feature 2: recording real status labels buckets them separately and keeps
     // OK vs non-OK accounting correct.
     #[test]
-    fn test_record_buckets_by_real_status() {
+    fn record_buckets_by_real_status() {
         let mut m = BenchMetrics::with_capacity(4);
         m.record(10, "OK", None, "svc/M");
         m.record(20, "OK", None, "svc/M");

@@ -6,7 +6,7 @@ use grpctestify::state::{CapturedExchange, ConfigSummary, TestMeta, TestResult, 
 use std::collections::HashMap;
 
 #[test]
-fn test_allure_reporter_passing_test() {
+fn allure_reporter_passing_test() {
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
 
@@ -55,7 +55,7 @@ fn test_allure_reporter_passing_test() {
 }
 
 #[test]
-fn test_allure_reporter_failing_test() {
+fn allure_reporter_failing_test() {
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
 
@@ -97,7 +97,7 @@ fn test_allure_reporter_failing_test() {
 }
 
 #[test]
-fn test_allure_reporter_mixed_results() {
+fn allure_reporter_mixed_results() {
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
 
@@ -158,7 +158,7 @@ fn test_allure_reporter_mixed_results() {
 }
 
 #[test]
-fn test_allure_reporter_labels_present() {
+fn allure_reporter_labels_present() {
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
 
@@ -206,7 +206,7 @@ fn test_allure_reporter_labels_present() {
 }
 
 #[test]
-fn test_allure_reporter_test_name_from_path() {
+fn allure_reporter_test_name_from_path() {
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
 
@@ -246,7 +246,7 @@ fn test_allure_reporter_test_name_from_path() {
 }
 
 #[test]
-fn test_allure_reporter_timestamps() {
+fn allure_reporter_timestamps() {
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
 
@@ -283,7 +283,7 @@ fn test_allure_reporter_timestamps() {
 }
 
 #[test]
-fn test_allure_reporter_tags_and_owner_labels() {
+fn allure_reporter_tags_and_owner_labels() {
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
 
@@ -330,7 +330,7 @@ fn test_allure_reporter_tags_and_owner_labels() {
 }
 
 #[test]
-fn test_allure_reporter_grpc_labels_for_filtering() {
+fn allure_reporter_grpc_labels_for_filtering() {
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
 
@@ -408,7 +408,7 @@ tasktracker.TaskService/GetTask
 }
 
 #[test]
-fn test_allure_reporter_runtime_parameters_present() {
+fn allure_reporter_runtime_parameters_present() {
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
 
@@ -488,7 +488,7 @@ tasktracker.TaskService/GetTask
 // values as Allure parameters, so history/retries can be traced back to the
 // exact row that produced them.
 #[test]
-fn test_allure_reporter_row_params_present() {
+fn allure_reporter_row_params_present() {
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
 
@@ -537,7 +537,7 @@ fn test_allure_reporter_row_params_present() {
 }
 
 #[test]
-fn test_allure_reporter_display_name_from_meta() {
+fn allure_reporter_display_name_from_meta() {
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
 
@@ -576,7 +576,7 @@ fn test_allure_reporter_display_name_from_meta() {
 }
 
 #[test]
-fn test_allure_reporter_description_and_links_from_meta() {
+fn allure_reporter_description_and_links_from_meta() {
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
 
@@ -627,7 +627,7 @@ fn test_allure_reporter_description_and_links_from_meta() {
 }
 
 #[test]
-fn test_allure_reporter_no_description_or_links_when_meta_empty() {
+fn allure_reporter_no_description_or_links_when_meta_empty() {
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
 
@@ -665,7 +665,7 @@ fn test_allure_reporter_no_description_or_links_when_meta_empty() {
 }
 
 #[test]
-fn test_allure_reporter_writes_exchange_attachment() {
+fn allure_reporter_writes_exchange_attachment() {
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
 
@@ -746,7 +746,7 @@ fn test_allure_reporter_writes_exchange_attachment() {
 }
 
 #[test]
-fn test_allure_reporter_no_attachment_when_exchange_absent() {
+fn allure_reporter_no_attachment_when_exchange_absent() {
     let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
     let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
 

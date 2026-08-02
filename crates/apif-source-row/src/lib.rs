@@ -30,7 +30,7 @@ pub use tsv::TsvReader;
 
 use anyhow::Result;
 use apif_utils::FileUtils;
-use std::io::{BufRead, BufReader, Read};
+use std::io::BufReader;
 use std::path::Path;
 
 pub trait SourceReader: Send {
@@ -79,12 +79,6 @@ pub fn resolve_source_path(
     document_path: &Path,
 ) -> std::path::PathBuf {
     FileUtils::resolve_relative_path(document_path, &definition.file)
-}
-
-pub fn peek_format(reader: &mut BufReader<impl Read>) -> Result<SourceFormat> {
-    let n = reader.fill_buf()?;
-    let text = String::from_utf8_lossy(n);
-    Ok(detect::detect_format_from_content(&text))
 }
 
 pub fn row_to_template_variables(

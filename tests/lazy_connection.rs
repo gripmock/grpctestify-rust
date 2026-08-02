@@ -3,7 +3,7 @@ use grpctestify::grpc::client::{CompressionMode, GrpcClient, GrpcClientConfig, P
 use std::path::PathBuf;
 
 #[tokio::test]
-async fn test_local_proto_files_descriptors_loaded() {
+async fn local_proto_files_descriptors_loaded() {
     let address = "http://localhost:59123";
     let proto_path = PathBuf::from("tests/e2e/examples/helloworld/helloworld.proto");
     let import_path = PathBuf::from("tests/e2e/examples/helloworld");

@@ -199,6 +199,31 @@ impl Workflow {
         }
         "Unary"
     }
+    /// Messages, not sections — one json-lines section carries N. Counted from
+    /// the plan so the summary agrees with `rpc_mode_name`, which counts the
+    /// events built from the same numbers. Errors stay out of the response
+    /// tally; they have their own.
+    fn message_counts(plan: &crate::execution::ExecutionPlan) -> (usize, usize) {
+        let requests = plan
+            .requests
+            .iter()
+            .map(|r| {
+                if r.content_type == "json-lines" {
+                    r.content.as_array().map_or(1, |v| v.len().max(1))
+                } else {
+                    1
+                }
+            })
+            .sum();
+        let responses = plan
+            .expectations
+            .iter()
+            .filter(|e| e.expectation_type == "response")
+            .map(|e| e.message_count.unwrap_or(1).max(1))
+            .sum();
+        (requests, responses)
+    }
+
     /// Build workflow from ExecutionPlan
     pub fn from_plan(plan: &crate::execution::ExecutionPlan) -> Self {
         let mut events = Vec::new();
@@ -228,24 +253,38 @@ impl Workflow {
         });
 
         for request in &plan.requests {
-            events.push(WorkflowEvent::SendRequest {
-                backend: backend.clone(),
-                request_index: request.index,
-                content_type: request.content_type.clone(),
-                line_range: (request.line_start, request.line_end),
-            });
-            events.push(WorkflowEvent::RequestSent {
-                backend: backend.clone(),
-                request_index: request.index,
-            });
+            // One json-lines section is N messages on a stream; the plan keeps
+            // it as a single entry, so both events fan out here (`validate`
+            // requires the send/sent counts to match).
+            let messages = if request.content_type == "json-lines" {
+                request.content.as_array().map_or(1, |v| v.len().max(1))
+            } else {
+                1
+            };
+            for _ in 0..messages {
+                events.push(WorkflowEvent::SendRequest {
+                    backend: backend.clone(),
+                    request_index: request.index,
+                    content_type: request.content_type.clone(),
+                    line_range: (request.line_start, request.line_end),
+                });
+                events.push(WorkflowEvent::RequestSent {
+                    backend: backend.clone(),
+                    request_index: request.index,
+                });
+            }
         }
 
         for expectation in &plan.expectations {
-            events.push(WorkflowEvent::ReceiveResponse {
-                backend: backend.clone(),
-                response_index: expectation.index,
-                expectation_type: expectation.expectation_type.clone(),
-            });
+            // Both halves fan out together: `validate` compares the two counts.
+            let messages = expectation.message_count.unwrap_or(1).max(1);
+            for _ in 0..messages {
+                events.push(WorkflowEvent::ReceiveResponse {
+                    backend: backend.clone(),
+                    response_index: expectation.index,
+                    expectation_type: expectation.expectation_type.clone(),
+                });
+            }
 
             if expectation.expectation_type == "error"
                 && let Some(content) = &expectation.content
@@ -259,12 +298,14 @@ impl Workflow {
                 events.push(WorkflowEvent::Error { code, message });
             }
 
-            events.push(WorkflowEvent::ResponseReceived {
-                backend: backend.clone(),
-                response_index: expectation.index,
-                has_content: expectation.content.is_some(),
-                options: ResponseOptions::from(&expectation.comparison_options),
-            });
+            for _ in 0..messages {
+                events.push(WorkflowEvent::ResponseReceived {
+                    backend: backend.clone(),
+                    response_index: expectation.index,
+                    has_content: expectation.content.is_some(),
+                    options: ResponseOptions::from(&expectation.comparison_options),
+                });
+            }
         }
 
         for extraction in &plan.extractions {
@@ -298,15 +339,16 @@ impl Workflow {
             backends_used: vec![backend.clone()],
         });
 
-        let has_streaming = plan.requests.len() > 1 || plan.expectations.len() > 1;
-        let has_bidi_streaming = plan.requests.len() > 1 && plan.expectations.len() > 1;
+        let (total_requests, total_responses) = Self::message_counts(plan);
+        let has_streaming = total_requests > 1 || total_responses > 1;
+        let has_bidi_streaming = total_requests > 1 && total_responses > 1;
 
         Self {
             file_path: plan.file_path.clone(),
             events,
             summary: WorkflowSummary {
-                total_requests: plan.summary.total_requests,
-                total_responses: plan.summary.total_responses,
+                total_requests,
+                total_responses,
                 total_extractions: plan.extractions.len(),
                 total_assertions: plan.assertions.iter().map(|a| a.assertions.len()).sum(),
                 backends: vec![backend],
@@ -456,12 +498,14 @@ impl Workflow {
 
         for event in &self.events {
             match event {
-                WorkflowEvent::SendRequest { .. } | WorkflowEvent::RequestSent { .. } => {
+                // One kind per direction: each message emits a matched pair, so
+                // counting both doubled every burst length.
+                WorkflowEvent::RequestSent { .. } => {
                     current_requests += 1;
                     current_responses = 0;
                     max_consecutive_requests = max_consecutive_requests.max(current_requests);
                 }
-                WorkflowEvent::ReceiveResponse { .. } | WorkflowEvent::ResponseReceived { .. } => {
+                WorkflowEvent::ResponseReceived { .. } => {
                     current_responses += 1;
                     current_requests = 0;
                     max_consecutive_responses = max_consecutive_responses.max(current_responses);
@@ -558,15 +602,16 @@ impl Workflow {
         let plan = crate::execution::ExecutionPlan::from_document(doc);
         Self::add_execution_events_from_plan(&mut events, &plan);
 
-        let has_streaming = plan.requests.len() > 1 || plan.expectations.len() > 1;
-        let has_bidi_streaming = plan.requests.len() > 1 && plan.expectations.len() > 1;
+        let (total_requests, total_responses) = Self::message_counts(&plan);
+        let has_streaming = total_requests > 1 || total_responses > 1;
+        let has_bidi_streaming = total_requests > 1 && total_responses > 1;
 
         Workflow {
             file_path: doc.file_path.clone(),
             events,
             summary: WorkflowSummary {
-                total_requests: plan.summary.total_requests,
-                total_responses: plan.summary.total_responses,
+                total_requests,
+                total_responses,
                 total_extractions: plan.extractions.len(),
                 total_assertions: plan.assertions.iter().map(|a| a.assertions.len()).sum(),
                 backends: vec!["default".to_string()],
@@ -604,24 +649,41 @@ impl Workflow {
         });
 
         for request in &plan.requests {
-            events.push(WorkflowEvent::SendRequest {
-                backend: backend.clone(),
-                request_index: request.index,
-                content_type: request.content_type.clone(),
-                line_range: (request.line_start, request.line_end),
-            });
-            events.push(WorkflowEvent::RequestSent {
-                backend: backend.clone(),
-                request_index: request.index,
-            });
+            // A `json-lines` REQUEST is one section holding N messages, sent as
+            // N messages on one stream. The plan deliberately keeps it as a
+            // single entry carrying the array, so the fan-out happens here.
+            // Both events are emitted N times: `rpc_mode_name` counts
+            // `RequestSent`, while `validate` requires the send/sent counts to
+            // match and `streaming_pattern` counts both.
+            let messages = if request.content_type == "json-lines" {
+                request.content.as_array().map_or(1, |v| v.len().max(1))
+            } else {
+                1
+            };
+            for _ in 0..messages {
+                events.push(WorkflowEvent::SendRequest {
+                    backend: backend.clone(),
+                    request_index: request.index,
+                    content_type: request.content_type.clone(),
+                    line_range: (request.line_start, request.line_end),
+                });
+                events.push(WorkflowEvent::RequestSent {
+                    backend: backend.clone(),
+                    request_index: request.index,
+                });
+            }
         }
 
         for expectation in &plan.expectations {
-            events.push(WorkflowEvent::ReceiveResponse {
-                backend: backend.clone(),
-                response_index: expectation.index,
-                expectation_type: expectation.expectation_type.clone(),
-            });
+            // Both halves fan out together: `validate` compares the two counts.
+            let messages = expectation.message_count.unwrap_or(1).max(1);
+            for _ in 0..messages {
+                events.push(WorkflowEvent::ReceiveResponse {
+                    backend: backend.clone(),
+                    response_index: expectation.index,
+                    expectation_type: expectation.expectation_type.clone(),
+                });
+            }
 
             if expectation.expectation_type == "error"
                 && let Some(content) = &expectation.content
@@ -635,12 +697,18 @@ impl Workflow {
                 events.push(WorkflowEvent::Error { code, message });
             }
 
-            events.push(WorkflowEvent::ResponseReceived {
-                backend: backend.clone(),
-                response_index: expectation.index,
-                has_content: expectation.content.is_some(),
-                options: ResponseOptions::from(&expectation.comparison_options),
-            });
+            // Symmetric with the request side: a RESPONSE section holding N
+            // json-lines messages is N received messages, and `message_count`
+            // already carries that. Emitting one made `rpc_mode_name` — which
+            // counts these — call server streaming `Unary`.
+            for _ in 0..expectation.message_count.unwrap_or(1).max(1) {
+                events.push(WorkflowEvent::ResponseReceived {
+                    backend: backend.clone(),
+                    response_index: expectation.index,
+                    has_content: expectation.content.is_some(),
+                    options: ResponseOptions::from(&expectation.comparison_options),
+                });
+            }
         }
 
         for extraction in &plan.extractions {
@@ -753,7 +821,7 @@ mod tests {
     }
 
     #[test]
-    fn test_workflow_from_plan() {
+    fn workflow_from_plan() {
         let plan = create_test_plan();
         let workflow = Workflow::from_plan(&plan);
 
@@ -763,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn test_workflow_validate() {
+    fn workflow_validate() {
         let plan = create_test_plan();
         let workflow = Workflow::from_plan(&plan);
         let result = workflow.validate();
@@ -772,7 +840,7 @@ mod tests {
     }
 
     #[test]
-    fn test_workflow_events_by_type() {
+    fn workflow_events_by_type() {
         let plan = create_test_plan();
         let workflow = Workflow::from_plan(&plan);
 
@@ -784,7 +852,7 @@ mod tests {
     }
 
     #[test]
-    fn test_workflow_streaming_analysis_unary() {
+    fn workflow_streaming_analysis_unary() {
         let plan = create_test_plan();
         let workflow = Workflow::from_plan(&plan);
         let pattern = workflow.analyze_streaming();
@@ -793,7 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn test_workflow_streaming_analysis_server() {
+    fn workflow_streaming_analysis_server() {
         let mut plan = create_test_plan();
         plan.expectations.push(ExpectationInfo {
             index: 2,
