@@ -32,6 +32,13 @@ updates:
     directory: /
     schedule:
       interval: daily
+    # Actions are pinned to a bare major tag, which already tracks every patch
+    # and minor; moving @v2 to @v2.85.3 would only freeze it.
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-patch
+          - version-update:semver-minor
     groups:
       actions:
         patterns:
