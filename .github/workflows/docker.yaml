@@ -20,8 +20,8 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: |
-            gripmock/grpctestify
-            ghcr.io/gripmock/grpctestify
+            bavix/grpctestify
+            ghcr.io/bavix/grpctestify
           tags: |
             type=ref,event=branch
             type=ref,event=pr
