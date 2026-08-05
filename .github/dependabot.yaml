@@ -46,6 +46,14 @@ updates:
     open-pull-requests-limit: 10
     commit-message:
       prefix: "ci(deps)"
+  # Docker base images (builder & runtime)
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(docker-deps)"
   # Node.js dependencies (docs / tooling)
   - package-ecosystem: npm
     directory: /
