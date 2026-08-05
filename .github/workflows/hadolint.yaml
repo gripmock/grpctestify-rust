@@ -1,8 +1,6 @@
 name: Hadolint
-
 on:
   pull_request:
-
 jobs:
   hadolint:
     name: Lint Dockerfile
