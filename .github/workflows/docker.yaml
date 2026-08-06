@@ -21,7 +21,6 @@ jobs:
         with:
           images: |
             bavix/grpctestify
-            ghcr.io/bavix/grpctestify
           tags: |
             type=ref,event=branch
             type=ref,event=pr
