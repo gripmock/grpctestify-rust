@@ -114,6 +114,7 @@ pub async fn handle_call(args: &CallArgs) -> Result<()> {
             load_max_duration: None,
             connections: None,
             connect_timeout: None,
+            request_timeout: None,
             keepalive: None,
             cpus: None,
             name: None,

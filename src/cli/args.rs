@@ -397,6 +397,10 @@ pub struct BenchArgs {
     #[arg(long, value_name = "DURATION")]
     pub connect_timeout: Option<String>,
 
+    /// Per-request timeout (e.g., 120s); defaults to the benchmark duration
+    #[arg(long, value_name = "DURATION")]
+    pub request_timeout: Option<String>,
+
     /// Keepalive interval (e.g., 30s)
     #[arg(long, value_name = "DURATION")]
     pub keepalive: Option<String>,

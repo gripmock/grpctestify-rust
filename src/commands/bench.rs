@@ -103,6 +103,8 @@ pub struct BenchConfigResolved {
     pub load_profile: Option<Vec<(f64, f64)>>,
     pub connections: u32,
     pub connect_timeout: Duration,
+    pub request_timeout: Option<Duration>,
+    pub collect_details: bool,
     pub keepalive: Option<Duration>,
     pub cpus: Option<usize>,
     pub name: Option<String>,
@@ -151,6 +153,8 @@ impl Default for BenchConfigResolved {
             load_profile: None,
             connections: 1,
             connect_timeout: Duration::from_secs(10),
+            request_timeout: None,
+            collect_details: false,
             keepalive: None,
             cpus: None,
             name: None,
@@ -434,6 +438,9 @@ impl BenchConfigResolved {
             if let Some(v) = bench.get("connections") {
                 config.connections = parse_bench_num(v, 1);
             }
+            if let Some(v) = bench_value(bench, "request_timeout") {
+                config.request_timeout = Some(parse_duration(v)?);
+            }
             if let Some(v) = bench_value(bench, "connect_timeout") {
                 config.connect_timeout = parse_duration(v)?;
             }
@@ -621,6 +628,9 @@ impl BenchConfigResolved {
             if let Some(v) = bench.get("connections") {
                 config.connections = parse_bench_num(v, 1);
             }
+            if let Some(v) = bench_value(bench, "request_timeout") {
+                config.request_timeout = Some(parse_duration(v)?);
+            }
             if let Some(v) = bench_value(bench, "connect_timeout") {
                 config.connect_timeout = parse_duration(v)?;
             }
@@ -724,6 +734,12 @@ impl BenchConfigResolved {
             "load_max_duration"
         );
         cli_config_field!(direct, config, cli, connections, "connections");
+        if let Some(v) = &cli.request_timeout {
+            config.request_timeout = Some(parse_duration(v)?);
+        }
+
+        // Only `detail-json` reads `details`; filling it elsewhere is pure hot-path cost.
+        config.collect_details = canonical_bench_format(&cli.format) == "detail-json";
         if let Some(v) = &cli.connect_timeout {
             config.connect_timeout = parse_duration(v)?;
         }
@@ -1039,6 +1055,7 @@ struct BenchMetrics {
     latency: LatencyHistogram,
     per_endpoint: BTreeMap<String, PerEndpointData>,
     details: Vec<crate::report::bench::BenchDetail>,
+    collect_details: bool,
     /// When false, latencies of error responses are excluded from the latency
     /// distribution (percentiles/histogram). Throughput and overall timing
     /// counters (count/rps/fastest/slowest/average) are never affected.
@@ -1087,11 +1104,13 @@ impl BenchMetrics {
         count_errors_in_latency: bool,
         sample_stride: u64,
         skip_first: u32,
+        collect_details: bool,
     ) -> Self {
         let mut m = Self::with_capacity(hint);
         m.count_errors_in_latency = count_errors_in_latency;
         m.sample_stride = sample_stride;
         m.skip_first_remaining = skip_first;
+        m.collect_details = collect_details;
         m
     }
 }
@@ -1113,13 +1132,12 @@ impl BenchMetrics {
             self.errors += 1;
         }
 
-        // Use static key strings to avoid allocation in hot path
+        // Borrowed lookup: `entry()` needs an owned key, so it allocated per request.
         let status_key = if status.is_empty() { "OK" } else { status };
-        *self.grpc_status.entry(status_key.to_string()).or_insert(0) += 1;
+        bump(&mut self.grpc_status, status_key);
 
         if let Some(err) = error {
-            let category = categorize_error(err);
-            *self.error_dist.entry(category).or_insert(0) += 1;
+            bump(&mut self.error_dist, categorize_error(err));
         }
 
         // Decide whether this request contributes a *latency sample* (percentiles
@@ -1131,7 +1149,10 @@ impl BenchMetrics {
         let contributes = sampled && (is_ok || self.count_errors_in_latency);
 
         // Per-endpoint tracking
-        let ep = self.per_endpoint.entry(endpoint.to_string()).or_default();
+        let ep = match self.per_endpoint.get_mut(endpoint) {
+            Some(ep) => ep,
+            None => self.per_endpoint.entry(endpoint.to_string()).or_default(),
+        };
         ep.count += 1;
         if !is_ok {
             ep.errors += 1;
@@ -1161,7 +1182,7 @@ impl BenchMetrics {
         }
 
         // Collect per-response detail (capped at 100k)
-        if self.details.len() < MAX_LATENCY_SAMPLES {
+        if self.collect_details && self.details.len() < MAX_LATENCY_SAMPLES {
             self.details.push(crate::report::bench::BenchDetail {
                 timestamp: crate::polyfill::runtime::now_timestamp(),
                 latency_ns,
@@ -1280,20 +1301,39 @@ impl BenchMetrics {
     }
 }
 
-fn categorize_error(message: &str) -> String {
-    let msg = message.to_lowercase();
-    if msg.contains("assertion") || msg.contains("assert") {
-        "assert_failure".to_string()
-    } else if msg.contains("timeout") || msg.contains("deadline") {
-        "timeout".to_string()
-    } else if msg.contains("connection") || msg.contains("refused") || msg.contains("reset") {
-        "connection_error".to_string()
-    } else if msg.contains("unavailable") {
-        "unavailable".to_string()
-    } else if msg.contains("invalid") || msg.contains("malformed") {
-        "invalid_input".to_string()
+/// Increment a counter keyed by a borrowed label, allocating the key only when
+/// the label has not been seen before.
+fn bump(counters: &mut BTreeMap<String, u64>, key: &str) {
+    if let Some(counter) = counters.get_mut(key) {
+        *counter += 1;
     } else {
-        "other".to_string()
+        counters.insert(key.to_string(), 1);
+    }
+}
+
+/// Case-insensitive substring test without the `to_lowercase()` allocation.
+fn contains_fold(haystack: &str, needle: &str) -> bool {
+    let (h, n) = (haystack.as_bytes(), needle.as_bytes());
+
+    !n.is_empty() && n.len() <= h.len() && h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
+}
+
+fn categorize_error(message: &str) -> &'static str {
+    if contains_fold(message, "assert") {
+        "assert_failure"
+    } else if contains_fold(message, "timeout") || contains_fold(message, "deadline") {
+        "timeout"
+    } else if contains_fold(message, "connection")
+        || contains_fold(message, "refused")
+        || contains_fold(message, "reset")
+    {
+        "connection_error"
+    } else if contains_fold(message, "unavailable") {
+        "unavailable"
+    } else if contains_fold(message, "invalid") || contains_fold(message, "malformed") {
+        "invalid_input"
+    } else {
+        "other"
     }
 }
 
@@ -1446,9 +1486,11 @@ async fn run_benchmark(
                 Some(Arc::new(sc))
             }
             Ok(None) => None,
+            // Fatal: continuing runs every request against unsubstituted placeholders.
             Err(e) => {
-                warn!("Source preparation failed: {e}");
-                None
+                return Err(e.context(
+                    "the BENCH section declares data sources that could not be prepared",
+                ));
             }
         }
     } else {
@@ -1463,14 +1505,27 @@ async fn run_benchmark(
         let done = Arc::clone(&progress_done);
         let cfg = config.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(cfg.progress_interval);
-            interval.tick().await;
+            // Poll the stop flag far more often than the reporting interval.
+            // Sleeping a whole interval and only then checking meant the run
+            // kept the process alive until the next tick after the workers had
+            // finished, which both wasted that time and, because `run_elapsed`
+            // is taken afterwards, deflated the reported throughput.
+            const POLL: Duration = Duration::from_millis(50);
+
+            let mut waited = Duration::ZERO;
+
             loop {
-                interval.tick().await;
+                tokio::time::sleep(POLL).await;
+
                 if done.load(Ordering::Relaxed) {
                     break;
                 }
-                print_progress_snapshot(run_start, &count, &errors, &cfg);
+
+                waited += POLL;
+                if waited >= cfg.progress_interval {
+                    waited = Duration::ZERO;
+                    print_progress_snapshot(run_start, &count, &errors, &cfg);
+                }
             }
         })
     };
@@ -1531,6 +1586,7 @@ async fn run_benchmark(
                     cfg.count_errors_in_latency,
                     sample_stride_from_rate(cfg.sample_rate),
                     cfg.skip_first,
+                    cfg.collect_details,
                 );
                 let mut next_slot = Instant::now();
                 let deadline = Instant::now() + dur;
@@ -1631,6 +1687,7 @@ async fn run_benchmark(
                     cfg.count_errors_in_latency,
                     sample_stride_from_rate(cfg.sample_rate),
                     cfg.skip_first,
+                    cfg.collect_details,
                 );
                 let mut next_slot = Instant::now();
                 for _ in 0..worker_requests {
@@ -1704,11 +1761,13 @@ async fn run_benchmark(
         }
     }
 
+    // Take the measurement window before winding the progress task down, so
+    // that shutdown never counts as time the benchmark spent serving requests.
+    let run_elapsed = run_start.elapsed();
+
     progress_done.store(true, Ordering::Relaxed);
     let _ = progress_task.await;
     print_progress_snapshot(run_start, &progress_count, &progress_errors, config);
-
-    let run_elapsed = run_start.elapsed();
     let end_ts = crate::polyfill::runtime::now_timestamp();
 
     let user_cancelled = shutdown_requested.load(Ordering::Relaxed);
@@ -2069,6 +2128,7 @@ async fn run_open_model(
             config.count_errors_in_latency,
             sample_stride_from_rate(config.sample_rate),
             config.skip_first,
+            config.collect_details,
         );
     }
 
@@ -2077,7 +2137,7 @@ async fn run_open_model(
     // globally cached (keyed by connection_id), so N distinct ids open N
     // distinct HTTP/2 channels while keeping client construction off the
     // per-request hot path.
-    let timeout_seconds = config.duration.map_or(30, |d| d.as_secs()).max(1);
+    let timeout_seconds = request_timeout_seconds(config);
     let no_assert = config.no_assert || config.assert_mode == "off" || config.assert_mode == "skip";
     let runners: Vec<Arc<TestRunner>> = (0..config.connections.max(1))
         .map(|i| {
@@ -2104,6 +2164,7 @@ async fn run_open_model(
         config.count_errors_in_latency,
         sample_stride_from_rate(config.sample_rate),
         config.skip_first,
+        config.collect_details,
     )));
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(
@@ -2240,7 +2301,7 @@ async fn execute_single_bench_iteration_with_vars(
 
     let endpoint = doc.get_endpoint().unwrap_or_else(|| "unknown".to_string());
 
-    let timeout_seconds = config.duration.map_or(30, |d| d.as_secs()).max(1);
+    let timeout_seconds = request_timeout_seconds(config);
     let no_assert = config.no_assert || config.assert_mode == "off" || config.assert_mode == "skip";
 
     let runner = TestRunner::new(false, timeout_seconds, no_assert, false, false, None)
@@ -2707,6 +2768,21 @@ fn canonical_bench_format(fmt: &str) -> &str {
     }
 }
 
+/// Per-request deadline in whole seconds; falls back to the run duration.
+fn request_timeout_seconds(config: &BenchConfigResolved) -> u64 {
+    config
+        .request_timeout
+        .or(config.duration)
+        .map_or(30, |d| d.as_secs())
+        .max(1)
+}
+
+/// Run produced no usable measurement. `ok` is transport-level, so an expected
+/// ERROR document legitimately ends at zero.
+fn measured_nothing(expects_error: bool, count: u64, ok: u64) -> bool {
+    !expects_error && count > 0 && ok == 0
+}
+
 pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
     // Handle --list-profiles
     if args.list_profiles {
@@ -3074,7 +3150,10 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
     // result. This must fail even with no `BENCH.thresholds` configured:
     // `thresholds_passed()` is vacuously `true` when there are no
     // thresholds to check, which previously let a 100%-error run exit 0.
-    if report.summary.count > 0 && report.summary.ok == 0 {
+    // Exception: an ERROR section asks for failing calls, so non-OK is expected.
+    let expects_error = doc.first_section(SectionType::Error).is_some();
+
+    if measured_nothing(expects_error, report.summary.count, report.summary.ok) {
         anyhow::bail!(
             "Benchmark measured nothing — all {} request(s) failed (target likely misconfigured or unreachable)",
             report.summary.count
@@ -3091,6 +3170,65 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn details_are_collected_only_for_the_per_response_format() {
+        let mut m = BenchMetrics::for_worker(0, false, 1, 0, false);
+        m.record(1, "OK", None, "svc/method");
+        assert!(m.details.is_empty());
+
+        let mut m = BenchMetrics::for_worker(0, false, 1, 0, true);
+        m.record(1, "OK", None, "svc/method");
+        assert_eq!(m.details.len(), 1);
+    }
+
+    #[test]
+    fn request_timeout_defaults_to_the_run_duration() {
+        let config = BenchConfigResolved {
+            duration: Some(Duration::from_secs(10)),
+            ..Default::default()
+        };
+        assert_eq!(request_timeout_seconds(&config), 10);
+    }
+
+    #[test]
+    fn request_timeout_overrides_the_run_duration() {
+        let config = BenchConfigResolved {
+            duration: Some(Duration::from_secs(10)),
+            request_timeout: Some(Duration::from_secs(120)),
+            ..Default::default()
+        };
+        assert_eq!(request_timeout_seconds(&config), 120);
+    }
+
+    #[test]
+    fn request_timeout_never_reaches_zero() {
+        let config = BenchConfigResolved {
+            request_timeout: Some(Duration::from_millis(1)),
+            ..Default::default()
+        };
+        assert_eq!(request_timeout_seconds(&config), 1);
+    }
+
+    #[test]
+    fn measured_nothing_flags_a_fully_failed_run() {
+        assert!(measured_nothing(false, 100, 0));
+    }
+
+    #[test]
+    fn measured_nothing_allows_a_run_that_expects_an_error() {
+        assert!(!measured_nothing(true, 100, 0));
+    }
+
+    #[test]
+    fn measured_nothing_allows_partial_success() {
+        assert!(!measured_nothing(false, 100, 1));
+    }
+
+    #[test]
+    fn measured_nothing_allows_an_empty_run() {
+        assert!(!measured_nothing(false, 0, 0));
+    }
 
     #[test]
     fn parse_bench_num_accepts_digit_separators() {
@@ -3402,6 +3540,7 @@ mod tests {
             load_max_duration: None,
             connections: Some(5),
             connect_timeout: Some("3s".to_string()),
+            request_timeout: None,
             keepalive: Some("1s".to_string()),
             cpus: Some(2),
             name: Some("load-test".to_string()),
@@ -3479,6 +3618,7 @@ mod tests {
             load_max_duration: None,
             connections: None,
             connect_timeout: None,
+            request_timeout: None,
             keepalive: None,
             cpus: None,
             name: None,
@@ -3542,6 +3682,7 @@ mod tests {
             load_max_duration: None,
             connections: None,
             connect_timeout: None,
+            request_timeout: None,
             keepalive: None,
             cpus: None,
             name: None,
@@ -3599,6 +3740,7 @@ mod tests {
             load_max_duration: None,
             connections: None,
             connect_timeout: None,
+            request_timeout: None,
             keepalive: None,
             cpus: None,
             name: None,
@@ -3688,6 +3830,7 @@ mod tests {
             load_max_duration: None,
             connections: Some(1),
             connect_timeout: None,
+            request_timeout: None,
             keepalive: None,
             cpus: None,
             name: None,
@@ -3741,6 +3884,7 @@ mod tests {
             load_max_duration: None,
             connections: Some(3),
             connect_timeout: None,
+            request_timeout: None,
             keepalive: None,
             cpus: None,
             name: None,
@@ -3792,6 +3936,7 @@ mod tests {
             load_max_duration: None,
             connections: Some(1),
             connect_timeout: None,
+            request_timeout: None,
             keepalive: None,
             cpus: None,
             name: None,

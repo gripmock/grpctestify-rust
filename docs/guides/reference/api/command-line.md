@@ -103,7 +103,7 @@ Note: if `--log-format` is set without `--log-output`, the run continues and fil
   - stop conditions: `-n, --requests`, `-d, --duration`, `--max-duration`
   - load profile: `--max-rps`, `--load-schedule`, `--load-start`, `--load-step`, `--load-end`, `--load-step-duration`, `--load-max-duration`
   - methodology: `--warmup`, `--ramp-up`, `--duration-stop`, `--skip-first`, `--count-errors-in-latency`, `--latency-percentiles`
-  - runtime/transport: `-c, --concurrency`, `--connections`, `--connect-timeout`, `--keepalive`, `--cpus`
+  - runtime/transport: `-c, --concurrency`, `--connections`, `--connect-timeout`, `--request-timeout`, `--keepalive`, `--cpus`
   - validation/progress: `--assert-mode`, `--no-assert`, `--sample-rate`, `--progress-interval`
   - profiles: `--profile <name>`, `--list-profiles`, `--profile-file <path>` (see [BENCH § Profiles](../sections/bench#profiles))
   - metadata/output: `--name`, `--log-format` (`console`/`json`/`csv`/`ndjson`/`prometheus`), `--output`,

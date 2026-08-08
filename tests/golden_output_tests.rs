@@ -154,6 +154,19 @@ fn scrub(text: &str, tmp_root: &Path) -> String {
     s = version
         .replace_all(&s, r#""version":"<VERSION>""#)
         .into_owned();
+    // Allure carries the version as a name/value pair, which the plain
+    // `"version":` form above does not reach.
+    let version_pair = regex::Regex::new(
+        r#""(grpctestify_version|grpctestify\.version)"\s*,\s*"value"\s*:\s*"[^"]*""#,
+    )
+    .unwrap();
+    s = version_pair
+        .replace_all(&s, r#""${1}","value":"<VERSION>""#)
+        .into_owned();
+
+    let version_yaml = regex::Regex::new(r"(?m)^(\s*version:\s*)\S+$").unwrap();
+    s = version_yaml.replace_all(&s, "${1}<VERSION>").into_owned();
+
     let version_props = regex::Regex::new(r"grpctestify\.version=\S+").unwrap();
     s = version_props
         .replace_all(&s, "grpctestify.version=<VERSION>")
@@ -479,6 +492,21 @@ mod scrub_tests {
         assert_eq!(
             scrub(text, tmp_root),
             "<span class=\"test-name\"><TMPDIR>&#x2f;a_pass.gctf</span> grpc.health.v1.Health&#x2f;Check"
+        );
+    }
+
+    // Regression: allure carries the version as a name/value pair, which the
+    // `"version":"…"` pattern never reached, so the golden pinned a literal
+    // version and broke on every release bump.
+    #[test]
+    fn scrub_replaces_the_allure_version_label_and_parameter() {
+        let v = env!("CARGO_PKG_VERSION");
+        let text = format!(
+            r#"{{"name":"grpctestify_version","value":"{v}"}},{{"name":"grpctestify.version","value":"{v}"}}"#
+        );
+        assert_eq!(
+            scrub(&text, Path::new("/tmp/AbC123")),
+            r#"{"name":"grpctestify_version","value":"<VERSION>"},{"name":"grpctestify.version","value":"<VERSION>"}"#
         );
     }
 
