@@ -45,7 +45,7 @@ thresholds.error_rate_pct: <1.0
 - Scheduler: `load_schedule`, `load_start`, `load_step`, `load_end`, `load_step_duration`, `load_max_duration`
   - `sine` shape adds: `load_midpoint`, `load_amplitude`, `load_frequency`
   - `spike` shape adds: `load_spike_target`, `load_spike_after`, `load_spike_duration`
-- Runtime/transport: `concurrency`, `connections`, `connect_timeout`, `keepalive`, `cpus`
+- Runtime/transport: `concurrency`, `connections`, `connect_timeout`, `request_timeout`, `keepalive`, `cpus`
 - Methodology: `ramp_up`, `warmup`, `skip_first`, `count_errors_in_latency`, `duration_stop`, `latency_percentiles`, `progress_interval`
 - Validation cost: `assert_mode`, `no_assert`, `sample_rate`
 - Cache: `cache`, `cache_ttl`
@@ -73,6 +73,9 @@ thresholds.error_rate_pct: <1.0
 - `load_spike_target`, `load_spike_after`, `load_spike_duration`: peak RPS, delay before the spike, and how
   long it lasts for the `spike` schedule.
 - `connect_timeout`: connection timeout duration.
+- `request_timeout`: per-request deadline. Defaults to the run `duration` (30s when only `requests` is
+  set), so a server slower than the run window reports timeouts instead of slow successes. Rounded down
+  to whole seconds, minimum 1s.
 - `keepalive`: keepalive interval.
 - `cpus`: optional CPU pinning hint.
 - `assert_mode`: assertion execution policy (`full`, `sampled`, `off`; compat aliases are accepted).
