@@ -1505,14 +1505,27 @@ async fn run_benchmark(
         let done = Arc::clone(&progress_done);
         let cfg = config.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(cfg.progress_interval);
-            interval.tick().await;
+            // Poll the stop flag far more often than the reporting interval.
+            // Sleeping a whole interval and only then checking meant the run
+            // kept the process alive until the next tick after the workers had
+            // finished, which both wasted that time and, because `run_elapsed`
+            // is taken afterwards, deflated the reported throughput.
+            const POLL: Duration = Duration::from_millis(50);
+
+            let mut waited = Duration::ZERO;
+
             loop {
-                interval.tick().await;
+                tokio::time::sleep(POLL).await;
+
                 if done.load(Ordering::Relaxed) {
                     break;
                 }
-                print_progress_snapshot(run_start, &count, &errors, &cfg);
+
+                waited += POLL;
+                if waited >= cfg.progress_interval {
+                    waited = Duration::ZERO;
+                    print_progress_snapshot(run_start, &count, &errors, &cfg);
+                }
             }
         })
     };
@@ -1748,11 +1761,13 @@ async fn run_benchmark(
         }
     }
 
+    // Take the measurement window before winding the progress task down, so
+    // that shutdown never counts as time the benchmark spent serving requests.
+    let run_elapsed = run_start.elapsed();
+
     progress_done.store(true, Ordering::Relaxed);
     let _ = progress_task.await;
     print_progress_snapshot(run_start, &progress_count, &progress_errors, config);
-
-    let run_elapsed = run_start.elapsed();
     let end_ts = crate::polyfill::runtime::now_timestamp();
 
     let user_cancelled = shutdown_requested.load(Ordering::Relaxed);
