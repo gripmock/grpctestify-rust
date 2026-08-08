@@ -582,12 +582,21 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
 
     let mut collected = Vec::new();
     let exclude_patterns = &args.exclude;
+    // A path that resolves to neither a file nor a directory used to be dropped
+    // silently, so a typo in one of several CI paths skipped that whole suite
+    // and still exited 0.
+    let mut missing = Vec::new();
     for path in &args.test_paths {
         if path.is_dir() {
             collected.extend(FileUtils::collect_test_files(path, exclude_patterns));
         } else if path.is_file() {
             collected.push(path.clone());
+        } else {
+            missing.push(path.display().to_string());
         }
+    }
+    if !missing.is_empty() {
+        anyhow::bail!("test path not found: {}", missing.join(", "));
     }
 
     // Convention-based per-directory fixtures (`_setup.gctf`/`_teardown.gctf`)
@@ -1206,7 +1215,10 @@ async fn run_single_test(
         }
     };
 
-    if let Some(resp) = &result.captured_response
+    // `captured_response` is populated by `--write` *and* by `capture_exchange`,
+    // which report formats turn on. Only `--write` may rewrite the file.
+    if runner.is_write_mode()
+        && let Some(resp) = &result.captured_response
         && let Err(e) = crate::utils::file::update_test_file(file, &doc, resp)
     {
         return Ok(execution::TestExecutionResult::fail(

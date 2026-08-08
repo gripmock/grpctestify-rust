@@ -911,6 +911,14 @@ impl TestRunner {
         self
     }
 
+    /// Whether snapshot-update mode (`--write`) is on. Callers must consult this
+    /// before rewriting a `.gctf` from a captured response: `capture_exchange`
+    /// also populates `captured_response`, and it is enabled by report formats
+    /// that have nothing to do with `--write`.
+    pub fn is_write_mode(&self) -> bool {
+        self.write_mode
+    }
+
     /// Run a test document chain.
     /// Walks the `next_document` linked list, accumulating EXTRACT variables
     /// between documents. Fail-fast: stops on first failure.
@@ -1272,7 +1280,8 @@ impl TestRunner {
                 &section.attributes,
                 &inherited_attrs,
             );
-            inherited_attrs = resolved_attrs.clone();
+            inherited_attrs =
+                crate::parser::content_parser::inheritable_attributes(&resolved_attrs);
 
             let get_attr = |name: &str| -> Option<&crate::parser::ast::GctfAttribute> {
                 resolved_attrs.iter().find(|a| a.name == name)

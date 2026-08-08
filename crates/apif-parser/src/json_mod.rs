@@ -32,6 +32,19 @@ impl std::error::Error for JsonParseError {}
 /// Parse JSON5 string into serde_json::Value
 /// Supports: comments (`//`, `#`, `/* */`), trailing commas, unquoted keys
 pub fn from_str(json_str: &str) -> Result<Value, anyhow::Error> {
+    // Plain JSON is the overwhelmingly common body, and JSON is a subset of
+    // JSON5, so anything `serde_json` accepts parses to the same value. Taking
+    // it directly skips a full-input copy in `tokenize_strip_comments` plus the
+    // much slower `json5` deserializer. Comments, trailing commas, unquoted
+    // keys, digit separators, `Infinity`, and over-deep input all fail here and
+    // fall through to the JSON5 path below, which owns the diagnostics.
+    //
+    // `serde_json` has its own recursion limit, so a too-deep document errors
+    // out here and still reaches the `MAX_JSON_DEPTH` check below.
+    if let Ok(value) = serde_json::from_str::<Value>(json_str) {
+        return Ok(value);
+    }
+
     let (cleaned, max_depth) = tokenize_strip_comments(json_str);
     if max_depth > MAX_JSON_DEPTH {
         return Err(anyhow::anyhow!(
@@ -348,5 +361,42 @@ mod tests {
         let input = "{\n  # comment line 1\n  # comment line 2\n  \"key\": \"value\"\n}";
         let result = from_str(input).unwrap();
         assert_eq!(result["key"], "value");
+    }
+
+    // Plain JSON takes a `serde_json` fast path that skips comment stripping
+    // and the JSON5 deserializer. Every JSON5-only spelling must still reach
+    // the fallback and produce the same value it did before the fast path
+    // existed.
+    #[test]
+    fn strict_json_and_json5_paths_agree() {
+        let strict = from_str(r#"{"a": 1, "b": [true, null], "c": {"d": "x"}}"#).unwrap();
+        let json5_spelled = from_str("{a: 1, b: [true, null,], c: {d: 'x'},}").unwrap();
+        assert_eq!(strict, json5_spelled);
+    }
+
+    #[test]
+    fn json5_only_spellings_still_parse() {
+        assert_eq!(from_str("{a: 1}").unwrap()["a"], 1);
+        assert_eq!(from_str("{\"a\": 1,}").unwrap()["a"], 1);
+        assert_eq!(from_str("{\"a\": 1_000}").unwrap()["a"], 1000);
+        assert_eq!(from_str("{\"a\": 1} // trailing").unwrap()["a"], 1);
+        assert_eq!(from_str("{'a': 'b'}").unwrap()["a"], "b");
+    }
+
+    #[test]
+    fn depth_limit_still_enforced_beyond_the_fast_path() {
+        // Deeper than MAX_JSON_DEPTH: `serde_json` rejects it too, so the
+        // fallback must still produce the depth diagnostic rather than a
+        // generic parse error.
+        let deep = format!(
+            "{}{}",
+            "[".repeat(MAX_JSON_DEPTH + 10),
+            "]".repeat(MAX_JSON_DEPTH + 10)
+        );
+        let err = from_str(&deep).unwrap_err().to_string();
+        assert!(
+            err.contains("exceeds maximum"),
+            "expected the depth diagnostic, got: {err}"
+        );
     }
 }

@@ -212,7 +212,7 @@ dependencies = [
 
 [[package]]
 name = "apif-parser"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "apif-ast",
@@ -2243,7 +2243,7 @@ dependencies = [
 
 [[package]]
 name = "grpctestify"
-version = "1.9.5"
+version = "1.9.6"
 dependencies = [
  "anyhow",
  "apif-assert",
