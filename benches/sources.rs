@@ -4,14 +4,17 @@
 //! contention. `bench` pulls one row per request from a shared reader, so the
 //! contended figure is the one that bounds a data-driven load test.
 
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{Criterion, SamplingMode, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicIsize, Ordering};
+use std::time::Duration;
 
 use apif_source_row::{SourceDefinition, SourceDrivenConfig};
 
 const ROWS: usize = 5_000;
+/// Rows drained per measured iteration.
+const ROWS_PER_ITER: usize = 200;
 
 fn csv_fixture(dir: &std::path::Path) -> std::path::PathBuf {
     let path = dir.join("names.csv");
@@ -58,20 +61,33 @@ fn bench_sources(c: &mut Criterion) {
     let path = csv_fixture(dir.path());
 
     let mut group = c.benchmark_group("sources/next_row");
-    group.throughput(Throughput::Elements(200));
+    group.throughput(Throughput::Elements(ROWS_PER_ITER as u64));
     group.sample_size(20);
+    // Flat sampling with a bounded window: the contended cases scale their work
+    // with the iteration count, and criterion's default linear sampling asks
+    // for a quadratic amount of it.
+    group.sampling_mode(SamplingMode::Flat);
+    group.measurement_time(Duration::from_secs(5));
+    group.warm_up_time(Duration::from_secs(1));
 
     group.bench_function("serial", |b| {
         let config = config_for(&path);
-        b.iter(|| drain(&config, 200));
+        b.iter(|| drain(&config, ROWS_PER_ITER));
     });
 
     // Every worker pulls from the same reader; this is what a bench run does.
     for threads in [4usize, 16] {
+        // Built once: rebuilding it per batch re-parsed the whole fixture and
+        // dominated the measurement.
+        let config = config_for(&path);
         group.bench_function(format!("contended/{threads}"), |b| {
             b.iter_custom(|iters| {
-                let config = config_for(&path);
-                let remaining = Arc::new(AtomicUsize::new((iters as usize) * 200));
+                let config = Arc::clone(&config);
+                // Signed on purpose: `AtomicUsize::fetch_sub` wraps, so once the
+                // counter reached zero every thread still in the loop saw
+                // `usize::MAX` and spun forever.
+                let remaining =
+                    Arc::new(AtomicIsize::new((iters as isize) * ROWS_PER_ITER as isize));
                 let start = std::time::Instant::now();
                 std::thread::scope(|scope| {
                     for _ in 0..threads {
