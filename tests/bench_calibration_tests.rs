@@ -4,13 +4,20 @@
 //! The calibration target has to behave like a real gRPC server, or the floor
 //! it reports is not comparable with a real run.
 
+#[path = "support/mod.rs"]
+mod support;
 use grpctestify::bench::calibrate::CalibrationTarget;
+use support::fixture_path;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_calibration_target_answers_any_unary_method() {
     let target = CalibrationTarget::spawn().await.unwrap();
     let dir = tempfile::tempdir().unwrap();
-    std::fs::copy("tests/proto/test.proto", dir.path().join("test.proto")).unwrap();
+    std::fs::copy(
+        fixture_path("tests/proto/test.proto"),
+        dir.path().join("test.proto"),
+    )
+    .unwrap();
     let file = dir.path().join("any.gctf");
     let report = dir.path().join("report.json");
     std::fs::write(
