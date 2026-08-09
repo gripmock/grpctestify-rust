@@ -1672,6 +1672,36 @@ impl TestRunner {
                         };
 
                         let read_timeout_secs = get_timeout().unwrap_or(effective_timeout_seconds);
+
+                        // A RESPONSE with no messages is the only way to assert
+                        // that a server-streaming call yielded none. It used to
+                        // skip the loop below and pass whatever arrived.
+                        if expected_values.is_empty()
+                            && matches!(section.content, SectionContent::Empty)
+                            && !effective_no_assert
+                        {
+                            let next_item = if read_timeout_secs > 0 {
+                                tokio::time::timeout(
+                                    std::time::Duration::from_secs(read_timeout_secs),
+                                    stream.next(),
+                                )
+                                .await
+                                .unwrap_or(None)
+                            } else {
+                                stream.next().await
+                            };
+                            if let Some(Ok(crate::grpc::client::StreamItem::Message(msg))) =
+                                next_item
+                            {
+                                rpc_end = Some(std::time::Instant::now());
+                                failure_reasons.push(format!(
+                                    "RESPONSE section at line {} expects no messages, but the stream produced one: {}",
+                                    section.start_line,
+                                    msg
+                                ));
+                            }
+                        }
+
                         let mut stream_read_timed_out = false;
                         for expected_template in expected_values {
                             // Bound each stream read: tonic's Endpoint::timeout only

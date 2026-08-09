@@ -428,24 +428,12 @@ fn validate_content(document: &GctfDocument, errors: &mut Vec<ValidationError>) 
                         });
                     }
                 }
-                // A RESPONSE/ERROR section with no body yields zero
-                // expectations, so the runner asserts nothing and reports a
-                // pass. Reject it instead of shipping a permanently green
-                // no-op test.
-                SectionContent::Empty
-                    if section_type == SectionType::Response
-                        || section_type == SectionType::Error =>
-                {
+                // An empty RESPONSE is zero messages, which is what a
+                // server-streaming call that yields none must assert. An empty
+                // ERROR has no such reading — an error either happened or not.
+                SectionContent::Empty if section_type == SectionType::Error => {
                     errors.push(ValidationError {
-                        message: format!(
-                            "{:?} section is empty — it would assert nothing. Give it a JSON body, or use `partial` with `{{}}` to accept any {}",
-                            section_type,
-                            if section_type == SectionType::Error {
-                                "error"
-                            } else {
-                                "response"
-                            }
-                        ),
+                        message: "ERROR section is empty — give it a JSON body, or use `partial` with `{}` to accept any error".to_string(),
                         line: Some(section.start_line),
                         severity: ErrorSeverity::Error,
                     });
