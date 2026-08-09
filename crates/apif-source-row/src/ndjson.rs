@@ -1,5 +1,5 @@
-use crate::SourceReader;
 use crate::SourceRow;
+use crate::{SourceReader, strip_bom};
 use anyhow::Result;
 use apif_source_error::SourceError;
 use std::io::{BufRead, BufReader, Read, Seek};
@@ -11,12 +11,17 @@ type NdjsonRewind<R> = Box<dyn Fn(&mut BufReader<R>) -> Result<()> + Send>;
 
 pub struct NdjsonReader<R> {
     reader: BufReader<R>,
-    headers: Vec<String>,
+    headers: std::sync::Arc<[String]>,
     /// First row is buffered during header discovery
     pending_first: Option<SourceRow>,
     row_number: usize,
     finished: bool,
     rewind: Option<NdjsonRewind<R>>,
+    /// Bytes consumed from the stream so far, and the span of the line the last
+    /// `next_row` came from.
+    bytes_read: u64,
+    last_span: Option<(u64, u32)>,
+    pending_first_span: Option<(u64, u32)>,
 }
 
 fn json_value_to_string(v: Option<&serde_json::Value>) -> String {
@@ -34,24 +39,31 @@ impl<R: Read> NdjsonReader<R> {
     pub fn new(reader: BufReader<R>) -> Self {
         Self {
             reader,
-            headers: Vec::new(),
+            headers: std::sync::Arc::from(Vec::new()),
             pending_first: None,
             row_number: 0,
             finished: false,
             rewind: None,
+            bytes_read: 0,
+            last_span: None,
+            pending_first_span: None,
         }
     }
 
     fn read_next_line(&mut self) -> Result<Option<String>> {
         loop {
             let mut line = String::new();
-            if self.reader.read_line(&mut line)? == 0 {
+            let start = self.bytes_read;
+            let read = self.reader.read_line(&mut line)?;
+            self.bytes_read += read as u64;
+            if read == 0 {
                 return Ok(None);
             }
             let trimmed = line.trim_ascii();
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
+            self.last_span = u32::try_from(read).ok().map(|len| (start, len));
             return Ok(Some(trimmed.to_string()));
         }
     }
@@ -86,6 +98,8 @@ impl<R: Read> NdjsonReader<R> {
             return Ok(());
         };
 
+        let mut line = line;
+        strip_bom(&mut line);
         let value: serde_json::Value =
             serde_json::from_str(&line).map_err(|e| SourceError::InvalidJson(1, e.to_string()))?;
 
@@ -96,7 +110,7 @@ impl<R: Read> NdjsonReader<R> {
 
         let mut keys: Vec<String> = obj.keys().cloned().collect();
         keys.sort();
-        self.headers = keys;
+        self.headers = keys.into();
         self.row_number = 1;
 
         let values: Vec<String> = self
@@ -104,24 +118,34 @@ impl<R: Read> NdjsonReader<R> {
             .iter()
             .map(|k| json_value_to_string(obj.get(k)))
             .collect();
-        self.pending_first = Some(SourceRow::new(&self.headers, values));
+        self.pending_first = Some(SourceRow::with_columns(
+            std::sync::Arc::clone(&self.headers),
+            values,
+        ));
+        self.pending_first_span = self.last_span;
         Ok(())
     }
 }
 
 impl<R: Read + Send> SourceReader for NdjsonReader<R> {
+    fn last_row_span(&self) -> Option<(u64, u32)> {
+        self.last_span
+    }
+
     fn next_row(&mut self) -> Result<Option<SourceRow>> {
         if self.finished {
             return Ok(None);
         }
 
         if let Some(row) = self.pending_first.take() {
+            self.last_span = self.pending_first_span.take();
             return Ok(Some(row));
         }
 
         if self.headers.is_empty() {
             self.discover_headers()?;
             if let Some(row) = self.pending_first.take() {
+                self.last_span = self.pending_first_span.take();
                 return Ok(Some(row));
             }
         }
@@ -133,7 +157,10 @@ impl<R: Read + Send> SourceReader for NdjsonReader<R> {
 
         self.row_number += 1;
         let values = self.parse_line(&line, self.row_number)?;
-        Ok(Some(SourceRow::new(&self.headers, values)))
+        Ok(Some(SourceRow::with_columns(
+            std::sync::Arc::clone(&self.headers),
+            values,
+        )))
     }
 
     fn headers(&self) -> &[String] {
@@ -149,10 +176,13 @@ impl<R: Read + Send> SourceReader for NdjsonReader<R> {
             return Ok(());
         };
         rewind(&mut self.reader)?;
-        self.headers.clear();
+        self.headers = std::sync::Arc::from(Vec::new());
         self.pending_first = None;
+        self.pending_first_span = None;
         self.row_number = 0;
         self.finished = false;
+        self.bytes_read = 0;
+        self.last_span = None;
         Ok(())
     }
 }

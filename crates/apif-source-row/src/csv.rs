@@ -1,5 +1,5 @@
-use crate::SourceReader;
 use crate::SourceRow;
+use crate::{SourceReader, span_of, strip_bom};
 use anyhow::Result;
 use apif_source_error::SourceError;
 use std::io::{BufReader, Read, Seek};
@@ -11,11 +11,16 @@ type CsvRewind<R> = Box<dyn Fn(&mut csv::Reader<BufReader<R>>) -> Result<()> + S
 
 pub struct CsvReader<R> {
     reader: csv::Reader<BufReader<R>>,
-    headers: Vec<String>,
+    headers: std::sync::Arc<[String]>,
     _delimiter: u8,
     row_number: usize,
     finished: bool,
     rewind: Option<CsvRewind<R>>,
+    /// Reused across rows. `Reader::records()` allocates a fresh
+    /// `StringRecord` per row; the crate's own tutorial measures amortising it
+    /// at 0.308 s against 0.645 s for the same file.
+    record: csv::StringRecord,
+    last_span: Option<(u64, u32)>,
 }
 
 impl<R: Read> CsvReader<R> {
@@ -33,6 +38,10 @@ impl<R: Read> CsvReader<R> {
             .iter()
             .map(|h| h.to_string())
             .collect::<Vec<_>>();
+        let mut headers = headers;
+        if let Some(first) = headers.first_mut() {
+            strip_bom(first);
+        }
 
         if headers.is_empty() {
             return Err(SourceError::EmptyFile("csv".into()).into());
@@ -47,11 +56,13 @@ impl<R: Read> CsvReader<R> {
 
         Ok(Self {
             reader: csv_reader,
-            headers,
+            headers: headers.into(),
             _delimiter: delimiter,
             row_number: 1,
             finished: false,
             rewind: None,
+            record: csv::StringRecord::new(),
+            last_span: None,
         })
     }
 }
@@ -75,21 +86,24 @@ impl<R: Read + Seek + Send> CsvReader<R> {
 }
 
 impl<R: Read + Send> SourceReader for CsvReader<R> {
+    fn last_row_span(&self) -> Option<(u64, u32)> {
+        self.last_span
+    }
+
     fn next_row(&mut self) -> Result<Option<SourceRow>> {
         if self.finished {
             return Ok(None);
         }
 
-        if let Some(result) = self.reader.records().next() {
-            self.row_number += 1;
-            let record = match result {
-                Ok(r) => r,
-                Err(e) => {
-                    return Err(anyhow::anyhow!("CSV error at row {}: {e}", self.row_number));
-                }
-            };
+        let has_row = self
+            .reader
+            .read_record(&mut self.record)
+            .map_err(|e| anyhow::anyhow!("CSV error at row {}: {e}", self.row_number + 1))?;
 
-            let values: Vec<String> = record.iter().map(|f| f.to_string()).collect();
+        if has_row {
+            self.row_number += 1;
+            self.last_span = span_of(self.record.position(), self.reader.position());
+            let values: Vec<String> = self.record.iter().map(|f| f.to_string()).collect();
 
             if values.len() != self.headers.len() {
                 return Err(SourceError::FieldCountMismatch {
@@ -100,7 +114,10 @@ impl<R: Read + Send> SourceReader for CsvReader<R> {
                 .into());
             }
 
-            return Ok(Some(SourceRow::new(&self.headers, values)));
+            return Ok(Some(SourceRow::with_columns(
+                std::sync::Arc::clone(&self.headers),
+                values,
+            )));
         }
 
         self.finished = true;

@@ -21,7 +21,16 @@ use std::path::Path;
 pub const REQUEST_CHANNEL_BUFFER: usize = 100;
 
 /// Default TLS configuration from environment variables.
-pub fn tls_env_defaults() -> apif_ast::OrderedStringMap {
+///
+/// Read once. `getenv` takes a process-wide lock on macOS, and the TLS block
+/// alone accounted for four calls on every request.
+pub fn tls_env_defaults() -> &'static apif_ast::OrderedStringMap {
+    static CACHE: std::sync::OnceLock<apif_ast::OrderedStringMap> = std::sync::OnceLock::new();
+    CACHE.get_or_init(read_tls_env_defaults)
+}
+
+/// Uncached read, for callers that must observe an environment change.
+pub fn read_tls_env_defaults() -> apif_ast::OrderedStringMap {
     let mut defaults = apif_ast::OrderedStringMap::new();
 
     if let Ok(value) = std::env::var("GRPCTESTIFY_TLS_CA_FILE")
@@ -62,8 +71,10 @@ pub fn effective_address(
     document: &GctfDocument,
     protocol_override: Option<WireProtocol>,
 ) -> String {
+    static ADDRESS: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let env_address = ADDRESS.get_or_init(|| std::env::var("GRPCTESTIFY_ADDRESS").ok());
     document
-        .get_address(std::env::var("GRPCTESTIFY_ADDRESS").ok().as_deref())
+        .get_address(env_address.as_deref())
         .unwrap_or_else(|| {
             let proto = protocol_override.unwrap_or_else(|| {
                 document
@@ -648,6 +659,16 @@ pub fn metadata_map_to_hashmap(metadata: &tonic::metadata::MetadataMap) -> HashM
 
 #[cfg(test)]
 mod tests {
+
+    // The hot path must not call `getenv` again on every request; caching is
+    // the point of the wrapper, so assert it is actually one shared value.
+    #[test]
+    fn tls_env_defaults_is_read_once() {
+        let first = tls_env_defaults();
+        let second = tls_env_defaults();
+        assert!(std::ptr::eq(first, second));
+        assert_eq!(*first, read_tls_env_defaults());
+    }
     use super::*;
     use apif_ast::{
         GctfAttribute, GctfDocument, Section, SectionContent, SectionSpan, SectionType,

@@ -30,6 +30,7 @@ grpctestify [OPTIONS] [TEST_PATHS]... [COMMAND]
 - `run [TEST_PATHS]...` - run tests (default command)
 - `bench [TEST_PATHS]...` - run load benchmark mode for `.gctf` scenarios
 - `bench-compare <BASELINE> <CURRENT>` - compare two bench JSON reports and gate on regressions
+- `bench-aggregate <FILES...>` - fold many bench reports into one matrix document (`json` or `csv`)
 - `check <FILES...>` - validate `.gctf` syntax and semantic rules
 - `fmt <FILES...>` - format `.gctf` files
 - `inspect <FILE>` - inspect parsed file structure (`text` or `json`)
@@ -102,6 +103,8 @@ Note: if `--log-format` is set without `--log-output`, the run continues and fil
 - `bench` (selected):
   - stop conditions: `-n, --requests`, `-d, --duration`, `--max-duration`
   - load profile: `--max-rps`, `--load-schedule`, `--load-start`, `--load-step`, `--load-end`, `--load-step-duration`, `--load-max-duration`
+  - concurrency sweep (second axis): `--concurrency-schedule <const|step|line>`, `--concurrency-start`,
+    `--concurrency-end`, `--concurrency-step`, `--concurrency-step-duration`
   - methodology: `--warmup`, `--ramp-up`, `--duration-stop`, `--skip-first`, `--count-errors-in-latency`, `--latency-percentiles`
   - runtime/transport: `-c, --concurrency`, `--connections`, `--connect-timeout`, `--request-timeout`, `--keepalive`, `--cpus`
   - validation/progress: `--assert-mode`, `--no-assert`, `--sample-rate`, `--progress-interval`
@@ -127,7 +130,23 @@ grpctestify bench tests/ \
 
 # Use BENCH section defaults, override progress heartbeat
 grpctestify bench tests/ --progress-interval 2s
+
+# Concurrency sweep: every level measured in full, all of them in one report
+grpctestify bench tests/ \
+  --requests 100000 \
+  --concurrency-schedule step \
+  --concurrency-start 1 \
+  --concurrency-end 64 \
+  --concurrency-step 16 \
+  --log-format json --log-output sweep.json
+
+# Fold several runs into one matrix a chart step can read directly
+grpctestify bench-aggregate results/*.json --format csv -o matrix.csv
 ```
+
+`bench-aggregate` takes any number of reports. A report produced by a sweep contributes one row per
+concurrency level; an ordinary report contributes one row. CSV emits one column per percentile seen
+across the inputs, so tail percentiles are not flattened away.
 
 `reflect --plaintext` expects `http://...` or `host:port` addresses. It is rejected for explicit
 `https://...` addresses. `reflect --insecure` forces skip-verify even for an explicit `https://` address

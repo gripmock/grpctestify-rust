@@ -53,6 +53,12 @@ pub struct DocumentMetadata {
 
     /// Parsed at timestamp
     pub parsed_at: i64,
+
+    /// The parser proved no section text contains a `{{` placeholder. Defaults
+    /// to `false`, so a document not built by the parser is treated as if it
+    /// might.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub placeholder_free: bool,
 }
 
 impl Default for DocumentMetadata {
@@ -61,6 +67,7 @@ impl Default for DocumentMetadata {
             source: None,
             mtime: None,
             parsed_at: apif_cfg_runtime::now_timestamp(),
+            placeholder_free: false,
         }
     }
 }

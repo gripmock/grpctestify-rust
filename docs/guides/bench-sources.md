@@ -43,7 +43,8 @@ sources:
 | `name` | Source name for templates like `{{name.column}}` |
 | `file` | Path to data file (relative to `.gctf`) |
 | `format` | `csv`, `tsv`, `ndjson` (auto-detected from extension) |
-| `indexed_by` | Column for FK lookups (speeds up `{{source.column}}` joins) |
+| `indexed_by` | Column, or list of columns, for FK lookups (speeds up `{{source.column}}` joins) |
+| `memory_budget` | Per-source cap on the RAM a dimension may occupy (e.g. `256mb`); above it the source is read through its index instead |
 
 ## Supported File Formats
 
@@ -120,7 +121,21 @@ sources:
         gte: 18
 ```
 
-**Operators:** `equals`, `in`, `gte`, `lt`
+**Operators:** `equals`, `contains`, `in`, `gte`, `lt`
+
+`gte` and `lt` compare numerically when both the field and the bound parse as numbers, and
+bytewise otherwise — so `qty gte 100` excludes `99`, while ISO-8601 dates and identifiers still
+order as strings.
+
+Filters apply the same way whether the source is loaded into memory or read through its index.
+
+### Memory budget
+
+A dimension is loaded into memory when it fits the budget, and read through its on-disk index when
+it does not. The budget is compared against the *loaded* size, not the file size: measured, a CSV
+occupies about **12x its file size** once parsed into rows, so an 8 MB file needs roughly 100 MB.
+`memory_budget` on the source overrides the run-wide default; a file whose size cannot be read is
+treated as too large.
 
 ## Relationships Between Sources
 
@@ -156,7 +171,7 @@ sources:
     indexed_by: product_id
   - name: order_products
     file: data/order_products.csv
-    indexed_by: order_id,product_id
+    indexed_by: [order_id, product_id]   # Composite key: joined on both columns
 ```
 
 ## Troubleshooting

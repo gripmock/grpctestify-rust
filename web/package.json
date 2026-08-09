@@ -25,7 +25,8 @@
     "zustand": "^5.0.14"
   },
   "overrides": {
-    "dompurify": "3.4.12"
+    "dompurify": "3.4.13",
+    "nanoid": "^3.3.17"
   },
   "devDependencies": {
     "@types/lodash-es": "^4.17.12",

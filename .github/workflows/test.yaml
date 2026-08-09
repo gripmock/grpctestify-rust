@@ -20,7 +20,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Native runners only. Linux ARM64 used to run through `cross`, i.e.
+        # every test binary under QEMU user-mode emulation.
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
       fail-fast: false
     steps:
       - name: Checkout

@@ -391,6 +391,43 @@ impl ExecutionPlan {
 }
 
 /// Get actual RPC mode from method descriptor
+/// What `run_one` derives from the document rather than from the request.
+pub struct PreparedDocument {
+    address: String,
+    package: String,
+    service: String,
+    method: String,
+    full_service: String,
+    timeout_seconds: u64,
+    compression: apif_grpc_transport::CompressionMode,
+    tls_config: Option<apif_grpc_transport::config::TlsConfig>,
+    proto_config: Option<apif_grpc_transport::config::ProtoConfig>,
+    protocol: crate::grpc::WireProtocol,
+    rpc_mode: RpcModeInfo,
+}
+
+/// One entry per chain document. `None` where deriving it would swallow an
+/// error the ordinary path reports.
+pub struct PreparedChain(Vec<Option<PreparedDocument>>);
+
+/// Dropping a `JoinHandle` only detaches the task; nothing here wants an
+/// abandoned in-flight call per request.
+struct AbortOnDrop<T>(Option<tokio::task::JoinHandle<T>>);
+
+impl<T> AbortOnDrop<T> {
+    fn into_inner(mut self) -> Option<tokio::task::JoinHandle<T>> {
+        self.0.take()
+    }
+}
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        if let Some(handle) = &self.0 {
+            handle.abort();
+        }
+    }
+}
+
 fn get_actual_rpc_mode(
     client: &crate::grpc::GrpcClient,
     full_service: &str,
@@ -604,6 +641,13 @@ pub enum FailureKind {
 pub struct TestExecutionResult {
     pub status: TestExecutionStatus,
     pub call_duration_ms: Option<u64>,
+    /// The same span as `call_duration_ms` at nanosecond resolution: the gRPC
+    /// call plus response validation, measured from after the client and
+    /// descriptors are resolved. Milliseconds are useless for the sub-millisecond
+    /// RPCs a load run measures, and `bench` needs this rather than wall-clock
+    /// around the whole document — that would fold client construction, `Value`
+    /// clones and variable substitution into the server's reported latency.
+    pub call_duration_ns: Option<u64>,
     pub captured_response: Option<crate::grpc::GrpcResponse>,
     pub meta: crate::state::TestMeta,
     /// What this test declared (sections, TLS, DATASET rows, PROTO files) —
@@ -668,6 +712,7 @@ impl TestExecutionResult {
         Self {
             status: TestExecutionStatus::Pass,
             call_duration_ms,
+            call_duration_ns: None,
             captured_response: None,
             meta: crate::state::TestMeta::default(),
             config_summary: apif_state::ConfigSummary::default(),
@@ -679,12 +724,19 @@ impl TestExecutionResult {
         }
     }
 
+    /// Attach the nanosecond-resolution call duration.
+    pub fn with_call_duration_ns(mut self, ns: u64) -> Self {
+        self.call_duration_ns = Some(ns);
+        self
+    }
+
     /// Build a failure. Defaults to `Assertion` (non-retryable); transport-level
     /// failures should override via [`with_failure_kind`].
     pub fn fail(message: String, call_duration_ms: Option<u64>) -> Self {
         Self {
             status: TestExecutionStatus::Fail(message),
             call_duration_ms,
+            call_duration_ns: None,
             captured_response: None,
             meta: crate::state::TestMeta::default(),
             config_summary: apif_state::ConfigSummary::default(),
@@ -742,6 +794,7 @@ struct ChainAccumulator {
     failure_kind: Option<FailureKind>,
     grpc_status: Option<u32>,
     total_duration_ms: f64,
+    total_duration_ns: u64,
     assertions: Vec<apif_state::AssertionRecord>,
     /// Last document's captured response wins — write mode/exchange capture
     /// always target a single physical file, so only the final call's
@@ -762,6 +815,7 @@ impl ChainAccumulator {
         if let Some(dur) = result.call_duration_ms {
             self.total_duration_ms += dur as f64;
         }
+        self.total_duration_ns += result.call_duration_ns.unwrap_or(0);
         self.document_durations_ms
             .push(result.call_duration_ms.unwrap_or(0));
         self.grpc_status = result.grpc_status;
@@ -783,6 +837,7 @@ impl ChainAccumulator {
         TestExecutionResult {
             status: self.status.unwrap_or(TestExecutionStatus::Pass),
             call_duration_ms: Some(self.total_duration_ms as u64),
+            call_duration_ns: Some(self.total_duration_ns),
             captured_response: self.captured_response,
             meta: crate::state::TestMeta::default(),
             config_summary: apif_state::ConfigSummary::default(),
@@ -805,6 +860,7 @@ pub struct TestRunner {
     /// Client-side connection pool slot. Threaded into `GrpcClientConfig` so the
     /// transport channel cache keys by it — distinct ids open distinct channels.
     connection_id: u64,
+    address_override: Option<String>,
     /// When true, capture headers/trailers/response messages even outside
     /// write mode, so reports (e.g. Allure attachments) can show what actually
     /// happened. Off by default: skips the extra buffering unless requested.
@@ -881,6 +937,7 @@ impl TestRunner {
             verbose,
             protocol_override: None,
             connection_id: 0,
+            address_override: None,
             capture_exchange: false,
             assertion_engine: AssertionEngine::with_registry(PLUGIN_REGISTRY.clone()),
             coverage_collector: coverage_collector.clone(),
@@ -893,6 +950,12 @@ impl TestRunner {
     /// Set protocol override. When set, this takes priority over the GCTF file's OPTIONS.protocol.
     pub fn with_protocol(mut self, protocol: crate::grpc::WireProtocol) -> Self {
         self.protocol_override = Some(protocol);
+        self
+    }
+
+    /// Send every request here regardless of the document's ADDRESS section.
+    pub fn with_address_override(mut self, address: String) -> Self {
+        self.address_override = Some(address);
         self
     }
 
@@ -911,6 +974,14 @@ impl TestRunner {
         self
     }
 
+    /// Whether snapshot-update mode (`--write`) is on. Callers must consult this
+    /// before rewriting a `.gctf` from a captured response: `capture_exchange`
+    /// also populates `captured_response`, and it is enabled by report formats
+    /// that have nothing to do with `--write`.
+    pub fn is_write_mode(&self) -> bool {
+        self.write_mode
+    }
+
     /// Run a test document chain.
     /// Walks the `next_document` linked list, accumulating EXTRACT variables
     /// between documents. Fail-fast: stops on first failure.
@@ -919,6 +990,84 @@ impl TestRunner {
     }
 
     /// Run a test document chain with pre-populated variables (for data-driven bench).
+    fn resolve_protocol(&self, document: &GctfDocument) -> crate::grpc::WireProtocol {
+        self.protocol_override.unwrap_or_else(|| {
+            document
+                .get_options()
+                .and_then(|o| {
+                    o.get("protocol").map(|s| {
+                        s.parse::<crate::grpc::WireProtocol>()
+                            .unwrap_or(crate::grpc::WireProtocol::Grpc)
+                    })
+                })
+                .unwrap_or(crate::grpc::WireProtocol::Grpc)
+        })
+    }
+
+    /// Derive what is constant for this document once, for callers that issue
+    /// many requests from it.
+    pub fn prepare(&self, document: &GctfDocument) -> PreparedChain {
+        PreparedChain(
+            document
+                .iter_chain()
+                .map(|doc| {
+                    let options = doc.get_options().unwrap_or_default();
+                    let (package, service, method) = doc.parse_endpoint()?;
+                    let timeout_seconds = match options.get("timeout") {
+                        Some(v) => match v.trim().parse::<u64>() {
+                            Ok(v) if v > 0 => v,
+                            _ => return None,
+                        },
+                        None => self.timeout_seconds,
+                    };
+                    let compression = runner_helpers::resolve_compression(
+                        doc,
+                        &options,
+                        crate::config::compression_from_env(),
+                    )
+                    .ok()?;
+                    let document_path = Path::new(&doc.file_path);
+                    Some(PreparedDocument {
+                        address: match &self.address_override {
+                            Some(a) => a.clone(),
+                            None => runner_helpers::effective_address(doc, self.protocol_override),
+                        },
+                        full_service: runner_helpers::full_service_name(&package, &service),
+                        package,
+                        service,
+                        method,
+                        timeout_seconds,
+                        compression,
+                        tls_config: runner_helpers::build_tls_config(doc, document_path),
+                        proto_config: runner_helpers::build_proto_config(doc, document_path),
+                        protocol: self.resolve_protocol(doc),
+                        rpc_mode: infer_rpc_mode_for_section_types(doc),
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// [`run_test_with_variables`] with the derivation done by the caller.
+    pub async fn run_test_prepared(
+        &self,
+        document: &GctfDocument,
+        initial_variables: HashMap<String, Value>,
+        prepared: &PreparedChain,
+    ) -> Result<TestExecutionResult> {
+        let mut variables = initial_variables;
+        let mut acc = ChainAccumulator::default();
+
+        for (doc, prep) in document.iter_chain().zip(prepared.0.iter()) {
+            let result = self.run_one(doc, &mut variables, prep.as_ref()).await?;
+            if acc.absorb(result) {
+                break;
+            }
+        }
+
+        Ok(acc.into_result())
+    }
+
     pub async fn run_test_with_variables(
         &self,
         document: &GctfDocument,
@@ -928,7 +1077,7 @@ impl TestRunner {
         let mut acc = ChainAccumulator::default();
 
         for doc in document.iter_chain() {
-            let result = self.run_one(doc, &mut variables).await?;
+            let result = self.run_one(doc, &mut variables, None).await?;
             if acc.absorb(result) {
                 break;
             }
@@ -950,7 +1099,7 @@ impl TestRunner {
         let mut acc = ChainAccumulator::default();
 
         for doc in document.iter_chain() {
-            let result = self.run_one(doc, &mut variables).await?;
+            let result = self.run_one(doc, &mut variables, None).await?;
             if acc.absorb(result) {
                 break;
             }
@@ -964,37 +1113,47 @@ impl TestRunner {
         &self,
         document: &GctfDocument,
         variables: &mut HashMap<String, Value>,
+        prepared: Option<&PreparedDocument>,
     ) -> Result<TestExecutionResult> {
         let effective_dry_run = self.dry_run;
         let effective_no_assert = self.no_assert;
         let effective_write_mode = self.write_mode;
 
-        let options = document.get_options().unwrap_or_default();
-        let effective_timeout_seconds = match options.get("timeout") {
-            Some(value) => match value.trim().parse::<u64>() {
-                Ok(v) if v > 0 => v,
-                _ => {
-                    return Ok(TestExecutionResult::fail(
-                        format!(
-                            "OPTIONS.timeout must be a positive integer, got '{}'",
-                            value
-                        ),
-                        None,
-                    ));
-                }
+        let options = match prepared {
+            Some(_) => Default::default(),
+            None => document.get_options().unwrap_or_default(),
+        };
+        let effective_timeout_seconds = match prepared.map(|p| p.timeout_seconds) {
+            Some(t) => t,
+            None => match options.get("timeout") {
+                Some(value) => match value.trim().parse::<u64>() {
+                    Ok(v) if v > 0 => v,
+                    _ => {
+                        return Ok(TestExecutionResult::fail(
+                            format!(
+                                "OPTIONS.timeout must be a positive integer, got '{}'",
+                                value
+                            ),
+                            None,
+                        ));
+                    }
+                },
+                None => self.timeout_seconds,
             },
-            None => self.timeout_seconds,
         };
 
         // Canonical precedence: section attribute > OPTIONS > env default.
         // An explicit-but-invalid value is a configuration error, not a fall-back.
-        let compression = match runner_helpers::resolve_compression(
-            document,
-            &options,
-            crate::config::compression_from_env(),
-        ) {
-            Ok(c) => c,
-            Err(e) => return Ok(TestExecutionResult::fail(e, None)),
+        let compression = match prepared.map(|p| p.compression) {
+            Some(c) => c,
+            None => match runner_helpers::resolve_compression(
+                document,
+                &options,
+                crate::config::compression_from_env(),
+            ) {
+                Ok(c) => c,
+                Err(e) => return Ok(TestExecutionResult::fail(e, None)),
+            },
         };
 
         if effective_write_mode {
@@ -1015,9 +1174,18 @@ impl TestRunner {
             }
         }
 
-        let address = runner_helpers::effective_address(document, self.protocol_override);
+        let address = match prepared {
+            Some(p) => p.address.clone(),
+            None => match &self.address_override {
+                Some(a) => a.clone(),
+                None => runner_helpers::effective_address(document, self.protocol_override),
+            },
+        };
 
-        let (package, service, method) = match document.parse_endpoint() {
+        let endpoint_parts =
+            prepared.map(|p| (p.package.clone(), p.service.clone(), p.method.clone()));
+        let (package, service, method) = match endpoint_parts.or_else(|| document.parse_endpoint())
+        {
             Some(e) => e,
             None => {
                 return Ok(TestExecutionResult::fail(
@@ -1041,11 +1209,20 @@ impl TestRunner {
 
         let document_path = Path::new(&document.file_path);
 
-        let tls_config = runner_helpers::build_tls_config(document, document_path);
+        let tls_config = match prepared {
+            Some(p) => p.tls_config.clone(),
+            None => runner_helpers::build_tls_config(document, document_path),
+        };
 
-        let proto_config = runner_helpers::build_proto_config(document, document_path);
+        let proto_config = match prepared {
+            Some(p) => p.proto_config.clone(),
+            None => runner_helpers::build_proto_config(document, document_path),
+        };
 
-        let full_service = runner_helpers::full_service_name(&package, &service);
+        let full_service = match prepared {
+            Some(p) => p.full_service.clone(),
+            None => runner_helpers::full_service_name(&package, &service),
+        };
 
         // Substitute variables in request header values, then guard against any
         // undefined/typo'd placeholder being shipped verbatim in metadata.
@@ -1092,17 +1269,10 @@ impl TestRunner {
             target_service: Some(full_service.clone()),
             compression,
             connection_id: self.connection_id,
-            protocol: self.protocol_override.unwrap_or_else(|| {
-                document
-                    .get_options()
-                    .and_then(|o| {
-                        o.get("protocol").map(|s| {
-                            s.parse::<crate::grpc::WireProtocol>()
-                                .unwrap_or(crate::grpc::WireProtocol::Grpc)
-                        })
-                    })
-                    .unwrap_or(crate::grpc::WireProtocol::Grpc)
-            }),
+            protocol: match prepared {
+                Some(p) => p.protocol,
+                None => self.resolve_protocol(document),
+            },
             version: env!("CARGO_PKG_VERSION").to_string(),
         };
 
@@ -1123,23 +1293,37 @@ impl TestRunner {
         );
         let client = GrpcClient::new(client_config).await?;
 
-        // Get input/output message types for field coverage tracking
-        let input_message_type = client
-            .descriptor_pool()
-            .get_service_by_name(&full_service)
-            .and_then(|s| s.methods().find(|m| m.name() == method))
-            .map(|m| m.input().full_name().to_string());
-        let output_message_type = client
-            .descriptor_pool()
-            .get_service_by_name(&full_service)
-            .and_then(|s| s.methods().find(|m| m.name() == method))
-            .map(|m| m.output().full_name().to_string());
+        // Field coverage is the only consumer; without a collector this is two
+        // descriptor-pool walks and two allocations per request for nothing.
+        let (input_message_type, output_message_type) = if self.coverage_collector.is_some() {
+            client
+                .descriptor_pool()
+                .get_service_by_name(&full_service)
+                .and_then(|s| s.methods().find(|m| m.name() == method))
+                .map_or((None, None), |m| {
+                    (
+                        Some(m.input().full_name().to_string()),
+                        Some(m.output().full_name().to_string()),
+                    )
+                })
+        } else {
+            (None, None)
+        };
 
-        // Phase 1: RPC mode validation - runtime warning if inferred != actual
-        let inferred_rpc_mode = infer_rpc_mode_for_section_types(document);
-        let actual_rpc_mode = get_actual_rpc_mode(&client, &full_service, &method);
-        if let Some(warning) = check_rpc_mode_compatibility(&inferred_rpc_mode, &actual_rpc_mode) {
-            tracing::debug!("{} (service={}, method={})", warning, full_service, method);
+        // Phase 1: RPC mode validation - runtime warning if inferred != actual.
+        // The comparison exists only to produce that debug line, and reading the
+        // actual mode costs a descriptor-pool walk on every request.
+        let inferred_rpc_mode = match prepared {
+            Some(p) => p.rpc_mode.clone(),
+            None => infer_rpc_mode_for_section_types(document),
+        };
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let actual_rpc_mode = get_actual_rpc_mode(&client, &full_service, &method);
+            if let Some(warning) =
+                check_rpc_mode_compatibility(&inferred_rpc_mode, &actual_rpc_mode)
+            {
+                tracing::debug!("{} (service={}, method={})", warning, full_service, method);
+            }
         }
 
         let (tx, rx) = mpsc::channel::<Value>(runner_helpers::REQUEST_CHANNEL_BUFFER);
@@ -1172,15 +1356,19 @@ impl TestRunner {
         let full_service_clone = full_service.clone();
         let method_clone = method.clone();
         let mut client_for_call = client;
-        let mut call_handle = Some(tokio::spawn(async move {
+        let mut call_handle = Some(AbortOnDrop(Some(tokio::spawn(Box::pin(async move {
             client_for_call
                 .call_stream(&full_service_clone, &method_clone, request_stream, rpc_mode)
                 .await
-        }));
+        })))));
 
         let mut response_stream = None;
 
         // variables passed from caller (shared across chain)
+        // When the wire went quiet. Everything after it — assertion
+        // evaluation, JSON diffing, snapshot capture — is our cost, not the
+        // server's, and must not land in the reported latency.
+        let mut rpc_end: Option<std::time::Instant> = None;
         let mut last_message: Option<Value> = None;
         let mut last_error_message: Option<String> = None;
         let mut last_error_json: Option<Value> = None;
@@ -1237,7 +1425,7 @@ impl TestRunner {
         macro_rules! ensure_stream_ready {
             () => {
                 if response_stream.is_none()
-                    && let Some(handle) = call_handle.take()
+                    && let Some(handle) = call_handle.take().and_then(AbortOnDrop::into_inner)
                 {
                     match handle.await {
                         Ok(Ok((h, stream))) => {
@@ -1272,7 +1460,8 @@ impl TestRunner {
                 &section.attributes,
                 &inherited_attrs,
             );
-            inherited_attrs = resolved_attrs.clone();
+            inherited_attrs =
+                crate::parser::content_parser::inheritable_attributes(&resolved_attrs);
 
             let get_attr = |name: &str| -> Option<&crate::parser::ast::GctfAttribute> {
                 resolved_attrs.iter().find(|a| a.name == name)
@@ -1328,7 +1517,11 @@ impl TestRunner {
                         };
 
                         for mut request_value in request_values {
-                            if !matches!(section.content, SectionContent::Empty) {
+                            // The parser proves at load time whether the file
+                            // holds a `{{` anywhere; when it does not, both
+                            // walks below can only report "nothing changed".
+                            let may_substitute = !document.metadata.placeholder_free;
+                            if may_substitute && !matches!(section.content, SectionContent::Empty) {
                                 self.substitute_variables(&mut request_value, variables);
                                 let mut unresolved = Vec::new();
                                 runner_helpers::collect_unresolved_placeholders(
@@ -1373,11 +1566,11 @@ impl TestRunner {
                             let max_retries = get_retry().unwrap_or(0);
                             let mut attempt = 0;
 
-                            let send_with_timeout = || async {
+                            let send_with_timeout = |payload: Value| async {
                                 if effective_timeout > 0 {
                                     let send_fut = self.request_handler.send_request(
                                         tx_ref,
-                                        request_value.clone(),
+                                        payload,
                                         section.start_line,
                                         None,
                                     );
@@ -1398,12 +1591,7 @@ impl TestRunner {
                                     }
                                 } else {
                                     self.request_handler
-                                        .send_request(
-                                            tx_ref,
-                                            request_value.clone(),
-                                            section.start_line,
-                                            None,
-                                        )
+                                        .send_request(tx_ref, payload, section.start_line, None)
                                         .await
                                 }
                             };
@@ -1415,7 +1603,12 @@ impl TestRunner {
                                     ))
                                     .await;
                                 }
-                                let r = send_with_timeout().await;
+                                let payload = if attempt < max_retries {
+                                    request_value.clone()
+                                } else {
+                                    std::mem::take(&mut request_value)
+                                };
+                                let r = send_with_timeout(payload).await;
                                 if r.success || attempt >= max_retries {
                                     if r.success && attempt > 0 {
                                         retry_occurred = true;
@@ -1479,6 +1672,36 @@ impl TestRunner {
                         };
 
                         let read_timeout_secs = get_timeout().unwrap_or(effective_timeout_seconds);
+
+                        // A RESPONSE with no messages is the only way to assert
+                        // that a server-streaming call yielded none. It used to
+                        // skip the loop below and pass whatever arrived.
+                        if expected_values.is_empty()
+                            && matches!(section.content, SectionContent::Empty)
+                            && !effective_no_assert
+                        {
+                            let next_item = if read_timeout_secs > 0 {
+                                tokio::time::timeout(
+                                    std::time::Duration::from_secs(read_timeout_secs),
+                                    stream.next(),
+                                )
+                                .await
+                                .unwrap_or(None)
+                            } else {
+                                stream.next().await
+                            };
+                            if let Some(Ok(crate::grpc::client::StreamItem::Message(msg))) =
+                                next_item
+                            {
+                                rpc_end = Some(std::time::Instant::now());
+                                failure_reasons.push(format!(
+                                    "RESPONSE section at line {} expects no messages, but the stream produced one: {}",
+                                    section.start_line,
+                                    msg
+                                ));
+                            }
+                        }
+
                         let mut stream_read_timed_out = false;
                         for expected_template in expected_values {
                             // Bound each stream read: tonic's Endpoint::timeout only
@@ -1507,26 +1730,24 @@ impl TestRunner {
                             match next_item {
                                 Some(Ok(item)) => match item {
                                     crate::grpc::client::StreamItem::Message(msg) => {
+                                        rpc_end = Some(std::time::Instant::now());
                                         let now_elapsed_ms =
                                             start_time.elapsed().as_millis() as u64;
 
-                                        let msg_for_state = msg.clone();
-                                        last_message = Some(msg_for_state.clone());
+                                        last_message = Some(msg.clone());
                                         if section.inline_options.with_asserts {
-                                            received_messages_for_section
-                                                .push(msg_for_state.clone());
+                                            received_messages_for_section.push(msg.clone());
                                         }
                                         scope_end_ms = now_elapsed_ms;
                                         scope_message_count += 1;
                                         assertion_timing.last_message_elapsed_ms =
                                             Some(now_elapsed_ms);
                                         if let Some(resp) = &mut captured_response {
-                                            resp.messages.push(msg_for_state);
+                                            resp.messages.push(msg.clone());
                                         }
 
                                         Self::log_response_message(
                                             &msg,
-                                            effective_no_assert,
                                             self.verbose,
                                             protocol_display(client_protocol),
                                             &client_address,
@@ -1579,6 +1800,7 @@ impl TestRunner {
                                     }
                                 },
                                 Some(Err(status)) => {
+                                    rpc_end = Some(std::time::Instant::now());
                                     grpc_status = Some(status.code());
                                     let scope_start_ms =
                                         assertion_timing.last_message_elapsed_ms.unwrap_or(0);
@@ -1600,7 +1822,7 @@ impl TestRunner {
                                         section.start_line,
                                         status.message()
                                     ));
-                                    } else {
+                                    } else if self.verbose {
                                         println!("--- RESPONSE (Error) ---");
                                         println!("{}", status.message());
                                     }
@@ -1905,6 +2127,7 @@ impl TestRunner {
                                 }
                             }
                             Some(Err(status)) => {
+                                rpc_end = Some(std::time::Instant::now());
                                 grpc_status = Some(status.code());
                                 let scope_start_ms =
                                     assertion_timing.last_message_elapsed_ms.unwrap_or(0);
@@ -1995,7 +2218,8 @@ impl TestRunner {
                         }
 
                         if response_stream.is_none()
-                            && let Some(handle) = call_handle.take()
+                            && let Some(handle) =
+                                call_handle.take().and_then(AbortOnDrop::into_inner)
                         {
                             match handle.await {
                                 Ok(Ok((h, stream))) => {
@@ -2235,6 +2459,7 @@ impl TestRunner {
                         };
                         match next_item {
                             Some(Err(status)) => {
+                                rpc_end = Some(std::time::Instant::now());
                                 grpc_status = Some(status.code());
                                 let scope_start_ms =
                                     assertion_timing.last_message_elapsed_ms.unwrap_or(0);
@@ -2400,7 +2625,7 @@ impl TestRunner {
 
         if let Some(resp) = &mut captured_response {
             if response_stream.is_none()
-                && let Some(handle) = call_handle.take()
+                && let Some(handle) = call_handle.take().and_then(AbortOnDrop::into_inner)
             {
                 match handle.await {
                     Ok(Ok((h, stream))) => {
@@ -2467,14 +2692,24 @@ impl TestRunner {
 
         // Tag this document's assertions with its endpoint so multi-document
         // chains group per endpoint in verbose reports.
-        let endpoint_label = format!("{}/{}", full_service, method);
-        for rec in &mut assertion_records {
-            if rec.endpoint.is_none() {
-                rec.endpoint = Some(endpoint_label.clone());
+        if assertion_records.iter().any(|rec| rec.endpoint.is_none()) {
+            let endpoint_label = format!("{}/{}", full_service, method);
+            for rec in &mut assertion_records {
+                if rec.endpoint.is_none() {
+                    rec.endpoint = Some(endpoint_label.clone());
+                }
             }
         }
 
-        let grpc_duration = start_time.elapsed().as_millis() as u64;
+        // Ends when the wire did, not when validation finished. Falls back to
+        // "now" only when nothing was ever received (a setup failure), where
+        // the two are the same anyway.
+        let grpc_elapsed = rpc_end.map_or_else(
+            || start_time.elapsed(),
+            |end| end.saturating_duration_since(start_time),
+        );
+        let grpc_duration = grpc_elapsed.as_millis() as u64;
+        let grpc_duration_ns = grpc_elapsed.as_nanos() as u64;
 
         if !failure_reasons.is_empty() {
             // In write mode, assertion mismatches are expected because we are
@@ -2486,6 +2721,7 @@ impl TestRunner {
                 && let Some(resp) = captured_response
             {
                 return Ok(TestExecutionResult::pass(Some(grpc_duration))
+                    .with_call_duration_ns(grpc_duration_ns)
                     .with_response(resp)
                     .with_grpc_status(grpc_status.unwrap_or(0))
                     .with_assertions(assertion_records)
@@ -2501,6 +2737,7 @@ impl TestRunner {
                 format!("Validation failed:\n  - {}", failure_reasons.join("\n  - ")),
                 Some(grpc_duration),
             )
+            .with_call_duration_ns(grpc_duration_ns)
             .with_failure_kind(kind)
             .with_assertions(assertion_records)
             .with_retried(retry_occurred);
@@ -2517,6 +2754,7 @@ impl TestRunner {
         }
 
         let mut result = TestExecutionResult::pass(Some(grpc_duration))
+            .with_call_duration_ns(grpc_duration_ns)
             .with_grpc_status(grpc_status.unwrap_or(0))
             .with_assertions(assertion_records)
             .with_retried(retry_occurred);
@@ -2619,15 +2857,8 @@ impl TestRunner {
     }
 
     /// Log a response message for debug/verbose/raw modes.
-    fn log_response_message(
-        msg: &Value,
-        effective_no_assert: bool,
-        verbose: bool,
-        protocol: &str,
-        addr: &str,
-    ) {
-        let should_format =
-            tracing::enabled!(tracing::Level::DEBUG) || effective_no_assert || verbose;
+    fn log_response_message(msg: &Value, verbose: bool, protocol: &str, addr: &str) {
+        let should_format = tracing::enabled!(tracing::Level::DEBUG) || verbose;
         if !should_format {
             return;
         }
@@ -2635,7 +2866,7 @@ impl TestRunner {
         if tracing::enabled!(tracing::Level::DEBUG) {
             tracing::debug!("[{}@{}] Received Response:\n{}", protocol, addr, pretty);
         }
-        if effective_no_assert {
+        if verbose {
             println!("--- RESPONSE (Raw) ---\n{}", pretty);
         }
     }
@@ -2766,7 +2997,7 @@ impl TestRunner {
         }
 
         let tls_defaults = runner_helpers::tls_env_defaults();
-        if let Some(tls_config) = document.get_tls_config_with_defaults(&tls_defaults) {
+        if let Some(tls_config) = document.get_tls_config_with_defaults(tls_defaults) {
             println!();
             println!("🔒 TLS Configuration:");
             if let Some(ca_cert) = tls_config
@@ -2817,6 +3048,100 @@ impl TestRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn runner() -> TestRunner {
+        TestRunner::new(false, 30, false, false, false, None)
+    }
+
+    fn parse(text: &str) -> crate::parser::GctfDocument {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("t.gctf");
+        std::fs::write(&path, text).expect("write");
+        crate::parser::parse_with_recovery(&path).document
+    }
+
+    // Preparation must reproduce what the ordinary path derives, or a bench run
+    // silently talks to somewhere else.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn preparation_matches_the_document() {
+        let doc = parse(
+            "--- ADDRESS ---\n127.0.0.1:9\n\n--- ENDPOINT ---\npkg.Svc/Method\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n",
+        );
+        let prepared = runner().prepare(&doc);
+        let prep = prepared.0[0].as_ref().expect("document is preparable");
+        assert_eq!(prep.address, "127.0.0.1:9");
+        assert_eq!(prep.package, "pkg");
+        assert_eq!(prep.service, "Svc");
+        assert_eq!(prep.method, "Method");
+        assert_eq!(prep.full_service, "pkg.Svc");
+        assert_eq!(prep.timeout_seconds, 30);
+    }
+
+    // A document whose OPTIONS cannot be honoured must fall back, so the error
+    // is still reported instead of being papered over with a default.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn an_unusable_timeout_is_not_prepared() {
+        let doc = parse(
+            "--- ENDPOINT ---\npkg.Svc/Method\n\n--- OPTIONS ---\ntimeout: not-a-number\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n",
+        );
+        let prepared = runner().prepare(&doc);
+        assert!(
+            prepared.0[0].is_none(),
+            "a bad timeout must fall back to the reporting path"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn a_document_without_an_endpoint_is_not_prepared() {
+        let doc = parse("--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n");
+        let prepared = runner().prepare(&doc);
+        assert!(prepared.0[0].is_none());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn an_address_override_wins_over_the_document() {
+        let doc = parse(
+            "--- ADDRESS ---\n127.0.0.1:9\n\n--- ENDPOINT ---\npkg.Svc/Method\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n",
+        );
+        let prepared = runner()
+            .with_address_override("127.0.0.1:10".to_string())
+            .prepare(&doc);
+        assert_eq!(
+            prepared.0[0].as_ref().expect("preparable").address,
+            "127.0.0.1:10"
+        );
+    }
+
+    // Dropping a `JoinHandle` only detaches the task. Under load that left one
+    // abandoned gRPC call per request in the runtime.
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn dropping_the_guard_cancels_the_task() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let ran = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&ran);
+        let guard = AbortOnDrop(Some(tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            flag.store(true, Ordering::SeqCst);
+        })));
+        drop(guard);
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        assert!(!ran.load(Ordering::SeqCst), "the task kept running");
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn taking_the_handle_leaves_the_task_alive() {
+        let guard = AbortOnDrop(Some(tokio::spawn(async { 7u8 })));
+        let handle = guard.into_inner().expect("handle is present once");
+        assert_eq!(handle.await.expect("task must finish"), 7);
+    }
     use crate::polyfill::runtime;
     use serde_json::json;
     use std::sync::Mutex;
@@ -3091,7 +3416,7 @@ chat.ChatService/SendMessages
             std::env::set_var(crate::config::ENV_GRPCTESTIFY_TLS_SERVER_NAME, "localhost");
         }
 
-        let defaults = runner_helpers::tls_env_defaults();
+        let defaults = runner_helpers::read_tls_env_defaults();
         assert_eq!(defaults.get("ca_cert"), Some(&"/tmp/ca.pem".to_string()));
         assert_eq!(
             defaults.get("client_cert"),
@@ -3122,7 +3447,7 @@ chat.ChatService/SendMessages
             std::env::set_var(crate::config::ENV_GRPCTESTIFY_TLS_SERVER_NAME, " ");
         }
 
-        let defaults = runner_helpers::tls_env_defaults();
+        let defaults = runner_helpers::read_tls_env_defaults();
         assert!(defaults.is_empty());
 
         unsafe {

@@ -1,7 +1,7 @@
 use super::proxy::ProxyEnv;
 use crate::config::{GrpcClientConfig, TlsConfig};
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -12,16 +12,51 @@ struct ChannelCacheKey {
     address: String,
     timeout_seconds: u64,
     tls_config: Option<TlsConfig>,
+    connection_id: u64,
 }
 
-static CHANNEL_CACHE: LazyLock<RwLock<HashMap<ChannelCacheKey, Channel>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
+/// Bounded channel cache with insertion-order eviction. Clearing on overflow
+/// would wipe channels other workers are still using.
+struct BoundedChannelCache {
+    map: HashMap<ChannelCacheKey, Channel>,
+    order: VecDeque<ChannelCacheKey>,
+    capacity: usize,
+}
+
+impl BoundedChannelCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            map: HashMap::new(),
+            order: VecDeque::new(),
+            capacity: capacity.max(1),
+        }
+    }
+
+    fn get(&self, key: &ChannelCacheKey) -> Option<&Channel> {
+        self.map.get(key)
+    }
+
+    fn insert(&mut self, key: ChannelCacheKey, channel: Channel) {
+        if self.map.insert(key.clone(), channel).is_none() {
+            self.order.push_back(key);
+        }
+        while self.map.len() > self.capacity {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.map.remove(&oldest);
+        }
+    }
+}
+
+static CHANNEL_CACHE: LazyLock<RwLock<BoundedChannelCache>> =
+    LazyLock::new(|| RwLock::new(BoundedChannelCache::new(CHANNEL_CACHE_MAX_ENTRIES)));
 static PROXY_WARNED: OnceLock<()> = OnceLock::new();
 
-/// Upper bound on cached channels. When the cap is reached the cache is
-/// cleared; channels are cheap to recreate (lazy connect) and this prevents
-/// unbounded growth over long runs against many distinct addresses.
-const CHANNEL_CACHE_MAX_ENTRIES: usize = 64;
+/// Upper bound on cached channels. Sized so a large `--connections` pool fits
+/// without evicting live members; channels connect lazily, so an idle entry is
+/// little more than its configuration.
+const CHANNEL_CACHE_MAX_ENTRIES: usize = 512;
 
 pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
     if config.address.is_empty() {
@@ -34,14 +69,12 @@ pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
         ));
     }
 
-    let mut cache_key = ChannelCacheKey {
+    let cache_key = ChannelCacheKey {
         address: config.address.clone(),
         timeout_seconds: config.timeout_seconds,
         tls_config: config.tls_config.clone(),
+        connection_id: config.connection_id,
     };
-    if config.connection_id > 0 {
-        cache_key.address = format!("{}/conn-{}", cache_key.address, config.connection_id);
-    }
 
     {
         let cache = CHANNEL_CACHE.read().await;
@@ -70,11 +103,28 @@ pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
     };
 
     let mut cache = CHANNEL_CACHE.write().await;
-    if cache.len() >= CHANNEL_CACHE_MAX_ENTRIES {
-        cache.clear();
-    }
     cache.insert(cache_key, channel.clone());
     Ok(channel)
+}
+
+/// Endpoint settings shared by both transports. HTTP/2 window sizes are left at
+/// their defaults: tuning them measured as a null result on loopback.
+fn tune(
+    endpoint: tonic::transport::Endpoint,
+    config: &GrpcClientConfig,
+) -> tonic::transport::Endpoint {
+    endpoint
+        .timeout(Duration::from_secs(config.timeout_seconds))
+        .connect_timeout(Duration::from_secs(5))
+}
+
+/// `host:port` with the scheme the transport needs, left alone if it has one.
+fn endpoint_uri(address: &str, scheme: &str) -> String {
+    if address.contains("://") {
+        address.to_string()
+    } else {
+        format!("{scheme}://{address}")
+    }
 }
 
 async fn create_tls_channel(config: &GrpcClientConfig, tls_config: &TlsConfig) -> Result<Channel> {
@@ -90,15 +140,9 @@ async fn create_tls_channel(config: &GrpcClientConfig, tls_config: &TlsConfig) -
         let key_pem = std::fs::read_to_string(key_path).context("Failed to read client key")?;
         tls = tls.identity(Identity::from_pem(cert_pem, key_pem));
     }
-    let addr = if !config.address.contains("://") {
-        format!("https://{}", config.address)
-    } else {
-        config.address.clone()
-    };
-    let endpoint = Channel::from_shared(addr)
-        .context("Invalid address format")?
-        .timeout(Duration::from_secs(config.timeout_seconds))
-        .connect_timeout(Duration::from_secs(5));
+    let endpoint = Channel::from_shared(endpoint_uri(&config.address, "https"))
+        .context("Invalid address format")?;
+    let endpoint = tune(endpoint, config);
     if tls_config.insecure_skip_verify {
         tracing::warn!(
             "SECURITY WARNING: TLS certificate verification is disabled (insecure_skip_verify=true)."
@@ -179,21 +223,70 @@ mod insecure {
 }
 
 async fn create_plaintext_channel(config: &GrpcClientConfig) -> Result<Channel> {
-    let addr = if !config.address.contains("://") {
-        format!("http://{}", config.address)
-    } else {
-        config.address.clone()
-    };
-    let endpoint = Channel::from_shared(addr)
-        .context("Invalid address format")?
-        .timeout(Duration::from_secs(config.timeout_seconds))
-        .connect_timeout(Duration::from_secs(5));
-    Ok(endpoint.connect_lazy())
+    let endpoint = Channel::from_shared(endpoint_uri(&config.address, "http"))
+        .context("Invalid address format")?;
+    Ok(tune(endpoint, config).connect_lazy())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cache_key_of(connection_id: u64) -> ChannelCacheKey {
+        ChannelCacheKey {
+            address: "localhost:50051".to_string(),
+            timeout_seconds: 30,
+            tls_config: None,
+            connection_id,
+        }
+    }
+
+    // `connection_id` used to be folded into the address only when non-zero, so
+    // slot 0 shared a channel with every other caller reaching the same address
+    // — including `call`, `health` and `reflect`, which all pass 0.
+    fn dummy_channel() -> Channel {
+        Channel::from_static("http://127.0.0.1:1").connect_lazy()
+    }
+
+    // Overflow used to `clear()` the whole map: with a connection pool larger
+    // than the cap, every insert wiped the channels the other workers were
+    // still using, so the pool never converged.
+    #[tokio::test]
+    async fn overflowing_the_cache_evicts_only_the_oldest() {
+        let mut cache = BoundedChannelCache::new(3);
+        for id in 0..3 {
+            cache.insert(cache_key_of(id), dummy_channel());
+        }
+        cache.insert(cache_key_of(3), dummy_channel());
+
+        assert!(cache.get(&cache_key_of(0)).is_none(), "oldest must go");
+        for id in 1..=3 {
+            assert!(cache.get(&cache_key_of(id)).is_some(), "slot {id} survives");
+        }
+        assert_eq!(cache.map.len(), 3);
+    }
+
+    // Re-inserting a live key must not queue it twice, or the eviction order
+    // drifts and the map shrinks below its capacity.
+    #[tokio::test]
+    async fn reinserting_a_key_does_not_double_count_it() {
+        let mut cache = BoundedChannelCache::new(2);
+        cache.insert(cache_key_of(0), dummy_channel());
+        cache.insert(cache_key_of(0), dummy_channel());
+        cache.insert(cache_key_of(1), dummy_channel());
+
+        assert_eq!(cache.map.len(), 2);
+        assert_eq!(cache.order.len(), 2);
+        assert!(cache.get(&cache_key_of(0)).is_some());
+        assert!(cache.get(&cache_key_of(1)).is_some());
+    }
+
+    #[test]
+    fn channel_cache_key_separates_every_connection_slot() {
+        assert_ne!(cache_key_of(0), cache_key_of(1));
+        assert_ne!(cache_key_of(1), cache_key_of(2));
+        assert_eq!(cache_key_of(3), cache_key_of(3));
+    }
 
     #[tokio::test]
     async fn insecure_skip_verify_builds_channel() {

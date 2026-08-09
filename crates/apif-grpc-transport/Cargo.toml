@@ -1,6 +1,6 @@
 [package]
 name = "apif-grpc-transport"
-version = "0.3.2"
+version = "0.3.4"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -47,3 +47,6 @@ tonic-transport = [
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3"

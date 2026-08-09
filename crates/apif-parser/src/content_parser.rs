@@ -368,6 +368,22 @@ pub fn resolve_attributes(
     resolved
 }
 
+/// Attributes that configure one section only. `#[skip]` is documented as
+/// "the test continues with subsequent sections" and `#[repeat(N)]` as
+/// "re-execute *this* section", so neither may propagate — inheriting them
+/// let a single `#[skip]` disable the whole rest of the test while the run
+/// still reported a pass.
+pub const SECTION_SCOPED_ATTRIBUTES: &[&str] = &["skip", "repeat"];
+
+/// The subset of a section's resolved attributes that later sections inherit.
+pub fn inheritable_attributes(resolved: &[GctfAttribute]) -> Vec<GctfAttribute> {
+    resolved
+        .iter()
+        .filter(|a| !SECTION_SCOPED_ATTRIBUTES.contains(&a.name.as_str()))
+        .cloned()
+        .collect()
+}
+
 /// Parse key-value section (one per line: key: value).
 fn parse_key_value_section(content: &str) -> Result<crate::ast::OrderedStringMap> {
     let mut key_values = crate::ast::OrderedStringMap::new();

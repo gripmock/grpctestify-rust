@@ -9,6 +9,7 @@ use crate::report::bench::{
 };
 use crate::utils::FileUtils;
 use anyhow::{Context, Result};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::Path;
@@ -94,6 +95,14 @@ pub struct BenchConfigResolved {
     pub load_end: Option<f64>,
     pub load_step_duration: Option<Duration>,
     pub load_max_duration: Option<Duration>,
+    /// Second schedule axis: how the worker count changes across the run.
+    /// `const` measures one level; `step`/`line` measure a series of levels,
+    /// each in full, so a sweep no longer needs an external loop.
+    pub concurrency_schedule: String,
+    pub concurrency_start: Option<u32>,
+    pub concurrency_end: Option<u32>,
+    pub concurrency_step: Option<u32>,
+    pub concurrency_step_duration: Option<Duration>,
     pub load_midpoint: Option<f64>,
     pub load_amplitude: Option<f64>,
     pub load_frequency: Option<f64>,
@@ -120,6 +129,9 @@ pub struct BenchConfigResolved {
     pub progress_interval: Duration,
     pub thresholds: HashMap<String, String>,
     pub option_sources: HashMap<String, BenchOptionSource>,
+    /// Set by `--calibrate`: every request goes here instead of the document's
+    /// address, and assertions are off because the target answers with defaults.
+    pub calibration_address: Option<String>,
     pub sources: Vec<crate::bench::sources::SourceDefinition>,
 }
 
@@ -144,6 +156,11 @@ impl Default for BenchConfigResolved {
             load_end: None,
             load_step_duration: None,
             load_max_duration: None,
+            concurrency_schedule: "const".to_string(),
+            concurrency_start: None,
+            concurrency_end: None,
+            concurrency_step: None,
+            concurrency_step_duration: None,
             load_midpoint: None,
             load_amplitude: None,
             load_frequency: None,
@@ -174,10 +191,12 @@ impl Default for BenchConfigResolved {
             ],
             progress_interval: Duration::from_secs(5),
             thresholds: HashMap::new(),
+            calibration_address: None,
             option_sources: {
                 let mut s = HashMap::new();
                 for key in [
                     "concurrency",
+                    "connections",
                     "load_schedule",
                     "load_start",
                     "load_step",
@@ -334,175 +353,211 @@ macro_rules! cli_config_field {
 }
 
 impl BenchConfigResolved {
+    /// Apply every `BENCH` section key onto `self`.
+    ///
+    /// Both constructors need this and used to carry a line-for-line copy of
+    /// it, so every new key had to be added twice.
+    fn apply_bench_section(&mut self, bench: &crate::parser::OrderedStringMap) -> Result<()> {
+        // Record the source of every key the section actually writes. Only
+        // eight keys used to be tracked, so `apply_profile_defaults` saw
+        // `duration`/`mode`/`requests` as unset and overwrote values the user
+        // had written explicitly.
+        for key in bench.keys() {
+            self.option_sources
+                .insert(key.clone(), BenchOptionSource::BenchSection);
+        }
+
+        if let Some(mode) = bench.get("mode") {
+            self.mode = mode.clone();
+        }
+        if let Some(p) = bench.get("profile") {
+            self.profile = p.clone();
+        }
+        if let Some(c) = bench.get("concurrency") {
+            self.concurrency = parse_bench_num(c, 1);
+            self.option_sources
+                .insert("concurrency".to_string(), BenchOptionSource::BenchSection);
+        }
+        if let Some(n) = bench.get("requests") {
+            self.requests = Some(parse_bench_num(n, 100));
+        }
+        if let Some(d) = bench.get("duration") {
+            self.duration = Some(parse_duration(d)?);
+        }
+        if let Some(d) = bench_value(bench, "ramp_up") {
+            self.ramp_up = Some(parse_duration(d)?);
+        }
+        if let Some(d) = bench.get("warmup") {
+            self.warmup = Some(parse_duration(d)?);
+        }
+        if let Some(v) = bench.get("warmup_mode") {
+            self.warmup_mode = v.clone();
+        }
+        if let Some(d) = bench.get("cool_down") {
+            self.cool_down = Some(parse_duration(d)?);
+        }
+        if let Some(d) = bench_value(bench, "max_duration") {
+            self.max_duration = Some(parse_duration(d)?);
+        }
+        if let Some(rps) = bench_value(bench, "max_rps") {
+            self.max_rps = Some(parse_bench_num(rps, 0.0));
+        }
+        if let Some(v) = bench_value(bench, "load_schedule") {
+            self.load_schedule = v.clone();
+            self.option_sources
+                .insert("load_schedule".to_string(), BenchOptionSource::BenchSection);
+        }
+        if let Some(v) = bench.get("load_profile") {
+            self.load_profile = parse_custom_profile(v);
+        }
+        if let Some(v) = bench.get("load_midpoint") {
+            self.load_midpoint = v.replace('_', "").parse::<f64>().ok();
+        }
+        if let Some(v) = bench.get("load_amplitude") {
+            self.load_amplitude = v.replace('_', "").parse::<f64>().ok();
+        }
+        if let Some(v) = bench.get("load_frequency") {
+            self.load_frequency = v.replace('_', "").parse::<f64>().ok();
+        }
+        if let Some(v) = bench.get("load_spike_target") {
+            self.load_spike_target = v.replace('_', "").parse::<f64>().ok();
+        }
+        if let Some(v) = bench.get("load_spike_after") {
+            self.load_spike_after = v.replace('_', "").parse::<f64>().ok();
+        }
+        if let Some(v) = bench.get("load_spike_duration") {
+            self.load_spike_duration = v.replace('_', "").parse::<f64>().ok();
+        }
+        if let Some(v) = bench_value(bench, "load_start") {
+            self.load_start = v.replace('_', "").parse::<f64>().ok();
+            self.option_sources
+                .insert("load_start".to_string(), BenchOptionSource::BenchSection);
+        }
+        if let Some(v) = bench_value(bench, "load_step") {
+            self.load_step = v.replace('_', "").parse::<f64>().ok();
+            self.option_sources
+                .insert("load_step".to_string(), BenchOptionSource::BenchSection);
+        }
+        if let Some(v) = bench_value(bench, "load_end") {
+            self.load_end = v.replace('_', "").parse::<f64>().ok();
+            self.option_sources
+                .insert("load_end".to_string(), BenchOptionSource::BenchSection);
+        }
+        if let Some(v) = bench_value(bench, "load_step_duration") {
+            self.load_step_duration = Some(parse_duration(v)?);
+            self.option_sources.insert(
+                "load_step_duration".to_string(),
+                BenchOptionSource::BenchSection,
+            );
+        }
+        if let Some(v) = bench_value(bench, "concurrency_schedule") {
+            self.concurrency_schedule = v.trim().to_ascii_lowercase();
+        }
+        if let Some(v) = bench_value(bench, "concurrency_start") {
+            self.concurrency_start = Some(parse_bench_num(v, 1));
+        }
+        if let Some(v) = bench_value(bench, "concurrency_end") {
+            self.concurrency_end = Some(parse_bench_num(v, 1));
+        }
+        if let Some(v) = bench_value(bench, "concurrency_step") {
+            self.concurrency_step = Some(parse_bench_num(v, 1));
+        }
+        if let Some(v) = bench_value(bench, "concurrency_step_duration") {
+            self.concurrency_step_duration = Some(parse_duration(v)?);
+        }
+        if let Some(v) = bench_value(bench, "load_max_duration") {
+            self.load_max_duration = Some(parse_duration(v)?);
+            self.option_sources.insert(
+                "load_max_duration".to_string(),
+                BenchOptionSource::BenchSection,
+            );
+        }
+        if let Some(v) = bench.get("connections") {
+            self.connections = parse_bench_num(v, 1);
+            self.option_sources
+                .insert("connections".to_string(), BenchOptionSource::BenchSection);
+        }
+        if let Some(v) = bench_value(bench, "request_timeout") {
+            self.request_timeout = Some(parse_duration(v)?);
+        }
+        if let Some(v) = bench_value(bench, "connect_timeout") {
+            self.connect_timeout = parse_duration(v)?;
+        }
+        if let Some(v) = bench.get("keepalive") {
+            self.keepalive = Some(parse_duration(v)?);
+        }
+        if let Some(v) = bench.get("cpus") {
+            self.cpus = Some(parse_bench_num(v, 1));
+        }
+        if let Some(v) = bench.get("name") {
+            self.name = Some(v.clone());
+        }
+        if let Some(am) = bench_value(bench, "assert_mode") {
+            self.assert_mode = am.clone();
+        }
+        if let Some(v) = bench_value(bench, "no_assert") {
+            self.no_assert = v == "true" || v == "1";
+        }
+        if let Some(v) = bench_value(bench, "duration_stop") {
+            self.duration_stop = DurationStopMode::parse(v)?;
+        }
+        if let Some(sr) = bench_value(bench, "sample_rate") {
+            self.sample_rate = parse_sample_rate(sr)?;
+        }
+        if let Some(v) = bench_value(bench, "skip_first") {
+            self.skip_first = parse_bench_num(v, 0);
+        }
+        if let Some(v) = bench_value(bench, "count_errors_in_latency") {
+            self.count_errors_in_latency = v == "true" || v == "1";
+        }
+        if let Some(v) = bench_value(bench, "latency_percentiles") {
+            self.latency_percentiles = parse_latency_percentiles(v);
+        }
+        if let Some(v) = bench_value(bench, "progress_interval") {
+            self.progress_interval = parse_duration(v)?;
+            self.option_sources.insert(
+                "progress_interval".to_string(),
+                BenchOptionSource::BenchSection,
+            );
+        }
+        if let Some(cache) = bench.get("cache") {
+            self.cache = cache == "true" || cache == "1";
+        }
+        if let Some(ttl) = bench.get("cache_ttl") {
+            self.cache_ttl = Some(parse_duration(ttl)?);
+        }
+
+        for (key, value) in bench {
+            if let Some(metric) = key.strip_prefix("thresholds.") {
+                self.thresholds.insert(metric.to_string(), value.clone());
+            }
+        }
+
+        if let Some(sources_yaml) = bench.get("sources") {
+            self.sources = serde_yaml_ng::from_str::<Vec<crate::bench::sources::SourceDefinition>>(
+                sources_yaml,
+            )
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "BENCH.sources is not a valid list of source definitions: {e}. \
+                     A malformed block used to be ignored, leaving every \
+                     `{{{{source.column}}}}` placeholder unsubstituted."
+                )
+            })?;
+        }
+        Ok(())
+    }
+
     pub fn from_bench_section(
         bench_section: Option<&crate::parser::OrderedStringMap>,
     ) -> Result<Self> {
         let mut config = Self::default();
-
         if let Some(bench) = bench_section {
-            if let Some(mode) = bench.get("mode") {
-                config.mode = mode.clone();
-            }
-            if let Some(p) = bench.get("profile") {
-                config.profile = p.clone();
-            }
-            if let Some(c) = bench.get("concurrency") {
-                config.concurrency = parse_bench_num(c, 1);
-                config
-                    .option_sources
-                    .insert("concurrency".to_string(), BenchOptionSource::BenchSection);
-            }
-            if let Some(n) = bench.get("requests") {
-                config.requests = Some(parse_bench_num(n, 100));
-            }
-            if let Some(d) = bench.get("duration") {
-                config.duration = Some(parse_duration(d)?);
-            }
-            if let Some(d) = bench_value(bench, "ramp_up") {
-                config.ramp_up = Some(parse_duration(d)?);
-            }
-            if let Some(d) = bench.get("warmup") {
-                config.warmup = Some(parse_duration(d)?);
-            }
-            if let Some(v) = bench.get("warmup_mode") {
-                config.warmup_mode = v.clone();
-            }
-            if let Some(d) = bench.get("cool_down") {
-                config.cool_down = Some(parse_duration(d)?);
-            }
-            if let Some(d) = bench_value(bench, "max_duration") {
-                config.max_duration = Some(parse_duration(d)?);
-            }
-            if let Some(rps) = bench_value(bench, "max_rps") {
-                config.max_rps = Some(parse_bench_num(rps, 0.0));
-            }
-            if let Some(v) = bench_value(bench, "load_schedule") {
-                config.load_schedule = v.clone();
-                config
-                    .option_sources
-                    .insert("load_schedule".to_string(), BenchOptionSource::BenchSection);
-            }
-            if let Some(v) = bench.get("load_profile") {
-                config.load_profile = parse_custom_profile(v);
-            }
-            if let Some(v) = bench.get("load_midpoint") {
-                config.load_midpoint = v.replace('_', "").parse::<f64>().ok();
-            }
-            if let Some(v) = bench.get("load_amplitude") {
-                config.load_amplitude = v.replace('_', "").parse::<f64>().ok();
-            }
-            if let Some(v) = bench.get("load_frequency") {
-                config.load_frequency = v.replace('_', "").parse::<f64>().ok();
-            }
-            if let Some(v) = bench.get("load_spike_target") {
-                config.load_spike_target = v.replace('_', "").parse::<f64>().ok();
-            }
-            if let Some(v) = bench.get("load_spike_after") {
-                config.load_spike_after = v.replace('_', "").parse::<f64>().ok();
-            }
-            if let Some(v) = bench.get("load_spike_duration") {
-                config.load_spike_duration = v.replace('_', "").parse::<f64>().ok();
-            }
-            if let Some(v) = bench_value(bench, "load_start") {
-                config.load_start = v.replace('_', "").parse::<f64>().ok();
-                config
-                    .option_sources
-                    .insert("load_start".to_string(), BenchOptionSource::BenchSection);
-            }
-            if let Some(v) = bench_value(bench, "load_step") {
-                config.load_step = v.replace('_', "").parse::<f64>().ok();
-                config
-                    .option_sources
-                    .insert("load_step".to_string(), BenchOptionSource::BenchSection);
-            }
-            if let Some(v) = bench_value(bench, "load_end") {
-                config.load_end = v.replace('_', "").parse::<f64>().ok();
-                config
-                    .option_sources
-                    .insert("load_end".to_string(), BenchOptionSource::BenchSection);
-            }
-            if let Some(v) = bench_value(bench, "load_step_duration") {
-                config.load_step_duration = Some(parse_duration(v)?);
-                config.option_sources.insert(
-                    "load_step_duration".to_string(),
-                    BenchOptionSource::BenchSection,
-                );
-            }
-            if let Some(v) = bench_value(bench, "load_max_duration") {
-                config.load_max_duration = Some(parse_duration(v)?);
-                config.option_sources.insert(
-                    "load_max_duration".to_string(),
-                    BenchOptionSource::BenchSection,
-                );
-            }
-            if let Some(v) = bench.get("connections") {
-                config.connections = parse_bench_num(v, 1);
-            }
-            if let Some(v) = bench_value(bench, "request_timeout") {
-                config.request_timeout = Some(parse_duration(v)?);
-            }
-            if let Some(v) = bench_value(bench, "connect_timeout") {
-                config.connect_timeout = parse_duration(v)?;
-            }
-            if let Some(v) = bench.get("keepalive") {
-                config.keepalive = Some(parse_duration(v)?);
-            }
-            if let Some(v) = bench.get("cpus") {
-                config.cpus = Some(parse_bench_num(v, 1));
-            }
-            if let Some(v) = bench.get("name") {
-                config.name = Some(v.clone());
-            }
-            if let Some(am) = bench_value(bench, "assert_mode") {
-                config.assert_mode = am.clone();
-            }
-            if let Some(v) = bench_value(bench, "no_assert") {
-                config.no_assert = v == "true" || v == "1";
-            }
-            if let Some(v) = bench_value(bench, "duration_stop") {
-                config.duration_stop = DurationStopMode::parse(v)?;
-            }
-            if let Some(sr) = bench_value(bench, "sample_rate") {
-                config.sample_rate = sr.parse().unwrap_or(1.0);
-            }
-            if let Some(v) = bench_value(bench, "skip_first") {
-                config.skip_first = parse_bench_num(v, 0);
-            }
-            if let Some(v) = bench_value(bench, "count_errors_in_latency") {
-                config.count_errors_in_latency = v == "true" || v == "1";
-            }
-            if let Some(v) = bench_value(bench, "latency_percentiles") {
-                config.latency_percentiles = parse_latency_percentiles(v);
-            }
-            if let Some(v) = bench_value(bench, "progress_interval") {
-                config.progress_interval = parse_duration(v)?;
-                config.option_sources.insert(
-                    "progress_interval".to_string(),
-                    BenchOptionSource::BenchSection,
-                );
-            }
-            if let Some(cache) = bench.get("cache") {
-                config.cache = cache == "true" || cache == "1";
-            }
-            if let Some(ttl) = bench.get("cache_ttl") {
-                config.cache_ttl = Some(parse_duration(ttl)?);
-            }
-
-            for (key, value) in bench {
-                if let Some(metric) = key.strip_prefix("thresholds.") {
-                    config.thresholds.insert(metric.to_string(), value.clone());
-                }
-            }
-
-            if let Some(sources_yaml) = bench.get("sources")
-                && let Ok(defs) = serde_yaml_ng::from_str::<
-                    Vec<crate::bench::sources::SourceDefinition>,
-                >(sources_yaml)
-            {
-                config.sources = defs;
-            }
+            config.apply_bench_section(bench)?;
         }
-
+        if config.option_sources.get("connections") == Some(&BenchOptionSource::Default) {
+            config.connections = default_connections(config.concurrency);
+        }
         if config.connections == 0 {
             anyhow::bail!("connections must be greater than 0");
         }
@@ -528,179 +583,9 @@ impl BenchConfigResolved {
         let defaults = Self::default();
         let mut config = defaults;
 
-        // Apply BENCH section first (if present)
         if let Some(bench) = bench_section {
-            if let Some(mode) = bench.get("mode") {
-                config.mode = mode.clone();
-            }
-            if let Some(p) = bench.get("profile") {
-                config.profile = p.clone();
-            }
-            if let Some(c) = bench.get("concurrency") {
-                config.concurrency = parse_bench_num(c, 1);
-                config
-                    .option_sources
-                    .insert("concurrency".to_string(), BenchOptionSource::BenchSection);
-            }
-            if let Some(n) = bench.get("requests") {
-                config.requests = Some(parse_bench_num(n, 100));
-            }
-            if let Some(d) = bench.get("duration") {
-                config.duration = Some(parse_duration(d)?);
-            }
-            if let Some(d) = bench_value(bench, "ramp_up") {
-                config.ramp_up = Some(parse_duration(d)?);
-            }
-            if let Some(d) = bench.get("warmup") {
-                config.warmup = Some(parse_duration(d)?);
-            }
-            if let Some(v) = bench.get("warmup_mode") {
-                config.warmup_mode = v.clone();
-            }
-            if let Some(d) = bench.get("cool_down") {
-                config.cool_down = Some(parse_duration(d)?);
-            }
-            if let Some(d) = bench_value(bench, "max_duration") {
-                config.max_duration = Some(parse_duration(d)?);
-            }
-            if let Some(rps) = bench_value(bench, "max_rps") {
-                config.max_rps = Some(parse_bench_num(rps, 0.0));
-            }
-            if let Some(v) = bench_value(bench, "load_schedule") {
-                config.load_schedule = v.clone();
-                config
-                    .option_sources
-                    .insert("load_schedule".to_string(), BenchOptionSource::BenchSection);
-            }
-            if let Some(v) = bench.get("load_profile") {
-                config.load_profile = parse_custom_profile(v);
-            }
-            if let Some(v) = bench.get("load_midpoint") {
-                config.load_midpoint = v.replace('_', "").parse::<f64>().ok();
-            }
-            if let Some(v) = bench.get("load_amplitude") {
-                config.load_amplitude = v.replace('_', "").parse::<f64>().ok();
-            }
-            if let Some(v) = bench.get("load_frequency") {
-                config.load_frequency = v.replace('_', "").parse::<f64>().ok();
-            }
-            if let Some(v) = bench.get("load_spike_target") {
-                config.load_spike_target = v.replace('_', "").parse::<f64>().ok();
-            }
-            if let Some(v) = bench.get("load_spike_after") {
-                config.load_spike_after = v.replace('_', "").parse::<f64>().ok();
-            }
-            if let Some(v) = bench.get("load_spike_duration") {
-                config.load_spike_duration = v.replace('_', "").parse::<f64>().ok();
-            }
-            if let Some(v) = bench_value(bench, "load_start") {
-                config.load_start = v.replace('_', "").parse::<f64>().ok();
-                config
-                    .option_sources
-                    .insert("load_start".to_string(), BenchOptionSource::BenchSection);
-            }
-            if let Some(v) = bench_value(bench, "load_step") {
-                config.load_step = v.replace('_', "").parse::<f64>().ok();
-                config
-                    .option_sources
-                    .insert("load_step".to_string(), BenchOptionSource::BenchSection);
-            }
-            if let Some(v) = bench_value(bench, "load_end") {
-                config.load_end = v.replace('_', "").parse::<f64>().ok();
-                config
-                    .option_sources
-                    .insert("load_end".to_string(), BenchOptionSource::BenchSection);
-            }
-            if let Some(v) = bench_value(bench, "load_step_duration") {
-                config.load_step_duration = Some(parse_duration(v)?);
-                config.option_sources.insert(
-                    "load_step_duration".to_string(),
-                    BenchOptionSource::BenchSection,
-                );
-            }
-            if let Some(v) = bench_value(bench, "load_max_duration") {
-                config.load_max_duration = Some(parse_duration(v)?);
-                config.option_sources.insert(
-                    "load_max_duration".to_string(),
-                    BenchOptionSource::BenchSection,
-                );
-            }
-            if let Some(v) = bench.get("connections") {
-                config.connections = parse_bench_num(v, 1);
-            }
-            if let Some(v) = bench_value(bench, "request_timeout") {
-                config.request_timeout = Some(parse_duration(v)?);
-            }
-            if let Some(v) = bench_value(bench, "connect_timeout") {
-                config.connect_timeout = parse_duration(v)?;
-            }
-            if let Some(v) = bench.get("keepalive") {
-                config.keepalive = Some(parse_duration(v)?);
-            }
-            if let Some(v) = bench.get("cpus") {
-                config.cpus = Some(parse_bench_num(v, 1));
-            }
-            if let Some(v) = bench.get("name") {
-                config.name = Some(v.clone());
-            }
-            if let Some(am) = bench_value(bench, "assert_mode") {
-                config.assert_mode = am.clone();
-            }
-            if let Some(v) = bench_value(bench, "no_assert") {
-                config.no_assert = v == "true" || v == "1";
-            }
-            if let Some(v) = bench_value(bench, "duration_stop") {
-                config.duration_stop = DurationStopMode::parse(v)?;
-            }
-            if let Some(sr) = bench_value(bench, "sample_rate") {
-                config.sample_rate = sr.parse().unwrap_or(1.0);
-            }
-            if let Some(v) = bench_value(bench, "skip_first") {
-                config.skip_first = parse_bench_num(v, 0);
-            }
-            if let Some(v) = bench_value(bench, "count_errors_in_latency") {
-                config.count_errors_in_latency = v == "true" || v == "1";
-            }
-            if let Some(v) = bench_value(bench, "latency_percentiles") {
-                config.latency_percentiles = parse_latency_percentiles(v);
-            }
-            if let Some(v) = bench_value(bench, "progress_interval") {
-                config.progress_interval = parse_duration(v)?;
-                config.option_sources.insert(
-                    "progress_interval".to_string(),
-                    BenchOptionSource::BenchSection,
-                );
-            }
-            if let Some(cache) = bench.get("cache") {
-                config.cache = cache == "true" || cache == "1";
-            }
-            if let Some(ttl) = bench.get("cache_ttl") {
-                config.cache_ttl = Some(parse_duration(ttl)?);
-            }
-
-            // Collect thresholds (keys starting with "thresholds.")
-            for (key, value) in bench {
-                if let Some(metric) = key.strip_prefix("thresholds.") {
-                    config.thresholds.insert(metric.to_string(), value.clone());
-                }
-            }
-
-            // Parse sources (YAML array of SourceDefinition)
-            if let Some(sources_yaml) = bench.get("sources")
-                && let Ok(defs) = serde_yaml_ng::from_str::<
-                    Vec<crate::bench::sources::SourceDefinition>,
-                >(sources_yaml)
-            {
-                config.sources = defs;
-            }
+            config.apply_bench_section(bench)?;
         }
-
-        // Apply profile defaults (lowest priority — fills in values not set by BENCH section)
-        let profile_name = config.profile.clone();
-        if profile_name != "functional" {
-            apply_profile_defaults(&mut config, &profile_name);
-        }
-
         // Override with CLI args (highest priority)
         // `--protocol` selects the wire protocol for the whole run, overriding
         // each file's OPTIONS.protocol — consistent with `run`/`call`, which
@@ -710,10 +595,13 @@ impl BenchConfigResolved {
         cli_config_field!(string_clone, config, cli, mode, "mode");
         cli_config_field!(direct, config, cli, concurrency, "concurrency");
         cli_config_field!(option_direct, config, cli, requests, "requests");
-        cli_config_field!(duration, config, cli, duration);
-        cli_config_field!(duration, config, cli, ramp_up);
-        cli_config_field!(duration, config, cli, warmup);
-        cli_config_field!(duration, config, cli, max_duration);
+        // `duration_source` rather than `duration`: a profile preset must not
+        // overwrite a duration the user passed on the command line, and it can
+        // only tell by the recorded source.
+        cli_config_field!(duration_source, config, cli, duration, "duration");
+        cli_config_field!(duration_source, config, cli, ramp_up, "ramp_up");
+        cli_config_field!(duration_source, config, cli, warmup, "warmup");
+        cli_config_field!(duration_source, config, cli, max_duration, "max_duration");
         cli_config_field!(option_direct, config, cli, max_rps, "max_rps");
         cli_config_field!(string_source, config, cli, load_schedule, "load_schedule");
         cli_config_field!(f64_source, config, cli, load_start, "load_start");
@@ -732,6 +620,40 @@ impl BenchConfigResolved {
             cli,
             load_max_duration,
             "load_max_duration"
+        );
+        if let Some(v) = &cli.concurrency_schedule {
+            config.concurrency_schedule = v.trim().to_ascii_lowercase();
+            config
+                .option_sources
+                .insert("concurrency_schedule".to_string(), BenchOptionSource::Cli);
+        }
+        cli_config_field!(
+            option_direct,
+            config,
+            cli,
+            concurrency_start,
+            "concurrency_start"
+        );
+        cli_config_field!(
+            option_direct,
+            config,
+            cli,
+            concurrency_end,
+            "concurrency_end"
+        );
+        cli_config_field!(
+            option_direct,
+            config,
+            cli,
+            concurrency_step,
+            "concurrency_step"
+        );
+        cli_config_field!(
+            duration_source,
+            config,
+            cli,
+            concurrency_step_duration,
+            "concurrency_step_duration"
         );
         cli_config_field!(direct, config, cli, connections, "connections");
         if let Some(v) = &cli.request_timeout {
@@ -757,6 +679,9 @@ impl BenchConfigResolved {
         }
         cli_config_field!(bool_flag, config, cli, no_assert);
         if let Some(sr) = cli.sample_rate {
+            if !sr.is_finite() || !(0.0..=1.0).contains(&sr) {
+                anyhow::bail!("--sample-rate must be between 0 and 1, got {sr}");
+            }
             config.sample_rate = sr;
         }
         if let Some(cache) = cli.cache {
@@ -779,6 +704,19 @@ impl BenchConfigResolved {
             config
                 .option_sources
                 .insert("progress_interval".to_string(), BenchOptionSource::Cli);
+        }
+
+        // Profile presets fill in what neither the CLI nor the BENCH section
+        // set, so they must be applied *after* the CLI overlay: `config.profile`
+        // only carries a `--profile` value from this point on, and every key
+        // either layer set is already marked non-`Default` in `option_sources`.
+        // Applying it earlier meant `--profile stress` printed the profile name
+        // and ran the defaults.
+        let profile_name = config.profile.clone();
+        apply_profile_defaults(&mut config, &profile_name);
+
+        if config.option_sources.get("connections") == Some(&BenchOptionSource::Default) {
+            config.connections = default_connections(config.concurrency);
         }
 
         if config.connections == 0 {
@@ -822,6 +760,9 @@ fn parse_duration(s: &str) -> Result<Duration> {
     let num: f64 = num_str
         .parse()
         .map_err(|_| anyhow::anyhow!("invalid duration number: {}", num_str))?;
+    if !num.is_finite() || num < 0.0 {
+        anyhow::bail!("duration must not be negative: {}", s);
+    }
 
     let millis = match unit {
         "ms" => num,
@@ -842,6 +783,201 @@ fn parse_latency_percentiles(s: &str) -> Vec<String> {
         .collect()
 }
 
+const MAX_DEFAULT_CONNECTIONS: u32 = 8;
+
+/// Every stream on a connection contends for h2's per-connection mutex, so the
+/// pool grows with the worker count; measured to flatten past eight.
+fn default_connections(concurrency: u32) -> u32 {
+    let parallelism = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+    let parallelism = u32::try_from(parallelism).unwrap_or(MAX_DEFAULT_CONNECTIONS);
+    concurrency
+        .max(1)
+        .min(parallelism)
+        .clamp(1, MAX_DEFAULT_CONNECTIONS)
+}
+
+/// `None` where the platform will not account for our CPU, rather than a zero
+/// that reads like "free".
+struct ClientCpuSampler {
+    system: sysinfo::System,
+    pid: sysinfo::Pid,
+    start_ms: u64,
+}
+
+impl ClientCpuSampler {
+    fn start() -> Option<Self> {
+        let pid = sysinfo::get_current_pid().ok()?;
+        let system = sysinfo::System::new();
+        let mut sampler = Self {
+            system,
+            pid,
+            start_ms: 0,
+        };
+        sampler.start_ms = sampler.read_ms()?;
+        Some(sampler)
+    }
+
+    fn read_ms(&mut self) -> Option<u64> {
+        self.system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[self.pid]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing().with_cpu(),
+        );
+        Some(self.system.process(self.pid)?.accumulated_cpu_time())
+    }
+
+    /// CPU seconds burned since `start`.
+    fn elapsed_cpu_seconds(&mut self) -> Option<f64> {
+        let now = self.read_ms()?;
+        Some(now.saturating_sub(self.start_ms) as f64 / 1000.0)
+    }
+}
+
+/// Above this share of the host's cores, the throughput a run reports is more
+/// likely the generator's ceiling than the target's. k6 prescribes leaving at
+/// least 20 % of the CPU idle for exactly this reason.
+const GENERATOR_BUSY_FRACTION: f64 = 0.8;
+
+/// Fold the client's own cost into a reportable block. Pure, so the thresholds
+/// are testable without running a benchmark.
+fn client_cost(
+    cpu_seconds: f64,
+    wall_seconds: f64,
+    requests: u64,
+    rps: f64,
+    host_cores: usize,
+) -> crate::report::bench::ClientCost {
+    let host_cores = host_cores.max(1);
+    let cores_used = if wall_seconds > 0.0 {
+        cpu_seconds / wall_seconds
+    } else {
+        0.0
+    };
+    let mut limits = Vec::new();
+    if cores_used >= host_cores as f64 * GENERATOR_BUSY_FRACTION {
+        limits.push(format!(
+            "client used {:.2} of {} cores — the measured throughput is likely this generator's ceiling, not the target's",
+            cores_used, host_cores
+        ));
+    }
+    crate::report::bench::ClientCost {
+        cpu_seconds,
+        cpu_us_per_request: if requests > 0 {
+            cpu_seconds * 1e6 / requests as f64
+        } else {
+            0.0
+        },
+        rps_per_core: if cores_used > 0.0 {
+            rps / cores_used
+        } else {
+            0.0
+        },
+        cores_used,
+        host_cores,
+        generator_limited: !limits.is_empty(),
+        limits,
+    }
+}
+
+/// The concurrency levels a run measures, in execution order. `step` and `line`
+/// differ only in their default step, mirroring ghz: `step` moves in whole
+/// blocks, `line` walks one worker at a time.
+fn concurrency_levels(config: &BenchConfigResolved) -> Result<Vec<u32>> {
+    let schedule = config.concurrency_schedule.trim();
+    if schedule.is_empty() || schedule == "const" {
+        return Ok(vec![config.concurrency]);
+    }
+    if schedule != "step" && schedule != "line" {
+        anyhow::bail!(
+            "unknown concurrency_schedule '{schedule}'; expected one of: const, step, line"
+        );
+    }
+
+    let start = config.concurrency_start.unwrap_or(config.concurrency);
+    let end = config.concurrency_end.unwrap_or(config.concurrency);
+    if start == 0 || end == 0 {
+        anyhow::bail!("concurrency levels must be greater than 0");
+    }
+
+    let default_step = if schedule == "line" { 1 } else { 0 };
+    let step = config.concurrency_step.unwrap_or(default_step);
+    let step = if step == 0 {
+        end.abs_diff(start).max(1)
+    } else {
+        step
+    };
+
+    let mut levels = Vec::new();
+    let mut current = start;
+    loop {
+        levels.push(current);
+        if current == end {
+            break;
+        }
+        let next = if start <= end {
+            current.saturating_add(step).min(end)
+        } else {
+            current.saturating_sub(step).max(end)
+        };
+        if next == current {
+            break;
+        }
+        current = next;
+        if levels.len() > MAX_CONCURRENCY_LEVELS {
+            anyhow::bail!(
+                "concurrency schedule produces more than {MAX_CONCURRENCY_LEVELS} levels; \
+                 raise concurrency_step"
+            );
+        }
+    }
+    Ok(levels)
+}
+
+/// Guards a typo (`concurrency_step: 1` from 1 to 100000) from becoming a run
+/// that never ends.
+const MAX_CONCURRENCY_LEVELS: usize = 64;
+
+/// The single `BENCH` section governing a run. Two files configuring the same
+/// run differently is an error: silently adopting the first-sorted one produced
+/// benchmarks that ignored the configuration the user wrote.
+fn resolve_bench_section(
+    test_paths: &[std::path::PathBuf],
+    exclude: &[String],
+) -> Result<Option<crate::parser::OrderedStringMap>> {
+    let mut files = Vec::new();
+    for path in test_paths {
+        if path.is_dir() {
+            files.extend(FileUtils::collect_test_files(path, exclude));
+        } else if path.is_file() {
+            files.push(path.clone());
+        }
+    }
+
+    let mut found: Vec<(std::path::PathBuf, crate::parser::OrderedStringMap)> = Vec::new();
+    for file in files {
+        let parsed = crate::parser::parse_with_recovery(&file);
+        if let Some(section) = extract_bench_section(&parsed.document) {
+            found.push((file, section));
+        }
+    }
+
+    let Some((first_file, first)) = found.first().cloned() else {
+        return Ok(None);
+    };
+    if let Some((other_file, _)) = found.iter().skip(1).find(|(_, s)| *s != first) {
+        anyhow::bail!(
+            "conflicting BENCH sections: {} and {} configure the same run differently. \
+             A run has one benchmark configuration — keep one BENCH section, or bench \
+             the files separately.",
+            first_file.display(),
+            other_file.display()
+        );
+    }
+    Ok(Some(first))
+}
+
 /// Extract BENCH section content from document
 fn extract_bench_section(doc: &GctfDocument) -> Option<crate::parser::OrderedStringMap> {
     for section in &doc.sections {
@@ -854,14 +990,29 @@ fn extract_bench_section(doc: &GctfDocument) -> Option<crate::parser::OrderedStr
     None
 }
 
-/// Apply profile defaults to config for keys not already set in the BENCH section.
+/// Apply profile defaults to config for keys the CLI and BENCH section left unset.
 fn apply_profile_defaults(config: &mut BenchConfigResolved, profile_name: &str) {
-    for (key, value) in crate::bench::schema::apply_profile_dynamic(profile_name) {
-        // Only apply if not explicitly set via BENCH section or CLI
-        let is_explicit = config
+    let explicit = |config: &BenchConfigResolved, key: &str| {
+        config
             .option_sources
-            .get(&key)
-            .is_some_and(|s| *s != BenchOptionSource::Default);
+            .get(key)
+            .is_some_and(|s| *s != BenchOptionSource::Default)
+    };
+    // `requests` and `duration` are mutually exclusive stop conditions, and a
+    // `duration` wins over a `requests` downstream. A preset must therefore not
+    // inject one when the user already chose the other, or `--profile load -n
+    // 1000` would silently discard the request budget.
+    let chose_requests = explicit(config, "requests");
+    let chose_duration = explicit(config, "duration");
+
+    for (key, value) in crate::bench::schema::apply_profile_dynamic(profile_name) {
+        if (key == "duration" && chose_requests && !chose_duration)
+            || (key == "requests" && chose_duration && !chose_requests)
+        {
+            continue;
+        }
+        // Only apply if not explicitly set via BENCH section or CLI
+        let is_explicit = explicit(config, &key);
         if is_explicit {
             continue;
         }
@@ -1042,11 +1193,15 @@ impl LatencyHistogram {
 }
 
 /// Shared metrics accumulator for bench results
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 struct BenchMetrics {
     count: u64,
     ok: u64,
     errors: u64,
+    /// Requests whose document verdict was a pass, and those whose was not.
+    /// Distinct from `ok`/`errors`, which follow the gRPC status.
+    passed: u64,
+    failed: u64,
     total_ns: u64,
     fastest_ns: u64,
     slowest_ns: u64,
@@ -1076,6 +1231,19 @@ struct BenchMetrics {
 /// Convert a `sample_rate` in `[0.0, 1.0]` into a deterministic recording
 /// stride: record one latency sample every `N` requests where `N = round(1/rate)`.
 /// `rate >= 1.0` records every request (stride 1); `rate <= 0.0` records none.
+/// `sample_rate` must be a finite number in `[0, 1]`. It used to be
+/// `parse().unwrap_or(1.0)`, so a typo silently meant "sample everything".
+fn parse_sample_rate(raw: &str) -> Result<f64> {
+    let v: f64 = raw
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid sample_rate '{raw}': expected a number in [0, 1]"))?;
+    if !v.is_finite() || !(0.0..=1.0).contains(&v) {
+        anyhow::bail!("sample_rate must be between 0 and 1, got '{raw}'");
+    }
+    Ok(v)
+}
+
 fn sample_stride_from_rate(rate: f64) -> u64 {
     if rate >= 1.0 {
         1
@@ -1115,7 +1283,7 @@ impl BenchMetrics {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 struct PerEndpointData {
     count: u64,
     errors: u64,
@@ -1123,13 +1291,31 @@ struct PerEndpointData {
 }
 
 impl BenchMetrics {
-    fn record(&mut self, latency_ns: u64, status: &str, error: Option<&str>, endpoint: &str) {
+    /// `passed` is the document's own verdict (did its RESPONSE/ERROR/ASSERTS
+    /// hold?), which is not the same thing as the transport status: a document
+    /// asserting `--- ERROR partial --- {}` passes while returning `NotFound`.
+    /// `ok`/`errors` stay transport-level for report compatibility;
+    /// `passed`/`failed` carry the verdict, and latency follows the verdict so
+    /// a negative-path benchmark still produces percentiles.
+    fn record(
+        &mut self,
+        latency_ns: u64,
+        status: &str,
+        error: Option<&str>,
+        endpoint: &str,
+        passed: bool,
+    ) {
         self.count += 1;
         let is_ok = status == "OK" || status.is_empty();
         if is_ok {
             self.ok += 1;
         } else {
             self.errors += 1;
+        }
+        if passed {
+            self.passed += 1;
+        } else {
+            self.failed += 1;
         }
 
         // Borrowed lookup: `entry()` needs an owned key, so it allocated per request.
@@ -1145,8 +1331,15 @@ impl BenchMetrics {
         // sampling) and `count_errors_in_latency` (exclude error responses when
         // false). Throughput and overall-timing counters below are unaffected.
         self.sample_counter += 1;
-        let sampled = self.sample_stride <= 1 || (self.sample_counter % self.sample_stride == 1);
-        let contributes = sampled && (is_ok || self.count_errors_in_latency);
+        let sampled = if self.sample_stride == u64::MAX {
+            // `sample_rate: 0` means record nothing. Without this the modulo
+            // below is true for the very first request, and that lone sample
+            // became min == max == p50 == p99 for the whole run.
+            false
+        } else {
+            self.sample_stride <= 1 || (self.sample_counter % self.sample_stride == 1)
+        };
+        let contributes = sampled && (passed || self.count_errors_in_latency);
 
         // Per-endpoint tracking
         let ep = match self.per_endpoint.get_mut(endpoint) {
@@ -1268,6 +1461,8 @@ impl BenchMetrics {
         self.count += other.count;
         self.ok += other.ok;
         self.errors += other.errors;
+        self.passed += other.passed;
+        self.failed += other.failed;
         self.total_ns += other.total_ns;
 
         if self.fastest_ns == 0 || (other.fastest_ns > 0 && other.fastest_ns < self.fastest_ns) {
@@ -1346,17 +1541,9 @@ fn categorize_error(message: &str) -> &'static str {
 ///   layer. Currently a no-op.
 /// - `ramp_up` without a target RPS: with unbounded load there is no target to
 ///   ramp toward, so ramp-up has no observable effect.
-/// - `cpus`: the tokio worker-thread count is fixed when the runtime starts in
-///   `main.rs`; the bench harness cannot repartition it, so `cpus` is a no-op.
-///   Use `--concurrency` to control the number of parallel workers.
 /// - `mode`: only the closed-loop execution model is implemented. Any other
 ///   mode (e.g. `open`/`adaptive`) is accepted but ignored.
 fn warn_ineffective_options(config: &BenchConfigResolved) {
-    if config.cpus.is_some() {
-        warn!(
-            "bench: `cpus` is parsed but not honored — the tokio worker-thread count is fixed at runtime startup and the bench harness cannot repartition it; use `--concurrency` to control parallel workers"
-        );
-    }
     let mode = config.mode.trim_ascii().to_ascii_lowercase();
     match exec_model_for(&mode) {
         ExecModel::Open if mode == "adaptive" => {
@@ -1399,12 +1586,101 @@ fn warn_ineffective_options(config: &BenchConfigResolved) {
 }
 
 /// Run actual benchmark with the given config
+/// Measure every concurrency level the schedule describes, folded into one
+/// report. The merged top-level metrics come from merging the per-level
+/// histograms, so aggregate percentiles are exact rather than averaged.
 async fn run_benchmark(
     test_paths: &[std::path::PathBuf],
     config: &BenchConfigResolved,
     exclude: &[String],
+    tags: &[String],
+    skip_tags: &[String],
 ) -> Result<BenchReport> {
+    let levels = concurrency_levels(config)?;
+    if levels.len() == 1 {
+        let (report, _) = run_benchmark_level(test_paths, config, exclude, tags, skip_tags).await?;
+        return Ok(report);
+    }
+
+    eprintln!(
+        "Concurrency sweep ({}): {} level(s) — {}",
+        config.concurrency_schedule,
+        levels.len(),
+        levels
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
     let start_ts = crate::polyfill::runtime::now_timestamp();
+    let mut merged: Option<BenchMetrics> = None;
+    let mut total_elapsed = Duration::ZERO;
+    let mut level_summaries = Vec::new();
+    let mut last_report: Option<BenchReport> = None;
+
+    for level in levels {
+        let mut level_config = config.clone();
+        level_config.concurrency = level;
+        // `connections` may not exceed `concurrency`, and a sweep walks below it.
+        level_config.connections = level_config.connections.min(level).max(1);
+        if let Some(per_level) = config.concurrency_step_duration {
+            level_config.duration = Some(per_level);
+            level_config.requests = None;
+        }
+
+        eprintln!("[bench] concurrency level {level}");
+        let (report, metrics) =
+            run_benchmark_level(test_paths, &level_config, exclude, tags, skip_tags).await?;
+
+        total_elapsed += Duration::from_nanos(report.summary.total_ns / u64::from(level).max(1));
+        level_summaries.push(crate::report::bench::BenchLevelSummary {
+            concurrency: level,
+            summary: report.summary.clone(),
+            latency_distribution: report.latency_distribution.clone(),
+            grpc_status_distribution: report.grpc_status_distribution.clone(),
+        });
+        merged = Some(match merged {
+            Some(mut acc) => {
+                acc.merge_from(metrics);
+                acc
+            }
+            None => metrics,
+        });
+        last_report = Some(report);
+    }
+
+    let merged = merged.unwrap_or_default();
+    let last = last_report.expect("a sweep always runs at least one level");
+    let mut report = build_report(
+        RunWindow {
+            start_ts,
+            end_ts: crate::polyfill::runtime::now_timestamp(),
+            end_reason: &last.run.end_reason,
+            elapsed: total_elapsed,
+            // Each level already accounted for its own client cost; summing them
+            // here would double-count the sampler's own overlap.
+            client_cpu_seconds: None,
+        },
+        config,
+        merged,
+        None,
+    )?;
+    report.levels = level_summaries;
+    Ok(report)
+}
+
+async fn run_benchmark_level(
+    test_paths: &[std::path::PathBuf],
+    config: &BenchConfigResolved,
+    exclude: &[String],
+    tags: &[String],
+    skip_tags: &[String],
+) -> Result<(BenchReport, BenchMetrics)> {
+    let start_ts = crate::polyfill::runtime::now_timestamp();
+    // Started before any setup so warm-up and index building count against the
+    // client too — they are real cost even though they are not per-request.
+    let mut client_cpu = ClientCpuSampler::start();
 
     let mut test_files = Vec::new();
     for path in test_paths {
@@ -1419,14 +1695,48 @@ async fn run_benchmark(
         warn!("No test files found for bench");
     }
 
-    // Pre-parse all test files for performance (avoid re-parsing on every iteration)
-    let test_docs: Vec<(std::path::PathBuf, crate::parser::GctfDocument)> = test_files
+    // Pre-parse all test files for performance (avoid re-parsing on every
+    // iteration). Behind `Arc` so spawning a worker clones pointers, not the
+    // whole AST once per worker.
+    let mut test_docs: Vec<(std::path::PathBuf, Arc<crate::parser::GctfDocument>)> = test_files
         .iter()
         .map(|f| {
             let result = crate::parser::parse_with_recovery(f);
-            (f.clone(), result.document)
+            (f.clone(), Arc::new(result.document))
         })
         .collect();
+
+    // `--tags`/`--skip-tags` were accepted and then never read, so `bench`
+    // silently ran everything the paths matched.
+    if !tags.is_empty() || !skip_tags.is_empty() {
+        let before = test_docs.len();
+        test_docs.retain(|(_, doc)| {
+            let file_tags = crate::commands::run::extract_test_meta(doc.as_ref()).tags;
+            crate::commands::run::tags_match(&file_tags, tags, skip_tags)
+        });
+        info!(
+            "Bench: {} of {before} test file(s) matched the tag filter",
+            test_docs.len()
+        );
+        if test_docs.is_empty() {
+            anyhow::bail!("no test files matched the requested tags");
+        }
+    }
+    // The same validation `run` applies. `bench` used to parse and go: a
+    // document with no verification section was accepted and then never had its
+    // response read, so the run reported requests *sent* rather than completed
+    // and left one abandoned call per request behind.
+    let mut invalid = Vec::new();
+    for (file, doc) in &test_docs {
+        if let Err(e) = crate::parser::validate_document_chain(doc) {
+            invalid.push(format!("{}: {e}", file.display()));
+        }
+    }
+    if !invalid.is_empty() {
+        anyhow::bail!("invalid test document(s):\n  {}", invalid.join("\n  "));
+    }
+
+    let test_files: Vec<std::path::PathBuf> = test_docs.iter().map(|(f, _)| f.clone()).collect();
 
     info!("Bench: found {} test files", test_files.len());
     warn_ineffective_options(config);
@@ -1499,11 +1809,12 @@ async fn run_benchmark(
 
     eprintln!("Starting benchmark...");
     let run_start = Instant::now();
+    let shared_config = Arc::new(config.clone());
     let progress_task = {
         let count = Arc::clone(&progress_count);
         let errors = Arc::clone(&progress_errors);
         let done = Arc::clone(&progress_done);
-        let cfg = config.clone();
+        let cfg = Arc::clone(&shared_config);
         tokio::spawn(async move {
             // Poll the stop flag far more often than the reporting interval.
             // Sleeping a whole interval and only then checking meant the run
@@ -1573,7 +1884,7 @@ async fn run_benchmark(
 
         for worker_id in 0..config.concurrency {
             let docs = test_docs.clone();
-            let cfg = config.clone();
+            let cfg = Arc::clone(&shared_config);
             let progress_count = Arc::clone(&progress_count);
             let progress_errors = Arc::clone(&progress_errors);
             let sc = source_config.clone();
@@ -1588,10 +1899,20 @@ async fn run_benchmark(
                     cfg.skip_first,
                     cfg.collect_details,
                 );
+                let runner = Arc::new(worker_runner(&cfg, connection_id));
+                let endpoints: Vec<Arc<str>> = docs
+                    .iter()
+                    .map(|(_, d)| {
+                        Arc::from(d.get_endpoint().unwrap_or_else(|| "unknown".to_string()))
+                    })
+                    .collect();
+                let prepared: Vec<_> = docs.iter().map(|(_, d)| runner.prepare(d)).collect();
                 let mut next_slot = Instant::now();
                 let deadline = Instant::now() + dur;
                 while Instant::now() < deadline && !shutdown.load(Ordering::Relaxed) {
-                    for (_file, gctf_doc) in &docs {
+                    for (((_file, gctf_doc), endpoint), prep) in
+                        docs.iter().zip(&endpoints).zip(&prepared)
+                    {
                         if Instant::now() >= deadline || shutdown.load(Ordering::Relaxed) {
                             break;
                         }
@@ -1601,12 +1922,7 @@ async fn run_benchmark(
                             Some(sdc) => match sdc.next_row_variables() {
                                 Ok(Some(v)) => v,
                                 Ok(None) => {
-                                    if let Err(e) = sdc
-                                        .primary
-                                        .lock()
-                                        .map_err(|e| anyhow::anyhow!("{e}"))
-                                        .and_then(|mut r| r.reset())
-                                    {
+                                    if let Err(e) = sdc.rewind() {
                                         warn!("source reset failed: {e}");
                                     }
                                     match sdc.next_row_variables() {
@@ -1619,17 +1935,12 @@ async fn run_benchmark(
                             None => std::collections::HashMap::new(),
                         };
 
-                        let (lat_ns, status, error, endpoint) =
-                            execute_single_bench_iteration_with_vars(
-                                gctf_doc,
-                                &cfg,
-                                vars,
-                                connection_id,
-                            )
-                            .await;
+                        let (lat_ns, status, error, passed) =
+                            execute_bench_iteration_with_runner(&runner, gctf_doc, prep, vars)
+                                .await;
                         let finished_at = Instant::now();
                         if should_record_after_deadline(cfg.duration_stop, finished_at, deadline) {
-                            local.record(lat_ns, &status, error.as_deref(), &endpoint);
+                            local.record(lat_ns, &status, error.as_deref(), endpoint, passed);
                             progress_count.fetch_add(1, Ordering::Relaxed);
                             if status != "OK" {
                                 progress_errors.fetch_add(1, Ordering::Relaxed);
@@ -1661,13 +1972,27 @@ async fn run_benchmark(
         // docs to keep the overall request count equal to `total_requests`
         // instead of `total_requests * docs.len()`.
         let total_passes = request_passes(total_requests, test_docs.len());
+        // Integer division: a budget smaller than the document count rounds to
+        // zero passes, which used to issue no requests at all, write an empty
+        // report and exit 0.
+        if total_passes == 0 {
+            anyhow::bail!(
+                "requests ({}) is below the number of selected documents ({}) — \
+                 `--requests` is the total budget across all of them, so this \
+                 would issue no requests at all. Raise it to at least {}, or \
+                 select fewer files.",
+                total_requests,
+                test_docs.len(),
+                test_docs.len()
+            );
+        }
         let passes_per_worker = total_passes / config.concurrency as u64;
         let max_deadline = config.max_duration.map(|d| Instant::now() + d);
         let schedule_start = run_start;
 
         for worker_id in 0..config.concurrency {
             let docs = test_docs.clone();
-            let cfg = config.clone();
+            let cfg = Arc::clone(&shared_config);
             let progress_count = Arc::clone(&progress_count);
             let progress_errors = Arc::clone(&progress_errors);
             let is_last = worker_id == config.concurrency - 1;
@@ -1689,6 +2014,14 @@ async fn run_benchmark(
                     cfg.skip_first,
                     cfg.collect_details,
                 );
+                let runner = Arc::new(worker_runner(&cfg, connection_id));
+                let endpoints: Vec<Arc<str>> = docs
+                    .iter()
+                    .map(|(_, d)| {
+                        Arc::from(d.get_endpoint().unwrap_or_else(|| "unknown".to_string()))
+                    })
+                    .collect();
+                let prepared: Vec<_> = docs.iter().map(|(_, d)| runner.prepare(d)).collect();
                 let mut next_slot = Instant::now();
                 for _ in 0..worker_requests {
                     if shutdown.load(Ordering::Relaxed) {
@@ -1700,7 +2033,9 @@ async fn run_benchmark(
                         break;
                     }
 
-                    for (_file, gctf_doc) in &docs {
+                    for (((_file, gctf_doc), endpoint), prep) in
+                        docs.iter().zip(&endpoints).zip(&prepared)
+                    {
                         if shutdown.load(Ordering::Relaxed) {
                             break;
                         }
@@ -1716,12 +2051,7 @@ async fn run_benchmark(
                             Some(sdc) => match sdc.next_row_variables() {
                                 Ok(Some(v)) => v,
                                 Ok(None) => {
-                                    if let Err(e) = sdc
-                                        .primary
-                                        .lock()
-                                        .map_err(|e| anyhow::anyhow!("{e}"))
-                                        .and_then(|mut r| r.reset())
-                                    {
+                                    if let Err(e) = sdc.rewind() {
                                         warn!("source reset failed: {e}");
                                     }
                                     match sdc.next_row_variables() {
@@ -1734,15 +2064,10 @@ async fn run_benchmark(
                             None => std::collections::HashMap::new(),
                         };
 
-                        let (lat_ns, status, error, endpoint) =
-                            execute_single_bench_iteration_with_vars(
-                                gctf_doc,
-                                &cfg,
-                                vars,
-                                connection_id,
-                            )
-                            .await;
-                        local.record(lat_ns, &status, error.as_deref(), &endpoint);
+                        let (lat_ns, status, error, passed) =
+                            execute_bench_iteration_with_runner(&runner, gctf_doc, prep, vars)
+                                .await;
+                        local.record(lat_ns, &status, error.as_deref(), endpoint, passed);
                         progress_count.fetch_add(1, Ordering::Relaxed);
                         if status != "OK" {
                             progress_errors.fetch_add(1, Ordering::Relaxed);
@@ -1778,15 +2103,24 @@ async fn run_benchmark(
         user_cancelled,
     );
 
-    build_report(
-        start_ts,
-        end_ts,
-        end_reason,
+    let client_cpu_seconds = client_cpu
+        .as_mut()
+        .and_then(ClientCpuSampler::elapsed_cpu_seconds);
+
+    let merged_metrics = metrics.clone();
+    let report = build_report(
+        RunWindow {
+            start_ts,
+            end_ts,
+            end_reason,
+            elapsed: run_elapsed,
+            client_cpu_seconds,
+        },
         config,
         metrics,
-        run_elapsed,
         source_config.as_ref(),
-    )
+    )?;
+    Ok((report, merged_metrics))
 }
 
 async fn wait_for_rps_slot(
@@ -1794,6 +2128,9 @@ async fn wait_for_rps_slot(
     schedule_start: Instant,
     next_slot: &mut Instant,
 ) {
+    if !has_target_rate(config) {
+        return;
+    }
     let target_total_rps = target_rps_at(config, schedule_start.elapsed());
     if target_total_rps <= 0.0 {
         return;
@@ -1810,7 +2147,12 @@ async fn wait_for_rps_slot(
 }
 
 fn target_rps_at(config: &BenchConfigResolved, elapsed: Duration) -> f64 {
-    let schedule = config.load_schedule.trim_ascii().to_ascii_lowercase();
+    let schedule = config.load_schedule.trim_ascii();
+    let schedule = SCHEDULE_NAMES
+        .iter()
+        .find(|name| schedule.eq_ignore_ascii_case(name))
+        .copied()
+        .unwrap_or(schedule);
     let fallback = config.max_rps.unwrap_or(0.0);
     let start = config.load_start.unwrap_or(fallback);
 
@@ -1822,7 +2164,7 @@ fn target_rps_at(config: &BenchConfigResolved, elapsed: Duration) -> f64 {
         }
     };
 
-    let rps = match schedule.as_str() {
+    let rps = match schedule {
         "step" => {
             let step = config.load_step.unwrap_or(0.0);
             let step_duration = config.load_step_duration.unwrap_or(Duration::from_secs(1));
@@ -1945,6 +2287,8 @@ fn exec_model_for(mode: &str) -> ExecModel {
 
 /// The open model needs a defined arrival rate. True when any target RPS is
 /// configured (explicit cap, load_start, or a non-const load schedule).
+const SCHEDULE_NAMES: &[&str] = &["const", "step", "line", "sine", "spike", "custom"];
+
 fn has_target_rate(config: &BenchConfigResolved) -> bool {
     config.max_rps.is_some()
         || config.load_start.is_some()
@@ -2054,12 +2398,11 @@ fn next_source_vars(
 /// their real status (`OK`, `Unavailable`, `NotFound`, ...) instead of a flat
 /// `OK`/`ERROR`. Falls back to the pass/fail outcome when the run produced no
 /// gRPC status at all (e.g. a pure assertion or config failure).
-fn grpc_status_label(grpc_status: Option<u32>, passed: bool) -> String {
+fn grpc_status_label(grpc_status: Option<u32>, passed: bool) -> Cow<'static, str> {
     match grpc_status {
         Some(code) => crate::execution::TestRunner::grpc_code_name_from_numeric(code as i64)
-            .map(|name| name.to_string())
-            .unwrap_or_else(|| format!("CODE_{code}")),
-        None => if passed { "OK" } else { "ERROR" }.to_string(),
+            .map_or_else(|| Cow::Owned(format!("CODE_{code}")), Cow::Borrowed),
+        None => Cow::Borrowed(if passed { "OK" } else { "ERROR" }),
     }
 }
 
@@ -2075,30 +2418,6 @@ fn round_robin_index(task_index: usize, pool_size: usize) -> usize {
     task_index % pool_size.max(1)
 }
 
-/// Run a single request against a *prebuilt, shared* runner. Returns the
-/// outcome only — the caller computes latency from the scheduled arrival.
-async fn run_request_with_runner(
-    runner: &crate::execution::TestRunner,
-    doc: &GctfDocument,
-    vars: HashMap<String, serde_json::Value>,
-) -> (String, Option<String>, String) {
-    use crate::execution::TestExecutionStatus;
-
-    let endpoint = doc.get_endpoint().unwrap_or_else(|| "unknown".to_string());
-    match runner.run_test_with_variables(doc, vars).await {
-        Ok(result) => {
-            let passed = matches!(result.status, TestExecutionStatus::Pass);
-            let status = grpc_status_label(result.grpc_status, passed);
-            let error = match result.status {
-                TestExecutionStatus::Pass => None,
-                TestExecutionStatus::Fail(msg) => Some(msg),
-            };
-            (status, error, endpoint)
-        }
-        Err(e) => ("ERROR".to_string(), Some(e.to_string()), endpoint),
-    }
-}
-
 /// Open-model (arrival-rate) executor.
 ///
 /// Scheduling is decoupled from completion: the scheduler sleeps until each
@@ -2111,7 +2430,7 @@ async fn run_request_with_runner(
 /// permit-wait time counts against latency — the coordinated-omission fix.
 #[allow(clippy::too_many_arguments)]
 async fn run_open_model(
-    test_docs: &[(std::path::PathBuf, GctfDocument)],
+    test_docs: &[(std::path::PathBuf, Arc<GctfDocument>)],
     config: &BenchConfigResolved,
     bound: RunBound,
     schedule_start: Instant,
@@ -2137,35 +2456,36 @@ async fn run_open_model(
     // globally cached (keyed by connection_id), so N distinct ids open N
     // distinct HTTP/2 channels while keeping client construction off the
     // per-request hot path.
-    let timeout_seconds = request_timeout_seconds(config);
-    let no_assert = config.no_assert || config.assert_mode == "off" || config.assert_mode == "skip";
     let runners: Vec<Arc<TestRunner>> = (0..config.connections.max(1))
-        .map(|i| {
-            Arc::new(
-                TestRunner::new(false, timeout_seconds, no_assert, false, false, None)
-                    .with_protocol(config.protocol)
-                    .with_connection_id(i as u64),
-            )
-        })
+        .map(|i| Arc::new(worker_runner(config, i as u64)))
         .collect();
 
-    // Share docs behind Arc so per-arrival dispatch clones a pointer, not the AST.
-    let docs: Vec<Arc<GctfDocument>> = test_docs
+    // Per-arrival dispatch clones a pointer, not the AST.
+    let docs: Vec<Arc<GctfDocument>> = test_docs.iter().map(|(_, doc)| Arc::clone(doc)).collect();
+    let endpoints: Vec<Arc<str>> = docs
         .iter()
-        .map(|(_, doc)| Arc::new(doc.clone()))
+        .map(|d| Arc::from(d.get_endpoint().unwrap_or_else(|| "unknown".to_string())))
+        .collect();
+    let prepared: Vec<Arc<crate::execution::runner::PreparedChain>> = docs
+        .iter()
+        .map(|d| Arc::new(runners[0].prepare(d)))
         .collect();
 
     let hint = match bound {
         RunBound::Count(n) => n as usize,
         RunBound::Duration(_) => 1000,
     };
-    let metrics = Arc::new(tokio::sync::Mutex::new(BenchMetrics::for_worker(
+    // Each arrival is its own task, so there is no per-worker accumulator to
+    // merge; the tasks hand their outcome back and this driver is the only
+    // writer. A shared `Mutex<BenchMetrics>` here meant one contended async
+    // lock acquisition per request.
+    let mut metrics = BenchMetrics::for_worker(
         hint,
         config.count_errors_in_latency,
         sample_stride_from_rate(config.sample_rate),
         config.skip_first,
         config.collect_details,
-    )));
+    );
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(
         config.concurrency.max(1) as usize
@@ -2202,23 +2522,25 @@ async fn run_open_model(
             break;
         }
 
-        let doc = Arc::clone(&docs[doc_cursor % docs.len()]);
+        let slot = doc_cursor % docs.len();
+        let doc = Arc::clone(&docs[slot]);
+        let endpoint = Arc::clone(&endpoints[slot]);
+        let prep = Arc::clone(&prepared[slot]);
         let vars = next_source_vars(&source_config);
 
         let permits = Arc::clone(&semaphore);
         // Round-robin task k across the `connections` channels: k -> runners[k % N].
         let runner = Arc::clone(&runners[round_robin_index(doc_cursor, runners.len())]);
-        let metrics = Arc::clone(&metrics);
         let progress_count = Arc::clone(&progress_count);
         let progress_errors = Arc::clone(&progress_errors);
         let duration_stop = config.duration_stop;
 
-        tasks.spawn(async move {
+        tasks.spawn(Box::pin(async move {
             // Acquire the in-flight permit HERE (inside the task): if the cap is
             // saturated we queue, and because latency is measured from
             // `arrival_instant` the queuing delay is captured in the sample.
             let _permit = permits.acquire_owned().await;
-            let (status, error, endpoint) = run_request_with_runner(&runner, &doc, vars).await;
+            let outcome = run_request_with_runner(&runner, &doc, &prep, vars).await;
             let finished_at = Instant::now();
             let lat_ns = latency_ns_from_arrival(arrival_instant, finished_at);
 
@@ -2227,18 +2549,24 @@ async fn run_open_model(
                 None => true,
             };
             if record {
-                let mut m = metrics.lock().await;
-                m.record(lat_ns, &status, error.as_deref(), &endpoint);
-                drop(m);
                 progress_count.fetch_add(1, Ordering::Relaxed);
-                if status != "OK" {
+                if outcome.status != "OK" {
                     progress_errors.fetch_add(1, Ordering::Relaxed);
                 }
             }
-        });
+            record.then_some(ArrivalOutcome {
+                lat_ns,
+                status: outcome.status,
+                error: outcome.error,
+                endpoint,
+                passed: outcome.passed,
+            })
+        }));
 
         // Reap already-finished tasks so the JoinSet doesn't accumulate handles.
-        while tasks.try_join_next().is_some() {}
+        while let Some(joined) = tasks.try_join_next() {
+            record_arrival(&mut metrics, joined.ok().flatten());
+        }
     }
 
     // Drain outstanding in-flight requests per the `duration_stop` policy.
@@ -2249,11 +2577,33 @@ async fn run_open_model(
         }
         DurationStopMode::Wait | DurationStopMode::Ignore => {}
     }
-    while tasks.join_next().await.is_some() {}
+    while let Some(joined) = tasks.join_next().await {
+        record_arrival(&mut metrics, joined.ok().flatten());
+    }
 
-    Arc::try_unwrap(metrics)
-        .map(tokio::sync::Mutex::into_inner)
-        .unwrap_or_else(|_| unreachable!("all bench tasks joined; metrics Arc must be unique"))
+    metrics
+}
+
+/// What one open-model arrival produced. Returned from the task rather than
+/// recorded inside it, so the driver stays the single writer of `BenchMetrics`.
+struct ArrivalOutcome {
+    lat_ns: u64,
+    status: Cow<'static, str>,
+    error: Option<String>,
+    endpoint: Arc<str>,
+    passed: bool,
+}
+
+fn record_arrival(metrics: &mut BenchMetrics, outcome: Option<ArrivalOutcome>) {
+    if let Some(o) = outcome {
+        metrics.record(
+            o.lat_ns,
+            &o.status,
+            o.error.as_deref(),
+            &o.endpoint,
+            o.passed,
+        );
+    }
 }
 
 fn print_progress_snapshot(
@@ -2283,10 +2633,86 @@ fn print_progress_snapshot(
 async fn execute_single_bench_iteration(
     file: &Path,
     config: &BenchConfigResolved,
-) -> (u64, String, Option<String>, String) {
+) -> (u64, Cow<'static, str>, Option<String>, String, bool) {
     let parse_result = crate::parser::parse_with_recovery(file);
     execute_single_bench_iteration_with_vars(&parse_result.document, config, HashMap::new(), 0)
         .await
+}
+
+/// The closed loop times the RPC, the open model the intended arrival slot.
+struct RequestOutcome {
+    call_duration_ns: Option<u64>,
+    status: Cow<'static, str>,
+    error: Option<String>,
+    passed: bool,
+}
+
+async fn run_request_with_runner(
+    runner: &crate::execution::TestRunner,
+    doc: &GctfDocument,
+    prepared: &crate::execution::runner::PreparedChain,
+    vars: HashMap<String, serde_json::Value>,
+) -> RequestOutcome {
+    use crate::execution::TestExecutionStatus;
+
+    match runner.run_test_prepared(doc, vars, prepared).await {
+        Ok(result) => {
+            let passed = matches!(result.status, TestExecutionStatus::Pass);
+            RequestOutcome {
+                call_duration_ns: result.call_duration_ns,
+                status: grpc_status_label(result.grpc_status, passed),
+                error: match result.status {
+                    TestExecutionStatus::Pass => None,
+                    TestExecutionStatus::Fail(msg) => Some(msg),
+                },
+                passed,
+            }
+        }
+        Err(e) => RequestOutcome {
+            call_duration_ns: None,
+            status: Cow::Borrowed("ERROR"),
+            error: Some(e.to_string()),
+            passed: false,
+        },
+    }
+}
+
+/// One closed-loop request: latency is the gRPC call, not the wall clock around
+/// it, which would also cover variable substitution and two `Value` deep clones.
+async fn execute_bench_iteration_with_runner(
+    runner: &crate::execution::TestRunner,
+    doc: &GctfDocument,
+    prepared: &crate::execution::runner::PreparedChain,
+    source_variables: HashMap<String, serde_json::Value>,
+) -> (u64, Cow<'static, str>, Option<String>, bool) {
+    let start = Instant::now();
+    let outcome = run_request_with_runner(runner, doc, prepared, source_variables).await;
+    let latency = outcome
+        .call_duration_ns
+        .unwrap_or_else(|| start.elapsed().as_nanos() as u64);
+    (latency, outcome.status, outcome.error, outcome.passed)
+}
+
+/// Build the runner a closed-loop worker reuses for every request it issues.
+fn worker_runner(config: &BenchConfigResolved, connection_id: u64) -> crate::execution::TestRunner {
+    let no_assert = config.no_assert
+        || config.assert_mode == "off"
+        || config.assert_mode == "skip"
+        || config.calibration_address.is_some();
+    let runner = crate::execution::TestRunner::new(
+        false,
+        request_timeout_seconds(config),
+        no_assert,
+        false,
+        false,
+        None,
+    )
+    .with_protocol(config.protocol)
+    .with_connection_id(connection_id);
+    match &config.calibration_address {
+        Some(address) => runner.with_address_override(address.clone()),
+        None => runner,
+    }
 }
 
 async fn execute_single_bench_iteration_with_vars(
@@ -2294,41 +2720,18 @@ async fn execute_single_bench_iteration_with_vars(
     config: &BenchConfigResolved,
     source_variables: HashMap<String, serde_json::Value>,
     connection_id: u64,
-) -> (u64, String, Option<String>, String) {
-    use crate::execution::{TestExecutionStatus, TestRunner};
-
-    let start = Instant::now();
-
+) -> (u64, Cow<'static, str>, Option<String>, String, bool) {
     let endpoint = doc.get_endpoint().unwrap_or_else(|| "unknown".to_string());
-
-    let timeout_seconds = request_timeout_seconds(config);
-    let no_assert = config.no_assert || config.assert_mode == "off" || config.assert_mode == "skip";
-
-    let runner = TestRunner::new(false, timeout_seconds, no_assert, false, false, None)
-        .with_protocol(config.protocol)
-        .with_connection_id(connection_id);
-    match runner.run_test_with_variables(doc, source_variables).await {
-        Ok(result) => {
-            let latency = start.elapsed().as_nanos() as u64;
-            let passed = matches!(result.status, TestExecutionStatus::Pass);
-            let status = grpc_status_label(result.grpc_status, passed);
-            let error = match result.status {
-                TestExecutionStatus::Pass => None,
-                TestExecutionStatus::Fail(msg) => Some(msg),
-            };
-            (latency, status, error, endpoint)
-        }
-        Err(e) => (
-            start.elapsed().as_nanos() as u64,
-            "ERROR".to_string(),
-            Some(e.to_string()),
-            endpoint,
-        ),
-    }
+    let runner = worker_runner(config, connection_id);
+    let prepared = runner.prepare(doc);
+    let (lat, status, error, passed) =
+        execute_bench_iteration_with_runner(&runner, doc, &prepared, source_variables).await;
+    (lat, status, error, endpoint, passed)
 }
 
 fn evaluate_thresholds(
     metrics: &BenchMetrics,
+    rps_observed: f64,
     thresholds: &HashMap<String, String>,
 ) -> Vec<BenchThresholdResult> {
     let mut results = Vec::new();
@@ -2351,7 +2754,7 @@ fn evaluate_thresholds(
             }
         };
 
-        let actual_f64 = resolve_metric_value(metrics, key);
+        let actual_f64 = resolve_metric_value(metrics, rps_observed, key);
         if actual_f64.is_none() {
             results.push(BenchThresholdResult {
                 metric: key.clone(),
@@ -2440,7 +2843,7 @@ fn invert_op(op: &str) -> &str {
     }
 }
 
-fn resolve_metric_value(metrics: &BenchMetrics, key: &str) -> Option<f64> {
+fn resolve_metric_value(metrics: &BenchMetrics, rps_observed: f64, key: &str) -> Option<f64> {
     let k = key.trim_ascii().to_ascii_lowercase();
     if k == "count" {
         return Some(metrics.count as f64);
@@ -2481,6 +2884,30 @@ fn resolve_metric_value(metrics: &BenchMetrics, key: &str) -> Option<f64> {
     }
     if k == "total_ns" {
         return Some(metrics.total_ns as f64);
+    }
+    if k == "passed" {
+        return Some(metrics.passed as f64);
+    }
+    if k == "failed" {
+        return Some(metrics.failed as f64);
+    }
+    // Throughput was unreachable before: this function only ever saw the
+    // counters, never the run's wall time, so `bench-ergonomics` promised a
+    // gate that could not exist.
+    if k == "rps" || k == "rps_observed" || k == "throughput" {
+        return Some(rps_observed);
+    }
+    if k == "pass_rate_pct" || k == "pass_rate" {
+        if metrics.count == 0 {
+            return Some(0.0);
+        }
+        return Some((metrics.passed as f64 / metrics.count as f64) * 100.0);
+    }
+    if k == "fail_rate_pct" || k == "fail_rate" {
+        if metrics.count == 0 {
+            return Some(0.0);
+        }
+        return Some((metrics.failed as f64 / metrics.count as f64) * 100.0);
     }
     if k == "error_rate_pct" || k == "error_rate" {
         if metrics.count == 0 {
@@ -2571,15 +2998,28 @@ fn derive_end_reason(
     }
 }
 
-fn build_report(
+/// When a run started and stopped, and what it cost us to produce.
+struct RunWindow<'a> {
     start_ts: i64,
     end_ts: i64,
-    end_reason: &str,
+    end_reason: &'a str,
+    elapsed: Duration,
+    client_cpu_seconds: Option<f64>,
+}
+
+fn build_report(
+    window: RunWindow<'_>,
     config: &BenchConfigResolved,
     metrics: BenchMetrics,
-    elapsed: Duration,
     source_config: Option<&std::sync::Arc<crate::bench::sources::SourceDrivenConfig>>,
 ) -> Result<BenchReport> {
+    let RunWindow {
+        start_ts,
+        end_ts,
+        end_reason,
+        elapsed,
+        client_cpu_seconds,
+    } = window;
     let source_for = |key: &str| {
         config
             .option_sources
@@ -2605,7 +3045,7 @@ fn build_report(
     let latency_dist = metrics.to_percentiles(&config.latency_percentiles);
     let histogram = metrics.to_histogram(10);
 
-    let threshold_results = evaluate_thresholds(&metrics, &config.thresholds);
+    let threshold_results = evaluate_thresholds(&metrics, rps, &config.thresholds);
 
     let mut options_resolved = BTreeMap::new();
     options_resolved.insert(
@@ -2689,6 +3129,8 @@ fn build_report(
             count,
             ok: metrics.ok,
             errors: metrics.errors,
+            passed: metrics.passed,
+            failed: metrics.failed,
             total_ns: metrics.total_ns,
             average_ns: avg_ns,
             fastest_ns: metrics.fastest_ns,
@@ -2726,7 +3168,6 @@ fn build_report(
                     dimension_misses: stats.dimension_misses,
                     in_memory_lookups: stats.in_memory_lookups,
                     indexed_lookups: stats.indexed_lookups,
-                    index_fallbacks: stats.index_fallbacks,
                 },
             );
             crate::report::bench::SourcesRuntime { source_stats }
@@ -2746,6 +3187,19 @@ fn build_report(
                 },
             )
             .collect(),
+        client_cost: client_cpu_seconds.map(|cpu| {
+            client_cost(
+                cpu,
+                elapsed.as_secs_f64(),
+                count,
+                rps,
+                std::thread::available_parallelism()
+                    .map(std::num::NonZeroUsize::get)
+                    .unwrap_or(1),
+            )
+        }),
+        // Filled in by the sweep driver; a single-level run leaves it empty.
+        levels: Vec::new(),
     };
 
     Ok(report)
@@ -2777,10 +3231,12 @@ fn request_timeout_seconds(config: &BenchConfigResolved) -> u64 {
         .max(1)
 }
 
-/// Run produced no usable measurement. `ok` is transport-level, so an expected
-/// ERROR document legitimately ends at zero.
-fn measured_nothing(expects_error: bool, count: u64, ok: u64) -> bool {
-    !expects_error && count > 0 && ok == 0
+/// Run produced no usable measurement: requests were issued and not one of them
+/// satisfied its document. Keyed on the verdict rather than the transport
+/// status, so a document that asserts an expected error no longer needs a
+/// special case here — those runs pass their assertions and count as measured.
+fn measured_nothing(count: u64, passed: u64) -> bool {
+    count > 0 && passed == 0
 }
 
 pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
@@ -2828,7 +3284,12 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
         // `ConnectionInfo.source`, for `inspect`/`explain` output) — writing
         // it here as a literal `ADDRESS` value made every direct-call bench
         // fail immediately with an invalid-URI error, 100% of the time.
-        let content = format!("--- ENDPOINT ---\n{endpoint}\n--- REQUEST ---\n{body}\n");
+        // `RESPONSE partial {}` matches any reply, and its presence is what makes
+        // the runner await one: without a verification section the run would
+        // report requests sent rather than completed.
+        let content = format!(
+            "--- ENDPOINT ---\n{endpoint}\n--- REQUEST ---\n{body}\n--- RESPONSE partial ---\n{{}}\n"
+        );
         // `--data` routinely carries credentials; this used to land in a fixed
         // world-readable path in the shared temp dir and was never deleted.
         let dir = tempfile::Builder::new()
@@ -2853,7 +3314,6 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
     eprintln!("BENCH MODE - Running benchmarks...");
     eprintln!();
 
-    // Parse first test file to extract BENCH section
     let first_file = &test_paths[0];
     if !first_file.exists() {
         anyhow::bail!("File not found: {}", first_file.display());
@@ -2862,12 +3322,27 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
     // Store synthetic path in first_file for cleanup later
     let _ = synthetic_path;
 
-    let parse_result = crate::parser::parse_with_recovery(first_file);
-    let doc = parse_result.document;
-    let bench_section = extract_bench_section(&doc);
+    // A run has one benchmark configuration. It used to be taken from
+    // `test_paths[0]` alone, so pointing `bench` at a directory silently
+    // adopted whichever file sorted first and ignored every other `BENCH`
+    // block. Collect them all and refuse to guess when they disagree.
+    let bench_section = resolve_bench_section(&test_paths, &args.exclude)?;
 
     // Resolve configuration
-    let config = BenchConfigResolved::from_cli_and_bench(args, bench_section.as_ref())?;
+    let mut config = BenchConfigResolved::from_cli_and_bench(args, bench_section.as_ref())?;
+
+    // Kept alive for the whole run; dropping it stops the target.
+    let _calibration = if args.calibrate {
+        let target = crate::bench::calibrate::CalibrationTarget::spawn().await?;
+        eprintln!(
+            "Calibrating against the built-in no-op target ({})",
+            target.address()
+        );
+        config.calibration_address = Some(target.address().to_string());
+        Some(target)
+    } else {
+        None
+    };
 
     // Print configuration
     eprintln!("Configuration:");
@@ -2937,9 +3412,12 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
             crate::report::style::format_duration_ms(k.as_millis() as u64)
         );
     }
-    if let Some(cpus) = config.cpus {
-        eprintln!("  CPUs: {}", cpus);
-    }
+    eprintln!(
+        "  Worker threads: {}",
+        config
+            .cpus
+            .map_or_else(|| "auto".to_string(), |c| c.to_string())
+    );
     if let Some(name) = &config.name {
         eprintln!("  Name: {}", name);
     }
@@ -2968,7 +3446,14 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
     }
     eprintln!();
 
-    let report = run_benchmark(&test_paths, &config, &args.exclude).await?;
+    let report = run_benchmark(
+        &test_paths,
+        &config,
+        &args.exclude,
+        &args.tags,
+        &args.skip_tags,
+    )
+    .await?;
 
     // Allure output: the raw report as a standalone file, plus the shared
     // allure-results contract so a benchmark run shows up in the same Allure
@@ -3051,7 +3536,7 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
     }
 
     // Custom template rendering (overrides format)
-    if let Some(template_path) = &args.report_template {
+    let rendered_from_template = if let Some(template_path) = &args.report_template {
         let template_str = std::fs::read_to_string(template_path)
             .with_context(|| format!("Failed to read template: {}", template_path.display()))?;
         let mut env = minijinja::Environment::new();
@@ -3068,79 +3553,88 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
         } else {
             println!("{}", rendered);
         }
-        return Ok(());
-    }
+        true
+    } else {
+        false
+    };
 
     // Output report based on format
-    match canonical_bench_format(args.format.as_str()) {
-        "json" => {
-            let json = serde_json::to_string_pretty(&report)?;
-            if let Some(output) = &args.output {
-                std::fs::write(output, json)?;
-                eprintln!("Benchmark report written to: {}", output.display());
-            } else {
-                println!("{}", json);
-            }
-        }
-        "prometheus" => {
-            let prom = report.to_prometheus_summary();
-            if let Some(output) = &args.output {
-                std::fs::write(output, prom)?;
-                eprintln!("Prometheus metrics written to: {}", output.display());
-            } else {
-                println!("{}", prom);
-            }
-        }
-        "console" => {
-            let summary = report.to_summary_text(args.compact);
-            println!("{}", summary);
-        }
-        "csv" => {
-            let s = &report.summary;
-            let csv = format!(
-                "count,ok,errors,total_ns,average_ns,fastest_ns,slowest_ns,rps\n{},{},{},{},{},{},{},{}\n",
-                s.count,
-                s.ok,
-                s.errors,
-                s.total_ns,
-                s.average_ns,
-                s.fastest_ns,
-                s.slowest_ns,
-                s.rps_observed
-            );
-            if let Some(output) = &args.output {
-                std::fs::write(output, csv)?;
-                eprintln!("CSV report written to: {}", output.display());
-            } else {
-                println!("{}", csv);
-            }
-        }
-        "html" => {
-            let html = report.to_html();
-            if let Some(output) = &args.output {
-                std::fs::write(output, html)?;
-                eprintln!("HTML report written to: {}", output.display());
-            } else {
-                println!("{}", html);
-            }
-        }
-        "detail-json" => {
-            // Per-response JSON Lines — one JSON object per response
-            if let Some(output) = &args.output {
-                let mut file = std::fs::File::create(output)?;
-                for detail in &report.details {
-                    let line = serde_json::to_string(detail)?;
-                    writeln!(file, "{}", line)?;
-                }
-                eprintln!("Detail JSON written to: {}", output.display());
-            } else {
-                for detail in &report.details {
-                    println!("{}", serde_json::to_string(detail)?);
+    if !rendered_from_template {
+        match canonical_bench_format(args.format.as_str()) {
+            "json" => {
+                let json = serde_json::to_string_pretty(&report)?;
+                if let Some(output) = &args.output {
+                    std::fs::write(output, json)?;
+                    eprintln!("Benchmark report written to: {}", output.display());
+                } else {
+                    println!("{}", json);
                 }
             }
-        }
-        _ => {
-            anyhow::bail!("Unsupported format: {}", args.format);
+            "prometheus" => {
+                let prom = report.to_prometheus_summary();
+                if let Some(output) = &args.output {
+                    std::fs::write(output, prom)?;
+                    eprintln!("Prometheus metrics written to: {}", output.display());
+                } else {
+                    println!("{}", prom);
+                }
+            }
+            "console" => {
+                let summary = report.to_summary_text(args.compact);
+                if let Some(output) = &args.output {
+                    std::fs::write(output, &summary)?;
+                    eprintln!("Console report written to: {}", output.display());
+                } else {
+                    println!("{}", summary);
+                }
+            }
+            "csv" => {
+                let s = &report.summary;
+                let csv = format!(
+                    "count,ok,errors,total_ns,average_ns,fastest_ns,slowest_ns,rps\n{},{},{},{},{},{},{},{}\n",
+                    s.count,
+                    s.ok,
+                    s.errors,
+                    s.total_ns,
+                    s.average_ns,
+                    s.fastest_ns,
+                    s.slowest_ns,
+                    s.rps_observed
+                );
+                if let Some(output) = &args.output {
+                    std::fs::write(output, csv)?;
+                    eprintln!("CSV report written to: {}", output.display());
+                } else {
+                    println!("{}", csv);
+                }
+            }
+            "html" => {
+                let html = report.to_html();
+                if let Some(output) = &args.output {
+                    std::fs::write(output, html)?;
+                    eprintln!("HTML report written to: {}", output.display());
+                } else {
+                    println!("{}", html);
+                }
+            }
+            "detail-json" => {
+                // Per-response JSON Lines — one JSON object per response
+                if let Some(output) = &args.output {
+                    let mut file = std::fs::File::create(output)?;
+                    for detail in &report.details {
+                        let line = serde_json::to_string(detail)?;
+                        writeln!(file, "{}", line)?;
+                    }
+                    eprintln!("Detail JSON written to: {}", output.display());
+                } else {
+                    for detail in &report.details {
+                        println!("{}", serde_json::to_string(detail)?);
+                    }
+                }
+            }
+            _ => {
+                anyhow::bail!("Unsupported format: {}", args.format);
+            }
         }
     }
 
@@ -3150,10 +3644,7 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
     // result. This must fail even with no `BENCH.thresholds` configured:
     // `thresholds_passed()` is vacuously `true` when there are no
     // thresholds to check, which previously let a 100%-error run exit 0.
-    // Exception: an ERROR section asks for failing calls, so non-OK is expected.
-    let expects_error = doc.first_section(SectionType::Error).is_some();
-
-    if measured_nothing(expects_error, report.summary.count, report.summary.ok) {
+    if measured_nothing(report.summary.count, report.summary.passed) {
         anyhow::bail!(
             "Benchmark measured nothing — all {} request(s) failed (target likely misconfigured or unreachable)",
             report.summary.count
@@ -3171,14 +3662,211 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn host_cores() -> u32 {
+        std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(1) as u32
+    }
+
+    // The pool never exceeds the workers that use it, whatever the host has —
+    // Miri reports a single core, so nothing here may assume more.
+    #[test]
+    fn the_default_pool_never_exceeds_the_worker_count() {
+        assert_eq!(default_connections(0), 1);
+        assert_eq!(default_connections(1), 1);
+        assert_eq!(default_connections(2), 2.min(host_cores()));
+    }
+
+    // Splitting the pool removes h2's per-connection mutex contention, but the
+    // measured curve flattens at eight and the count can never exceed the
+    // workers using it.
+    #[test]
+    fn the_default_pool_stays_within_its_bounds() {
+        let parallelism = std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(1) as u32;
+        for concurrency in [0, 1, 2, 7, 99, 101, 1_000, u32::MAX] {
+            let n = default_connections(concurrency);
+            assert!(n >= 1);
+            assert!(n <= concurrency.max(1), "{n} > concurrency {concurrency}");
+            assert!(n <= MAX_DEFAULT_CONNECTIONS);
+            assert!(n <= parallelism.max(1), "{n} > {parallelism} cores");
+        }
+        assert_eq!(
+            default_connections(u32::MAX),
+            MAX_DEFAULT_CONNECTIONS.min(parallelism.max(1))
+        );
+    }
+
+    #[test]
+    fn an_explicit_connection_count_is_never_overridden() {
+        let mut bench = crate::parser::OrderedStringMap::new();
+        bench.insert("concurrency".to_string(), "300".to_string());
+        bench.insert("connections".to_string(), "1".to_string());
+        let config = BenchConfigResolved::from_bench_section(Some(&bench)).unwrap();
+        assert_eq!(config.connections, 1);
+        assert_eq!(
+            config.option_sources.get("connections"),
+            Some(&BenchOptionSource::BenchSection)
+        );
+    }
+
+    #[test]
+    fn an_unset_connection_count_follows_concurrency() {
+        let mut bench = crate::parser::OrderedStringMap::new();
+        bench.insert("concurrency".to_string(), "300".to_string());
+        let config = BenchConfigResolved::from_bench_section(Some(&bench)).unwrap();
+        // Not a fixed count: the derivation is bounded by the host's cores.
+        assert_eq!(config.connections, default_connections(300));
+        assert_eq!(
+            config.option_sources.get("connections"),
+            Some(&BenchOptionSource::Default)
+        );
+    }
+
+    #[test]
+    fn client_cost_reports_per_request_cpu_and_cores() {
+        let cost = client_cost(4.0, 2.0, 40_000, 20_000.0, 8);
+        assert_eq!(cost.cores_used, 2.0);
+        assert_eq!(cost.cpu_us_per_request, 100.0);
+        assert_eq!(cost.rps_per_core, 10_000.0);
+        assert!(!cost.generator_limited);
+        assert!(cost.limits.is_empty());
+    }
+
+    #[test]
+    fn client_cost_flags_a_saturated_generator() {
+        let cost = client_cost(14.0, 2.0, 1_000, 500.0, 8);
+        assert!(cost.generator_limited);
+        assert_eq!(cost.limits.len(), 1);
+        assert!(cost.limits[0].contains("of 8 cores"));
+    }
+
+    // A run that finishes instantly must not divide by zero and must not claim
+    // an infinite rps/core.
+    #[test]
+    fn client_cost_survives_a_zero_length_run() {
+        let cost = client_cost(0.0, 0.0, 0, 0.0, 0);
+        assert_eq!(cost.cores_used, 0.0);
+        assert_eq!(cost.cpu_us_per_request, 0.0);
+        assert_eq!(cost.rps_per_core, 0.0);
+        assert_eq!(cost.host_cores, 1);
+        assert!(!cost.generator_limited);
+    }
+
+    // Exactly at the 80 % line the run is already suspect.
+    #[test]
+    fn client_cost_flags_at_the_busy_boundary() {
+        let cost = client_cost(3.2, 1.0, 100, 100.0, 4);
+        assert!(cost.generator_limited);
+        let below = client_cost(3.1, 1.0, 100, 100.0, 4);
+        assert!(!below.generator_limited);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn client_cpu_sampler_accounts_for_burned_cpu() {
+        let Some(mut sampler) = ClientCpuSampler::start() else {
+            return;
+        };
+
+        // Linux accounts CPU in 10 ms ticks, and on a runner executing hundreds
+        // of tests at once this thread can spend most of a wall-clock second
+        // descheduled. Burn work until a tick lands rather than assuming one
+        // will inside a fixed window.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut cpu = 0.0;
+        let mut spin: u64 = 0;
+        while std::time::Instant::now() < deadline {
+            for _ in 0..2_000_000u64 {
+                spin = spin.wrapping_mul(31).wrapping_add(7);
+            }
+            cpu = sampler
+                .elapsed_cpu_seconds()
+                .expect("a live process must report its own CPU");
+            if cpu > 0.0 {
+                break;
+            }
+        }
+        std::hint::black_box(spin);
+
+        assert!(cpu >= 0.0, "CPU time must never go backwards, got {cpu}");
+        assert!(
+            sampler.elapsed_cpu_seconds().unwrap_or(cpu) >= cpu,
+            "accumulated CPU must be monotonic"
+        );
+        if cpu == 0.0 {
+            eprintln!(
+                "note: this platform reported no CPU for a busy loop; only monotonicity checked"
+            );
+        }
+    }
+
+    /// `BenchArgs` with everything unset — the shape of `grpctestify bench x.gctf`
+    /// with no flags. Tests set only the fields they exercise.
+    fn base_args() -> BenchArgs {
+        BenchArgs {
+            calibrate: false,
+            protocol: "grpc".to_string(),
+            test_paths: vec![],
+            profile: None,
+            mode: None,
+            concurrency: None,
+            requests: None,
+            duration: None,
+            ramp_up: None,
+            warmup: None,
+            max_duration: None,
+            max_rps: None,
+            load_schedule: None,
+            load_start: None,
+            load_step: None,
+            load_end: None,
+            load_step_duration: None,
+            load_max_duration: None,
+            concurrency_schedule: None,
+            concurrency_start: None,
+            concurrency_end: None,
+            concurrency_step: None,
+            concurrency_step_duration: None,
+            connections: None,
+            connect_timeout: None,
+            request_timeout: None,
+            keepalive: None,
+            cpus: None,
+            name: None,
+            assert_mode: None,
+            no_assert: false,
+            sample_rate: None,
+            cache: None,
+            skip_first: None,
+            count_errors_in_latency: None,
+            duration_stop: None,
+            latency_percentiles: None,
+            progress_interval: None,
+            format: "console".to_string(),
+            output: None,
+            compact: false,
+            tags: vec![],
+            skip_tags: vec![],
+            exclude: vec![],
+            report_template: None,
+            allure_output_dir: None,
+            profile_file: None,
+            call: None,
+            data: None,
+            list_profiles: false,
+        }
+    }
+
     #[test]
     fn details_are_collected_only_for_the_per_response_format() {
         let mut m = BenchMetrics::for_worker(0, false, 1, 0, false);
-        m.record(1, "OK", None, "svc/method");
+        m.record(1, "OK", None, "svc/method", true);
         assert!(m.details.is_empty());
 
         let mut m = BenchMetrics::for_worker(0, false, 1, 0, true);
-        m.record(1, "OK", None, "svc/method");
+        m.record(1, "OK", None, "svc/method", true);
         assert_eq!(m.details.len(), 1);
     }
 
@@ -3212,22 +3900,24 @@ mod tests {
 
     #[test]
     fn measured_nothing_flags_a_fully_failed_run() {
-        assert!(measured_nothing(false, 100, 0));
+        assert!(measured_nothing(100, 0));
     }
 
     #[test]
     fn measured_nothing_allows_a_run_that_expects_an_error() {
-        assert!(!measured_nothing(true, 100, 0));
+        // Every request returned a non-OK status, but each one satisfied its
+        // ERROR section, so the run measured something.
+        assert!(!measured_nothing(100, 100));
     }
 
     #[test]
     fn measured_nothing_allows_partial_success() {
-        assert!(!measured_nothing(false, 100, 1));
+        assert!(!measured_nothing(100, 1));
     }
 
     #[test]
     fn measured_nothing_allows_an_empty_run() {
-        assert!(!measured_nothing(false, 0, 0));
+        assert!(!measured_nothing(0, 0));
     }
 
     #[test]
@@ -3448,10 +4138,115 @@ mod tests {
         metrics.ok = 98;
         let mut thresholds = HashMap::new();
         thresholds.insert("error_rate_pct".to_string(), "< 5%".to_string());
-        let results = evaluate_thresholds(&metrics, &thresholds);
+        let results = evaluate_thresholds(&metrics, 0.0, &thresholds);
         assert_eq!(results.len(), 1);
         // 2% < 5% must PASS. With the old unwrap_or(0.0), rhs was 0 -> failed.
         assert!(results[0].passed, "2% should pass a < 5% threshold");
+    }
+
+    #[test]
+    fn concurrency_levels_default_to_a_single_level() {
+        let config = BenchConfigResolved {
+            concurrency: 8,
+            ..Default::default()
+        };
+        assert_eq!(concurrency_levels(&config).unwrap(), vec![8]);
+    }
+
+    #[test]
+    fn concurrency_levels_step_up_and_down() {
+        let up = BenchConfigResolved {
+            concurrency_schedule: "step".to_string(),
+            concurrency_start: Some(1),
+            concurrency_end: Some(9),
+            concurrency_step: Some(4),
+            ..Default::default()
+        };
+        assert_eq!(concurrency_levels(&up).unwrap(), vec![1, 5, 9]);
+
+        // A ramp-down is expressed by an end below the start, not a negative
+        // step — the level count is a `u32`.
+        let down = BenchConfigResolved {
+            concurrency_schedule: "step".to_string(),
+            concurrency_start: Some(10),
+            concurrency_end: Some(4),
+            concurrency_step: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(concurrency_levels(&down).unwrap(), vec![10, 7, 4]);
+    }
+
+    #[test]
+    fn concurrency_levels_clamp_the_last_step_to_the_end() {
+        // 1 -> 5 -> 9 -> 10, not 1 -> 5 -> 9 -> 13.
+        let config = BenchConfigResolved {
+            concurrency_schedule: "line".to_string(),
+            concurrency_start: Some(1),
+            concurrency_end: Some(10),
+            concurrency_step: Some(4),
+            ..Default::default()
+        };
+        assert_eq!(concurrency_levels(&config).unwrap(), vec![1, 5, 9, 10]);
+    }
+
+    #[test]
+    fn concurrency_levels_reject_an_unbounded_sweep() {
+        let config = BenchConfigResolved {
+            concurrency_schedule: "line".to_string(),
+            concurrency_start: Some(1),
+            concurrency_end: Some(100_000),
+            ..Default::default()
+        };
+        let err = concurrency_levels(&config).unwrap_err().to_string();
+        assert!(err.contains("levels"), "got: {err}");
+    }
+
+    #[test]
+    fn concurrency_levels_reject_an_unknown_schedule() {
+        let config = BenchConfigResolved {
+            concurrency_schedule: "sine".to_string(),
+            ..Default::default()
+        };
+        let err = concurrency_levels(&config).unwrap_err().to_string();
+        assert!(err.contains("const, step, line"), "got: {err}");
+    }
+
+    // Throughput gating was promised by the spec but structurally impossible:
+    // the evaluator only ever received the counters, never the run's duration.
+    #[test]
+    fn evaluate_thresholds_gates_on_throughput() {
+        let metrics = BenchMetrics {
+            count: 100,
+            ..Default::default()
+        };
+        let mut thresholds = HashMap::new();
+        thresholds.insert("rps".to_string(), "> 1000".to_string());
+
+        let met = evaluate_thresholds(&metrics, 2_500.0, &thresholds);
+        assert!(met[0].passed, "2500 rps should clear a > 1000 threshold");
+
+        let missed = evaluate_thresholds(&metrics, 250.0, &thresholds);
+        assert!(!missed[0].passed, "250 rps should fail a > 1000 threshold");
+    }
+
+    // The verdict counters are gateable too, so a negative-path benchmark can
+    // require that every request behaved as its document asserted.
+    #[test]
+    fn evaluate_thresholds_gates_on_the_verdict() {
+        let mut metrics = BenchMetrics {
+            count: 100,
+            ..Default::default()
+        };
+        metrics.passed = 97;
+        metrics.failed = 3;
+
+        let mut thresholds = HashMap::new();
+        thresholds.insert("pass_rate_pct".to_string(), ">= 99".to_string());
+        assert!(!evaluate_thresholds(&metrics, 0.0, &thresholds)[0].passed);
+
+        let mut thresholds = HashMap::new();
+        thresholds.insert("failed".to_string(), "< 5".to_string());
+        assert!(evaluate_thresholds(&metrics, 0.0, &thresholds)[0].passed);
     }
 
     // Bug 2: unparsable thresholds must error instead of defaulting to 0.0.
@@ -3463,7 +4258,7 @@ mod tests {
         };
         let mut thresholds = HashMap::new();
         thresholds.insert("error_rate_pct".to_string(), "< abc".to_string());
-        let results = evaluate_thresholds(&metrics, &thresholds);
+        let results = evaluate_thresholds(&metrics, 0.0, &thresholds);
         assert_eq!(results.len(), 1);
         assert!(!results[0].passed);
         assert!(
@@ -3521,6 +4316,7 @@ mod tests {
     #[test]
     fn bench_config_cli_override() {
         let args = BenchArgs {
+            calibrate: false,
             protocol: "grpc".to_string(),
             test_paths: vec![],
             profile: Some("load".to_string()),
@@ -3538,6 +4334,11 @@ mod tests {
             load_end: None,
             load_step_duration: None,
             load_max_duration: None,
+            concurrency_schedule: None,
+            concurrency_start: None,
+            concurrency_end: None,
+            concurrency_step: None,
+            concurrency_step_duration: None,
             connections: Some(5),
             connect_timeout: Some("3s".to_string()),
             request_timeout: None,
@@ -3599,6 +4400,7 @@ mod tests {
         bench_section.insert("thresholds.latency_ms.p95".to_string(), "< 200".to_string());
 
         let args = BenchArgs {
+            calibrate: false,
             protocol: "grpc".to_string(),
             test_paths: vec![],
             profile: None,
@@ -3616,6 +4418,11 @@ mod tests {
             load_end: None,
             load_step_duration: None,
             load_max_duration: None,
+            concurrency_schedule: None,
+            concurrency_start: None,
+            concurrency_end: None,
+            concurrency_step: None,
+            concurrency_step_duration: None,
             connections: None,
             connect_timeout: None,
             request_timeout: None,
@@ -3648,7 +4455,12 @@ mod tests {
         let config = BenchConfigResolved::from_cli_and_bench(&args, Some(&bench_section)).unwrap();
         assert_eq!(config.profile, "stress");
         assert_eq!(config.concurrency, 50);
-        assert_eq!(config.requests, None);
+        // `BENCH section > --profile preset`: the `stress` preset carries
+        // `duration: 120s`, but this section chose a request budget, so the
+        // preset must not inject the competing stop condition and silently
+        // discard it. This previously asserted `None`, encoding that bug.
+        assert_eq!(config.requests, Some(5000));
+        assert_eq!(config.duration, None);
         assert_eq!(config.thresholds.len(), 1);
         assert_eq!(
             config.thresholds.get("latency_ms.p95"),
@@ -3663,6 +4475,7 @@ mod tests {
         bench_section.insert("concurrency".to_string(), "50".to_string());
 
         let args = BenchArgs {
+            calibrate: false,
             protocol: "grpc".to_string(),
             test_paths: vec![],
             profile: Some("load".to_string()),
@@ -3680,6 +4493,11 @@ mod tests {
             load_end: None,
             load_step_duration: None,
             load_max_duration: None,
+            concurrency_schedule: None,
+            concurrency_start: None,
+            concurrency_end: None,
+            concurrency_step: None,
+            concurrency_step_duration: None,
             connections: None,
             connect_timeout: None,
             request_timeout: None,
@@ -3721,6 +4539,7 @@ mod tests {
         bench_section.insert("load_schedule".to_string(), "step".to_string());
 
         let args = BenchArgs {
+            calibrate: false,
             protocol: "grpc".to_string(),
             test_paths: vec![],
             profile: None,
@@ -3738,6 +4557,11 @@ mod tests {
             load_end: None,
             load_step_duration: None,
             load_max_duration: None,
+            concurrency_schedule: None,
+            concurrency_start: None,
+            concurrency_end: None,
+            concurrency_step: None,
+            concurrency_step_duration: None,
             connections: None,
             connect_timeout: None,
             request_timeout: None,
@@ -3811,6 +4635,7 @@ mod tests {
     #[test]
     fn duration_mode_ignores_requests() {
         let args = BenchArgs {
+            calibrate: false,
             protocol: "grpc".to_string(),
             test_paths: vec![],
             profile: None,
@@ -3828,6 +4653,11 @@ mod tests {
             load_end: None,
             load_step_duration: None,
             load_max_duration: None,
+            concurrency_schedule: None,
+            concurrency_start: None,
+            concurrency_end: None,
+            concurrency_step: None,
+            concurrency_step_duration: None,
             connections: Some(1),
             connect_timeout: None,
             request_timeout: None,
@@ -3862,9 +4692,47 @@ mod tests {
         assert_eq!(config.requests, None);
     }
 
+    // Regression: `apply_profile_defaults` ran before `cli.profile` was
+    // assigned, so `config.profile` was still the `functional` default and the
+    // `!= "functional"` guard skipped it entirely. `--profile stress` printed
+    // "Profile: stress" in the banner and then ran the built-in defaults.
+    #[test]
+    fn cli_profile_applies_its_preset() {
+        let mut args = base_args();
+        args.profile = Some("stress".to_string());
+
+        let config = BenchConfigResolved::from_cli_and_bench(&args, None).unwrap();
+
+        assert_eq!(config.profile, "stress");
+        assert_eq!(config.mode, "stepping");
+        assert_eq!(config.concurrency, 50);
+        assert_eq!(config.duration, Some(Duration::from_secs(120)));
+        assert_eq!(config.load_schedule, "line");
+        assert_eq!(config.load_start, Some(10.0));
+        assert_eq!(config.load_end, Some(500.0));
+    }
+
+    // A CLI flag still beats the preset it sits next to.
+    #[test]
+    fn cli_flag_overrides_its_profile_preset() {
+        let mut args = base_args();
+        args.profile = Some("stress".to_string());
+        args.concurrency = Some(3);
+        args.connections = Some(1);
+
+        let config = BenchConfigResolved::from_cli_and_bench(&args, None).unwrap();
+
+        assert_eq!(config.concurrency, 3);
+        assert_eq!(
+            config.mode, "stepping",
+            "unset keys still come from the preset"
+        );
+    }
+
     #[test]
     fn connections_must_not_exceed_concurrency() {
         let args = BenchArgs {
+            calibrate: false,
             protocol: "grpc".to_string(),
             test_paths: vec![],
             profile: None,
@@ -3882,6 +4750,11 @@ mod tests {
             load_end: None,
             load_step_duration: None,
             load_max_duration: None,
+            concurrency_schedule: None,
+            concurrency_start: None,
+            concurrency_end: None,
+            concurrency_step: None,
+            concurrency_step_duration: None,
             connections: Some(3),
             connect_timeout: None,
             request_timeout: None,
@@ -3917,6 +4790,7 @@ mod tests {
     #[test]
     fn duration_stop_invalid_value_fails() {
         let args = BenchArgs {
+            calibrate: false,
             protocol: "grpc".to_string(),
             test_paths: vec![],
             profile: None,
@@ -3934,6 +4808,11 @@ mod tests {
             load_end: None,
             load_step_duration: None,
             load_max_duration: None,
+            concurrency_schedule: None,
+            concurrency_start: None,
+            concurrency_end: None,
+            concurrency_step: None,
+            concurrency_step_duration: None,
             connections: Some(1),
             connect_timeout: None,
             request_timeout: None,
@@ -4076,7 +4955,7 @@ mod tests {
         let mut metrics = BenchMetrics::default();
         let n = MAX_LATENCY_SAMPLES + 10;
         for i in 0..n {
-            metrics.record(i as u64, "OK", None, "test");
+            metrics.record(i as u64, "OK", None, "test", true);
         }
         assert_eq!(metrics.latency.buckets.len(), HIST_BUCKETS);
         assert_eq!(metrics.latency.total, n as u64);
@@ -4088,7 +4967,7 @@ mod tests {
     fn mean_is_exact() {
         let mut m = BenchMetrics::default();
         for v in [10u64, 20, 30, 40, 100] {
-            m.record(v, "OK", None, "e");
+            m.record(v, "OK", None, "e", true);
         }
         // total 200 over 5 requests -> exact 40.
         assert_eq!(m.total_ns / m.count, 40);
@@ -4141,22 +5020,22 @@ mod tests {
     #[test]
     fn resolve_metric_error_rate_pct() {
         let mut metrics = BenchMetrics::default();
-        metrics.record(1_000_000, "OK", None, "test");
-        metrics.record(1_000_000, "ERROR", Some("boom"), "test");
+        metrics.record(1_000_000, "OK", None, "test", true);
+        metrics.record(1_000_000, "ERROR", Some("boom"), "test", false);
 
-        let value = resolve_metric_value(&metrics, "error_rate_pct").unwrap_or_default();
+        let value = resolve_metric_value(&metrics, 0.0, "error_rate_pct").unwrap_or_default();
         assert!((value - 50.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn unknown_threshold_metric_fails_with_reason() {
         let mut metrics = BenchMetrics::default();
-        metrics.record(1_000_000, "OK", None, "test");
+        metrics.record(1_000_000, "OK", None, "test", true);
 
         let mut thresholds = HashMap::new();
         thresholds.insert("unknown_metric".to_string(), "< 10".to_string());
 
-        let results = evaluate_thresholds(&metrics, &thresholds);
+        let results = evaluate_thresholds(&metrics, 0.0, &thresholds);
         assert_eq!(results.len(), 1);
         assert!(!results[0].passed);
         assert_eq!(results[0].actual, "unknown");
@@ -4209,7 +5088,7 @@ mod tests {
             ..Default::default()
         };
         for v in [9999, 9998, 10, 11, 12] {
-            m.record(v, "OK", None, "e");
+            m.record(v, "OK", None, "e", true);
         }
         // The two warm-up outliers never enter the global histogram.
         assert_eq!(m.latency.total, 3);
@@ -4226,13 +5105,13 @@ mod tests {
             skip_first_remaining: 10,
             ..Default::default()
         };
-        m.record(1, "OK", None, "e");
-        m.record(2, "OK", None, "e");
+        m.record(1, "OK", None, "e", true);
+        m.record(2, "OK", None, "e", true);
         assert_eq!(m.latency.total, 0);
         // Zero skip is a no-op.
         let mut m2 = BenchMetrics::default();
         for v in [1, 2, 3] {
-            m2.record(v, "OK", None, "e");
+            m2.record(v, "OK", None, "e", true);
         }
         assert_eq!(m2.latency.total, 3);
     }
@@ -4242,8 +5121,8 @@ mod tests {
     #[test]
     fn count_errors_excluded_from_latency_by_default() {
         let mut m = BenchMetrics::default();
-        m.record(100, "OK", None, "e");
-        m.record(9999, "ERROR", Some("boom"), "e");
+        m.record(100, "OK", None, "e", true);
+        m.record(9999, "ERROR", Some("boom"), "e", false);
         // Only the OK latency enters the distribution (value 100 -> linear bucket).
         assert_eq!(m.latency.total, 1);
         assert_eq!(m.latency.buckets[100], 1);
@@ -4261,8 +5140,8 @@ mod tests {
             count_errors_in_latency: true,
             ..Default::default()
         };
-        m.record(100, "OK", None, "e");
-        m.record(200, "ERROR", Some("boom"), "e");
+        m.record(100, "OK", None, "e", true);
+        m.record(200, "ERROR", Some("boom"), "e", false);
         // Both latencies (< 256 -> bucket index == value) enter the distribution.
         assert_eq!(m.latency.total, 2);
         assert_eq!(m.latency.buckets[100], 1);
@@ -4287,7 +5166,7 @@ mod tests {
             ..Default::default()
         };
         for i in 0..6 {
-            m.record(i, "OK", None, "e");
+            m.record(i, "OK", None, "e", true);
         }
         // stride 2 -> records requests 1,3,5 (i = 0,2,4); all 6 still counted.
         assert_eq!(m.latency.total, 3);
@@ -4304,7 +5183,7 @@ mod tests {
             ..Default::default()
         };
         for i in 0..4 {
-            m.record(i, "OK", None, "e");
+            m.record(i, "OK", None, "e", true);
         }
         assert_eq!(m.latency.total, 4);
     }
@@ -4380,9 +5259,9 @@ mod tests {
     #[test]
     fn record_buckets_by_real_status() {
         let mut m = BenchMetrics::with_capacity(4);
-        m.record(10, "OK", None, "svc/M");
-        m.record(20, "OK", None, "svc/M");
-        m.record(30, "Unavailable", Some("boom"), "svc/M");
+        m.record(10, "OK", None, "svc/M", true);
+        m.record(20, "OK", None, "svc/M", true);
+        m.record(30, "Unavailable", Some("boom"), "svc/M", false);
 
         assert_eq!(m.grpc_status.get("OK"), Some(&2));
         assert_eq!(m.grpc_status.get("Unavailable"), Some(&1));

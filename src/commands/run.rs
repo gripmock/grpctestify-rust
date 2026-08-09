@@ -98,9 +98,7 @@ fn collect_data_rows(
         name: Some(name),
         format,
         delimiter: None,
-        header: None,
         indexed_by: None,
-        index_mode: None,
         memory_budget: None,
         filter: None,
         join_type: None,
@@ -336,35 +334,30 @@ pub(crate) fn extract_test_meta(doc: &parser::ast::GctfDocument) -> TestMeta {
     meta
 }
 
-fn file_matches_meta(path: &Path, tags_include: &[String], skip_tags: &[String]) -> bool {
-    let parse_result = parser::parse_with_recovery(path);
-    let doc = parse_result.document;
-
-    let meta = doc.sections.iter().find_map(|s: &parser::ast::Section| {
-        if let SectionContent::Meta(m) = &s.content
-            && s.section_type == SectionType::Meta
-        {
-            Some(m)
-        } else {
-            None
-        }
-    });
-
-    let file_tags: Vec<&str> = meta
-        .map(|m| m.tags.iter().map(|s| s.as_str()).collect())
-        .unwrap_or_default();
-
+/// Does a document's tag set satisfy `--tags` (all must be present) and
+/// `--skip-tags` (none may be present)?
+///
+/// Shared with `bench`, which advertises the same two flags.
+pub(crate) fn tags_match(
+    file_tags: &[String],
+    tags_include: &[String],
+    skip_tags: &[String],
+) -> bool {
     for tag in tags_include {
         if !file_tags.iter().any(|t| t == tag) {
             return false;
         }
     }
+    !(!skip_tags.is_empty() && file_tags.iter().any(|t| skip_tags.contains(t)))
+}
 
-    if !skip_tags.is_empty() && file_tags.iter().any(|t| skip_tags.iter().any(|e| t == e)) {
-        return false;
-    }
-
-    true
+fn file_matches_meta(path: &Path, tags_include: &[String], skip_tags: &[String]) -> bool {
+    let parse_result = parser::parse_with_recovery(path);
+    // `extract_test_meta` also honours per-section `#[tag(...)]` attributes.
+    // Reading only `META.tags` here meant an attribute-tagged test was
+    // *displayed* as tagged but never selected by `--tags`.
+    let file_tags = extract_test_meta(&parse_result.document).tags;
+    tags_match(&file_tags, tags_include, skip_tags)
 }
 
 /// gRPC status codes that indicate a transient transport/availability failure
@@ -582,12 +575,21 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
 
     let mut collected = Vec::new();
     let exclude_patterns = &args.exclude;
+    // A path that resolves to neither a file nor a directory used to be dropped
+    // silently, so a typo in one of several CI paths skipped that whole suite
+    // and still exited 0.
+    let mut missing = Vec::new();
     for path in &args.test_paths {
         if path.is_dir() {
             collected.extend(FileUtils::collect_test_files(path, exclude_patterns));
         } else if path.is_file() {
             collected.push(path.clone());
+        } else {
+            missing.push(path.display().to_string());
         }
+    }
+    if !missing.is_empty() {
+        anyhow::bail!("test path not found: {}", missing.join(", "));
     }
 
     // Convention-based per-directory fixtures (`_setup.gctf`/`_teardown.gctf`)
@@ -1206,7 +1208,10 @@ async fn run_single_test(
         }
     };
 
-    if let Some(resp) = &result.captured_response
+    // `captured_response` is populated by `--write` *and* by `capture_exchange`,
+    // which report formats turn on. Only `--write` may rewrite the file.
+    if runner.is_write_mode()
+        && let Some(resp) = &result.captured_response
         && let Err(e) = crate::utils::file::update_test_file(file, &doc, resp)
     {
         return Ok(execution::TestExecutionResult::fail(

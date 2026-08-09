@@ -89,6 +89,7 @@ pub async fn handle_call(args: &CallArgs) -> Result<()> {
     // --bench mode: forward to benchmark (handles both file and inline)
     if args.bench {
         let bench_args = crate::cli::args::BenchArgs {
+            calibrate: false,
             protocol: args.protocol.clone(),
             test_paths: if args.endpoint.is_some() {
                 vec![]
@@ -112,6 +113,11 @@ pub async fn handle_call(args: &CallArgs) -> Result<()> {
             load_end: None,
             load_step_duration: None,
             load_max_duration: None,
+            concurrency_schedule: None,
+            concurrency_start: None,
+            concurrency_end: None,
+            concurrency_step: None,
+            concurrency_step_duration: None,
             connections: None,
             connect_timeout: None,
             request_timeout: None,

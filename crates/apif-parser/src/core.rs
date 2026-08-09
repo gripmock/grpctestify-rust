@@ -52,6 +52,8 @@ pub fn parse_gctf_from_str(content: &str, file_path: &str) -> Result<GctfDocumen
         let mut document = GctfDocument::new(file_path.to_string());
         document.metadata.source =
             Some(extract_doc_source_from_lines(&doc_sections, &source_lines));
+        document.metadata.placeholder_free =
+            doc_sections.iter().all(|s| !s.raw_content.contains("{{"));
         document.sections = doc_sections;
         document.next_document = head.map(Box::new);
         head = Some(document);
@@ -380,6 +382,11 @@ fn bench_key_rank(key: &str) -> usize {
         "load_end",
         "load_step_duration",
         "load_max_duration",
+        "concurrency_schedule",
+        "concurrency_start",
+        "concurrency_end",
+        "concurrency_step",
+        "concurrency_step_duration",
         "load_midpoint",
         "load_amplitude",
         "load_frequency",

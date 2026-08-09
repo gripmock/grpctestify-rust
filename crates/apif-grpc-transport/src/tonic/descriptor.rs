@@ -55,7 +55,14 @@ pub async fn load_descriptors(config: &GrpcClientConfig) -> Result<Arc<Descripto
             tracing::debug!("descriptors: loading from proto files {:?}", cfg.files);
             load_from_proto_files(&cfg.files, &cfg.import_paths)?
         }
-        _ => {
+        Some(cfg) => {
+            anyhow::bail!(
+                "PROTO section names neither `files` nor `descriptor` (import_paths: {:?}); \
+                 refusing to fall back to server reflection, which would silently ignore it",
+                cfg.import_paths
+            );
+        }
+        None => {
             tracing::debug!(
                 "descriptors: loading via reflection from {}",
                 config.address
@@ -109,7 +116,10 @@ fn load_from_descriptor_file(path: &str) -> Result<DescriptorPool> {
     Ok(pool)
 }
 
-fn load_from_proto_files(files: &[String], import_paths: &[String]) -> Result<DescriptorPool> {
+pub(crate) fn load_from_proto_files(
+    files: &[String],
+    import_paths: &[String],
+) -> Result<DescriptorPool> {
     let fds = protox::compile(files, import_paths)
         .map_err(|e| anyhow!("Failed to compile proto files: {}", e))?;
     let mut pool = new_pool_with_wkt();
@@ -249,6 +259,37 @@ async fn load_via_reflection(config: &GrpcClientConfig) -> Result<DescriptorPool
         _ => Err(anyhow!(
             "Failed to build descriptor pool from reflected descriptors"
         )),
+    }
+}
+
+#[cfg(test)]
+mod proto_source_tests {
+    use crate::config::{GrpcClientConfig, ProtoConfig};
+
+    fn config_with(proto: Option<ProtoConfig>) -> GrpcClientConfig {
+        GrpcClientConfig {
+            address: "127.0.0.1:1".to_string(),
+            proto_config: proto,
+            ..Default::default()
+        }
+    }
+
+    // A PROTO section that resolves to nothing used to fall through to server
+    // reflection, so a mistyped path silently changed where descriptors came
+    // from.
+    #[tokio::test]
+    async fn a_proto_section_without_a_source_is_an_error_not_reflection() {
+        let config = config_with(Some(ProtoConfig {
+            files: Vec::new(),
+            import_paths: vec!["proto".to_string()],
+            descriptor: None,
+        }));
+        let err = super::load_descriptors(&config)
+            .await
+            .expect_err("must not reach reflection");
+        let msg = err.to_string();
+        assert!(msg.contains("PROTO"), "{msg}");
+        assert!(msg.contains("reflection"), "{msg}");
     }
 }
 

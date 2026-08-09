@@ -12,12 +12,8 @@ pub struct SourceDefinition {
     pub format: Option<SourceFormat>,
     #[serde(default)]
     pub delimiter: Option<u8>,
-    #[serde(default)]
-    pub header: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_string_or_seq")]
     pub indexed_by: Option<Vec<String>>,
-    #[serde(default)]
-    pub index_mode: Option<IndexMode>,
     #[serde(default)]
     pub memory_budget: Option<String>,
     #[serde(default)]
@@ -32,15 +28,6 @@ pub enum JoinType {
     Inner,
     Left,
     Cross,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IndexMode {
-    #[default]
-    OnDemand,
-    BuildOnce,
-    Memory,
 }
 
 /// `indexed_by` takes one column or several. The documented spelling for the
@@ -86,9 +73,7 @@ impl SourceDefinition {
             name: None,
             format: format.cloned(),
             delimiter: None,
-            header: None,
             indexed_by: Some(vec![key_column.to_string()]),
-            index_mode: Some(IndexMode::BuildOnce),
             memory_budget: None,
             filter: None,
             join_type: None,
@@ -97,10 +82,6 @@ impl SourceDefinition {
 
     pub fn join_type_or_default(&self) -> JoinType {
         self.join_type.unwrap_or(JoinType::Left)
-    }
-
-    pub fn effective_index_mode(&self) -> IndexMode {
-        self.index_mode.unwrap_or_default()
     }
 
     pub fn indexed_columns(&self) -> Vec<&str> {
@@ -131,14 +112,12 @@ file: data/pvz.csv
 name: pvz
 format: csv
 indexed_by: [pvz_id]
-index_mode: build_once
 memory_budget: 256mb
 ";
         let def: SourceDefinition = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(def.file, "data/pvz.csv");
         assert_eq!(def.name.as_deref(), Some("pvz"));
         assert_eq!(def.format, Some(SourceFormat::Csv));
-        assert_eq!(def.effective_index_mode(), IndexMode::BuildOnce);
         assert_eq!(def.indexed_columns(), vec!["pvz_id"]);
         assert_eq!(def.memory_budget.as_deref(), Some("256mb"));
     }
@@ -153,19 +132,6 @@ indexed_by:
 ";
         let def: SourceDefinition = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(def.indexed_columns(), vec!["pvz_id", "region_id"]);
-    }
-
-    #[test]
-    fn index_mode_default_is_on_demand() {
-        let def: SourceDefinition = serde_yaml_ng::from_str("file: x.csv").unwrap();
-        assert_eq!(def.effective_index_mode(), IndexMode::OnDemand);
-    }
-
-    #[test]
-    fn index_mode_all_variants() {
-        assert_eq!(IndexMode::default(), IndexMode::OnDemand);
-        assert_ne!(IndexMode::OnDemand, IndexMode::BuildOnce);
-        assert_ne!(IndexMode::BuildOnce, IndexMode::Memory);
     }
 
     #[test]

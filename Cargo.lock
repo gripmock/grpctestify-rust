@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "apif-ast"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "apif-cfg-runtime",
  "indexmap",
@@ -160,7 +160,7 @@ dependencies = [
 
 [[package]]
 name = "apif-execution"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "apif-ast",
@@ -179,7 +179,7 @@ dependencies = [
 
 [[package]]
 name = "apif-grpc-transport"
-version = "0.3.2"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -191,6 +191,7 @@ dependencies = [
  "rand",
  "rustls",
  "serde_json",
+ "tempfile",
  "tokio",
  "tonic",
  "tonic-reflection",
@@ -212,7 +213,7 @@ dependencies = [
 
 [[package]]
 name = "apif-parser"
-version = "0.2.2"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "apif-ast",
@@ -290,7 +291,7 @@ version = "0.1.0"
 
 [[package]]
 name = "apif-source-row"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "apif-ast",
@@ -322,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "apif-twoq-cache"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "apif-utils"
@@ -2243,7 +2244,7 @@ dependencies = [
 
 [[package]]
 name = "grpctestify"
-version = "1.9.5"
+version = "1.10.0"
 dependencies = [
  "anyhow",
  "apif-assert",
@@ -2292,6 +2293,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "sysinfo",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -2967,9 +2969,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.49.7"
+version = "0.49.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca4b985be36e5b3d15162b16ca94ac18c2a0514f5598b23b9d769895cb56bc3c"
+checksum = "ce93912abc8220a3fdb768b2c4a826a7a9a4b1599cfb4d760d422eaa1faf88c7"
 dependencies = [
  "ahash",
  "bytecount",
@@ -2998,18 +3000,18 @@ dependencies = [
 
 [[package]]
 name = "jsonschema-regex"
-version = "0.49.7"
+version = "0.49.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "614c05e01260d4532d9ad28d66185fa1d93d015c5d610cde70d4b7143d7fb98f"
+checksum = "8165657ebed4d32c50f3c250c1986d8428b16fbfeac355222e8fec50aa26eb1d"
 dependencies = [
  "regex-syntax",
 ]
 
 [[package]]
 name = "jsonschema-value"
-version = "0.49.7"
+version = "0.49.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8602a6850f24cf05c518f58c9b8d08e32a28b9848115c8e193693db0952353f6"
+checksum = "b069c5fdda3e9c2242bba49d811d5bbdb488abd8d234ed44a6312fd2891113e1"
 dependencies = [
  "ahash",
  "bytecount",
@@ -3657,9 +3659,9 @@ dependencies = [
 
 [[package]]
 name = "portable-atomic"
-version = "1.14.0"
+version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d20d5497ef88037a52ff98267d066e7f11fcc5e99bbfbd58a42336193aacec3"
+checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
 
 [[package]]
 name = "portable-atomic-util"
@@ -4051,9 +4053,9 @@ dependencies = [
 
 [[package]]
 name = "referencing"
-version = "0.49.7"
+version = "0.49.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0753550862a089302b186486dfb843f2d547415257d78c32ae0d169e4d6784d1"
+checksum = "f39f4c36ce0f50e96fb740d895f1cad34cfa76c4ab5c36934d6590bcd7029087"
 dependencies = [
  "ahash",
  "fluent-uri",

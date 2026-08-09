@@ -1,0 +1,5 @@
+# Benchmarks are built by `--all-targets` so they cannot rot, but they must not
+# be executed here: a criterion harness run outside `cargo bench` measures for
+# as long as it needs, which for the contended source benchmarks is minutes.
+[profile.default]
+default-filter = "not kind(bench)"

@@ -19,8 +19,55 @@ fn help_logo() -> String {
         .join("\n")
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// `--cpus` wins, then `TOKIO_WORKER_THREADS`, else `bench` caps at 4 and every
+/// other command keeps `available_parallelism`. More threads cost instructions
+/// per request without adding throughput — see `docs/.../bench.md`.
+fn resolve_worker_threads(args: &[String]) -> usize {
+    let parallelism = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+    let env = std::env::var("TOKIO_WORKER_THREADS").ok();
+    worker_threads_for(args, env.as_deref(), parallelism)
+}
+
+/// Pure half of [`resolve_worker_threads`], so the precedence is testable
+/// without touching process state.
+fn worker_threads_for(args: &[String], env: Option<&str>, parallelism: usize) -> usize {
+    let parallelism = parallelism.max(1);
+
+    if let Some(n) = args
+        .iter()
+        .position(|a| a == "--cpus")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+    {
+        return n;
+    }
+    if let Some(n) = env.and_then(|v| v.parse::<usize>().ok()).filter(|n| *n > 0) {
+        return n;
+    }
+    if args.iter().any(|a| a == "bench") {
+        return parallelism.min(BENCH_MAX_WORKER_THREADS);
+    }
+    parallelism
+}
+
+/// Above this, worker threads cost CPU and instructions per request without
+/// adding throughput; the tax grows with the host's core count.
+const BENCH_MAX_WORKER_THREADS: usize = 4;
+
+fn main() -> Result<()> {
+    let argv: Vec<String> = std::env::args().collect();
+    let worker_threads = resolve_worker_threads(&argv);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .enable_all()
+        .build()?;
+    runtime.block_on(run())
+}
+
+async fn run() -> Result<()> {
     // Install the default crypto provider (ring) to avoid panics with rustls 0.23+
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -113,6 +160,7 @@ async fn main() -> Result<()> {
         Some(Commands::Lsp(args)) => commands::handle_lsp(args).await,
         Some(Commands::Bench(args)) => commands::handle_bench(args).await,
         Some(Commands::BenchCompare(args)) => commands::bench_compare::run(args),
+        Some(Commands::BenchAggregate(args)) => commands::bench_aggregate::run(args),
         Some(Commands::Query(args)) => commands::handle_query(args),
         Some(Commands::Health(args)) => commands::handle_health(args).await,
         Some(Commands::Play(args)) => commands::handle_play(args).await,
@@ -176,4 +224,56 @@ fn print_welcome() {
         "{} https://gripmock.github.io/grpctestify-rust/",
         d.apply_to("Docs:")
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::worker_threads_for;
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn bench_caps_worker_threads_below_the_host_core_count() {
+        assert_eq!(
+            worker_threads_for(&argv(&["grpctestify", "bench", "x.gctf"]), None, 64),
+            4
+        );
+        // A host smaller than the cap keeps its own core count.
+        assert_eq!(
+            worker_threads_for(&argv(&["grpctestify", "bench", "x.gctf"]), None, 2),
+            2
+        );
+    }
+
+    #[test]
+    fn other_commands_keep_full_parallelism() {
+        assert_eq!(
+            worker_threads_for(&argv(&["grpctestify", "run", "tests/"]), None, 64),
+            64
+        );
+    }
+
+    #[test]
+    fn cpus_flag_wins_over_env_and_defaults() {
+        let args = argv(&["grpctestify", "bench", "x.gctf", "--cpus", "7"]);
+        assert_eq!(worker_threads_for(&args, Some("2"), 64), 7);
+    }
+
+    #[test]
+    fn env_wins_over_the_default_but_not_the_flag() {
+        let args = argv(&["grpctestify", "bench", "x.gctf"]);
+        assert_eq!(worker_threads_for(&args, Some("2"), 64), 2);
+    }
+
+    #[test]
+    fn nonsense_values_fall_through_rather_than_producing_zero_threads() {
+        let args = argv(&["grpctestify", "bench", "x.gctf", "--cpus", "0"]);
+        assert_eq!(worker_threads_for(&args, Some("nope"), 8), 4);
+        let trailing = argv(&["grpctestify", "bench", "x.gctf", "--cpus"]);
+        assert_eq!(worker_threads_for(&trailing, None, 8), 4);
+        // A runtime with zero worker threads would not start.
+        assert!(worker_threads_for(&argv(&["grpctestify", "run"]), None, 0) >= 1);
+    }
 }

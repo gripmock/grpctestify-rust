@@ -40,6 +40,22 @@ For server- or bidi-streaming methods that expect several messages, either form 
 { "index": 2 }
 ```
 
+## No messages at all
+
+Messages in a `RESPONSE` block are newline-delimited, so **no lines means no messages** — the
+assertion is that the stream produced none. This is how a server-streaming method that yields an
+empty result set is verified:
+
+```gctf
+--- REQUEST ---
+{ "query": "nonexistent" }
+
+--- RESPONSE ---
+```
+
+`{}` is a different assertion: exactly one message, and that message is empty. Against a stream that
+yields nothing it fails with "expected message for RESPONSE section, but stream ended".
+
 ## Rules
 
 - Do not combine `RESPONSE` and `ERROR` in one file
