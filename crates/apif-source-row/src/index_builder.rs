@@ -120,7 +120,7 @@ where
     let mut index = SourceIndex::with_key_type(key_column, key_type);
     let header_line = read_first_line(&source_path)?;
     // Fallback only, for a reader that cannot report its position. Summing
-    // decoded field lengths mis-locates every row after the first quoted field,
+    // decoded field lengths misplaces every row after the first quoted field,
     // CRLF, comment, blank line or BOM.
     let mut byte_offset = header_line.len() as u64;
 

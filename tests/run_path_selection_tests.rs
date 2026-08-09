@@ -3,7 +3,7 @@
 //! `run` must not silently ignore a test path it cannot resolve.
 //!
 //! Regression: paths were walked with `if is_dir { .. } else if is_file { .. }`
-//! and no `else`, so `run suite/ regresion/` (typo) ran only the paths that
+//! and no `else`, so `run suite/ mistyped/` (typo) ran only the paths that
 //! happened to exist and exited 0 — a mistyped suite in a CI invocation
 //! disappeared without a word and the build stayed green.
 
@@ -23,7 +23,7 @@ async fn a_nonexistent_path_alongside_a_valid_one_fails_the_run() {
     let dir = tempfile::tempdir().unwrap();
     let good = dir.path().join("good.gctf");
     std::fs::write(&good, passing_doc(&address)).unwrap();
-    let typo = dir.path().join("regresion.gctf");
+    let typo = dir.path().join("mistyped.gctf");
 
     let output = cli_command()
         .args(["run", &good.to_string_lossy(), &typo.to_string_lossy()])
@@ -36,7 +36,7 @@ async fn a_nonexistent_path_alongside_a_valid_one_fails_the_run() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("regresion.gctf"),
+        stderr.contains("mistyped.gctf"),
         "the error must name the offending path, got:\n{stderr}"
     );
 }

@@ -210,7 +210,7 @@ Every run measures its own CPU and reports it next to the target's numbers, so a
 audited rather than taken on trust. No other gRPC load generator does this; k6 documents the concern
 but leaves the check to the operator.
 
-```
+```text
    • Requests/sec: 17415.30
    • Client cost:  72.7 µs CPU/request, 1.27/8 cores, 13765 rps/core
 ```
