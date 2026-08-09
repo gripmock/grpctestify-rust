@@ -2033,7 +2033,10 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
 
     // Overflow used to clear the whole map, rebuilding every worker's client —
     // and dropping its live connection pool — on each subsequent insert.
+    // `reqwest::Client::new` initialises TLS through a C library, which Miri
+    // cannot call.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn http_client_cache_evicts_only_the_oldest() {
         let mut cache = BoundedHttpClientCache {
             map: HashMap::new(),

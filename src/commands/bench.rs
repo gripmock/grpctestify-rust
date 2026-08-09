@@ -3662,11 +3662,19 @@ pub async fn handle_bench(args: &BenchArgs) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn host_cores() -> u32 {
+        std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(1) as u32
+    }
+
+    // The pool never exceeds the workers that use it, whatever the host has —
+    // Miri reports a single core, so nothing here may assume more.
     #[test]
     fn the_default_pool_never_exceeds_the_worker_count() {
-        assert_eq!(default_connections(1), 1);
-        assert_eq!(default_connections(2), 2);
         assert_eq!(default_connections(0), 1);
+        assert_eq!(default_connections(1), 1);
+        assert_eq!(default_connections(2), 2.min(host_cores()));
     }
 
     // Splitting the pool removes h2's per-connection mutex contention, but the
@@ -3708,10 +3716,11 @@ mod tests {
         let mut bench = crate::parser::OrderedStringMap::new();
         bench.insert("concurrency".to_string(), "300".to_string());
         let config = BenchConfigResolved::from_bench_section(Some(&bench)).unwrap();
+        // Not a fixed count: the derivation is bounded by the host's cores.
         assert_eq!(config.connections, default_connections(300));
-        assert!(
-            config.connections > 1,
-            "a 300-worker run must split the pool"
+        assert_eq!(
+            config.option_sources.get("connections"),
+            Some(&BenchOptionSource::Default)
         );
     }
 
