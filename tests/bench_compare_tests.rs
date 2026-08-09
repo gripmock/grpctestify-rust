@@ -183,3 +183,74 @@ fn json_format_emits_parseable_output() {
     serde_json::from_str::<serde_json::Value>(stdout.trim())
         .unwrap_or_else(|e| panic!("--format json must emit valid JSON: {e}\ngot:\n{stdout}"));
 }
+
+/// A report whose `latency_distribution` uses the real schema: `percentile` is
+/// a *number*, and fractional tail percentiles are ordinary values.
+fn report_with_percentiles(pairs: &[(f64, f64)]) -> String {
+    serde_json::json!({
+        "summary": {
+            "count": 100,
+            "errors": 0,
+            "rps_observed": 1000.0,
+            "average_ns": 1_000_000.0,
+        },
+        "latency_distribution": pairs
+            .iter()
+            .map(|(p, ns)| serde_json::json!({ "percentile": p, "latency_ns": ns }))
+            .collect::<Vec<_>>(),
+        "per_endpoint": [],
+    })
+    .to_string()
+}
+
+/// Regression: percentile keys were built with `format!("p{}", p.round())`, so
+/// `p99.5` and `p99.9` collapsed onto a single `p100` entry — the last one
+/// parsed won and the other vanished. On top of that only a hardcoded
+/// `[p50, p90, p95, p99]` list was ever compared, so a run configured for tail
+/// percentiles was gated on nothing.
+#[test]
+fn fractional_tail_percentiles_are_compared_separately() {
+    let baseline = report_with_percentiles(&[
+        (50.0, 1_000_000.0),
+        (99.5, 2_000_000.0),
+        (99.9, 3_000_000.0),
+    ]);
+    // p99.9 regresses tenfold; p99.5 is unchanged.
+    let current = report_with_percentiles(&[
+        (50.0, 1_000_000.0),
+        (99.5, 2_000_000.0),
+        (99.9, 30_000_000.0),
+    ]);
+    let (_dir, b, c) = write_pair(&baseline, &current);
+
+    let output = support::cli_command()
+        .args(["bench-compare", &b, &c, "--format", "json"])
+        .output()
+        .expect("failed to run bench-compare");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let names: Vec<String> = parsed["metrics"]
+        .as_array()
+        .expect("metrics array")
+        .iter()
+        .map(|r| r["name"].as_str().unwrap_or_default().to_string())
+        .collect();
+
+    assert!(
+        names.iter().any(|n| n == "latency_p99.5"),
+        "p99.5 must be compared under its own key, got: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "latency_p99.9"),
+        "p99.9 must be compared under its own key, got: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "latency_p100"),
+        "no percentile should be rounded into a p100 bucket, got: {names:?}"
+    );
+    assert!(
+        !output.status.success(),
+        "a tenfold p99.9 regression must fail the gate"
+    );
+}

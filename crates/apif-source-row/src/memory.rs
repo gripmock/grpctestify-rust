@@ -22,12 +22,10 @@ impl InMemorySource {
 
         while let Some(row) = reader.next_row()? {
             row_count += 1;
-            let key = row
-                .get(key_column)
+            let key = crate::index::composite_value(key_column, |c| row.get(c).map(str::to_string))
                 .ok_or_else(|| {
                     SourceError::ColumnNotFound(key_column.to_string(), "<memory>".into())
-                })?
-                .to_string();
+                })?;
             data.entry(key).or_default().push(row);
         }
 
@@ -118,6 +116,52 @@ mod tests {
         fn make_reader(data: &'static str) -> CsvReader<Cursor<&'static str>> {
             CsvReader::new(BufReader::new(Cursor::new(data)), b',').unwrap()
         }
+    }
+
+    /// `DIMENSION_MEMORY_EXPANSION` must stay near the real expansion. Bounds
+    /// are loose because RSS sampling is noisy: catch a change of shape.
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    #[cfg(not(miri))]
+    fn in_memory_expansion_stays_near_the_budget_constant() {
+        let mut data = String::from("id,name,region,city,note\n");
+        for i in 0..200_000 {
+            data.push_str(&format!(
+                "{i},user-{i:06},region-{},city-{},note-{}\n",
+                i % 8,
+                i % 32,
+                i % 4
+            ));
+        }
+        let file_bytes = data.len();
+        let data: &'static str = Box::leak(data.into_boxed_str());
+        let mut reader = CsvFixtures::make_reader(data);
+        let before = rss_bytes();
+        let src = InMemorySource::load(&mut reader, "id").unwrap();
+        let after = rss_bytes();
+        assert_eq!(src.row_count(), 200_000);
+        let multiplier = (after - before) as f64 / file_bytes as f64;
+        println!(
+            "file={file_bytes} rss_delta={} multiplier={multiplier:.2}",
+            after - before
+        );
+        assert!(
+            (4.0..=20.0).contains(&multiplier),
+            "in-memory expansion moved to {multiplier:.2}x; DIMENSION_MEMORY_EXPANSION is {}",
+            crate::driven::DIMENSION_MEMORY_EXPANSION
+        );
+    }
+
+    #[cfg(not(miri))]
+    fn rss_bytes() -> usize {
+        let mut system = sysinfo::System::new();
+        let pid = sysinfo::get_current_pid().unwrap();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[pid]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing().with_memory(),
+        );
+        system.process(pid).unwrap().memory() as usize
     }
 
     #[test]

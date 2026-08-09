@@ -40,10 +40,16 @@ pub const BENCH_NUMERIC_KEYS: &[&str] = &[
     "load_spike_target",
     "load_spike_after",
     "load_spike_duration",
+    "concurrency_start",
+    "concurrency_end",
+    "concurrency_step",
 ];
 
 pub const BENCH_DURATION_KEYS: &[&str] = &[
     "max_duration",
+    // Honoured by the bench runtime; without it here `check` reported a
+    // documented key as unknown.
+    "request_timeout",
     "connect_timeout",
     "keepalive",
     "ramp_up",
@@ -54,9 +60,12 @@ pub const BENCH_DURATION_KEYS: &[&str] = &[
     "load_step_duration",
     "load_max_duration",
     "progress_interval",
+    "concurrency_step_duration",
 ];
 
 pub const BENCH_MODE_VALUES: &[&str] = &["fixed", "stepping", "adaptive", "closed", "open"];
+/// Second schedule axis: how the worker count moves across a run.
+pub const BENCH_CONCURRENCY_SCHEDULE_VALUES: &[&str] = &["const", "step", "line"];
 pub const BENCH_LOAD_SCHEDULE_VALUES: &[&str] =
     &["const", "step", "line", "sine", "spike", "custom"];
 pub const BENCH_DURATION_STOP_VALUES: &[&str] = &["close", "wait", "ignore"];
@@ -73,6 +82,7 @@ pub fn supported_bench_keys() -> Vec<&'static str> {
     keys.push("mode");
     keys.push("profile");
     keys.push("load_schedule");
+    keys.push("concurrency_schedule");
     keys.push("name");
     keys.push("assert_mode");
     keys.push("duration_stop");
@@ -742,6 +752,19 @@ fn validate_bench_key_values(
                     });
                 }
             }
+            "concurrency_schedule" => {
+                if !is_allowed_value(value, BENCH_CONCURRENCY_SCHEDULE_VALUES) {
+                    errors.push(ValidationError {
+                        message: format!(
+                            "BENCH.concurrency_schedule must be one of: {} (got '{}')",
+                            allowed_values_message(BENCH_CONCURRENCY_SCHEDULE_VALUES),
+                            value
+                        ),
+                        line: Some(start_line),
+                        severity: ErrorSeverity::Error,
+                    });
+                }
+            }
             "load_schedule" => {
                 if !is_allowed_value(value, BENCH_LOAD_SCHEDULE_VALUES) {
                     errors.push(ValidationError {
@@ -906,6 +929,16 @@ fn validate_bench_duration(
         .or_else(|| trimmed.strip_suffix("m"))
         .or_else(|| trimmed.strip_suffix("h"))
         .unwrap_or(trimmed);
+    // A negative duration parses fine as an `f64` and used to reach the runtime,
+    // where the cast to `u64` saturated it to a zero-length run.
+    if unit.parse::<f64>().is_ok_and(|n| n < 0.0) {
+        errors.push(ValidationError {
+            message: format!("BENCH.{} must not be negative, got '{}'", key, value),
+            line: Some(start_line),
+            severity: ErrorSeverity::Error,
+        });
+        return;
+    }
     if unit.parse::<f64>().is_err() {
         errors.push(ValidationError {
             message: format!(

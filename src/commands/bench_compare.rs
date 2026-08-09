@@ -137,6 +137,17 @@ fn require_f64(v: &Value, obj: &str, key: &str) -> Result<f64> {
         .with_context(|| format!("bench report missing numeric field `{obj}.{key}`"))
 }
 
+/// Canonical key for a percentile: `50.0` -> `p50`, `99.9` -> `p99.9`.
+fn percentile_key(p: f64) -> String {
+    format!("p{p}")
+}
+
+/// Inverse of [`percentile_key`], for ordering shared keys numerically —
+/// lexicographic order would put `p100` before `p50`.
+fn percentile_of_key(key: &str) -> Option<f64> {
+    key.strip_prefix('p')?.parse().ok()
+}
+
 fn extract_metrics(v: &Value) -> Result<Metrics> {
     if !v.is_object() || v.get("summary").is_none() {
         bail!("input is not a bench report (no `summary` object)");
@@ -156,7 +167,11 @@ fn extract_metrics(v: &Value) -> Result<Metrics> {
             ) else {
                 continue;
             };
-            percentiles.insert(format!("p{}", p.round() as i64), ns);
+            // Keyed by the exact percentile. Rounding to an integer collapsed
+            // `p99.5` and `p99.9` onto the same `p100` key — the last one
+            // parsed won, and the tail percentiles a run was configured to
+            // measure were never compared at all.
+            percentiles.insert(percentile_key(p), ns);
         }
     }
 
@@ -240,8 +255,18 @@ fn compare_aggregate(base: &Metrics, cur: &Metrics, th: &Thresholds) -> Vec<Metr
         ),
     });
 
-    // Percentiles — lower is better; only those present in BOTH reports.
-    for key in ["p50", "p90", "p95", "p99"] {
+    // Percentiles — lower is better; every one present in BOTH reports, in
+    // ascending order. A hardcoded `[p50, p90, p95, p99]` list silently skipped
+    // whatever else `latency_percentiles` was configured to produce.
+    let mut shared: Vec<(f64, &String)> = base
+        .percentiles
+        .keys()
+        .filter(|k| cur.percentiles.contains_key(*k))
+        .filter_map(|k| percentile_of_key(k).map(|p| (p, k)))
+        .collect();
+    shared.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    for (_, key) in shared {
         if let (Some(&b), Some(&c)) = (base.percentiles.get(key), cur.percentiles.get(key)) {
             rows.push(MetricRow {
                 name: format!("latency_{key}"),

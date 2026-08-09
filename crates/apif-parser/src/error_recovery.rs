@@ -77,6 +77,7 @@ fn build_doc_from_sections(sections: &[Section], file_path: &str) -> GctfDocumen
         file_path: file_path.to_string(),
         sections: sections.to_vec(),
         metadata: DocumentMetadata {
+            placeholder_free: false,
             source: None,
             mtime: None,
             parsed_at: 0,
@@ -221,12 +222,13 @@ fn parse_single_with_recovery(content: &str, file_path: &str) -> ErrorRecoveryRe
 
     let document = GctfDocument {
         file_path: file_path.to_string(),
-        sections,
         metadata: DocumentMetadata {
+            placeholder_free: sections.iter().all(|s| !s.raw_content.contains("{{")),
             source: Some(content.to_string()),
             mtime: None,
             parsed_at: 0,
         },
+        sections,
         next_document: None,
     };
 

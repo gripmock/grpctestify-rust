@@ -996,29 +996,55 @@ fn effective_request_timeout_secs(configured: u64) -> u64 {
     }
 }
 
-/// Cache key for a built reqwest client: only the fields that influence the
-/// client build (TLS material + request timeout). `reqwest::Client` owns a
-/// connection pool, so reusing one instance across requests enables keep-alive
-/// and avoids re-reading CA/cert/key PEM from disk on every call.
+/// What makes two reqwest clients interchangeable. `connection_id` belongs here
+/// too: one client per slot is what makes `--connections` mean anything.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct HttpClientCacheKey {
     timeout_seconds: u64,
     tls_config: Option<TlsConfig>,
+    connection_id: u64,
 }
 
 fn http_client_cache_key(config: &GrpcClientConfig) -> HttpClientCacheKey {
     HttpClientCacheKey {
         timeout_seconds: config.timeout_seconds,
         tls_config: config.tls_config.clone(),
+        connection_id: config.connection_id,
     }
 }
 
-/// Upper bound on cached clients. When reached the cache is cleared; clients are
-/// cheap to rebuild and this bounds growth over long runs against many configs.
-const HTTP_CLIENT_CACHE_MAX_ENTRIES: usize = 64;
+/// Sized so a large `--connections` pool fits; a rebuild drops a live pool.
+const HTTP_CLIENT_CACHE_MAX_ENTRIES: usize = 512;
 
-static HTTP_CLIENT_CACHE: LazyLock<Mutex<HashMap<HttpClientCacheKey, reqwest::Client>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+struct BoundedHttpClientCache {
+    map: HashMap<HttpClientCacheKey, reqwest::Client>,
+    order: std::collections::VecDeque<HttpClientCacheKey>,
+}
+
+impl BoundedHttpClientCache {
+    fn get(&self, key: &HttpClientCacheKey) -> Option<&reqwest::Client> {
+        self.map.get(key)
+    }
+
+    fn insert(&mut self, key: HttpClientCacheKey, client: reqwest::Client) {
+        if self.map.insert(key.clone(), client).is_none() {
+            self.order.push_back(key);
+        }
+        while self.map.len() > HTTP_CLIENT_CACHE_MAX_ENTRIES {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.map.remove(&oldest);
+        }
+    }
+}
+
+static HTTP_CLIENT_CACHE: LazyLock<Mutex<BoundedHttpClientCache>> = LazyLock::new(|| {
+    Mutex::new(BoundedHttpClientCache {
+        map: HashMap::new(),
+        order: std::collections::VecDeque::new(),
+    })
+});
 
 /// Return a process-global reqwest client for this config, building (and reading
 /// TLS PEM files) at most once per distinct effective config. `reqwest::Client`
@@ -1033,9 +1059,6 @@ pub(crate) fn cached_http_client(config: &GrpcClientConfig) -> Result<reqwest::C
     }
     let client = build_http_client(config)?;
     let mut cache = HTTP_CLIENT_CACHE.lock().unwrap();
-    if cache.len() >= HTTP_CLIENT_CACHE_MAX_ENTRIES {
-        cache.clear();
-    }
     cache.insert(key, client.clone());
     Ok(client)
 }
@@ -2008,6 +2031,55 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         );
     }
 
+    // Overflow used to clear the whole map, rebuilding every worker's client —
+    // and dropping its live connection pool — on each subsequent insert.
+    #[test]
+    fn http_client_cache_evicts_only_the_oldest() {
+        let mut cache = BoundedHttpClientCache {
+            map: HashMap::new(),
+            order: std::collections::VecDeque::new(),
+        };
+        let key_of = |id: u64| HttpClientCacheKey {
+            timeout_seconds: 30,
+            tls_config: None,
+            connection_id: id,
+        };
+        for id in 0..=HTTP_CLIENT_CACHE_MAX_ENTRIES as u64 {
+            cache.insert(key_of(id), reqwest::Client::new());
+        }
+
+        assert_eq!(cache.map.len(), HTTP_CLIENT_CACHE_MAX_ENTRIES);
+        assert!(cache.get(&key_of(0)).is_none(), "oldest must go");
+        assert!(
+            cache
+                .get(&key_of(HTTP_CLIENT_CACHE_MAX_ENTRIES as u64))
+                .is_some(),
+            "newest must stay"
+        );
+    }
+
+    // Without `connection_id` in the key every `--connections` slot shared one
+    // reqwest client, making the flag a silent no-op over connectrpc/grpc-web.
+    #[test]
+    fn http_client_cache_key_separates_connection_slots() {
+        let first = GrpcClientConfig {
+            connection_id: 1,
+            ..Default::default()
+        };
+        let second = GrpcClientConfig {
+            connection_id: 2,
+            ..Default::default()
+        };
+        assert_ne!(
+            http_client_cache_key(&first),
+            http_client_cache_key(&second)
+        );
+        assert_ne!(
+            http_client_cache_key(&GrpcClientConfig::default()),
+            http_client_cache_key(&first)
+        );
+    }
+
     #[test]
     #[cfg_attr(miri, ignore)]
     fn cached_http_client_reuses_same_config() {
@@ -2025,13 +2097,13 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         let key = http_client_cache_key(&config);
 
         let _first = cached_http_client(&config).expect("first build ok");
-        assert!(HTTP_CLIENT_CACHE.lock().unwrap().contains_key(&key));
-        let len_after_first = HTTP_CLIENT_CACHE.lock().unwrap().len();
+        assert!(HTTP_CLIENT_CACHE.lock().unwrap().get(&key).is_some());
+        let len_after_first = HTTP_CLIENT_CACHE.lock().unwrap().map.len();
 
         // A second call with the same config must hit the cache — no new entry,
         // no PEM re-read, no rebuild.
         let _second = cached_http_client(&config).expect("second call reuses");
-        assert_eq!(HTTP_CLIENT_CACHE.lock().unwrap().len(), len_after_first);
+        assert_eq!(HTTP_CLIENT_CACHE.lock().unwrap().map.len(), len_after_first);
     }
 
     #[test]

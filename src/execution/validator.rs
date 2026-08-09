@@ -126,6 +126,7 @@ mod tests {
                 },
             ],
             metadata: crate::parser::ast::DocumentMetadata {
+                placeholder_free: false,
                 source: None,
                 mtime: None,
                 parsed_at: 0,

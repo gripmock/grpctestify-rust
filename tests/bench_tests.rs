@@ -104,6 +104,45 @@ async fn bench_fails_when_a_threshold_is_violated() {
     );
 }
 
+/// `bench-ergonomics` promised throughput gating, but the threshold evaluator
+/// only ever saw the counters — never the run's wall time — so `thresholds.rps`
+/// resolved to "unknown metric". These two runs differ only in the direction of
+/// an unreachable throughput bound.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bench_gates_on_throughput() {
+    let address = spawn_health_server().await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let run = |name: &str, threshold: &str| {
+        let file = dir.path().join(name);
+        std::fs::write(
+            &file,
+            format!(
+                "--- ADDRESS ---\n{address}\n\n--- ENDPOINT ---\ngrpc.health.v1.Health/Check\n\n--- BENCH ---\nmode: fixed\nrequests: 5\nconcurrency: 1\nthresholds.rps: {threshold}\n\n--- REQUEST ---\n{{}}\n\n--- RESPONSE partial ---\n{{}}\n"
+            ),
+        )
+        .unwrap();
+        cli_command()
+            .args(["bench", &file.to_string_lossy()])
+            .output()
+            .expect("failed to run bench")
+    };
+
+    let unreachable = run("rps-too-high.gctf", "> 100000000");
+    assert!(
+        !unreachable.status.success(),
+        "an unreachable rps floor must fail the run: stderr:\n{}",
+        String::from_utf8_lossy(&unreachable.stderr)
+    );
+
+    let trivial = run("rps-trivial.gctf", "> 0");
+    assert!(
+        trivial.status.success(),
+        "a trivially satisfied rps floor must pass: stderr:\n{}",
+        String::from_utf8_lossy(&trivial.stderr)
+    );
+}
+
 /// §5.1 report-format coverage. Golden *files* are a poor fit for `bench`
 /// (latencies/rps/histogram are non-deterministic — a golden would be almost
 /// entirely scrubbed and brittle), so each `--log-format` is verified by its

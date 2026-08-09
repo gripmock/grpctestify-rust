@@ -93,6 +93,13 @@ pub const ENV_GRPCTESTIFY_ADDRESS: &str = "GRPCTESTIFY_ADDRESS";
 pub const ENV_GRPCTESTIFY_COMPRESSION: &str = "GRPCTESTIFY_COMPRESSION";
 
 pub fn compression_from_env() -> apif_grpc_transport::CompressionMode {
+    static CACHE: std::sync::OnceLock<apif_grpc_transport::CompressionMode> =
+        std::sync::OnceLock::new();
+    *CACHE.get_or_init(read_compression_from_env)
+}
+
+/// Uncached read, for callers that must observe an environment change.
+pub fn read_compression_from_env() -> apif_grpc_transport::CompressionMode {
     match std::env::var("GRPCTESTIFY_COMPRESSION")
         .unwrap_or_default()
         .trim()

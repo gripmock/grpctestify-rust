@@ -160,15 +160,7 @@ impl GrpcClient for TonicGrpcClient {
                 .next()
                 .await
                 .ok_or_else(|| GrpcError::new(3, "Missing request message".to_string()))?;
-            let mut v = json_val;
-            transform_input_json_for_well_known(&mut v, &input_desc);
-            let json_str = serde_json::to_string(&v)
-                .map_err(|e| GrpcError::new(3, format!("JSON error: {}", e)))?;
-            let msg = DynamicMessage::deserialize(
-                input_desc.clone(),
-                &mut serde_json::Deserializer::from_str(&json_str),
-            )
-            .map_err(|e| GrpcError::new(3, format!("Deser error: {}", e)))?;
+            let msg = convert_request_json(0, json_val, &input_desc)?;
             result = if is_ss {
                 let mut req = Request::new(msg);
                 insert_metadata(
@@ -280,20 +272,7 @@ fn convert_request_json(
     desc: &MessageDescriptor,
 ) -> Result<DynamicMessage, GrpcError> {
     transform_input_json_for_well_known(&mut json, desc);
-    let json_str = serde_json::to_string(&json).map_err(|e| {
-        GrpcError::new(
-            3,
-            format!(
-                "Failed to convert request message #{} to protobuf: {}",
-                index, e
-            ),
-        )
-    })?;
-    DynamicMessage::deserialize(
-        desc.clone(),
-        &mut serde_json::Deserializer::from_str(&json_str),
-    )
-    .map_err(|e| {
+    DynamicMessage::deserialize(desc.clone(), json).map_err(|e| {
         GrpcError::new(
             3,
             format!(
@@ -399,14 +378,15 @@ fn insert_metadata(
     custom: Option<&HashMap<String, String>>,
     version: &str,
 ) {
-    let default_ua = format!("grpctestify/{}", version);
+    static DEFAULT_UA: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let default_ua = DEFAULT_UA.get_or_init(|| format!("grpctestify/{version}"));
     let ua = custom
         .and_then(|m| {
             m.iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case("user-agent"))
                 .map(|(_, v)| v.as_str())
         })
-        .unwrap_or(&default_ua);
+        .unwrap_or(default_ua);
     if let Ok(val) = MetadataValue::from_str(ua) {
         meta.insert("user-agent", val);
     }
@@ -470,6 +450,10 @@ fn dynamic_message_to_json(msg: &DynamicMessage) -> Value {
 }
 
 fn transform_input_json_for_well_known(value: &mut Value, desc: &MessageDescriptor) {
+    // Only a message-typed field can need this.
+    if !desc.fields().any(|f| matches!(f.kind(), Kind::Message(_))) {
+        return;
+    }
     let Some(obj) = value.as_object_mut() else {
         return;
     };
@@ -710,5 +694,46 @@ mod tests {
             "custom-ua/2.0"
         );
         assert_eq!(meta.get("x-custom").unwrap().to_str().unwrap(), "value1");
+    }
+}
+
+#[cfg(test)]
+mod well_known_tests {
+    use super::*;
+
+    fn pool_from(proto: &str) -> prost_reflect::DescriptorPool {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("t.proto");
+        std::fs::write(&path, proto).expect("write proto");
+        crate::tonic::descriptor::load_from_proto_files(
+            &[path.to_string_lossy().to_string()],
+            &[dir.path().to_string_lossy().to_string()],
+        )
+        .expect("compile proto")
+    }
+
+    // The early return must not skip a message that does need transforming.
+    #[test]
+    fn a_field_mask_is_still_flattened() {
+        let pool = pool_from(
+            "syntax = \"proto3\";\npackage t;\nimport \"google/protobuf/field_mask.proto\";\nmessage M { google.protobuf.FieldMask mask = 1; }\n",
+        );
+        let desc = pool.get_message_by_name("t.M").expect("message");
+        let mut value = serde_json::json!({"mask": {"paths": ["a", "b"]}});
+        transform_input_json_for_well_known(&mut value, &desc);
+        assert_eq!(value["mask"], serde_json::json!("a,b"));
+    }
+
+    // A message with only scalar fields takes the early return and is untouched.
+    #[test]
+    fn a_scalar_only_message_is_left_alone() {
+        let pool = pool_from(
+            "syntax = \"proto3\";\npackage t;\nmessage S { string name = 1; int32 n = 2; }\n",
+        );
+        let desc = pool.get_message_by_name("t.S").expect("message");
+        let before = serde_json::json!({"name": "x", "n": 1});
+        let mut value = before.clone();
+        transform_input_json_for_well_known(&mut value, &desc);
+        assert_eq!(value, before);
     }
 }

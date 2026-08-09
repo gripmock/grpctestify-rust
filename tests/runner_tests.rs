@@ -12,6 +12,7 @@ fn create_empty_doc() -> GctfDocument {
         file_path: "test.gctf".to_string(),
         sections: Vec::new(),
         metadata: DocumentMetadata {
+            placeholder_free: false,
             source: None,
             mtime: None,
             parsed_at: 0,

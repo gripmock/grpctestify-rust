@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Write as FmtWrite;
 
-pub const BENCH_REPORT_SCHEMA_VERSION: &str = "bench_report_schema_v1";
+pub const BENCH_REPORT_SCHEMA_VERSION: &str = "bench_report_schema_v2";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchRunInfo {
@@ -23,8 +23,15 @@ pub struct BenchOptionValue {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BenchSummary {
     pub count: u64,
+    /// Transport outcome: requests whose gRPC status was `OK`, and those whose
+    /// was not.
     pub ok: u64,
     pub errors: u64,
+    /// Document verdict: requests whose RESPONSE/ERROR/ASSERTS held, and those
+    /// whose did not. A document asserting an expected error passes here while
+    /// counting as an `error` above.
+    pub passed: u64,
+    pub failed: u64,
     pub total_ns: u64,
     pub average_ns: u64,
     pub fastest_ns: u64,
@@ -70,12 +77,32 @@ pub struct SourceRuntimeStats {
     pub dimension_misses: u64,
     pub in_memory_lookups: u64,
     pub indexed_lookups: u64,
-    pub index_fallbacks: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourcesRuntime {
     pub source_stats: BTreeMap<String, SourceRuntimeStats>,
+}
+
+/// What the generator itself cost, so a reader can tell whether the numbers
+/// describe the server or this process.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientCost {
+    /// CPU seconds this process burned across the run.
+    pub cpu_seconds: f64,
+    /// CPU microseconds per request — the figure to watch across releases.
+    pub cpu_us_per_request: f64,
+    /// Requests per second per core of client CPU.
+    pub rps_per_core: f64,
+    /// Cores the client used on average, against the host's core count.
+    pub cores_used: f64,
+    pub host_cores: usize,
+    /// Set when the client was busy enough that the measured throughput is
+    /// likely its own ceiling rather than the target's.
+    pub generator_limited: bool,
+    /// Why, when it is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub limits: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +120,22 @@ pub struct BenchReport {
     pub tags: BTreeMap<String, String>,
     pub sources_runtime: Option<SourcesRuntime>,
     pub per_endpoint: Vec<PerEndpointSummary>,
+    /// Absent when the platform could not account for the process's own CPU.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_cost: Option<ClientCost>,
+    /// One entry per concurrency level when a sweep was requested. Empty for a
+    /// single-level run, so a `const` schedule reports exactly as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub levels: Vec<BenchLevelSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchLevelSummary {
+    /// Worker count this level ran with.
+    pub concurrency: u32,
+    pub summary: BenchSummary,
+    pub latency_distribution: Vec<BenchPercentile>,
+    pub grpc_status_distribution: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +165,8 @@ impl BenchReport {
             tags: BTreeMap::new(),
             sources_runtime: None,
             per_endpoint: Vec::new(),
+            client_cost: None,
+            levels: Vec::new(),
         }
     }
 
@@ -206,6 +251,17 @@ impl BenchReport {
             format_ns(self.summary.average_ns)
         );
         let _ = writeln!(out, "   • Requests/sec: {:.2}", self.summary.rps_observed);
+
+        if let Some(cost) = &self.client_cost {
+            let _ = writeln!(
+                out,
+                "   • Client cost:  {:.1} µs CPU/request, {:.2}/{} cores, {:.0} rps/core",
+                cost.cpu_us_per_request, cost.cores_used, cost.host_cores, cost.rps_per_core
+            );
+            for limit in &cost.limits {
+                let _ = writeln!(out, "     {}", fail_style().apply_to(format!("⚠ {limit}")));
+            }
+        }
 
         if !self.threshold_evaluation.is_empty() {
             let passed = self
@@ -462,6 +518,8 @@ mod tests {
             count: 100,
             ok: 99,
             errors: 1,
+            passed: 99,
+            failed: 1,
             total_ns: 1_000_000,
             average_ns: 10_000,
             fastest_ns: 1_000,

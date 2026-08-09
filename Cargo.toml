@@ -21,7 +21,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.9.6"
+version = "1.10.0"
 edition = "2024"
 authors = ["bavix"]
 license = "MIT"
@@ -142,6 +142,19 @@ mime_guess = "2"
 # separate statically linked binary, and with Cargo's defaults every one of them
 # carried full debuginfo for the entire dependency tree (tonic, tokio, rhai,
 # regex, chrono...) — debug data for code nobody here steps through.
+[profile.release]
+# The request path crosses six crates; without cross-crate inlining none of the
+# small hot functions in apif-execution / apif-grpc-transport can be folded into
+# their callers. Measured -7.3% instructions per request on a 26-byte unary call
+# (157 262 -> 145 825) and -3.1% at 64 KB. A compiler setting, not a dependency —
+# the binary stays self-contained.
+#
+# Costs build time: `cargo build --release` goes from ~42 s to ~3.5 min here.
+# That is a release action, not the inner loop — `cargo test` uses the dev
+# profile and is unaffected.
+lto = "thin"
+codegen-units = 1
+
 [profile.dev]
 # Enough for backtraces with file/line, without the type and variable records
 # that dominate the size.
@@ -264,6 +277,9 @@ console = "0.16"
 # File operations
 walkdir = { workspace = true }
 ignore = { workspace = true }
+
+# Client-side CPU accounting for the bench self-measurement block.
+sysinfo = { workspace = true }
 apif-source-row = { path = "crates/apif-source-row", version = "0.2.0" }
 apif-cfg-runtime = { path = "crates/apif-cfg-runtime", version = "0.1.1" }
 apif-diagnostics = { path = "crates/apif-diagnostics", version = "0.1.0" }
@@ -400,6 +416,10 @@ harness = false
 
 [[bench]]
 name = "index"
+harness = false
+
+[[bench]]
+name = "sources"
 harness = false
 
 [package.metadata.cargo-machete]

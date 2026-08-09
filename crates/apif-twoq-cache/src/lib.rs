@@ -1,14 +1,32 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
+
+//! 2Q cache: a small LRU of frequently-reused keys (`hot`) protected from a
+//! scan by a larger admission queue (`cold`).
+//!
+//! Recency is tracked by a monotonic tick stored with each entry, and the order
+//! queues hold `(key, tick)` pairs that are allowed to go stale. That keeps
+//! every operation O(1) amortised. The previous shape kept one queue entry per
+//! key and located it with `iter().position()`, so a hit cost a linear scan of
+//! up to `hot_limit` keys plus a `VecDeque` middle-removal memmove — with the
+//! 2048-entry hot limit the dimension-join path uses, looking a row up in the
+//! cache was dearer than the mmap read it existed to avoid.
+
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 
+struct Entry<V> {
+    value: V,
+    tick: u64,
+}
+
 pub struct TwoQCache<K, V> {
-    hot: HashMap<K, V>,
-    hot_order: VecDeque<K>,
-    cold: HashMap<K, V>,
-    cold_order: VecDeque<K>,
+    hot: HashMap<K, Entry<V>>,
+    hot_order: VecDeque<(K, u64)>,
+    cold: HashMap<K, Entry<V>>,
+    cold_order: VecDeque<(K, u64)>,
     hot_limit: usize,
     cold_limit: usize,
+    clock: u64,
 }
 
 impl<K: Hash + Eq + Clone, V> TwoQCache<K, V> {
@@ -20,56 +38,75 @@ impl<K: Hash + Eq + Clone, V> TwoQCache<K, V> {
             cold_order: VecDeque::new(),
             hot_limit,
             cold_limit,
+            clock: 0,
         }
+    }
+
+    fn next_tick(&mut self) -> u64 {
+        self.clock += 1;
+        self.clock
+    }
+
+    /// Drop order entries whose tick no longer matches the map, so the queue
+    /// cannot grow without bound when one key is hit repeatedly.
+    fn compact(order: &mut VecDeque<(K, u64)>, map: &HashMap<K, Entry<V>>, limit: usize) {
+        if order.len() <= (limit + 1).saturating_mul(4) {
+            return;
+        }
+        order.retain(|(k, tick)| map.get(k).is_some_and(|e| e.tick == *tick));
     }
 
     pub fn get(&mut self, key: &K) -> Option<&V> {
         if self.hot.contains_key(key) {
-            if let Some(pos) = self.hot_order.iter().position(|k| k == key) {
-                let k = self.hot_order.remove(pos).unwrap();
-                self.hot_order.push_back(k);
+            let tick = self.next_tick();
+            if let Some(entry) = self.hot.get_mut(key) {
+                entry.tick = tick;
             }
-            return self.hot.get(key);
+            self.hot_order.push_back((key.clone(), tick));
+            Self::compact(&mut self.hot_order, &self.hot, self.hot_limit);
+            return self.hot.get(key).map(|e| &e.value);
         }
 
-        if let Some(v) = self.cold.remove(key) {
-            if let Some(pos) = self.cold_order.iter().position(|k| k == key) {
-                self.cold_order.remove(pos);
-            }
-            self.hot.insert(key.clone(), v);
-            self.hot_order.push_back(key.clone());
+        if let Some(entry) = self.cold.remove(key) {
+            let tick = self.next_tick();
+            self.hot.insert(
+                key.clone(),
+                Entry {
+                    value: entry.value,
+                    tick,
+                },
+            );
+            self.hot_order.push_back((key.clone(), tick));
             self.evict_hot();
-            return self.hot.get(key);
+            return self.hot.get(key).map(|e| &e.value);
         }
 
         None
     }
 
     pub fn insert(&mut self, key: K, value: V) {
+        let tick = self.next_tick();
+
         // Updating an existing key must refresh its recency, otherwise a
         // frequently-rewritten hot key can be evicted as if it were stale.
         if let Some(slot) = self.hot.get_mut(&key) {
-            *slot = value;
-            Self::touch(&mut self.hot_order, &key);
+            slot.value = value;
+            slot.tick = tick;
+            self.hot_order.push_back((key, tick));
+            Self::compact(&mut self.hot_order, &self.hot, self.hot_limit);
             return;
         }
         if let Some(slot) = self.cold.get_mut(&key) {
-            *slot = value;
-            Self::touch(&mut self.cold_order, &key);
+            slot.value = value;
+            slot.tick = tick;
+            self.cold_order.push_back((key, tick));
+            Self::compact(&mut self.cold_order, &self.cold, self.cold_limit);
             return;
         }
-        self.cold.insert(key.clone(), value);
-        self.cold_order.push_back(key);
-        self.evict_cold();
-    }
 
-    /// Move `key` to the most-recently-used end of the given order queue.
-    fn touch(order: &mut VecDeque<K>, key: &K) {
-        if let Some(pos) = order.iter().position(|k| k == key)
-            && let Some(k) = order.remove(pos)
-        {
-            order.push_back(k);
-        }
+        self.cold.insert(key.clone(), Entry { value, tick });
+        self.cold_order.push_back((key, tick));
+        self.evict_cold();
     }
 
     #[inline]
@@ -102,39 +139,53 @@ impl<K: Hash + Eq + Clone, V> TwoQCache<K, V> {
         self.cold.len()
     }
 
+    /// The queue entry is left behind and skipped at eviction time.
     pub fn remove(&mut self, key: &K) -> Option<V> {
-        if let Some(v) = self.hot.remove(key) {
-            if let Some(pos) = self.hot_order.iter().position(|k| k == key) {
-                self.hot_order.remove(pos);
-            }
-            return Some(v);
+        if let Some(e) = self.hot.remove(key) {
+            return Some(e.value);
         }
-        if let Some(v) = self.cold.remove(key) {
-            if let Some(pos) = self.cold_order.iter().position(|k| k == key) {
-                self.cold_order.remove(pos);
+        self.cold.remove(key).map(|e| e.value)
+    }
+
+    /// Least-recently-used live key, dropping stale queue entries on the way.
+    fn pop_lru(order: &mut VecDeque<(K, u64)>, map: &HashMap<K, Entry<V>>) -> Option<K> {
+        while let Some((key, tick)) = order.pop_front() {
+            if map.get(&key).is_some_and(|e| e.tick == tick) {
+                return Some(key);
             }
-            return Some(v);
         }
         None
     }
 
     fn evict_hot(&mut self) {
         while self.hot.len() > self.hot_limit {
-            if let Some(oldest) = self.hot_order.pop_front()
-                && let Some(v) = self.hot.remove(&oldest)
-            {
-                self.cold.insert(oldest.clone(), v);
-                self.cold_order.push_back(oldest);
-                self.evict_cold();
-            }
+            // An empty queue with a non-empty map would spin forever; bail
+            // instead, the next insert re-establishes the ordering.
+            let Some(oldest) = Self::pop_lru(&mut self.hot_order, &self.hot) else {
+                break;
+            };
+            let Some(entry) = self.hot.remove(&oldest) else {
+                break;
+            };
+            let tick = self.next_tick();
+            self.cold.insert(
+                oldest.clone(),
+                Entry {
+                    value: entry.value,
+                    tick,
+                },
+            );
+            self.cold_order.push_back((oldest, tick));
+            self.evict_cold();
         }
     }
 
     fn evict_cold(&mut self) {
         while self.cold.len() > self.cold_limit {
-            if let Some(oldest) = self.cold_order.pop_front() {
-                self.cold.remove(&oldest);
-            }
+            let Some(oldest) = Self::pop_lru(&mut self.cold_order, &self.cold) else {
+                break;
+            };
+            self.cold.remove(&oldest);
         }
     }
 }
@@ -267,5 +318,40 @@ mod tests {
     fn missing_get_returns_none() {
         let mut cache: TwoQCache<&str, i32> = TwoQCache::new(2, 2);
         assert_eq!(cache.get(&"missing"), None);
+    }
+
+    // Lazy eviction leaves stale `(key, tick)` pairs behind; the queue must not
+    // grow without bound when the same key is hit over and over.
+    #[test]
+    fn repeated_hits_do_not_grow_the_queue_without_bound() {
+        let mut cache: TwoQCache<String, i32> = TwoQCache::new(4, 4);
+        cache.insert("k".into(), 1);
+        let _ = cache.get(&"k".to_string());
+        for _ in 0..10_000 {
+            let _ = cache.get(&"k".to_string());
+        }
+        assert!(
+            cache.hot_order.len() <= 4 * (4 + 1) + 1,
+            "queue grew to {}",
+            cache.hot_order.len()
+        );
+        assert_eq!(cache.get(&"k".to_string()), Some(&1));
+    }
+
+    // A key removed while its order entry is still queued must not resurrect
+    // and must not stall eviction.
+    #[test]
+    fn removed_keys_do_not_block_eviction() {
+        let mut cache: TwoQCache<String, i32> = TwoQCache::new(1, 1);
+        cache.insert("a".into(), 1);
+        let _ = cache.get(&"a".to_string());
+        assert_eq!(cache.remove(&"a".to_string()), Some(1));
+
+        for i in 0..5 {
+            cache.insert(format!("k{i}"), i);
+            let _ = cache.get(&format!("k{i}"));
+        }
+        assert!(!cache.contains(&"a".to_string()));
+        assert!(cache.len() <= 2);
     }
 }

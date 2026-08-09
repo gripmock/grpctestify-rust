@@ -131,6 +131,8 @@ pub enum Commands {
     Bench(BenchArgs),
     /// Compare two bench reports & gate regressions
     BenchCompare(BenchCompareArgs),
+    /// Fold many bench reports into one matrix document
+    BenchAggregate(BenchAggregateArgs),
 
     // Data sources.
     /// Build & manage data-source indexes
@@ -389,6 +391,28 @@ pub struct BenchArgs {
     #[arg(long = "load-max-duration", value_name = "DURATION")]
     pub load_max_duration: Option<String>,
 
+    /// Concurrency schedule: const, step, line — a second axis alongside the
+    /// --load-* (RPS) schedule. Each level is measured in full and reported
+    /// separately.
+    #[arg(long = "concurrency-schedule", value_name = "SCHEDULE")]
+    pub concurrency_schedule: Option<String>,
+
+    /// First concurrency level for a step/line schedule
+    #[arg(long = "concurrency-start", value_name = "N")]
+    pub concurrency_start: Option<u32>,
+
+    /// Last concurrency level for a step/line schedule (inclusive)
+    #[arg(long = "concurrency-end", value_name = "N")]
+    pub concurrency_end: Option<u32>,
+
+    /// Worker delta between concurrency levels (default 1 for line, 0 = auto)
+    #[arg(long = "concurrency-step", value_name = "N")]
+    pub concurrency_step: Option<u32>,
+
+    /// Per-level run duration, overriding the run's own stop condition
+    #[arg(long = "concurrency-step-duration", value_name = "DURATION")]
+    pub concurrency_step_duration: Option<String>,
+
     /// Number of gRPC connections to use (<= concurrency)
     #[arg(long, value_name = "N")]
     pub connections: Option<u32>,
@@ -405,7 +429,9 @@ pub struct BenchArgs {
     #[arg(long, value_name = "DURATION")]
     pub keepalive: Option<String>,
 
-    /// Number of CPU cores to use
+    /// Tokio worker threads for the run. Defaults to min(cores, 4) for `bench`;
+    /// more threads cost CPU and instructions per request without adding
+    /// throughput. Also honours TOKIO_WORKER_THREADS.
     #[arg(long, value_name = "N")]
     pub cpus: Option<usize>,
 
@@ -420,6 +446,11 @@ pub struct BenchArgs {
     /// Disable ASSERTS evaluation to measure transport baseline
     #[arg(long, visible_alias = "bench-no-assert", default_value_t = false)]
     pub no_assert: bool,
+
+    /// Measure this client's own floor: run against a built-in no-op target
+    /// instead of the configured address
+    #[arg(long, default_value_t = false)]
+    pub calibrate: bool,
 
     /// Sample rate for detailed logging (0.0-1.0)
     #[arg(long, value_name = "RATE")]
@@ -506,6 +537,21 @@ pub struct BenchArgs {
     /// Inline JSON request body (used with --call)
     #[arg(long, value_name = "JSON")]
     pub data: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct BenchAggregateArgs {
+    /// Bench reports to fold together (JSON produced by `bench --log-format json`)
+    #[arg(required = true, value_name = "FILE")]
+    pub reports: Vec<PathBuf>,
+
+    /// Output format: json (one matrix document) or csv (one row per level)
+    #[arg(long, default_value = "json", value_name = "FORMAT")]
+    pub format: String,
+
+    /// Write to this path instead of stdout
+    #[arg(short = 'o', long, value_name = "FILE")]
+    pub output: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Clone)]

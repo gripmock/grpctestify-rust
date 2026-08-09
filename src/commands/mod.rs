@@ -3,6 +3,7 @@ use crate::grpc::TlsConfig;
 use anyhow::Result;
 
 pub mod bench;
+pub mod bench_aggregate;
 pub mod bench_compare;
 pub mod call;
 pub mod check;

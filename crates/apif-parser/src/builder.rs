@@ -101,6 +101,7 @@ impl GctfDocumentBuilder {
             file_path: self.file_path,
             sections: self.sections,
             metadata: DocumentMetadata {
+                placeholder_free: false,
                 source: None,
                 mtime: None,
                 parsed_at: apif_cfg_runtime::now_timestamp(),

@@ -8,8 +8,36 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 const INDEX_MAGIC: u32 = 0x47435449;
-const INDEX_VERSION: u32 = 5; // v5: single-file + typed keys + CRC32 checksum
+const INDEX_VERSION: u32 = 6; // v6: fixed UUID/ULID key ordering (v5 keys sorted wrong)
 pub const COMPOSITE_KEY_SEPARATOR: &str = "\x1F"; // Unit separator for composite keys
+
+/// The columns a key spec names. A single-column spec yields one item, so the
+/// composite path and the plain path are the same code.
+pub fn key_columns(spec: &str) -> impl Iterator<Item = &str> {
+    spec.split(COMPOSITE_KEY_SEPARATOR)
+        .filter(|c| !c.is_empty())
+}
+
+/// The key value a row carries for a spec, or `None` when a named column is
+/// absent. `indexed_by: [a, b]` used to be passed around as the literal column
+/// name `"a\x1Fb"`, which no row has — the in-memory path failed the lookup and
+/// the index builder silently indexed on `a` alone.
+pub fn composite_value(spec: &str, get: impl Fn(&str) -> Option<String>) -> Option<String> {
+    let mut out = String::new();
+    for (i, column) in key_columns(spec).enumerate() {
+        if i > 0 {
+            out.push_str(COMPOSITE_KEY_SEPARATOR);
+        }
+        out.push_str(&get(column)?);
+    }
+    (!out.is_empty() || spec.is_empty()).then_some(out)
+}
+
+/// A key spec rendered for a file name: the unit separator is not something to
+/// put on a filesystem.
+pub fn key_spec_slug(spec: &str) -> String {
+    key_columns(spec).collect::<Vec<_>>().join("+")
+}
 
 fn json_value_to_string(v: Option<&serde_json::Value>) -> String {
     match v {
@@ -21,9 +49,6 @@ fn json_value_to_string(v: Option<&serde_json::Value>) -> String {
         Some(other) => other.to_string(),
     }
 }
-
-const FLAG_HAS_UNICODE: u64 = 1 << 62;
-const FLAG_HAS_METADATA: u64 = 1 << 63;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum KeyType {
@@ -129,26 +154,29 @@ fn parse_uuid(s: &str) -> Option<UuidParts> {
     if bytes.len() != 16 {
         return None;
     }
-    let p0 = u64::from_le_bytes(bytes[0..8].try_into().ok()?);
-    let p1 = u64::from_le_bytes(bytes[8..16].try_into().ok()?);
+    let p0 = u64::from_be_bytes(bytes[0..8].try_into().ok()?);
+    let p1 = u64::from_be_bytes(bytes[8..16].try_into().ok()?);
     Some(UuidParts(p0, p1))
 }
 
+/// Split high/low so the derived `Ord` matches both numeric and lexicographic
+/// order. 26 x 5 = 130 bits, of which the leading two must be zero.
 fn parse_ulid(s: &str) -> Option<UlidParts> {
     const BASE32_CHARS: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
     let s = s.trim();
     if s.len() != 26 {
         return None;
     }
-    let mut bytes = [0u8; 16];
+    let mut value: u128 = 0;
     for (i, c) in s.bytes().enumerate() {
         let c = c.to_ascii_uppercase();
-        let idx = BASE32_CHARS.iter().position(|&x| x == c)?;
-        bytes[i / 2] = bytes[i / 2] * 32 + idx as u8;
+        let idx = BASE32_CHARS.iter().position(|&x| x == c)? as u128;
+        if i == 0 && idx > 7 {
+            return None;
+        }
+        value = (value << 5) | idx;
     }
-    let p0 = u64::from_le_bytes(bytes[0..8].try_into().ok()?);
-    let p1 = u64::from_le_bytes(bytes[8..16].try_into().ok()?);
-    Some(UlidParts(p0, p1))
+    Some(UlidParts((value >> 64) as u64, value as u64))
 }
 
 fn parse_hex_bytes(s: &str) -> Option<Vec<u8>> {
@@ -475,58 +503,6 @@ fn is_time(s: &str) -> bool {
 pub struct IndexEntry {
     pub offset: u64,
     pub row_length: u32,
-}
-
-#[derive(Debug, Clone)]
-pub struct IndexEntryV4 {
-    pub offset: u64,
-    pub row_length: u32,
-    pub has_unicode_suffix: bool,
-    pub has_extended_metadata: bool,
-}
-
-impl IndexEntryV4 {
-    pub fn new(offset: u64, row_length: u32) -> Self {
-        Self {
-            offset,
-            row_length,
-            has_unicode_suffix: false,
-            has_extended_metadata: false,
-        }
-    }
-
-    pub fn with_unicode(mut self) -> Self {
-        self.has_unicode_suffix = true;
-        self
-    }
-
-    pub fn with_metadata(mut self) -> Self {
-        self.has_extended_metadata = true;
-        self
-    }
-
-    pub fn encode(&self) -> u64 {
-        let mut bits = self.offset & 0x3FFFFFFFFFFFFFFF;
-        if self.has_unicode_suffix {
-            bits |= FLAG_HAS_UNICODE;
-        }
-        if self.has_extended_metadata {
-            bits |= FLAG_HAS_METADATA;
-        }
-        bits
-    }
-
-    pub fn decode(bits: u64) -> Self {
-        let offset = bits & 0x3FFFFFFFFFFFFFFF;
-        let has_unicode_suffix = (bits & FLAG_HAS_UNICODE) != 0;
-        let has_extended_metadata = (bits & FLAG_HAS_METADATA) != 0;
-        Self {
-            offset,
-            row_length: 0,
-            has_unicode_suffix,
-            has_extended_metadata,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -997,6 +973,8 @@ impl SourceIndex {
         Ok(Some(line))
     }
 
+    /// A row span runs to the end of its line terminator, so callers that want
+    /// the record itself must drop it.
     pub fn lookup_row_from_mmap(&self, mmap_data: &[u8], key: &str) -> Result<Option<String>> {
         let entries = self.lookup_all(key);
         let entry = match entries.and_then(|e| e.first()) {
@@ -1016,14 +994,45 @@ impl SourceIndex {
             );
         }
 
-        let line = String::from_utf8(mmap_data[start..end].to_vec())
+        let line = std::str::from_utf8(trim_row_terminator(&mmap_data[start..end]))
             .context("invalid UTF-8 in source row")?;
-        Ok(Some(line))
+        Ok(Some(line.to_string()))
     }
 
     pub fn key_column(&self) -> &str {
         &self.header.key_column
     }
+}
+
+/// A span is a superset of its record: it may lead with blank or `#` comment
+/// lines the reader skipped, and it ends past the terminator.
+pub fn trim_row_terminator(bytes: &[u8]) -> &[u8] {
+    let mut rest = bytes;
+    loop {
+        let trimmed = rest
+            .strip_prefix(b"\n")
+            .or_else(|| rest.strip_prefix(b"\r"));
+        if let Some(next) = trimmed {
+            rest = next;
+            continue;
+        }
+        if rest.first() == Some(&b'#') {
+            let line_end = rest
+                .iter()
+                .position(|b| *b == b'\n')
+                .map_or(rest.len(), |i| i + 1);
+            rest = &rest[line_end..];
+            continue;
+        }
+        break;
+    }
+    while let Some(next) = rest
+        .strip_suffix(b"\n")
+        .or_else(|| rest.strip_suffix(b"\r"))
+    {
+        rest = next;
+    }
+    rest
 }
 
 pub fn read_index_key_type<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Result<KeyType> {
@@ -1175,6 +1184,60 @@ fn read_var_u64(reader: &mut impl Read) -> Result<u64> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    // A real 2026 ULID: `01K` is January 2026, and the random suffix carries
+    // characters well above `7`. The old two-chars-into-a-`u8` accumulator
+    // overflowed on those — a debug panic and a corrupt key in release.
+    #[test]
+    fn a_current_ulid_decodes_without_overflowing() {
+        let parsed = parse_ulid("01KZZZZZZZZZZZZZZZZZZZZZZZ").expect("valid ULID must decode");
+        assert_ne!(parsed, UlidParts::default());
+        assert!(parse_ulid("01JQ8XMK3F9T7VWXYZAB0CDEFG").is_some());
+    }
+
+    // ULIDs are built to sort by time as strings; the key ordering must agree.
+    #[test]
+    fn ulid_keys_sort_the_way_the_strings_do() {
+        let mut ulids = [
+            "01K0000000ZZZZZZZZZZZZZZZZ",
+            "01J000000000000000000000A0",
+            "01K0000000000000000000000P",
+        ];
+        let mut parsed: Vec<_> = ulids.iter().map(|s| parse_ulid(s).unwrap()).collect();
+        parsed.sort();
+        ulids.sort_unstable();
+        let expected: Vec<_> = ulids.iter().map(|s| parse_ulid(s).unwrap()).collect();
+        assert_eq!(parsed, expected);
+    }
+
+    #[test]
+    fn uuid_keys_sort_the_way_the_strings_do() {
+        let a = parse_uuid("00000000-0000-0000-0000-000000000001").unwrap();
+        let b = parse_uuid("00000000-0000-0000-0000-000000000002").unwrap();
+        let c = parse_uuid("00000001-0000-0000-0000-000000000000").unwrap();
+        assert!(a < b, "{a:?} must precede {b:?}");
+        assert!(b < c, "{b:?} must precede {c:?}");
+    }
+
+    #[test]
+    fn malformed_ulids_are_rejected_rather_than_truncated() {
+        assert!(parse_ulid("").is_none());
+        assert!(
+            parse_ulid("01JQ8XMK3F9T7VWXYZAB0CDEF").is_none(),
+            "25 chars"
+        );
+        assert!(
+            parse_ulid("01JQ8XMK3F9T7VWXYZAB0CDEFGH").is_none(),
+            "27 chars"
+        );
+        assert!(
+            parse_ulid("01JQ8XMK3F9T7VWXYZAB0CDEFU").is_none(),
+            "U is not in Crockford base32"
+        );
+        // The leading character carries only three significant bits; anything
+        // above `7` would need a 131st bit.
+        assert!(parse_ulid("81JQ8XMK3F9T7VWXYZAB0CDEFG").is_none());
+    }
 
     // `batch_insert` is the O(n log n) alternative to inserting one row at a
     // time, which is O(n^2) for numeric keys because each new key shifts a Vec.
@@ -1358,57 +1421,6 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].offset, 10);
         assert_eq!(all[1].offset, 31);
-    }
-
-    #[test]
-    fn index_entry_v4_encode_decode() {
-        let entry = IndexEntryV4::new(0x123456789ABC, 100);
-        let encoded = entry.encode();
-        let decoded = IndexEntryV4::decode(encoded);
-        assert_eq!(decoded.offset, 0x123456789ABC);
-        assert!(!decoded.has_unicode_suffix);
-        assert!(!decoded.has_extended_metadata);
-    }
-
-    #[test]
-    fn index_entry_v4_with_unicode_flag() {
-        let entry = IndexEntryV4::new(0x1000, 50).with_unicode();
-        let encoded = entry.encode();
-        assert!(encoded & FLAG_HAS_UNICODE != 0);
-
-        let decoded = IndexEntryV4::decode(encoded);
-        assert!(decoded.has_unicode_suffix);
-    }
-
-    #[test]
-    fn index_entry_v4_with_metadata_flag() {
-        let entry = IndexEntryV4::new(0x1000, 50).with_metadata();
-        let encoded = entry.encode();
-        assert!(encoded & FLAG_HAS_METADATA != 0);
-
-        let decoded = IndexEntryV4::decode(encoded);
-        assert!(decoded.has_extended_metadata);
-    }
-
-    #[test]
-    fn index_entry_v4_both_flags() {
-        let entry = IndexEntryV4::new(0x1000, 50).with_unicode().with_metadata();
-        let encoded = entry.encode();
-        assert!(encoded & FLAG_HAS_UNICODE != 0);
-        assert!(encoded & FLAG_HAS_METADATA != 0);
-
-        let decoded = IndexEntryV4::decode(encoded);
-        assert!(decoded.has_unicode_suffix);
-        assert!(decoded.has_extended_metadata);
-    }
-
-    #[test]
-    fn index_entry_v4_max_offset() {
-        let max_offset: u64 = 0x3FFFFFFFFFFFFFFF;
-        let entry = IndexEntryV4::new(max_offset, 1000);
-        let encoded = entry.encode();
-        let decoded = IndexEntryV4::decode(encoded);
-        assert_eq!(decoded.offset, max_offset);
     }
 
     #[test]

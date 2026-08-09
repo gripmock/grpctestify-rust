@@ -17,13 +17,11 @@ pub use analyzer::{
 pub use apif_source_error::SourceError;
 pub use apif_twoq_cache::TwoQCache;
 pub use csv::CsvReader;
-pub use definition::{IndexMode, JoinType, SourceDefinition};
+pub use definition::{JoinType, SourceDefinition};
 pub use detect::{SourceFormat, detect_format};
-pub use driven::{
-    FallbackReason, FallbackType, RuntimeFallbackPolicy, SourceDrivenConfig, SourceFallbackEvent,
-};
+pub use driven::SourceDrivenConfig;
 pub use filter::{FilterCondition, matches_all as matches_filter_all};
-pub use index::{IndexEntry, IndexEntryV4, SourceIndex};
+pub use index::{IndexEntry, SourceIndex};
 pub use memory::InMemorySource;
 pub use ndjson::NdjsonReader;
 pub use tsv::TsvReader;
@@ -32,6 +30,7 @@ use anyhow::Result;
 use apif_utils::FileUtils;
 use std::io::BufReader;
 use std::path::Path;
+use std::sync::Arc;
 
 pub trait SourceReader: Send {
     fn next_row(&mut self) -> Result<Option<SourceRow>>;
@@ -46,6 +45,31 @@ pub trait SourceReader: Send {
     fn supports_reset(&self) -> bool {
         false
     }
+
+    /// Byte span `(offset, length)` of the row `next_row` last returned,
+    /// including its terminator. Index building needs a true file position, not
+    /// one reconstructed from decoded field lengths.
+    fn last_row_span(&self) -> Option<(u64, u32)> {
+        None
+    }
+}
+
+/// A BOM'd file otherwise names its first column `\u{feff}id`.
+pub(crate) fn strip_bom(header: &mut String) {
+    if let Some(rest) = header.strip_prefix('\u{feff}') {
+        *header = rest.to_string();
+    }
+}
+
+/// Byte span from a record's start position to the reader's position after it,
+/// i.e. the raw bytes of that record including its terminator.
+pub(crate) fn span_of(
+    start: Option<&::csv::Position>,
+    end: &::csv::Position,
+) -> Option<(u64, u32)> {
+    let start = start?.byte();
+    let len = end.byte().checked_sub(start)?;
+    Some((start, u32::try_from(len).ok()?))
 }
 
 pub fn open_source_reader(
@@ -130,16 +154,27 @@ mod tests {
 
 #[derive(Debug, Clone)]
 pub struct SourceRow {
-    columns: Vec<String>,
+    /// Shared with every row from the same source. Storing a private
+    /// `Vec<String>` per row re-cloned every column name for every row — for a
+    /// 3-column CSV that is three allocations per row for strings identical
+    /// across the whole file, and a large part of the in-memory footprint.
+    columns: Arc<[String]>,
     values: Vec<String>,
 }
 
 impl SourceRow {
     pub fn new(headers: &[String], values: Vec<String>) -> Self {
         Self {
-            columns: headers.to_vec(),
+            columns: headers.into(),
             values,
         }
+    }
+
+    /// Build a row sharing an already-allocated column list — a refcount bump
+    /// rather than one `String` allocation per column. Readers hold the list
+    /// once and hand the same handle to every row.
+    pub fn with_columns(columns: Arc<[String]>, values: Vec<String>) -> Self {
+        Self { columns, values }
     }
 
     pub fn from_csv_line(line: &str) -> Self {
@@ -152,7 +187,10 @@ impl SourceRow {
                 columns.push(format!("col_{}", columns.len()));
             }
         }
-        Self { columns, values }
+        Self {
+            columns: columns.into(),
+            values,
+        }
     }
 
     pub fn from_pairs(pairs: Vec<(String, String)>) -> Self {
@@ -162,7 +200,10 @@ impl SourceRow {
             columns.push(k);
             values.push(v);
         }
-        Self { columns, values }
+        Self {
+            columns: columns.into(),
+            values,
+        }
     }
 
     pub fn get(&self, column: &str) -> Option<&str> {

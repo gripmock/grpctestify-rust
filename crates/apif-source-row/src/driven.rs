@@ -24,6 +24,10 @@ const ENV_DIMENSION_MEMORY_BUDGET: &str = "GRPCTESTIFY_DIMENSION_MEMORY_BUDGET";
 const MAX_DIMENSION_MEMORY_BUDGET: u64 = 512 * 1024 * 1024;
 const MIN_DIMENSION_MEMORY_BUDGET: u64 = 32 * 1024 * 1024;
 
+/// RAM per byte of dimension file once loaded; measured 12.02x on a 5-column
+/// CSV. The budget is a RAM budget, so the file size must be scaled by it.
+pub(crate) const DIMENSION_MEMORY_EXPANSION: u64 = 12;
+
 fn resolve_dimension_budget() -> u64 {
     if let Ok(val) = std::env::var(ENV_DIMENSION_MEMORY_BUDGET)
         && !val.is_empty()
@@ -41,6 +45,21 @@ fn resolve_dimension_budget() -> u64 {
     }
 
     (available / 2).clamp(MIN_DIMENSION_MEMORY_BUDGET, MAX_DIMENSION_MEMORY_BUDGET)
+}
+
+/// A source's own `memory_budget`, else the run-wide one.
+fn task_budget(def: &SourceDefinition, default_budget: u64) -> u64 {
+    def.memory_budget
+        .as_deref()
+        .and_then(|v| parse_bytes(v).ok())
+        .unwrap_or(default_budget)
+}
+
+/// Whether a dimension of this file size can be held in memory within `budget`.
+fn fits_in_memory(file_size: u64, budget: u64) -> bool {
+    file_size
+        .checked_mul(DIMENSION_MEMORY_EXPANSION)
+        .is_some_and(|needed| needed <= budget)
 }
 
 fn parse_bytes(s: &str) -> Result<u64> {
@@ -70,6 +89,13 @@ pub enum DimensionSource {
     Indexed(Box<IndexedDimension>),
 }
 
+/// How to turn one raw line of an indexed dimension back into fields.
+#[derive(Debug, Clone, Copy)]
+pub enum RowDecoder {
+    Delimited(u8),
+    Ndjson,
+}
+
 pub struct IndexedDimension {
     pub index: Arc<SourceIndex>,
     pub mmap: memmap2::Mmap,
@@ -77,19 +103,58 @@ pub struct IndexedDimension {
     /// Column names of the source, so rows read from the mmap carry the same
     /// field names an in-memory dimension would (`dim.name`, not `dim.col_0`).
     pub headers: Vec<String>,
+    pub decoder: RowDecoder,
+    /// Applied on lookup. An in-memory dimension filters at load; without this
+    /// the same YAML filtered or not depending on free RAM.
+    pub filter: Vec<FilterCondition>,
 }
 
 impl IndexedDimension {
     fn row_from_line(&self, line: &str) -> SourceRow {
-        if self.headers.is_empty() {
-            SourceRow::from_csv_line(line)
-        } else {
-            let values: Vec<String> = line
-                .split(',')
-                .map(|p| p.trim_ascii().to_string())
-                .collect();
-            SourceRow::new(&self.headers, values)
+        let values = match self.decoder {
+            RowDecoder::Ndjson => self.ndjson_values(line),
+            RowDecoder::Delimited(delimiter) => delimited_values(line, delimiter),
+        };
+        match values {
+            Some(values) if !self.headers.is_empty() => SourceRow::new(&self.headers, values),
+            Some(values) => SourceRow::new(
+                &(0..values.len())
+                    .map(|i| format!("col_{i}"))
+                    .collect::<Vec<_>>(),
+                values,
+            ),
+            None => SourceRow::from_csv_line(line),
         }
+    }
+
+    fn ndjson_values(&self, line: &str) -> Option<Vec<String>> {
+        let serde_json::Value::Object(obj) = serde_json::from_str(line).ok()? else {
+            return None;
+        };
+        Some(
+            self.headers
+                .iter()
+                .map(|k| match obj.get(k) {
+                    None | Some(serde_json::Value::Null) => String::new(),
+                    Some(serde_json::Value::String(s)) => s.clone(),
+                    Some(v) => v.to_string(),
+                })
+                .collect(),
+        )
+    }
+}
+
+fn delimited_values(line: &str, delimiter: u8) -> Option<Vec<String>> {
+    let mut reader = csv::ReaderBuilder::new()
+        .delimiter(delimiter)
+        .has_headers(false)
+        .flexible(true)
+        .from_reader(line.as_bytes());
+    let mut record = csv::StringRecord::new();
+    if reader.read_record(&mut record).ok()? {
+        Some(record.iter().map(|f| f.trim_ascii().to_string()).collect())
+    } else {
+        None
     }
 }
 
@@ -106,6 +171,9 @@ impl DimensionSource {
                     return Ok(None);
                 };
                 let row = idx.row_from_line(&line);
+                if !idx.filter.is_empty() && !matches_filter_all(&row, &idx.filter) {
+                    return Ok(None);
+                }
                 cache.insert(key.to_string(), row.clone());
                 Ok(Some(row))
             }
@@ -130,48 +198,16 @@ impl DimensionSource {
                     .filter_map(|entry| {
                         let start = entry.offset as usize;
                         let end = start.checked_add(entry.row_length as usize)?;
-                        let bytes = data.get(start..end)?;
+                        let bytes = crate::index::trim_row_terminator(data.get(start..end)?);
                         std::str::from_utf8(bytes)
                             .ok()
                             .map(|line| idx.row_from_line(line))
                     })
+                    .filter(|row| idx.filter.is_empty() || matches_filter_all(row, &idx.filter))
                     .collect()
             }
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RuntimeFallbackPolicy {
-    #[default]
-    Skip,
-    ScanSource,
-    Error,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct SourceFallbackEvent {
-    pub source_name: String,
-    pub key: String,
-    pub reason: FallbackReason,
-    pub fallback_type: FallbackType,
-}
-
-#[derive(Debug, Clone, Default)]
-pub enum FallbackReason {
-    #[default]
-    IndexLookupMiss,
-    IndexCorrupted,
-    IndexOutOfSync,
-    TypeMismatch,
-}
-
-#[derive(Debug, Clone, Default)]
-pub enum FallbackType {
-    #[default]
-    None,
-    ScanSource,
-    Error,
 }
 
 struct DimensionJoin {
@@ -203,8 +239,12 @@ fn load_dimension_source(
     resolved_path: &Path,
     key_col: &str,
 ) -> Result<DimensionSource> {
-    let reader = open_source_reader(def, document_path)
+    let mut reader = open_source_reader(def, document_path)
         .with_context(|| format!("failed to open dimension source '{}'", def.file))?;
+    if reader.headers().is_empty() {
+        // NDJSON has no header line: its columns come from the first record.
+        reader.next_row()?;
+    }
     let headers = reader.headers().to_vec();
     drop(reader);
     let effective_key = if key_col.is_empty() {
@@ -230,7 +270,22 @@ fn load_dimension_source(
         mmap,
         cache: Mutex::new(TwoQCache::new(DIMENSION_CACHE_HOT, DIMENSION_CACHE_COLD)),
         headers,
+        decoder: row_decoder_for(def, resolved_path),
+        filter: def.filter.clone().unwrap_or_default(),
     })))
+}
+
+/// The line decoder a dimension's format implies.
+fn row_decoder_for(def: &SourceDefinition, resolved_path: &Path) -> RowDecoder {
+    let format = def
+        .format
+        .clone()
+        .or_else(|| crate::detect::detect_format(resolved_path).ok());
+    match format {
+        Some(crate::detect::SourceFormat::Ndjson) => RowDecoder::Ndjson,
+        Some(crate::detect::SourceFormat::Tsv) => RowDecoder::Delimited(b'\t'),
+        _ => RowDecoder::Delimited(def.delimiter.unwrap_or(b',')),
+    }
 }
 
 fn load_dimension_in_memory(
@@ -257,8 +312,24 @@ fn load_dimension_in_memory(
     Ok(DimensionSource::Memory(mem))
 }
 
+/// The dimension key a primary row carries for a join, composite or not.
+fn join_key(row: &SourceRow, spec: &str) -> Option<String> {
+    crate::index::composite_value(spec, |c| row.get(c).map(str::to_string))
+}
+
+/// Rows read from the primary source per refill. Large enough that the reader
+/// lock and the CSV parse amortise across many requests, small enough that a
+/// short run does not read far past what it uses.
+const PRIMARY_BATCH_ROWS: usize = 256;
+
 pub struct SourceDrivenConfig {
     pub primary: Arc<Mutex<Box<dyn SourceReader>>>,
+    /// Rows pulled from `primary` ahead of demand. Parsing a CSV record is far
+    /// more expensive than handing one out, and every bench worker pulls from
+    /// the same reader — doing the parse under the reader lock serialised all
+    /// of them behind it. Refilling in batches keeps the parse off the
+    /// per-request critical section.
+    primary_batch: Mutex<std::collections::VecDeque<SourceRow>>,
     pub primary_name: String,
     pub dimensions: HashMap<String, DimensionSource>,
     pub resolved_paths: HashMap<String, PathBuf>,
@@ -266,8 +337,15 @@ pub struct SourceDrivenConfig {
     primary_filter: Vec<FilterCondition>,
     pub load_stats: DimLoadStats,
     pub runtime_stats: SourceRuntimeStats,
-    pub fallback_policy: RuntimeFallbackPolicy,
-    cross_product_state: std::sync::Mutex<Option<CrossProductState>>,
+    /// Cross-products awaiting emission, one per primary row that produced
+    /// them. A single `Option` slot let two workers that each pulled a
+    /// distinct row both install state, the second silently discarding the
+    /// first row's entire product.
+    cross_product_state: std::sync::Mutex<std::collections::VecDeque<CrossProductState>>,
+    /// Whether any join is a CROSS. Without it the cross-product mutex was
+    /// acquired on every single request even when no join could ever populate
+    /// it.
+    has_cross_join: bool,
     pub loaded_at: std::time::Instant,
     pub current_row: std::sync::atomic::AtomicU64,
 }
@@ -290,7 +368,6 @@ pub struct SourceRuntimeStats {
     pub dimension_misses: std::sync::atomic::AtomicU64,
     pub in_memory_lookups: std::sync::atomic::AtomicU64,
     pub indexed_lookups: std::sync::atomic::AtomicU64,
-    pub index_fallbacks: std::sync::atomic::AtomicU64,
 }
 
 /// Consistent snapshot of runtime stats at a point in time.
@@ -301,7 +378,6 @@ pub struct RuntimeStatsSnapshot {
     pub dimension_misses: u64,
     pub in_memory_lookups: u64,
     pub indexed_lookups: u64,
-    pub index_fallbacks: u64,
 }
 
 impl SourceRuntimeStats {
@@ -314,7 +390,6 @@ impl SourceRuntimeStats {
             dimension_misses: self.dimension_misses.load(Relaxed),
             in_memory_lookups: self.in_memory_lookups.load(Relaxed),
             indexed_lookups: self.indexed_lookups.load(Relaxed),
-            index_fallbacks: self.index_fallbacks.load(Relaxed),
         }
     }
 }
@@ -327,7 +402,6 @@ impl Default for SourceRuntimeStats {
             dimension_misses: std::sync::atomic::AtomicU64::new(0),
             in_memory_lookups: std::sync::atomic::AtomicU64::new(0),
             indexed_lookups: std::sync::atomic::AtomicU64::new(0),
-            index_fallbacks: std::sync::atomic::AtomicU64::new(0),
         }
     }
 }
@@ -355,10 +429,6 @@ impl Clone for SourceRuntimeStats {
                 self.indexed_lookups
                     .load(std::sync::atomic::Ordering::Relaxed),
             ),
-            index_fallbacks: std::sync::atomic::AtomicU64::new(
-                self.index_fallbacks
-                    .load(std::sync::atomic::Ordering::Relaxed),
-            ),
         }
     }
 }
@@ -377,15 +447,6 @@ impl SourceRuntimeStats {
         } else {
             self.in_memory_lookups.fetch_add(1, Ordering::Relaxed);
         }
-    }
-
-    /// Count one time an indexed dimension had to fall back to a scan. Feeds the
-    /// `index_fallbacks` field reported in the bench output. NOT yet called from
-    /// the fallback policy, so that metric currently always reads 0 — see the
-    /// codebase-reduction change, task 8.x.
-    pub fn record_fallback(&self) {
-        use std::sync::atomic::Ordering;
-        self.index_fallbacks.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -414,7 +475,11 @@ impl SourceDrivenConfig {
             let dim_name = def.name.clone().unwrap_or_else(|| "dim".to_string());
 
             let resolved = FileUtils::resolve_relative_path(document_path, &def.file);
-            let file_size = std::fs::metadata(&resolved).map(|m| m.len()).unwrap_or(0);
+            // A file we cannot stat is treated as too large: indexing it is
+            // slower but bounded, while assuming zero loads it whole.
+            let file_size = std::fs::metadata(&resolved)
+                .map(|m| m.len())
+                .unwrap_or(u64::MAX);
 
             let key_col = def
                 .indexed_by
@@ -443,8 +508,8 @@ impl SourceDrivenConfig {
         let mut too_large: Vec<DimTask> = Vec::new();
         let mut total_file_bytes = 0u64;
         for task in dim_tasks {
-            total_file_bytes += task.file_size;
-            if task.file_size <= memory_bb {
+            total_file_bytes = total_file_bytes.saturating_add(task.file_size);
+            if fits_in_memory(task.file_size, task_budget(&task.def, memory_bb)) {
                 in_memory.push(task);
             } else {
                 too_large.push(task);
@@ -461,7 +526,7 @@ impl SourceDrivenConfig {
                 .into_iter()
                 .map(|t| {
                     let start = std::time::Instant::now();
-                    let src = if t.file_size <= memory_bb {
+                    let src = if fits_in_memory(t.file_size, task_budget(&t.def, memory_bb)) {
                         load_dimension_in_memory(
                             &t.def,
                             document_path,
@@ -473,7 +538,7 @@ impl SourceDrivenConfig {
                     };
                     let elapsed = start.elapsed().as_millis() as u64;
                     let mut s = stats.lock().expect("stats mutex should not be poisoned");
-                    if t.file_size <= memory_bb {
+                    if fits_in_memory(t.file_size, task_budget(&t.def, memory_bb)) {
                         s.0 += 1;
                     } else {
                         s.1 += 1;
@@ -539,14 +604,20 @@ impl SourceDrivenConfig {
             }
         }
 
+        let has_cross_join = dim_joins
+            .iter()
+            .any(|j| j.join_type == super::definition::JoinType::Cross);
+
         Ok(Some(Self {
             primary: Arc::new(Mutex::new(primary_reader)),
+            primary_batch: Mutex::new(std::collections::VecDeque::new()),
             primary_name,
             dimensions,
             resolved_paths,
+            has_cross_join,
             dim_joins,
             primary_filter,
-            cross_product_state: std::sync::Mutex::new(None),
+            cross_product_state: std::sync::Mutex::new(std::collections::VecDeque::new()),
             loaded_at: std::time::Instant::now(),
             current_row: std::sync::atomic::AtomicU64::new(0),
             load_stats: DimLoadStats {
@@ -556,49 +627,104 @@ impl SourceDrivenConfig {
                 index_build_ms,
             },
             runtime_stats: SourceRuntimeStats::default(),
-            fallback_policy: RuntimeFallbackPolicy::default(),
         }))
     }
 
-    pub fn next_row_variables(&self) -> Result<Option<HashMap<String, Value>>> {
-        // If we're in the middle of a cross-product iteration, yield the next combination
+    /// Rewind the primary source to the top, for a duration run that outlives
+    /// its data. Clears the read-ahead batch and any half-emitted cross-product
+    /// so the first row after the wrap is the first row of the file — replaying
+    /// the leftover cross-product of the pre-rewind row was a real defect.
+    pub fn rewind(&self) -> Result<()> {
+        // Lock order is reader -> batch everywhere, including here. Taking the
+        // batch first deadlocked against `next_primary_row`, which holds the
+        // reader across its refill.
+        let mut reader = self.primary.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        self.primary_batch
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .clear();
+        if let Ok(mut state) = self.cross_product_state.lock() {
+            state.clear();
+        }
+        reader.reset()
+    }
+
+    /// Next filtered row from the primary source, refilling from the reader in
+    /// batches.
+    fn next_primary_row(&self) -> Result<Option<SourceRow>> {
+        if let Some(row) = self
+            .primary_batch
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .pop_front()
         {
-            let state_guard = self
-                .cross_product_state
-                .lock()
-                .expect("cross_product_state mutex should not be poisoned");
-            if state_guard.is_some() {
-                drop(state_guard);
-                return self.next_cross_product_combination();
+            return Ok(Some(row));
+        }
+
+        // Refill into a local buffer with only the reader lock held. Holding
+        // the batch lock across the parse too made every other worker wait out
+        // a whole 256-row parse rather than just a pop. Lock order is
+        // reader -> batch, and the fast path above takes batch alone, so there
+        // is no cycle.
+        let mut reader = self.primary.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        if let Some(row) = self
+            .primary_batch
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .pop_front()
+        {
+            // Someone refilled while we waited for the reader.
+            return Ok(Some(row));
+        }
+
+        let mut refill = Vec::with_capacity(PRIMARY_BATCH_ROWS);
+        while refill.len() < PRIMARY_BATCH_ROWS {
+            match reader.next_row()? {
+                Some(r) => {
+                    if self.primary_filter.is_empty()
+                        || matches_filter_all(&r, &self.primary_filter)
+                    {
+                        refill.push(r);
+                    }
+                }
+                None => break,
             }
+        }
+        drop(reader);
+
+        let mut batch = self
+            .primary_batch
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        batch.extend(refill);
+        Ok(batch.pop_front())
+    }
+
+    pub fn next_row_variables(&self) -> Result<Option<HashMap<String, Value>>> {
+        // An in-flight cross-product is observed and consumed under one lock
+        // acquisition. Checking `is_some()`, dropping the guard and re-locking
+        // let two workers both see the state, the first drain the last
+        // combination, and the second unwrap `None`.
+        if self.has_cross_join
+            && let Some(vars) = self.next_cross_product_combination()?
+        {
+            return Ok(Some(vars));
         }
 
         // Loop (rather than recurse) so a long run of INNER-join misses can't
         // blow the stack.
         let row = loop {
-            let candidate = {
-                let mut reader = self.primary.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-                loop {
-                    match reader.next_row()? {
-                        Some(r) => {
-                            if self.primary_filter.is_empty()
-                                || matches_filter_all(&r, &self.primary_filter)
-                            {
-                                break r;
-                            }
-                        }
-                        None => return Ok(None),
-                    }
-                }
+            let candidate = match self.next_primary_row()? {
+                Some(r) => r,
+                None => return Ok(None),
             };
 
             // Check INNER join constraints — skip row if the FK column is
             // absent or its value has no match in the dimension.
             let inner_missing = self.dim_joins.iter().any(|j| {
                 j.join_type == super::definition::JoinType::Inner
-                    && candidate
-                        .get(&j.foreign_key)
-                        .is_none_or(|fk| self.dimension_lookup(&j.source_name, fk).is_none())
+                    && join_key(&candidate, &j.foreign_key)
+                        .is_none_or(|fk| self.dimension_lookup(&j.source_name, &fk).is_none())
             });
             if inner_missing {
                 continue;
@@ -608,13 +734,19 @@ impl SourceDrivenConfig {
 
         let mut vars = self.build_primary_vars(&row);
 
-        // Process LEFT joins (standard: add dimension fields when FK matches)
+        // LEFT and INNER both contribute the dimension's fields; INNER only
+        // differs in dropping the primary row when there is no match, which the
+        // loop above has already done. Restricting this to LEFT meant an INNER
+        // join filtered rows and then injected nothing.
         for join in &self.dim_joins {
-            if join.join_type != super::definition::JoinType::Left {
+            if !matches!(
+                join.join_type,
+                super::definition::JoinType::Left | super::definition::JoinType::Inner
+            ) {
                 continue;
             }
-            if let Some(fk_val) = row.get(&join.foreign_key)
-                && let Some(dim_row) = self.dimension_lookup(&join.source_name, fk_val)
+            if let Some(fk_val) = join_key(&row, &join.foreign_key)
+                && let Some(dim_row) = self.dimension_lookup(&join.source_name, &fk_val)
             {
                 for col in dim_row.columns() {
                     if let Some(val) = dim_row.get(col) {
@@ -638,8 +770,8 @@ impl SourceDrivenConfig {
                 if join.join_type != super::definition::JoinType::Cross {
                     continue;
                 }
-                if let Some(fk_val) = row.get(&join.foreign_key) {
-                    if let Some(all_rows) = self.dimension_lookup_all(&join.source_name, fk_val) {
+                if let Some(fk_val) = join_key(&row, &join.foreign_key) {
+                    if let Some(all_rows) = self.dimension_lookup_all(&join.source_name, &fk_val) {
                         cross_matches.push(all_rows);
                     } else {
                         cross_matches.push(Vec::new());
@@ -649,11 +781,10 @@ impl SourceDrivenConfig {
                 }
             }
 
-            *self
-                .cross_product_state
+            self.cross_product_state
                 .lock()
-                .expect("cross_product_state mutex should not be poisoned") =
-                Some(CrossProductState {
+                .map_err(|e| anyhow::anyhow!("cross_product_state mutex poisoned: {e}"))?
+                .push_back(CrossProductState {
                     row,
                     cross_matches,
                     cross_indices: vec![
@@ -677,10 +808,13 @@ impl SourceDrivenConfig {
         let mut state_guard = self
             .cross_product_state
             .lock()
-            .expect("cross_product_state mutex should not be poisoned");
-        let state = state_guard.as_ref().unwrap();
-        let row = &state.row;
-        let mut vars = self.build_primary_vars(row);
+            .map_err(|e| anyhow::anyhow!("cross_product_state mutex poisoned: {e}"))?;
+        // `None` means "no cross-product in flight", not "source exhausted" —
+        // the caller falls through to pulling a fresh primary row.
+        let Some(state) = state_guard.front_mut() else {
+            return Ok(None);
+        };
+        let mut vars = self.build_primary_vars(&state.row);
 
         // Inject dimension fields for each cross join at the current index
         let mut cross_idx = 0;
@@ -711,31 +845,24 @@ impl SourceDrivenConfig {
             .iter()
             .filter(|j| j.join_type == super::definition::JoinType::Cross)
             .count();
-        let mut new_indices = state.cross_indices.clone();
+        // Advance in place. Rebuilding the state cloned the whole match set on
+        // every emitted combination — O(M^2) row clones for one primary row.
         let mut advanced = false;
-
         for i in (0..cross_count).rev() {
             let max = state.cross_matches[i].len();
             if max == 0 {
                 continue;
             }
-            if new_indices[i] + 1 < max {
-                new_indices[i] += 1;
+            if state.cross_indices[i] + 1 < max {
+                state.cross_indices[i] += 1;
                 advanced = true;
                 break;
-            } else {
-                new_indices[i] = 0;
             }
+            state.cross_indices[i] = 0;
         }
 
-        if advanced {
-            *state_guard = Some(CrossProductState {
-                row: row.clone(),
-                cross_matches: state.cross_matches.clone(),
-                cross_indices: new_indices,
-            });
-        } else {
-            *state_guard = None;
+        if !advanced {
+            state_guard.pop_front();
         }
 
         self.current_row
@@ -744,14 +871,16 @@ impl SourceDrivenConfig {
     }
 
     fn build_primary_vars(&self, row: &SourceRow) -> HashMap<String, Value> {
-        let mut vars = HashMap::new();
-        for col in row.columns() {
-            if let Some(val) = row.get(col) {
-                vars.insert(
-                    format!("{}.{}", self.primary_name, col),
-                    Value::String(val.to_string()),
-                );
-            }
+        // `zip`, not `row.get(col)` per column: `get` is a linear scan with a
+        // string compare, so building an already index-aligned row cost O(C^2)
+        // comparisons.
+        let mut vars = HashMap::with_capacity(row.columns().len());
+        for (col, val) in row.columns().iter().zip(row.values()) {
+            let mut key = String::with_capacity(self.primary_name.len() + 1 + col.len());
+            key.push_str(&self.primary_name);
+            key.push('.');
+            key.push_str(col);
+            vars.insert(key, Value::String(val.clone()));
         }
         vars
     }
@@ -818,23 +947,27 @@ fn load_or_build_index_with_key(
 
     let mut index = SourceIndex::new(key_col);
     let header_line = read_first_line(&source_path)?;
-    // `read_first_line` keeps the trailing newline, so its length already
-    // covers the header line plus its line terminator: the first data row
-    // begins at exactly `header_line.len()`.
+    // Fallback only; see `SourceReader::last_row_span`.
     let mut byte_offset = header_line.len() as u64;
     let mut row_count = 0u64;
 
+    let mut batch: Vec<(String, u64, u32)> = Vec::new();
     while let Some(row) = reader.next_row()? {
-        let key_val = row.get(key_col).ok_or_else(|| {
-            anyhow::anyhow!("column '{}' not found in row {}", key_col, row_count)
-        })?;
-        let row_bytes = estimate_row_size(&row);
-        index
-            .insert(key_val.to_string(), byte_offset, row_bytes)
-            .with_context(|| format!("failed to insert key '{}' at row {}", key_val, row_count))?;
-        byte_offset += row_bytes as u64 + 1;
+        let key_val = crate::index::composite_value(key_col, |c| row.get(c).map(str::to_string))
+            .ok_or_else(|| {
+                anyhow::anyhow!("column '{}' not found in row {}", key_col, row_count)
+            })?;
+        let (offset, row_bytes) = match reader.last_row_span() {
+            Some(span) => span,
+            None => (byte_offset, estimate_row_size(&row)),
+        };
+        batch.push((key_val, offset, row_bytes));
+        byte_offset = offset + row_bytes as u64 + 1;
         row_count += 1;
     }
+    index
+        .batch_insert(batch)
+        .with_context(|| format!("failed to index {row_count} rows of '{}'", def.file))?;
 
     let parent = idx_path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent).ok();
@@ -886,6 +1019,157 @@ mod tests {
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(content.as_bytes()).unwrap();
         path
+    }
+
+    /// A filter used to apply only when the dimension fit in memory, so the
+    /// same YAML filtered or not depending on free RAM.
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    #[cfg(not(miri))]
+    fn an_indexed_dimension_applies_its_filter_like_an_in_memory_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        create_temp_csv(
+            dir,
+            "pvz.csv",
+            "id,status\nP1,active\nP2,closed\nP3,active\n",
+        );
+        let def: SourceDefinition = serde_yaml_ng::from_str(
+            "file: pvz.csv\nname: pvz\nindexed_by: [id]\nfilter:\n  - field: status\n    equals: active\n",
+        )
+        .unwrap();
+        let doc_path = dir.join("test.gctf");
+        std::fs::write(&doc_path, "").unwrap();
+        let resolved = FileUtils::resolve_relative_path(&doc_path, &def.file);
+
+        for dim in [
+            load_dimension_source(&def, &doc_path, &resolved, "id").unwrap(),
+            load_dimension_in_memory(&def, &doc_path, &resolved, "id").unwrap(),
+        ] {
+            assert!(dim.lookup_row("P1").unwrap().is_some(), "active kept");
+            assert!(dim.lookup_row("P2").unwrap().is_none(), "closed dropped");
+            assert!(dim.lookup_all("P2").is_empty(), "closed dropped from all");
+            assert_eq!(dim.lookup_all("P3").len(), 1);
+        }
+    }
+
+    /// The mmap line was split on `,` whatever the format, so an over-budget
+    /// TSV decoded into one garbage column.
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    #[cfg(not(miri))]
+    fn an_indexed_tsv_dimension_decodes_its_own_format() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        create_temp_csv(dir, "regions.tsv", "id\tname\nR01\tMoscow, RU\n");
+        let def: SourceDefinition =
+            serde_yaml_ng::from_str("file: regions.tsv\nname: regions\nindexed_by: [id]\n")
+                .unwrap();
+        let doc_path = dir.join("test.gctf");
+        std::fs::write(&doc_path, "").unwrap();
+        let resolved = FileUtils::resolve_relative_path(&doc_path, &def.file);
+
+        let dim = load_dimension_source(&def, &doc_path, &resolved, "id").unwrap();
+        let row = dim.lookup_row("R01").unwrap().expect("row must be found");
+        assert_eq!(row.get("id"), Some("R01"));
+        assert_eq!(
+            row.get("name"),
+            Some("Moscow, RU"),
+            "a comma inside a TSV field is data, not a separator"
+        );
+    }
+
+    /// Same for NDJSON: a JSON object split on commas yields nothing usable.
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    #[cfg(not(miri))]
+    fn an_indexed_ndjson_dimension_decodes_its_own_format() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        create_temp_csv(
+            dir,
+            "regions.ndjson",
+            "{\"id\": \"R01\", \"name\": \"Moscow\", \"pop\": 13}\n",
+        );
+        let def: SourceDefinition =
+            serde_yaml_ng::from_str("file: regions.ndjson\nname: regions\nindexed_by: [id]\n")
+                .unwrap();
+        let doc_path = dir.join("test.gctf");
+        std::fs::write(&doc_path, "").unwrap();
+        let resolved = FileUtils::resolve_relative_path(&doc_path, &def.file);
+
+        let dim = load_dimension_source(&def, &doc_path, &resolved, "id").unwrap();
+        let row = dim.lookup_row("R01").unwrap().expect("row must be found");
+        assert_eq!(row.get("name"), Some("Moscow"));
+        assert_eq!(row.get("pop"), Some("13"));
+    }
+
+    /// The indexed path must build the same composite key the in-memory one
+    /// does, or the two disagree above the memory budget.
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    #[cfg(not(miri))]
+    fn an_indexed_composite_key_matches_the_in_memory_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        create_temp_csv(
+            dir,
+            "prices.csv",
+            "order_id,product_id,price\nO1,P1,10\nO1,P2,99\n",
+        );
+        let def: SourceDefinition = serde_yaml_ng::from_str(
+            "file: prices.csv\nname: prices\nindexed_by: [order_id, product_id]\n",
+        )
+        .unwrap();
+        let doc_path = dir.join("test.gctf");
+        std::fs::write(&doc_path, "").unwrap();
+        let resolved = FileUtils::resolve_relative_path(&doc_path, &def.file);
+        let key = def
+            .indexed_by
+            .as_ref()
+            .unwrap()
+            .join(crate::index::COMPOSITE_KEY_SEPARATOR);
+
+        let sep = crate::index::COMPOSITE_KEY_SEPARATOR;
+        for dim in [
+            load_dimension_source(&def, &doc_path, &resolved, &key).unwrap(),
+            load_dimension_in_memory(&def, &doc_path, &resolved, &key).unwrap(),
+        ] {
+            let row = dim
+                .lookup_row(&format!("O1{sep}P2"))
+                .unwrap()
+                .expect("composite key must resolve");
+            assert_eq!(row.get("price"), Some("99"));
+            assert!(dim.lookup_row(&format!("O1{sep}P9")).unwrap().is_none());
+        }
+
+        // The unit separator must never reach a file name.
+        let idx = crate::index_builder::index_path_for_source(&resolved, &key);
+        let name = idx.file_name().unwrap().to_string_lossy();
+        assert!(!name.contains('\u{1f}'), "index file named {name}");
+        assert!(
+            name.contains("order_id+product_id"),
+            "index file named {name}"
+        );
+    }
+
+    /// A quoted delimiter inside a CSV field is data.
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    #[cfg(not(miri))]
+    fn an_indexed_csv_dimension_honours_quoting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        create_temp_csv(dir, "q.csv", "id,name\nR01,\"Moscow, RU\"\n");
+        let def: SourceDefinition =
+            serde_yaml_ng::from_str("file: q.csv\nname: q\nindexed_by: [id]\n").unwrap();
+        let doc_path = dir.join("test.gctf");
+        std::fs::write(&doc_path, "").unwrap();
+        let resolved = FileUtils::resolve_relative_path(&doc_path, &def.file);
+
+        let dim = load_dimension_source(&def, &doc_path, &resolved, "id").unwrap();
+        let row = dim.lookup_row("R01").unwrap().expect("row must be found");
+        assert_eq!(row.get("name"), Some("Moscow, RU"));
     }
 
     /// Regression (BUG 1): index-backed dimensions must yield the same rows —
@@ -991,6 +1275,7 @@ mod tests {
 
         let config = SourceDrivenConfig {
             primary: Arc::new(Mutex::new(primary_reader)),
+            primary_batch: Mutex::new(std::collections::VecDeque::new()),
             primary_name: "orders".to_string(),
             dimensions,
             resolved_paths: HashMap::new(),
@@ -1002,8 +1287,8 @@ mod tests {
             primary_filter: Vec::new(),
             load_stats: DimLoadStats::default(),
             runtime_stats: SourceRuntimeStats::default(),
-            fallback_policy: RuntimeFallbackPolicy::default(),
-            cross_product_state: std::sync::Mutex::new(None),
+            has_cross_join: true,
+            cross_product_state: std::sync::Mutex::new(std::collections::VecDeque::new()),
             loaded_at: std::time::Instant::now(),
             current_row: std::sync::atomic::AtomicU64::new(0),
         };
@@ -1022,6 +1307,182 @@ mod tests {
         assert_eq!(
             region_names,
             vec!["Kazan".to_string(), "Moscow".to_string()]
+        );
+    }
+
+    /// Regression: `next_primary_row` refills with the reader lock held and
+    /// then takes the batch lock, while `rewind` took the batch lock first and
+    /// the reader second — an order inversion that deadlocked a duration run
+    /// the moment one worker wrapped the source while another was refilling.
+    /// Compilation cannot catch this, so the test bounds itself in wall time.
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    #[cfg(not(miri))]
+    fn concurrent_rewind_and_refill_do_not_deadlock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // Deliberately fewer rows than the refill batch, so the source is
+        // exhausted and rewound constantly while workers pull.
+        let mut rows = String::from("id,name\n");
+        for i in 0..50 {
+            rows.push_str(&format!("{i},user-{i}\n"));
+        }
+        create_temp_csv(dir, "rows.csv", &rows);
+        let doc_path = dir.join("test.gctf");
+        std::fs::write(&doc_path, "").unwrap();
+
+        let def: SourceDefinition =
+            serde_yaml_ng::from_str("file: rows.csv\nname: rows\n").unwrap();
+        let config = Arc::new(
+            SourceDrivenConfig::prepare(&[def], &doc_path)
+                .unwrap()
+                .unwrap(),
+        );
+
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let served = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        {
+            let config = Arc::clone(&config);
+            let done = Arc::clone(&done);
+            let served = Arc::clone(&served);
+            std::thread::spawn(move || {
+                std::thread::scope(|scope| {
+                    for _ in 0..8 {
+                        let config = &config;
+                        let served = &served;
+                        scope.spawn(move || {
+                            for _ in 0..2_000 {
+                                match config.next_row_variables() {
+                                    Ok(Some(_)) => {
+                                        served.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    }
+                                    // Exhausted: wrap, exactly as the duration
+                                    // executor does.
+                                    Ok(None) => {
+                                        let _ = config.rewind();
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                        });
+                    }
+                });
+                done.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while std::time::Instant::now() < deadline {
+            if done.load(std::sync::atomic::Ordering::SeqCst) {
+                assert!(served.load(std::sync::atomic::Ordering::Relaxed) > 0);
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!(
+            "deadlocked: {} rows served before the workers stopped making progress",
+            served.load(std::sync::atomic::Ordering::Relaxed)
+        );
+    }
+
+    /// Regression: `next_row_variables` checked `cross_product_state` under the
+    /// lock, dropped the guard, then re-locked inside
+    /// `next_cross_product_combination` and unwrapped. Two workers could both
+    /// observe `Some`, the first drain the last combination and clear the slot,
+    /// and the second unwrap `None` — a panic on any CROSS join driven by more
+    /// than one worker. A second race let two workers each installing a
+    /// different row's product clobber one another, silently dropping a row.
+    ///
+    /// Every emitted combination is collected here and checked for completeness,
+    /// so a lost product fails the assertion rather than passing quietly.
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    #[cfg(not(miri))]
+    fn concurrent_cross_join_neither_panics_nor_drops_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+
+        // 40 primary rows, each matching 3 dimension rows -> 120 combinations.
+        let mut orders = String::from("order_id,region_id\n");
+        for i in 0..40 {
+            orders.push_str(&format!("O{i},R{}\n", i % 4));
+        }
+        create_temp_csv(dir, "orders.csv", &orders);
+
+        let mut regions = String::from("region_id,region_name\n");
+        for r in 0..4 {
+            for n in 0..3 {
+                regions.push_str(&format!("R{r},name-{r}-{n}\n"));
+            }
+        }
+        create_temp_csv(dir, "regions.csv", &regions);
+
+        let doc_path = dir.join("test.gctf");
+        std::fs::write(&doc_path, "").unwrap();
+
+        let dim_def: SourceDefinition =
+            serde_yaml_ng::from_str("file: regions.csv\nname: regions\nindexed_by: [region_id]\n")
+                .unwrap();
+        let resolved = FileUtils::resolve_relative_path(&doc_path, &dim_def.file);
+        let dimension = load_dimension_source(&dim_def, &doc_path, &resolved, "region_id").unwrap();
+
+        let primary_def: SourceDefinition =
+            serde_yaml_ng::from_str("file: orders.csv\nname: orders\n").unwrap();
+        let primary_reader = open_source_reader(&primary_def, &doc_path).unwrap();
+
+        let mut dimensions = HashMap::new();
+        dimensions.insert("regions".to_string(), dimension);
+
+        let config = Arc::new(SourceDrivenConfig {
+            primary: Arc::new(Mutex::new(primary_reader)),
+            primary_batch: Mutex::new(std::collections::VecDeque::new()),
+            primary_name: "orders".to_string(),
+            dimensions,
+            resolved_paths: HashMap::new(),
+            dim_joins: vec![DimensionJoin {
+                source_name: "regions".to_string(),
+                foreign_key: "region_id".to_string(),
+                join_type: crate::definition::JoinType::Cross,
+            }],
+            primary_filter: Vec::new(),
+            load_stats: DimLoadStats::default(),
+            runtime_stats: SourceRuntimeStats::default(),
+            has_cross_join: true,
+            cross_product_state: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            loaded_at: std::time::Instant::now(),
+            current_row: std::sync::atomic::AtomicU64::new(0),
+        });
+
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let config = Arc::clone(&config);
+                let emitted = Arc::clone(&emitted);
+                scope.spawn(move || {
+                    while let Some(vars) = config.next_row_variables().expect("no panic, no error")
+                    {
+                        let order = match vars.get("orders.order_id") {
+                            Some(Value::String(s)) => s.clone(),
+                            _ => panic!("primary field missing"),
+                        };
+                        let region = match vars.get("regions.region_name") {
+                            Some(Value::String(s)) => s.clone(),
+                            _ => panic!("cross-joined field missing"),
+                        };
+                        emitted.lock().unwrap().push((order, region));
+                    }
+                });
+            }
+        });
+
+        let mut got = emitted.lock().unwrap().clone();
+        got.sort();
+        got.dedup();
+        assert_eq!(
+            got.len(),
+            120,
+            "40 rows x 3 matches must yield 120 distinct combinations, got {}",
+            got.len()
         );
     }
 
@@ -1094,6 +1555,124 @@ mod tests {
             Some(&Value::String("O3".into()))
         );
         assert!(config.next_row_variables().unwrap().is_none());
+    }
+
+    /// An INNER join used to filter the primary rows and then contribute
+    /// nothing: only LEFT injected the dimension's fields.
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    #[cfg(not(miri))]
+    fn an_inner_join_injects_the_dimension_fields_it_matched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        create_temp_csv(dir, "orders.csv", "order_id,region_id\nO1,R01\n");
+        create_temp_csv(dir, "regions.csv", "region_id,region_name\nR01,Moscow\n");
+
+        let defs: Vec<SourceDefinition> = serde_yaml_ng::from_str(
+            "- file: orders.csv\n  name: orders\n- file: regions.csv\n  name: regions\n  indexed_by: [region_id]\n  join_type: inner\n",
+        )
+        .unwrap();
+        let doc_path = dir.join("test.gctf");
+        std::fs::write(&doc_path, "").unwrap();
+
+        let config = SourceDrivenConfig::prepare(&defs, &doc_path)
+            .unwrap()
+            .unwrap();
+        let vars = config.next_row_variables().unwrap().unwrap();
+        assert_eq!(
+            vars.get("orders.order_id"),
+            Some(&Value::String("O1".into()))
+        );
+        assert_eq!(
+            vars.get("regions.region_name"),
+            Some(&Value::String("Moscow".into())),
+            "the matched dimension row must be available to the template: {vars:?}"
+        );
+    }
+
+    /// `indexed_by: [a, b]` was passed around as the literal column name
+    /// `"a\x1Fb"`, which no row has: the in-memory path failed the lookup
+    /// outright and the CLI builder quietly indexed on `a` alone.
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    #[cfg(not(miri))]
+    fn a_composite_key_joins_on_every_named_column() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        create_temp_csv(
+            dir,
+            "lines.csv",
+            "order_id,product_id,qty\nO1,P1,2\nO1,P2,5\n",
+        );
+        create_temp_csv(
+            dir,
+            "prices.csv",
+            "order_id,product_id,price\nO1,P1,10\nO1,P2,99\n",
+        );
+
+        let defs: Vec<SourceDefinition> = serde_yaml_ng::from_str(
+            "- file: lines.csv\n  name: lines\n- file: prices.csv\n  name: prices\n  indexed_by: [order_id, product_id]\n",
+        )
+        .unwrap();
+        let doc_path = dir.join("test.gctf");
+        std::fs::write(&doc_path, "").unwrap();
+
+        let config = SourceDrivenConfig::prepare(&defs, &doc_path)
+            .unwrap()
+            .unwrap();
+
+        // Both rows share `order_id`, so indexing on the first column alone
+        // would give them the same price.
+        let first = config.next_row_variables().unwrap().unwrap();
+        assert_eq!(first.get("lines.qty"), Some(&Value::String("2".into())));
+        assert_eq!(
+            first.get("prices.price"),
+            Some(&Value::String("10".into())),
+            "{first:?}"
+        );
+
+        let second = config.next_row_variables().unwrap().unwrap();
+        assert_eq!(second.get("lines.qty"), Some(&Value::String("5".into())));
+        assert_eq!(
+            second.get("prices.price"),
+            Some(&Value::String("99".into())),
+            "{second:?}"
+        );
+    }
+
+    // The gate compared a raw file size with a RAM budget, so a dimension
+    // needing 12x its file size was loaded whole whenever the file alone fit.
+    // `memory_budget` was parsed and never read.
+    #[test]
+    fn a_source_may_override_the_run_wide_memory_budget() {
+        let mut def: SourceDefinition =
+            serde_yaml_ng::from_str("file: pvz.csv\nname: pvz\n").unwrap();
+        assert_eq!(task_budget(&def, 4096), 4096);
+
+        def.memory_budget = Some("1kb".into());
+        assert_eq!(task_budget(&def, 4096), 1024);
+
+        // An unparseable value falls back rather than dropping to zero and
+        // pushing every dimension onto the index path.
+        def.memory_budget = Some("not a size".into());
+        assert_eq!(task_budget(&def, 4096), 4096);
+    }
+
+    #[test]
+    fn the_memory_gate_accounts_for_in_memory_expansion() {
+        let budget = 120;
+        assert!(
+            fits_in_memory(10, budget),
+            "10 bytes needs 120, exactly the budget"
+        );
+        assert!(!fits_in_memory(11, budget), "11 bytes needs 132");
+        assert!(fits_in_memory(0, budget));
+    }
+
+    // A file we cannot stat must not be treated as empty.
+    #[test]
+    fn an_unmeasurable_file_never_counts_as_fitting() {
+        assert!(!fits_in_memory(u64::MAX, u64::MAX));
     }
 
     #[test]
