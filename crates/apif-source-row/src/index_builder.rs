@@ -449,8 +449,16 @@ mod tests {
             elapsed
         };
 
-        let small = build(4_000, "small.csv");
-        let large = build(32_000, "large.csv");
+        // Minimum of three: a scheduling hiccup on a loaded runner inflates a
+        // single timing, and the ratio is what carries the signal.
+        let best = |rows: usize, name: &str| {
+            (0..3)
+                .map(|_| build(rows, name))
+                .min()
+                .expect("three samples")
+        };
+        let small = best(4_000, "small.csv");
+        let large = best(32_000, "large.csv");
         let ratio = large.as_secs_f64() / small.as_secs_f64().max(1e-6);
         println!("4k={small:?} 32k={large:?} ratio={ratio:.1}x");
         assert!(

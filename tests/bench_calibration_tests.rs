@@ -53,11 +53,15 @@ async fn dropping_the_target_frees_its_port() {
         let target = CalibrationTarget::spawn().await.unwrap();
         target.address().to_string()
     };
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    assert!(
-        tokio::net::TcpStream::connect(&address).await.is_err(),
-        "{address} still accepts connections after the target was dropped"
-    );
+    // The listener closes when the task is aborted, which is not instantaneous
+    // on a loaded runner.
+    for _ in 0..40 {
+        if tokio::net::TcpStream::connect(&address).await.is_err() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("{address} still accepts connections after the target was dropped");
 }
 
 // The target must serve every RPC mode, not only unary.

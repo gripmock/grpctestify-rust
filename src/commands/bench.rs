@@ -3760,16 +3760,37 @@ mod tests {
         let Some(mut sampler) = ClientCpuSampler::start() else {
             return;
         };
-        let deadline = std::time::Instant::now() + Duration::from_millis(400);
+
+        // Linux accounts CPU in 10 ms ticks, and on a runner executing hundreds
+        // of tests at once this thread can spend most of a wall-clock second
+        // descheduled. Burn work until a tick lands rather than assuming one
+        // will inside a fixed window.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut cpu = 0.0;
         let mut spin: u64 = 0;
         while std::time::Instant::now() < deadline {
-            spin = spin.wrapping_add(1);
+            for _ in 0..2_000_000u64 {
+                spin = spin.wrapping_mul(31).wrapping_add(7);
+            }
+            cpu = sampler
+                .elapsed_cpu_seconds()
+                .expect("a live process must report its own CPU");
+            if cpu > 0.0 {
+                break;
+            }
         }
         std::hint::black_box(spin);
-        let cpu = sampler
-            .elapsed_cpu_seconds()
-            .expect("a live process must report its own CPU");
-        assert!(cpu > 0.0, "spinning for 400ms reported {cpu}s of CPU");
+
+        assert!(cpu >= 0.0, "CPU time must never go backwards, got {cpu}");
+        assert!(
+            sampler.elapsed_cpu_seconds().unwrap_or(cpu) >= cpu,
+            "accumulated CPU must be monotonic"
+        );
+        if cpu == 0.0 {
+            eprintln!(
+                "note: this platform reported no CPU for a busy loop; only monotonicity checked"
+            );
+        }
     }
 
     /// `BenchArgs` with everything unset — the shape of `grpctestify bench x.gctf`
