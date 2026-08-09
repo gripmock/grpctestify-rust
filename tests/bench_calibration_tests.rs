@@ -77,7 +77,7 @@ async fn the_calibration_target_serves_streaming_methods() {
     let target = CalibrationTarget::spawn().await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     std::fs::copy(
-        "tests/servers/proto/echo.proto",
+        fixture_path("tests/servers/proto/echo.proto"),
         dir.path().join("echo.proto"),
     )
     .unwrap();
