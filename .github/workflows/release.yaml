@@ -25,7 +25,7 @@ jobs:
             package_globs: |
               grpctestify_*_amd64.deb
               grpctestify-*.x86_64.rpm
-          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             artifact_name: grpctestify-linux-arm64.tar.gz
             exe_suffix: ""
@@ -58,17 +58,10 @@ jobs:
         with:
           target: ${{ matrix.target }}
           cache: false
-      - name: Install cross
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cross
-      - name: Build with cargo
-        if: matrix.target != 'aarch64-unknown-linux-gnu'
+      # Every target builds on its own architecture, so nothing needs `cross`
+      # or a container.
+      - name: Build
         run: cargo build --release --target ${{ matrix.target }}
-      - name: Build with cross
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: cross build --release --target ${{ matrix.target }}
       - name: Prepare package directory (Unix)
         if: runner.os != 'Windows'
         run: |

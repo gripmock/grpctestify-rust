@@ -2953,83 +2953,100 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     // chunk boundaries decodes to the same messages/trailers as the whole-buffer
     // parser (chunk-boundary robustness).
 
-    #[tokio::test]
-    async fn grpc_web_stream_parse_matches_buffered_across_chunk_boundaries() {
-        // Two JSON data frames + a trailer frame — a realistic server-stream body.
-        let mut data = Vec::new();
-        for m in [json!({"seq": 0}), json!({"seq": 1})] {
-            let body = serde_json::to_vec(&m).unwrap();
-            data.push(0x00);
+    /// These parse in-memory chunks and need no I/O driver. `#[tokio::test]`
+    /// builds one anyway, which pulls in mio and makes them unrunnable under
+    /// Miri.
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("current-thread runtime")
+            .block_on(future)
+    }
+
+    #[test]
+    fn grpc_web_stream_parse_matches_buffered_across_chunk_boundaries() {
+        block_on(async {
+            // Two JSON data frames + a trailer frame — a realistic server-stream body.
+            let mut data = Vec::new();
+            for m in [json!({"seq": 0}), json!({"seq": 1})] {
+                let body = serde_json::to_vec(&m).unwrap();
+                data.push(0x00);
+                data.extend_from_slice(&(body.len() as u32).to_be_bytes());
+                data.extend_from_slice(&body);
+            }
+            let trailer = b"grpc-status: 0";
+            data.push(0x80);
+            data.extend_from_slice(&(trailer.len() as u32).to_be_bytes());
+            data.extend_from_slice(trailer);
+
+            let (want_m, want_t, want_e) = parse_grpc_web_framed_json(&data);
+            assert_eq!(want_m.len(), 2);
+
+            // Every single-cut split (including mid-frame-header and mid-payload)
+            // must reproduce the buffered result exactly.
+            for cut in 1..data.len() {
+                let chunks = chunk_at(&data, &[cut]);
+                let stream =
+                    futures::stream::iter(chunks.into_iter().map(Ok::<Vec<u8>, anyhow::Error>));
+                let (m, t, e) = parse_grpc_web_stream(Box::pin(stream), None).await.unwrap();
+                assert_eq!(m, want_m, "messages differ at cut {cut}");
+                assert_eq!(t, want_t, "trailers differ at cut {cut}");
+                assert_eq!(e.is_some(), want_e.is_some(), "error differs at cut {cut}");
+            }
+        });
+    }
+
+    #[test]
+    fn connect_stream_parse_matches_buffered_across_chunk_boundaries() {
+        block_on(async {
+            // Two data frames + a Connect end-of-stream frame carrying metadata.
+            let mut data = Vec::new();
+            for m in [json!({"seq": 0}), json!({"seq": 1})] {
+                data.extend_from_slice(&encode_connect_envelope(
+                    &serde_json::to_vec(&m).unwrap(),
+                    false,
+                ));
+            }
+            let end = json!({"metadata": {"x-trace": ["t-1"]}});
+            data.extend_from_slice(&encode_connect_envelope(
+                &serde_json::to_vec(&end).unwrap(),
+                true,
+            ));
+
+            let headers = HashMap::new();
+            let (want_m, want_t, _e) = parse_connect_framed(&data, None, &headers);
+            assert_eq!(want_m.len(), 2);
+            assert_eq!(want_t.get("x-trace").unwrap(), "t-1");
+
+            for cut in 1..data.len() {
+                let chunks = chunk_at(&data, &[cut]);
+                let stream =
+                    futures::stream::iter(chunks.into_iter().map(Ok::<Vec<u8>, anyhow::Error>));
+                let (m, t, _e) = parse_connect_stream(Box::pin(stream), None, &headers)
+                    .await
+                    .unwrap();
+                assert_eq!(m, want_m, "messages differ at cut {cut}");
+                assert_eq!(t, want_t, "trailers differ at cut {cut}");
+            }
+        });
+    }
+
+    #[test]
+    fn grpc_web_stream_parse_many_tiny_chunks() {
+        block_on(async {
+            // A single frame delivered one byte at a time still decodes.
+            let body = serde_json::to_vec(&json!({"reply": "hi"})).unwrap();
+            let mut data = vec![0x00];
             data.extend_from_slice(&(body.len() as u32).to_be_bytes());
             data.extend_from_slice(&body);
-        }
-        let trailer = b"grpc-status: 0";
-        data.push(0x80);
-        data.extend_from_slice(&(trailer.len() as u32).to_be_bytes());
-        data.extend_from_slice(trailer);
 
-        let (want_m, want_t, want_e) = parse_grpc_web_framed_json(&data);
-        assert_eq!(want_m.len(), 2);
-
-        // Every single-cut split (including mid-frame-header and mid-payload)
-        // must reproduce the buffered result exactly.
-        for cut in 1..data.len() {
-            let chunks = chunk_at(&data, &[cut]);
+            let chunks: Vec<Vec<u8>> = data.iter().map(|b| vec![*b]).collect();
             let stream =
                 futures::stream::iter(chunks.into_iter().map(Ok::<Vec<u8>, anyhow::Error>));
-            let (m, t, e) = parse_grpc_web_stream(Box::pin(stream), None).await.unwrap();
-            assert_eq!(m, want_m, "messages differ at cut {cut}");
-            assert_eq!(t, want_t, "trailers differ at cut {cut}");
-            assert_eq!(e.is_some(), want_e.is_some(), "error differs at cut {cut}");
-        }
-    }
-
-    #[tokio::test]
-    async fn connect_stream_parse_matches_buffered_across_chunk_boundaries() {
-        // Two data frames + a Connect end-of-stream frame carrying metadata.
-        let mut data = Vec::new();
-        for m in [json!({"seq": 0}), json!({"seq": 1})] {
-            data.extend_from_slice(&encode_connect_envelope(
-                &serde_json::to_vec(&m).unwrap(),
-                false,
-            ));
-        }
-        let end = json!({"metadata": {"x-trace": ["t-1"]}});
-        data.extend_from_slice(&encode_connect_envelope(
-            &serde_json::to_vec(&end).unwrap(),
-            true,
-        ));
-
-        let headers = HashMap::new();
-        let (want_m, want_t, _e) = parse_connect_framed(&data, None, &headers);
-        assert_eq!(want_m.len(), 2);
-        assert_eq!(want_t.get("x-trace").unwrap(), "t-1");
-
-        for cut in 1..data.len() {
-            let chunks = chunk_at(&data, &[cut]);
-            let stream =
-                futures::stream::iter(chunks.into_iter().map(Ok::<Vec<u8>, anyhow::Error>));
-            let (m, t, _e) = parse_connect_stream(Box::pin(stream), None, &headers)
-                .await
-                .unwrap();
-            assert_eq!(m, want_m, "messages differ at cut {cut}");
-            assert_eq!(t, want_t, "trailers differ at cut {cut}");
-        }
-    }
-
-    #[tokio::test]
-    async fn grpc_web_stream_parse_many_tiny_chunks() {
-        // A single frame delivered one byte at a time still decodes.
-        let body = serde_json::to_vec(&json!({"reply": "hi"})).unwrap();
-        let mut data = vec![0x00];
-        data.extend_from_slice(&(body.len() as u32).to_be_bytes());
-        data.extend_from_slice(&body);
-
-        let chunks: Vec<Vec<u8>> = data.iter().map(|b| vec![*b]).collect();
-        let stream = futures::stream::iter(chunks.into_iter().map(Ok::<Vec<u8>, anyhow::Error>));
-        let (m, _t, _e) = parse_grpc_web_stream(Box::pin(stream), None).await.unwrap();
-        assert_eq!(m.len(), 1);
-        assert_eq!(m[0]["reply"], "hi");
+            let (m, _t, _e) = parse_grpc_web_stream(Box::pin(stream), None).await.unwrap();
+            assert_eq!(m.len(), 1);
+            assert_eq!(m[0]["reply"], "hi");
+        });
     }
 
     // TASK 2 — Connect request compression (gzip).
