@@ -2621,6 +2621,35 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     }
 
     #[test]
+    fn split_connect_trailers_strips_the_prefix() {
+        let mut headers = HashMap::new();
+        headers.insert("x-channel".to_string(), "header".to_string());
+        headers.insert("trailer-x-channel".to_string(), "trailer".to_string());
+        headers.insert("trailer-x-audit".to_string(), "done".to_string());
+        headers.insert("content-type".to_string(), "application/json".to_string());
+
+        let (leading, trailers) = split_connect_trailers(headers);
+
+        assert_eq!(leading.get("x-channel"), Some(&"header".to_string()));
+        assert!(!leading.contains_key("trailer-x-channel"));
+        assert!(!leading.contains_key("content-type"));
+
+        assert_eq!(trailers.get("x-channel"), Some(&"trailer".to_string()));
+        assert_eq!(trailers.get("x-audit"), Some(&"done".to_string()));
+    }
+
+    #[test]
+    fn split_connect_trailers_keeps_a_bare_prefix_as_a_header() {
+        let mut headers = HashMap::new();
+        headers.insert("trailer-".to_string(), "odd".to_string());
+
+        let (leading, trailers) = split_connect_trailers(headers);
+
+        assert_eq!(leading.get("trailer-"), Some(&"odd".to_string()));
+        assert!(trailers.is_empty());
+    }
+
+    #[test]
     fn public_response_headers_strips_framing_headers() {
         let mut headers = HashMap::new();
         headers.insert("grpc-status".to_string(), "0".to_string());
