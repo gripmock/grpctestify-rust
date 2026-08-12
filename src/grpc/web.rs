@@ -26,6 +26,30 @@ fn public_response_headers(headers: ResponseHeaders) -> ResponseHeaders {
         .collect()
 }
 
+/// Split Connect unary response metadata into leading headers and trailers.
+///
+/// The Connect protocol carries trailing metadata for unary responses as HTTP
+/// headers prefixed with `trailer-`; the prefix must be stripped when reading
+/// from the wire. Without this, `@trailer(...)` assertions never see anything
+/// over the Connect protocol.
+fn split_connect_trailers(headers: ResponseHeaders) -> (ResponseHeaders, ResponseHeaders) {
+    let mut leading = ResponseHeaders::new();
+    let mut trailers = ResponseHeaders::new();
+
+    for (key, value) in headers {
+        match key.strip_prefix("trailer-") {
+            Some(stripped) if !stripped.is_empty() => {
+                trailers.insert(stripped.to_string(), value);
+            }
+            _ => {
+                leading.insert(key, value);
+            }
+        }
+    }
+
+    (public_response_headers(leading), trailers)
+}
+
 /// True when the response is gRPC-Web text framing (`application/grpc-web-text`),
 /// in which case the entire body — data and trailer frames alike — is base64.
 fn is_grpc_web_text(headers: &ResponseHeaders) -> bool {
@@ -515,18 +539,12 @@ async fn connect_rpc_unary_json(
     // if the server treated our unframed request as streaming.
     match serde_json::from_slice::<Value>(&response_bytes) {
         Ok(v) => {
-            let trailers = HashMap::new();
             let mut error = None;
             if let Some(grpc_status) = headers.get("grpc-status").filter(|s| *s != "0") {
                 let msg = headers.get("grpc-message").cloned().unwrap_or_default();
                 error = Some(trailer_status_error(grpc_status, msg));
             }
-            let response_headers: HashMap<String, String> = headers
-                .into_iter()
-                .filter(|(k, _)| {
-                    !k.starts_with("grpc-") && *k != "content-type" && *k != "content-length"
-                })
-                .collect();
+            let (response_headers, trailers) = split_connect_trailers(headers);
             return Ok(WebResponse {
                 messages: vec![v],
                 headers: response_headers,
@@ -593,13 +611,12 @@ async fn connect_rpc_unary_proto(
         .with_context(|| "Failed to decode protobuf response")?;
     let result = dynamic_message_to_json(&msg);
 
-    let trailers = HashMap::new();
     let mut error = None;
     if let Some(grpc_status) = headers.get("grpc-status").filter(|s| *s != "0") {
         let msg = headers.get("grpc-message").cloned().unwrap_or_default();
         error = Some(trailer_status_error(grpc_status, msg));
     }
-    let response_headers = public_response_headers(headers);
+    let (response_headers, trailers) = split_connect_trailers(headers);
 
     Ok(WebResponse {
         messages: vec![result],
@@ -2601,6 +2618,35 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         let e = error.unwrap();
         assert_eq!(e.code, 5, "not_found maps to 5");
         assert_eq!(e.message, "gone");
+    }
+
+    #[test]
+    fn split_connect_trailers_strips_the_prefix() {
+        let mut headers = HashMap::new();
+        headers.insert("x-channel".to_string(), "header".to_string());
+        headers.insert("trailer-x-channel".to_string(), "trailer".to_string());
+        headers.insert("trailer-x-audit".to_string(), "done".to_string());
+        headers.insert("content-type".to_string(), "application/json".to_string());
+
+        let (leading, trailers) = split_connect_trailers(headers);
+
+        assert_eq!(leading.get("x-channel"), Some(&"header".to_string()));
+        assert!(!leading.contains_key("trailer-x-channel"));
+        assert!(!leading.contains_key("content-type"));
+
+        assert_eq!(trailers.get("x-channel"), Some(&"trailer".to_string()));
+        assert_eq!(trailers.get("x-audit"), Some(&"done".to_string()));
+    }
+
+    #[test]
+    fn split_connect_trailers_keeps_a_bare_prefix_as_a_header() {
+        let mut headers = HashMap::new();
+        headers.insert("trailer-".to_string(), "odd".to_string());
+
+        let (leading, trailers) = split_connect_trailers(headers);
+
+        assert_eq!(leading.get("trailer-"), Some(&"odd".to_string()));
+        assert!(trailers.is_empty());
     }
 
     #[test]
