@@ -451,6 +451,15 @@ fn get_actual_rpc_mode(
         .unwrap_or(RpcModeInfo::Unknown)
 }
 
+fn rpc_mode_info(mode: crate::grpc::RpcMode) -> RpcModeInfo {
+    match mode {
+        crate::grpc::RpcMode::Unary => RpcModeInfo::Unary,
+        crate::grpc::RpcMode::ClientStream => RpcModeInfo::ClientStreaming,
+        crate::grpc::RpcMode::ServerStream => RpcModeInfo::ServerStreaming,
+        crate::grpc::RpcMode::Bidi => RpcModeInfo::BidirectionalStreaming,
+    }
+}
+
 /// Format protocol name for display in verbose output.
 fn protocol_display(protocol: crate::grpc::WireProtocol) -> &'static str {
     match protocol {
@@ -1310,21 +1319,38 @@ impl TestRunner {
             (None, None)
         };
 
-        // Phase 1: RPC mode validation - runtime warning if inferred != actual.
-        // The comparison exists only to produce that debug line, and reading the
-        // actual mode costs a descriptor-pool walk on every request.
+        // Phase 1: RPC mode. The section shape is only a guess -- a
+        // server-streaming method with one RESPONSE looks unary, and an ERROR
+        // section hides streaming entirely. gRPC does not care, but Connect and
+        // gRPC-Web pick the content type and the framing from the mode, and a
+        // streaming method addressed as unary is rejected with 415. So on those
+        // transports the descriptor wins whenever it knows the method.
         let inferred_rpc_mode = match prepared {
             Some(p) => p.rpc_mode.clone(),
             None => infer_rpc_mode_for_section_types(document),
         };
-        if tracing::enabled!(tracing::Level::DEBUG) {
-            let actual_rpc_mode = get_actual_rpc_mode(&client, &full_service, &method);
-            if let Some(warning) =
-                check_rpc_mode_compatibility(&inferred_rpc_mode, &actual_rpc_mode)
-            {
-                tracing::debug!("{} (service={}, method={})", warning, full_service, method);
-            }
+        let descriptor_rpc_mode = if client_protocol == crate::grpc::WireProtocol::Grpc
+            && !tracing::enabled!(tracing::Level::DEBUG)
+        {
+            RpcModeInfo::Unknown
+        } else {
+            get_actual_rpc_mode(&client, &full_service, &method)
+        };
+        if tracing::enabled!(tracing::Level::DEBUG)
+            && let Some(warning) =
+                check_rpc_mode_compatibility(&inferred_rpc_mode, &descriptor_rpc_mode)
+        {
+            tracing::debug!("{} (service={}, method={})", warning, full_service, method);
         }
+
+        let wire_rpc_mode = match (client_protocol, &descriptor_rpc_mode) {
+            (crate::grpc::WireProtocol::Grpc, _) => inferred_rpc_mode.clone(),
+            (_, RpcModeInfo::Unknown) => client
+                .reflect_rpc_mode(&full_service, &method)
+                .await
+                .map_or_else(|| inferred_rpc_mode.clone(), rpc_mode_info),
+            (_, actual) => actual.clone(),
+        };
 
         let (tx, rx) = mpsc::channel::<Value>(runner_helpers::REQUEST_CHANNEL_BUFFER);
         let request_stream = ReceiverStream::new(rx);
@@ -1338,7 +1364,7 @@ impl TestRunner {
         let start_time = std::time::Instant::now();
 
         // Determine RPC mode for HTTP transport (connectrpc/grpc-web needs to know streaming type)
-        let rpc_mode: Option<crate::grpc::RpcMode> = match inferred_rpc_mode {
+        let rpc_mode: Option<crate::grpc::RpcMode> = match wire_rpc_mode {
             RpcModeInfo::Unary => Some(crate::grpc::RpcMode::Unary),
             RpcModeInfo::ServerStreaming => Some(crate::grpc::RpcMode::ServerStream),
             RpcModeInfo::ClientStreaming => Some(crate::grpc::RpcMode::ClientStream),

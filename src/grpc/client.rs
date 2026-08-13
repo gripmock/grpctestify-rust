@@ -44,6 +44,22 @@ impl GrpcClient {
         }
     }
 
+    /// Ask the server what shape this method is, over the same HTTP port the
+    /// call itself uses. Only Connect needs it: gRPC and gRPC-Web frame every
+    /// mode identically, while Connect switches both the content type and the
+    /// framing on it. Used only when no local descriptor answered first.
+    pub async fn reflect_rpc_mode(&self, service_name: &str, method_name: &str) -> Option<RpcMode> {
+        match &self.inner {
+            ClientInner::Http { config, .. }
+                if config.protocol == crate::grpc::WireProtocol::ConnectRpc =>
+            {
+                crate::grpc::web_reflection::resolve_rpc_mode(config, service_name, method_name)
+                    .await
+            }
+            _ => None,
+        }
+    }
+
     pub fn describe(&self, symbol: Option<&str>) -> Result<String> {
         match &self.inner {
             ClientInner::Tonic(c) => {
@@ -123,71 +139,31 @@ impl GrpcClient {
                 use crate::grpc::TransportRef;
                 use futures::stream;
 
-                // For streaming modes where all requests arrive before first response
-                // (client-streaming, bidi), collect ALL and send as envelope stream.
-                // For unary/server-streaming, read first request immediately to avoid deadlock.
+                // Client-streaming and bidi RPCs must always use envelope
+                // framing, whatever the message count: a single message sent as
+                // a plain unary body is not valid Connect or gRPC-Web.
                 let needs_collect = matches!(
                     rpc_mode,
                     Some(crate::grpc::RpcMode::ClientStream | crate::grpc::RpcMode::Bidi)
                 );
-                let request_body = if needs_collect {
+                if needs_collect {
                     let all: Vec<Value> = requests.collect().await;
                     if all.is_empty() {
                         return Ok((HashMap::new(), Box::pin(stream::iter(vec![]))));
                     }
-                    if all.len() == 1 {
-                        all.into_iter().next().unwrap()
-                    } else {
-                        let is_grpc_web = config.protocol == crate::grpc::WireProtocol::GrpcWeb;
-                        let (messages, trailers, error, headers) = if is_grpc_web {
-                            let body = crate::grpc::web::encode_multi_request_grpc_web(&all);
-                            let (_status, response_bytes, headers) =
-                                crate::grpc::web::send_http_post(
-                                    config,
-                                    service_name,
-                                    method_name,
-                                    "application/grpc-web+json",
-                                    &body,
-                                )
-                                .await
-                                .map_err(|e| anyhow::anyhow!("{}", e))?;
-                            let (mut m, t, mut e) =
-                                crate::grpc::web::parse_grpc_web_framed_json_public(
-                                    &response_bytes,
-                                );
-                            // Extract structured error details from data frame if available
-                            crate::grpc::web::enrich_grpc_web_error(&mut m, &mut e);
-                            (m, t, e, headers)
-                        } else {
-                            let body = crate::grpc::web::encode_multi_request(&all);
-                            let (_status, response_bytes, headers) =
-                                crate::grpc::web::send_http_post(
-                                    config,
-                                    service_name,
-                                    method_name,
-                                    "application/connect+json",
-                                    &body,
-                                )
-                                .await
-                                .map_err(|e| anyhow::anyhow!("{}", e))?;
-                            let (m, t, e) = crate::grpc::web::parse_connect_framed_public(
-                                &response_bytes,
-                                None,
-                                &headers,
-                            );
-                            (m, t, e, headers)
-                        };
-                        return Ok((
-                            headers,
-                            Box::pin(stream::iter(Self::convert_result(
-                                messages,
-                                trailers,
-                                error,
-                                HashMap::new(),
-                            ))),
-                        ));
-                    }
-                } else {
+
+                    let (messages, trailers, error, headers) =
+                        send_framed_stream(config, service_name, method_name, &all).await?;
+
+                    return Ok((
+                        headers.clone(),
+                        Box::pin(stream::iter(Self::convert_result(
+                            messages, trailers, error, headers,
+                        ))),
+                    ));
+                }
+
+                let request_body = {
                     let mut pinned = Box::pin(requests);
                     pinned.next().await.unwrap_or(Value::Null)
                 };
@@ -340,3 +316,52 @@ pub use apif_grpc_transport::config::{
 };
 pub use apif_grpc_transport::error::GrpcError;
 pub use apif_grpc_transport::types::{RpcMode, StreamItem};
+
+/// Send every request message as one framed stream body.
+///
+/// Returns `(messages, trailers, error, headers)`.
+async fn send_framed_stream(
+    config: &apif_grpc_transport::config::GrpcClientConfig,
+    service_name: &str,
+    method_name: &str,
+    all: &[Value],
+) -> Result<(
+    Vec<Value>,
+    HashMap<String, String>,
+    Option<apif_grpc_transport::GrpcError>,
+    HashMap<String, String>,
+)> {
+    if config.protocol == crate::grpc::WireProtocol::GrpcWeb {
+        let body = crate::grpc::web::encode_multi_request_grpc_web(all);
+        let (_status, response_bytes, headers) = crate::grpc::web::send_http_post(
+            config,
+            service_name,
+            method_name,
+            "application/grpc-web+json",
+            &body,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        let (mut m, t, mut e) =
+            crate::grpc::web::parse_grpc_web_framed_json_public(&response_bytes);
+        crate::grpc::web::enrich_grpc_web_error(&mut m, &mut e);
+
+        return Ok((m, t, e, headers));
+    }
+
+    let body = crate::grpc::web::encode_multi_request(all);
+    let (_status, response_bytes, headers) = crate::grpc::web::send_http_post(
+        config,
+        service_name,
+        method_name,
+        "application/connect+json",
+        &body,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let (m, t, e) = crate::grpc::web::parse_connect_framed_public(&response_bytes, None, &headers);
+
+    Ok((m, t, e, headers))
+}
