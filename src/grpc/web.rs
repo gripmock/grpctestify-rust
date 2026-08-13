@@ -476,7 +476,7 @@ async fn connect_rpc(
     });
 
     match mode {
-        RpcMode::Unary | RpcMode::ClientStream => {
+        RpcMode::Unary => {
             if let Some(ref m) = resolved {
                 connect_rpc_unary_proto(
                     config,
@@ -491,7 +491,7 @@ async fn connect_rpc(
                 connect_rpc_unary_json(config, service_name, method_name, request_body).await
             }
         }
-        RpcMode::ServerStream | RpcMode::Bidi => {
+        RpcMode::ClientStream | RpcMode::ServerStream | RpcMode::Bidi => {
             if let Some(ref m) = resolved {
                 connect_rpc_stream_proto(
                     config,
@@ -636,7 +636,7 @@ async fn connect_rpc_stream_json(
     let body =
         serde_json::to_vec(&request_body).with_context(|| "Failed to serialize request body")?;
     let compress = config.compression == CompressionMode::Gzip;
-    let framed = encode_connect_envelope_compressed(&body, true, compress)?;
+    let framed = encode_connect_envelope_compressed(&body, false, compress)?;
 
     let (status, headers, body_stream) = send_http(
         config,
@@ -683,7 +683,7 @@ async fn connect_rpc_stream_proto(
 ) -> Result<WebResponse> {
     let request_bytes = serialize_message(&request_body, input_desc)?;
     let compress = config.compression == CompressionMode::Gzip;
-    let framed = encode_connect_envelope_compressed(&request_bytes, true, compress)?;
+    let framed = encode_connect_envelope_compressed(&request_bytes, false, compress)?;
 
     let (status, headers, body_stream) = send_http(
         config,
@@ -907,19 +907,20 @@ async fn grpc_web_binary(
 }
 
 /// Frame multiple requests as a ConnectRPC envelope stream: one data frame per
-/// message followed by the empty end-of-stream frame. Returned per-frame so the
-/// same frames can either be concatenated into a buffered body
-/// ([`encode_multi_request`]) or streamed one chunk at a time ([`frames_to_body`]).
+/// message, no end-of-stream frame. The protocol reserves the end-stream flag
+/// for responses -- "request streams must always leave this bit unset" -- and
+/// the end of the HTTP request body is what terminates a request stream.
+/// Returned per-frame so the same frames can either be concatenated into a
+/// buffered body ([`encode_multi_request`]) or streamed one chunk at a time
+/// ([`frames_to_body`]).
 fn frame_messages_connect(requests: &[Value]) -> Vec<Vec<u8>> {
-    let mut frames: Vec<Vec<u8>> = requests
+    requests
         .iter()
         .map(|req| {
             let body = serde_json::to_vec(req).unwrap_or_default();
             encode_connect_envelope(&body, false)
         })
-        .collect();
-    frames.push(encode_connect_envelope(b"", true));
-    frames
+        .collect()
 }
 
 /// Frame multiple requests as gRPC-Web data frames (flag 0x00), one per message.
@@ -936,6 +937,42 @@ fn frame_messages_grpc_web(requests: &[Value]) -> Vec<Vec<u8>> {
             frame
         })
         .collect()
+}
+
+/// Encode one message as a single Connect data frame.
+pub(crate) fn encode_connect_frame(data: &[u8]) -> Vec<u8> {
+    encode_connect_envelope(data, false)
+}
+
+/// Encode the empty end-of-stream frame a Connect server appends.
+#[cfg(test)]
+pub(crate) fn encode_connect_frame_end() -> Vec<u8> {
+    encode_connect_envelope(b"", true)
+}
+
+/// Encode one message as a single gRPC-Web data frame.
+pub(crate) fn encode_grpc_web_frame(data: &[u8]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(data.len() + 5);
+    frame.push(0x00);
+    frame.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    frame.extend_from_slice(data);
+    frame
+}
+
+/// Payloads of every data frame in a framed body, skipping the trailers and
+/// end-of-stream frames that both protocols append.
+pub(crate) fn data_frame_payloads(data: &[u8]) -> Vec<Vec<u8>> {
+    let mut decoder = FrameDecoder::new();
+    decoder.extend(data);
+
+    let mut payloads = Vec::new();
+    while let Some((flags, payload)) = decoder.next_frame() {
+        if flags == 0x00 {
+            payloads.push(payload);
+        }
+    }
+
+    payloads
 }
 
 /// Encode multiple requests as a ConnectRPC envelope stream (buffered).
@@ -2958,15 +2995,14 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         let reqs = vec![json!({"seq": 0}), json!({"seq": 1}), json!({"seq": 2})];
         let frames = frame_messages_connect(&reqs);
 
-        // One data frame per message + the empty end-of-stream frame.
-        assert_eq!(frames.len(), reqs.len() + 1);
-        assert_eq!(frames.last().unwrap(), &encode_connect_envelope(b"", true));
+        // One data frame per message, no end-of-stream frame on a request.
+        assert_eq!(frames.len(), reqs.len());
         // Concatenating the streamed frames reproduces the buffered body exactly.
         assert_eq!(frames.concat(), encode_multi_request(&reqs));
 
         // Each frame is one intact, in-order envelope.
         let headers = HashMap::new();
-        for (i, frame) in frames.iter().take(reqs.len()).enumerate() {
+        for (i, frame) in frames.iter().enumerate() {
             let (msgs, _t, _e) = parse_connect_framed(frame, None, &headers);
             assert_eq!(msgs.len(), 1);
             assert_eq!(msgs[0]["seq"], i);
@@ -3179,5 +3215,57 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         assert_eq!(dec.next_frame(), Some((0x00, vec![0xAA, 0xBB])));
         assert!(dec.next_frame().is_none());
         assert!(dec.remaining().is_empty());
+    }
+
+    #[test]
+    fn encode_multi_request_frames_a_single_message() {
+        let body = encode_multi_request(&[serde_json::json!({"name": "world"})]);
+        let payload = br#"{"name":"world"}"#;
+
+        assert_eq!(body[0], 0x00);
+        assert_eq!(
+            u32::from_be_bytes([body[1], body[2], body[3], body[4]]) as usize,
+            payload.len()
+        );
+        assert_eq!(&body[5..], payload);
+    }
+
+    #[test]
+    fn encode_multi_request_grpc_web_frames_a_single_message() {
+        let body = encode_multi_request_grpc_web(&[serde_json::json!({"name": "world"})]);
+        let payload = br#"{"name":"world"}"#;
+
+        assert_eq!(body[0], 0x00);
+        assert_eq!(
+            u32::from_be_bytes([body[1], body[2], body[3], body[4]]) as usize,
+            payload.len()
+        );
+        assert_eq!(&body[5..], payload);
+    }
+
+    #[test]
+    fn encode_multi_request_frames_every_message_separately() {
+        let body =
+            encode_multi_request(&[serde_json::json!({"a": 1}), serde_json::json!({"b": 2})]);
+        let mut decoder = FrameDecoder::new();
+        decoder.extend(&body);
+
+        assert_eq!(decoder.next_frame(), Some((0x00, br#"{"a":1}"#.to_vec())));
+        assert_eq!(decoder.next_frame(), Some((0x00, br#"{"b":2}"#.to_vec())));
+        assert!(decoder.next_frame().is_none());
+    }
+
+    // "Request streams must always leave this bit unset" -- the end-stream flag
+    // is response-only, so no request frame may carry it.
+    #[test]
+    fn encode_multi_request_never_sets_the_end_stream_flag() {
+        let body = encode_multi_request(&[serde_json::json!({"a": 1})]);
+        let mut decoder = FrameDecoder::new();
+        decoder.extend(&body);
+
+        while let Some((flags, _)) = decoder.next_frame() {
+            assert_eq!(flags & 0x02, 0);
+        }
+        assert!(decoder.remaining().is_empty());
     }
 }

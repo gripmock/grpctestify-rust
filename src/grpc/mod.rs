@@ -3,6 +3,7 @@ pub mod client;
 pub mod grpcurl_invocation;
 pub mod proxy;
 pub mod web;
+pub(crate) mod web_reflection;
 
 pub use apif_grpc_transport::config::{
     CompressionMode, GrpcClientConfig, ProtoConfig, TlsConfig, WireProtocol,
