@@ -151,11 +151,42 @@ impl ErrorHandler {
     }
 
     /// Try to decode details as raw JSON array bytes (ConnectRPC style).
+    ///
+    /// Connect carries a detail as `{"type": <name>, "value": <base64 proto>}`,
+    /// while the gRPC path exposes the protobuf JSON form with an `@type` key.
+    /// A `.gctf` expectation is written once and run against every protocol, so
+    /// the Connect shape is normalised here: the protocol's optional `debug`
+    /// field is exactly that protobuf JSON rendering, and is used for comparison
+    /// when the server provides it. Details without it are left untouched.
     fn decode_json_details(raw: &[u8]) -> Option<Vec<Value>> {
         if raw.is_empty() {
             return Some(Vec::new());
         }
-        serde_json::from_slice::<Vec<Value>>(raw).ok()
+
+        let details = serde_json::from_slice::<Vec<Value>>(raw).ok()?;
+
+        Some(
+            details
+                .into_iter()
+                .map(Self::normalize_connect_detail)
+                .collect(),
+        )
+    }
+
+    /// Replace a Connect detail with its `debug` rendering when one is present.
+    fn normalize_connect_detail(detail: Value) -> Value {
+        let Some(object) = detail.as_object() else {
+            return detail;
+        };
+
+        if !object.contains_key("type") || !object.contains_key("value") {
+            return detail;
+        }
+
+        match object.get("debug") {
+            Some(debug) if debug.is_object() => debug.clone(),
+            _ => detail,
+        }
     }
 
     /// Returns a human-readable mismatch reason for GrpcError comparison
@@ -965,5 +996,52 @@ mod tests {
         assert!(!ErrorHandler::status_matches_expected(&status, &expected));
         let reason = ErrorHandler::status_mismatch_reason(&status, &expected).unwrap();
         assert!(reason.contains("details mismatch at index 1"));
+    }
+
+    #[test]
+    fn connect_detail_is_compared_through_its_debug_rendering() {
+        let raw = br#"[{"type":"google.rpc.ErrorInfo","value":"CgVRVU9UQQ",
+            "debug":{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"QUOTA"}}]"#;
+
+        let decoded = ErrorHandler::decode_json_details(raw).expect("details decode");
+
+        assert_eq!(
+            decoded,
+            vec![serde_json::json!({
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                "reason": "QUOTA"
+            })]
+        );
+    }
+
+    #[test]
+    fn connect_detail_without_debug_is_left_alone() {
+        let raw = br#"[{"type":"google.rpc.ErrorInfo","value":"CgVRVU9UQQ"}]"#;
+
+        let decoded = ErrorHandler::decode_json_details(raw).expect("details decode");
+
+        assert_eq!(
+            decoded,
+            vec![serde_json::json!({
+                "type": "google.rpc.ErrorInfo",
+                "value": "CgVRVU9UQQ"
+            })]
+        );
+    }
+
+    #[test]
+    fn non_connect_details_pass_through() {
+        let raw =
+            br#"[{"@type":"type.googleapis.com/google.rpc.BadRequest","fieldViolations":[]}]"#;
+
+        let decoded = ErrorHandler::decode_json_details(raw).expect("details decode");
+
+        assert_eq!(
+            decoded,
+            vec![serde_json::json!({
+                "@type": "type.googleapis.com/google.rpc.BadRequest",
+                "fieldViolations": []
+            })]
+        );
     }
 }
