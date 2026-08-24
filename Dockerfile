@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM rust:1.97-alpine3.24 AS builder
+FROM rust:1.98-alpine3.24 AS builder
 
 COPY . /grpctestify-src
 
