@@ -1,6 +1,3 @@
-// Regex plugin for pattern matching
-// Usage: @regex(field, "pattern")
-
 use anyhow::Result;
 use serde_json::Value;
 
@@ -9,7 +6,6 @@ use crate::{
 };
 use apif_assert::engine::AssertionResult;
 
-/// Regex plugin for pattern matching
 #[derive(Debug, Clone, Default)]
 pub struct RegexPlugin;
 

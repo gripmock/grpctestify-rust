@@ -20,6 +20,8 @@ api.UserService/CreateUser
 }
 
 --- EXTRACT ---
+user_id = .id
+// Document 2: Read - fetch the created user
 
 --- ENDPOINT ---
 api.UserService/GetUser

@@ -1,9 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
-//! Integration tests: pure plugins called from inside jaq/jq expressions.
-//!
-//! These exercise the jaq-fallback path of the assertion engine wired with the
-//! real `PluginManager`, so `@plugin(...)` calls compose with jq operators
-//! (pipes, `map`, `select`, `all`, arithmetic, comparison against fields).
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::Arc;
 
@@ -98,7 +93,6 @@ fn regex_plugin_inside_jq_pipe_negative() {
 
 #[test]
 fn context_plugin_in_jaq_is_clear_error() {
-    // `@header` needs response headers and cannot be a pure jq function.
     let response = json!({ "list": [1] });
     let result = engine()
         .evaluate(".list | map(@header(\"y\")) | all", &response, None, None)

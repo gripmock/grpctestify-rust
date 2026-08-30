@@ -1,8 +1,3 @@
-//! Semantic tokenization for GCTF documents.
-//!
-//! 100% token-based — no starts_with, ends_with, find, contains, as_bytes.
-//! Pipeline: text → gctf_tokenizer → GctfToken → assertion tokenizer → LSP tokens
-
 use crate::parser::gctf_tokenizer::{GctfTokenKind, tokenize_gctf};
 use crate::parser::tokenizer::{TokenKind, tokenize_assertion};
 use tower_lsp::lsp_types::{SemanticToken, SemanticTokens};
@@ -23,12 +18,6 @@ struct SrcToken {
     token_type: u32,
 }
 
-/// Build semantic tokens for syntax highlighting.
-///
-/// Pipeline:
-/// 1. tokenize_gctf() → Vec<GctfToken> (section headers, content lines)
-/// 2. For each line: tokenize_assertion() → Vec<Token> with Spans
-/// 3. Classify tokens by GctfTokenKind / TokenKind → LSP delta-encoded SemanticTokens
 pub fn build_semantic_tokens(content: &str) -> SemanticTokens {
     let mut tokens: Vec<SrcToken> = Vec::new();
     let gctf_tokens = tokenize_gctf(content);
@@ -55,7 +44,6 @@ pub fn build_semantic_tokens(content: &str) -> SemanticTokens {
     encode_tokens(tokens)
 }
 
-/// UTF-16 column of character offset `char_off` within `line`.
 fn char_off_to_utf16(line: &str, char_off: usize) -> u32 {
     line.chars()
         .take(char_off)
@@ -63,14 +51,6 @@ fn char_off_to_utf16(line: &str, char_off: usize) -> u32 {
         .sum()
 }
 
-/// Push a token whose span is relative to the trimmed assertion string.
-///
-/// `tokenize_assertion` runs on the leading-whitespace-trimmed line and reports
-/// *character* offsets into that trimmed string, but LSP semantic tokens use
-/// UTF-16 code-unit columns measured from the start of the *original* line. Add
-/// back the indentation (`indent`, in characters) and convert character offsets
-/// to UTF-16 so tokens land correctly on indented lines and lines containing
-/// astral (surrogate-pair) characters.
 fn push_span(
     tokens: &mut Vec<SrcToken>,
     line: &str,
@@ -95,7 +75,6 @@ fn tokenize_line_as_assertion(line: &str, line_num: u32, tokens: &mut Vec<SrcTok
     if trimmed.is_empty() {
         return;
     }
-    // Number of leading-whitespace characters stripped by the trim above.
     let indent = line.chars().count() - line.trim_start().chars().count();
 
     let toks = tokenize_assertion(trimmed);
@@ -110,7 +89,6 @@ fn tokenize_line_as_assertion(line: &str, line_num: u32, tokens: &mut Vec<SrcTok
             let start = tok.span.start;
             let mut end = next.span.end;
             let mut j = i + 2;
-            // Consume .method for @type.method syntax
             while j + 1 < toks.len()
                 && matches!(toks[j].kind, TokenKind::Dot)
                 && matches!(toks[j + 1].kind, TokenKind::Ident(_))
@@ -249,7 +227,6 @@ mod tests {
         assert!(tokens.data.iter().any(|t| t.token_type == STRING));
     }
 
-    /// Decode the delta-encoded tokens back to absolute (line, start, length).
     fn absolute(tokens: &SemanticTokens) -> Vec<(u32, u32, u32, u32)> {
         let mut out = Vec::new();
         let mut line = 0u32;
@@ -268,8 +245,6 @@ mod tests {
 
     #[test]
     fn semantic_tokens_indented_line_keeps_column() {
-        // The number `123` sits at column 8 because of the 2-space indent.
-        // Tokenizing the trimmed line dropped the indent, mislocating it at 6.
         let content = "--- REQUEST ---\n  \"id\": 123\n";
         let toks = absolute(&build_semantic_tokens(content));
         let number = toks
@@ -281,9 +256,6 @@ mod tests {
 
     #[test]
     fn semantic_tokens_astral_utf16_column() {
-        // The emoji key is a single `char` but two UTF-16 code units, so `42`
-        // sits at char offset 6 but UTF-16 column 7. Emitting the raw char
-        // offset mislocates the highlight by one on every following token.
         let content = "--- REQUEST ---\n{\"😀\": 42}\n";
         let toks = absolute(&build_semantic_tokens(content));
         let number = toks

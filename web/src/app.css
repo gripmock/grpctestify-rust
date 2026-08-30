@@ -1,0 +1,2585 @@
+.modal.golf { width: min(32rem, calc(100vw - 2rem)); }
+.golf-round { font-size: var(--ui-2xs); }
+.golf-ask { display: flex; align-items: baseline; gap: var(--gap-4); font-size: var(--ui-sm); }
+.golf-clock { min-width: 2.5rem; text-align: right; font-size: var(--ui-2xs); color: var(--ink-muted); }
+.golf-clock.is-low { color: var(--warn); }
+.golf-clock.is-out { color: var(--fail); }
+.golf-bar { height: 2px; border-radius: var(--radius-xs); background: var(--surface-hover); overflow: hidden; }
+.golf-fill {
+  display: block;
+  height: 100%;
+  width: calc(var(--left) * 100%);
+  background: var(--accent);
+  transition: width calc(var(--motion-base) * var(--motion-scale)) linear;
+}
+.golf-fill.is-low { background: var(--warn); }
+.golf-fill.is-out { background: var(--fail); }
+.golf-input {
+  max-height: 11rem;
+  overflow: auto;
+  margin: 0;
+  padding: var(--gap-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  color: var(--ink-muted);
+  font-size: var(--ui-2xs);
+}
+.golf-field.is-ok { border-color: var(--ok); }
+.golf-strokes { padding-right: var(--gap-3); font-size: var(--ui-2xs); }
+.golf-out { min-height: 1.25rem; font-size: var(--ui-2xs); }
+.golf-want { font-size: var(--ui-2xs); }
+.golf-carry { font-size: var(--ui-2xs); }
+@import "tailwindcss";
+@import "../luvo/tokens.css";
+@import "../luvo/base.css";
+@import "../luvo/controls.css";
+
+/* The component layer. Every rule reads a token; none names a colour, radius,
+   shadow, duration or font of its own — the invariant tests enforce it.
+
+   Reviewed as a full-screen mockup before any of it shipped; that mockup lives in
+   the Claude Design project, not in the repo. */
+
+.assert-expr {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  padding: 0;
+  cursor: text;
+  min-width: 0;
+}
+.assert-pencil { opacity: 0; flex: 0 0 auto; }
+.assert-expr:hover .assert-pencil { opacity: 0.5; }
+.menu-item:disabled { opacity: 0.4; }
+.menu-item:disabled:hover { background: transparent; color: inherit; }
+.menu-item.is-danger:hover { background: color-mix(in oklab, var(--fail) 12%, transparent); color: var(--fail); }
+.menu-sep { height: 1px; margin: var(--gap-2) 0; background: var(--line); }
+
+/* The method picker drops under the endpoint field, as wide as it, and scrolls. */
+.method-menu { max-height: 20rem; overflow: auto; }
+.method-menu > .field { margin-bottom: var(--gap-2); }
+
+/* Two ways to run, each with the sentence that distinguishes them. */
+.mode-menu { min-width: 15rem; }
+.mode-item { align-items: flex-start; }
+.mode-icon { padding-top: var(--gap-0); }
+.mode-label { font-weight: 600; }
+.mode-desc { color: var(--ink-muted); font-size: var(--ui-2xs); }
+
+/* The documentation is read, not glanced at: as much of the window as a dialog
+   can honestly take. */
+
+/* A keycap and what it does, in two columns that line up inside their group.
+   The keycap column was a fixed 5.5 rem, which left a gutter beside `?` and
+   wrapped every description in a narrow column. */
+.shortcuts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--gap-2) var(--gap-4); }
+.shortcuts > .bar { display: contents; }
+.shortcuts dt, .shortcuts dd { margin: 0; }
+/* The places a local key belongs to are words, not keycaps, so the column is
+   wider and quieter than the one holding keycaps. */
+.shortcuts dd { color: var(--ink); }
+/* Two spacings that recur inside dialogs, as tokens rather than as numbers
+   typed into a style attribute. */
+/* Two more steps of the same scale, so a component never writes a gap of its
+   own: rows that belong to one value, and a label sitting on its value. */
+/* A column inside a row that must be allowed to shrink — a name and its meta,
+   where the row is what has the width. */
+/* One step of the tree, written once: the row and the failure under it both
+   indent by their depth, and the component passes the depth rather than the
+   arithmetic. */
+.row.tree-node { padding-left: calc(var(--gap-3) + var(--depth, 0) * 0.875rem); }
+.run-failure-row { display: flex; align-items: center; }
+.run-failure {
+  padding-left: calc(1.5rem + var(--depth, 0) * 0.875rem);
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
+  /* The line shrinks so the fix beside it stays on screen: at 100% it pushed
+     `define` past the rail's right edge, where nothing is clickable. */
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-right: var(--gap-3);
+  padding-bottom: var(--gap-2);
+  border: 0;
+  background: transparent;
+  color: var(--fail);
+  font: inherit;
+  /* The mark and the fix sit with the first line of a reason that wraps. */
+  align-items: flex-start;
+  font-size: var(--ui-2xs);
+  text-align: left;
+  cursor: pointer;
+}
+.run-failure-fix { flex: 0 0 auto; margin-right: var(--gap-3); }
+/* A menu placed at a pointer: the component writes where, the sheet writes how. */
+.menu.is-floating { position: fixed; z-index: 1000; }
+/* Monaco's own overflow container: hovers, suggestions and parameter hints,
+   which are drawn outside the editor and would otherwise sit under the panels
+   the editor is inside. Below a modal, above everything else. */
+.monaco-editor .overflowingContentWidgets,
+.monaco-editor-hover,
+.monaco-hover { z-index: 1100; }
+/* A checkbox row in a menu: the menu's own padding is the row's, so it only
+   needs the pair of hairlines that keep two of them apart. */
+.save-col { min-width: 0; }
+/* What the checker would say about the file being named — beside the preview
+   it is about, and quiet unless it is an error. */
+.save-problems { display: flex; align-items: baseline; gap: var(--gap-3); flex-wrap: wrap; }
+.save-problems.is-bad { border-left-color: var(--fail); }
+.save-problems.is-bad > .label { color: var(--fail); }
+.save-problem-first { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Depth is data, so it rides in a variable; the step it multiplies is a token,
+   which a `paddingLeft` computed in the component was not. */
+.save-folder { padding-left: var(--gap-4); }
+.save-crumbs { flex-wrap: wrap; gap: 0; margin-bottom: var(--gap-2); }
+.save-meta-open { align-self: flex-start; }
+/* A field the run does not read: dimmed rather than hidden, because it is in
+   the file and taking it off screen would hide what is written there. */
+.opt-field.is-overruled .field-frame { opacity: 0.55; }
+
+/* The first-call path: three lines that are also the controls for them. */
+.start-steps { gap: var(--gap-4); align-items: stretch; max-width: 34rem; margin: auto; text-align: left; }
+.start-steps > .label { text-align: center; }
+/* One grid for the three steps rather than one per step: sized separately,
+   their middle columns came out three different widths, and the only way to
+   line the sentences up was to push them against the right edge — ragged-left
+   prose with a gutter of nothing in the middle of the first thing a new reader
+   sees. The action keeps a line of its own; a button in the same row squeezed
+   the sentence into a column two words wide. */
+.start-steps ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1.25rem max-content 1fr;
+  align-items: baseline;
+  gap: var(--gap-3) var(--gap-4);
+}
+.start-step { display: contents; }
+.start-step .start-detail {
+  justify-self: start;
+  text-align: left;
+  display: block;
+  margin: 0;
+}
+.start-action { grid-column: 2 / -1; justify-self: start; }
+/* The state of a step, not a second sentence about it. */
+.start-step.is-done { color: var(--ink-muted); }
+.start-mark {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.25rem; height: 1.25rem; flex: 0 0 auto;
+  border: 1px solid var(--line-strong); border-radius: var(--radius-pill);
+  font-size: var(--ui-2xs);
+}
+.start-step.is-done .start-mark { border-color: var(--ok); color: var(--ok); }
+.start-detail { font-size: var(--ui-2xs); overflow-wrap: anywhere; }
+.start-steps .start-hint { text-align: center; }
+
+.bench-add { max-height: 20rem; overflow: auto; }
+
+.share-link { display: flex; flex-direction: column; gap: var(--gap-2); margin: 0 var(--gap-6) var(--gap-4); }
+.save-crumb { display: inline-flex; align-items: center; }
+.save-path { margin-top: var(--gap-2); }
+.save-family-note { margin-top: var(--gap-2); }
+.save-fmt { gap: var(--gap-3); font-size: var(--ui-xs); }
+.conflict-side { gap: 0; min-width: 0; }
+
+/* A file is a file whatever the run said; the colour is how it went. */
+/* The family a file belongs to, at a glance: one hue per family, the same two
+   the shape badges use for a request and a web transport. A verdict overrides
+   it — how the last run went outranks what kind of file it is. */
+/* One colour per family, wherever a file is drawn — the rail, the palette,
+   anywhere a row names a file. */
+.is-gctf { color: var(--kind-simple); }
+.is-httf { color: var(--kind-down); }
+.is-apif { color: var(--kind-up); }
+.tree-node .is-unknown { color: var(--ink-muted); }
+.tree-node .is-pass { color: var(--ok); }
+.tree-node .is-fail { color: var(--fail); }
+.tree-node .is-skip { color: var(--warn); }
+
+/* A panel whose contents failed validation. */
+.panel.is-bad { border-color: var(--fail); }
+
+/* The paste target in the import panel: a field that is a textarea. */
+.paste-area { display: block; resize: vertical; min-height: 4.5rem; line-height: 1.5; }
+
+/* A click-to-use example line: a row that wraps instead of truncating. */
+.example { align-items: flex-start; padding: var(--gap-3) var(--gap-3); }
+.example > .mono { white-space: normal; word-break: break-all; line-height: 1.45; text-align: left; }
+
+/* The collection tree. Indent comes from the row's own padding, so a node at
+   any depth is still one .row and keeps the same hit area. */
+.tree { display: flex; flex-direction: column; }
+.tree-node { user-select: none; }
+.tree-caret { width: 0.625rem; flex: 0 0 auto; transition: transform calc(var(--motion-fast) * var(--motion-scale)) ease; }
+.tree-caret.is-open { transform: rotate(90deg); }
+/* Not in the last run: present, but not part of the verdict above it. */
+.row.tree-node.is-untouched { opacity: 0.55; }
+.row.tree-node.is-untouched.is-on { opacity: 1; }
+
+.rail-filtered {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-3);
+  padding-left: var(--gap-3);
+  font-size: var(--ui-2xs);
+  color: var(--ink-muted);
+}
+
+/* the count that rides along inside a tag chip */
+.chip-count { opacity: 0.7; font-variant-numeric: tabular-nums; }
+
+/* One call, one line: the method, how long it took, when. The times share one
+   column so they line up down the list rather than drifting with the length of
+   the name beside them. */
+.history-row {
+  align-items: center;
+  gap: var(--gap-3);
+  padding-block: var(--gap-2);
+  position: relative;
+  min-height: 1.75rem;
+}
+/* A call is two lines: the one thing that tells it apart, at full width, and
+   under it everything that is the same for every call to that method. */
+.history-row.is-call { align-items: flex-start; padding-block: var(--gap-2); padding-left: var(--gap-4); }
+.history-row.is-call > .dot { margin-top: 0.3rem; }
+.history-lines { gap: 0; min-width: 0; flex: 1; }
+.history-meta {
+  gap: var(--gap-4);
+  font-size: var(--ui-2xs);
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+  /* A rail this narrow cannot hold six facts on one line: it wraps between
+     them rather than inside them, which is how `1 ms` came to be read as `1`
+     over `ms` and an address as `ht…`. */
+  flex-wrap: wrap;
+  row-gap: var(--gap-1);
+}
+.history-meta > * { white-space: nowrap; }
+.history-meta .history-where { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The file a call was made from: shorter than the address beside it, and the
+   first thing to give up the row's width. */
+.history-meta .history-from { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The actions sit over the row's right edge, so nothing moves under the
+   pointer. */
+.history-acts {
+  position: absolute;
+  top: var(--gap-1);
+  right: var(--gap-2);
+  display: none;
+  align-items: center;
+  gap: var(--gap-0);
+  padding-left: var(--gap-4);
+  background: var(--surface-hover);
+}
+.history-row:hover .history-acts,
+.history-row:focus-within .history-acts { display: flex; }
+.history-acts .btn { height: 1.25rem; padding-inline: var(--gap-2); }
+/* Scanning for the one that failed is why the list is opened at all. */
+.history-row.is-fail { box-shadow: inset 2px 0 0 0 var(--fail); }
+/* One list, one rhythm: every row is the same height whether it is a burst, a
+   single call or one of a burst's entries. */
+/* A glow belongs to something being acted on, not to every row in a list. */
+.history-row .dot.is-ok { box-shadow: none; }
+/* A single call keeps the room a burst spends on its chevron, so every dot
+   down the list starts at the same place. */
+.history-filters { flex-wrap: wrap; }
+/* Placed where the click was, so it is a menu about that row rather than a
+   panel that happens to be open. */
+.history-menu { position: fixed; z-index: 1000; min-width: 9.5rem; }
+.chip.is-fail-chip { --tag: var(--fail); }
+
+/* The environment manager: one list, and one table of variables for whichever
+   environment is open — a file in the project or one this browser holds. */
+.env-modal { width: min(44rem, calc(100vw - 2rem)); }
+.env-row { align-items: center; padding-block: var(--gap-2); }
+/* The whole name is the switch: the environment is chosen by clicking it, not
+   by hitting a radio the size of a full stop. */
+.env-pick {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-4);
+  flex: 1;
+  min-width: 0;
+  padding: var(--gap-2) var(--gap-3);
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.env-pick:hover { background: var(--surface-hover); }
+
+/* The target reads as the environment's own line, above the variables rather
+   than as one of them: it is the only value that changes where a call goes. */
+/* The same three columns as the variables under it, so every left edge on the
+   panel is one edge and the lock sits in the lock's column. */
+/* The environment menu: one row, read left to right — which one, where it
+   lives, where it sends a call. */
+.env-menu { min-width: 22rem; }
+.env-foot { align-items: center; }
+.env-foot-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.env-check { display: inline-flex; justify-content: center; width: 0.875rem; flex: 0 0 auto; }
+.env-menu-name { flex: 0 1 auto; min-width: 6rem; }
+.env-menu-target { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.env-target {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--gap-2) var(--gap-3);
+  align-items: center;
+}
+.env-target > .label { display: inline-flex; align-items: center; gap: var(--gap-2); }
+.env-target-note { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* What the files ask for and this environment does not answer. A dashed frame:
+   it is a list of holes, not a list of variables. */
+.env-missing {
+  padding: var(--gap-4);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+}
+/* Flush with the label above it: the hover fill still reaches the frame, so
+   the name lines up with the heading rather than sitting a padding in. */
+.env-missing-row {
+  width: auto;
+  margin-inline: calc(var(--gap-4) * -1);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.env-missing-row:hover { background: var(--surface-hover); color: var(--accent); }
+.env-missing-where { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+/* Bounded: a suite can ask for more names than a screen has room for, and the
+   variables below have to stay reachable. */
+.env-missing-list { max-height: 12rem; overflow: auto; padding-right: var(--gap-2); }
+.env-missing-filter { margin-inline: calc(var(--gap-4) * -1); }
+.env-missing-none { padding: var(--gap-2) 0; }
+.env-missing > .btn.is-quiet { align-self: flex-start; }
+
+.var-table { display: flex; flex-direction: column; gap: var(--gap-2); }
+.var-head, .var-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) auto;
+  gap: var(--gap-3);
+  align-items: center;
+}
+/* Names line up whatever they are called, so the badges after them read as a
+   column rather than as scatter. */
+.env-pick > .row-name { min-width: 8rem; flex: 0 1 auto; }
+.var-head { font-size: var(--ui-2xs); letter-spacing: var(--title-tracking); text-transform: var(--title-transform); }
+/* A machine-only value reads as one at a glance, without a second panel to
+   move variables into. */
+.var-line.is-local .field { border-color: color-mix(in oklab, var(--warn) 45%, var(--line)); }
+/* A fixed column, not a shrinking one: a row that gains a `used` badge would
+   otherwise push its own fields narrower than the row above it. */
+.var-tools { display: flex; align-items: center; justify-content: flex-end; gap: var(--gap-1); width: 6.5rem; }
+.btn.is-warned { color: var(--warn); }
+
+.field-error { color: var(--fail); font-size: var(--ui-2xs); }
+/* The shape of a bench's load, drawn from the samples it reported. One point
+   per progress event: the line is measurement, so it is drawn without
+   smoothing and the box says what its top is worth. */
+.plot { border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); padding: var(--gap-2); }
+.plot > svg { display: block; width: 100%; height: 5rem; }
+.plot .grid { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.plot .series { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.plot .target { fill: none; stroke: var(--ink-muted); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+.plot-legend { display: flex; align-items: center; gap: var(--gap-3); font-size: var(--ui-2xs); color: var(--ink-muted); }
+.plot-legend i { display: inline-block; width: .625rem; height: 0; border-top: 2px solid var(--accent); margin-right: var(--gap-2); vertical-align: middle; }
+.plot-legend i.is-target { border-top-style: dashed; border-top-color: var(--ink-muted); }
+
+/* A name substitution cannot read: the row says so where the name is typed,
+   and the note under the list says what a name may be. */
+.field.is-bad { border-color: var(--fail); color: var(--fail); }
+
+/* The code an HTTP answer came back with, in the tone of its class. */
+.history-status { flex: 0 0 auto; font-size: var(--ui-2xs); }
+.history-status.is-ok { color: var(--ok); }
+.history-status.is-warn { color: var(--warn); }
+.history-status.is-fail { color: var(--fail); }
+
+/* Only appears when the call went somewhere other than the current target, so
+   it is a signal rather than a column. */
+.history-where {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--ui-2xs);
+}
+/* The method is what tells the rows apart, so it truncates last. */
+.history-row .row-name { flex: 1 1 auto; min-width: 4rem; }
+/* One list, newest first: the method is named on the row rather than in a
+   header above a group of them. */
+.history-row.is-call.is-nested { padding-left: calc(var(--gap-4) + var(--gap-6)); }
+.history-payload { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--ui-2xs); }
+/* Which side of the call this line came from: what was sent reads as ink, what
+   came back is quieter and arrow-marked, a failure is its reason. */
+.history-payload.is-response { color: var(--ink-muted); }
+.history-payload.is-error { color: var(--fail); }
+.history-back { margin-right: var(--gap-2); opacity: 0.7; }
+/* The day a run of calls happened on. */
+.history-day {
+  padding: var(--gap-3) var(--gap-3) var(--gap-1) var(--gap-4);
+  font-size: var(--ui-2xs);
+  letter-spacing: var(--title-tracking);
+  color: var(--ink-muted);
+}
+
+/* The day a call happened, above the calls that happened on it — and still on
+   screen while its calls are scrolled through. */
+.rail-group {
+  position: sticky;
+  top: calc(var(--gap-4) * -1);
+  z-index: 1;
+  /* The rail's own surface, or the label rides a lighter band down the list. */
+  background: var(--surface-raised);
+  box-shadow: 0 1px 0 0 var(--line);
+  margin-bottom: var(--gap-2);
+  padding: var(--gap-4) var(--gap-3) var(--gap-2);
+  font-size: var(--ui-2xs);
+  letter-spacing: var(--title-tracking);
+  text-transform: var(--title-transform);
+  color: var(--ink-muted);
+}
+.history-row.is-nested { padding-left: var(--gap-7); }
+.tree-node.is-hollow { color: var(--ink-muted); }
+.history-row.is-open { color: var(--ink); }
+
+/* The spinner Lucide icons get via className. Dividing by the motion scale
+   made reduced motion mean *infinitely fast*; under it the spinner simply
+   stops, and the words beside it still say what is happening. */
+.animate-spin { animation: spin 700ms linear infinite; }
+
+@keyframes toast-in { from { transform: translateY(0.625rem); opacity: 0; } to { transform: none; opacity: 1; } }
+
+.toast-mark { font-family: var(--font-code); }
+/* The message is selectable — an error is something to paste into a ticket. */
+.toast-text { flex: 1; min-width: 0; user-select: text; }
+
+.tok-key { color: var(--kind-down); }
+.tok-str { color: var(--ok); }
+.tok-num { color: var(--kind-up); }
+.tok-punct { color: var(--ink-muted); }
+.env {
+  padding: 0 2px;
+  border-radius: var(--radius-xs);
+  background: color-mix(in oklab, var(--ok) 16%, transparent);
+  color: var(--ok);
+  box-shadow: inset 0 -1px 0 0 var(--ok);
+}
+.env.is-secret { background: color-mix(in oklab, var(--warn) 16%, transparent); color: var(--warn); box-shadow: inset 0 -1px 0 0 var(--warn); }
+.env.is-unknown { background: color-mix(in oklab, var(--fail) 16%, transparent); color: var(--fail); box-shadow: inset 0 -1px 0 0 var(--fail); }
+/* Answered, and answered with nothing: the shared file keeps the name while the
+   value lives in someone's `.local`. Not a failure — a hole to fill. */
+.env.is-empty { background: color-mix(in oklab, var(--warn) 12%, transparent); color: var(--warn); box-shadow: inset 0 -1px 0 0 var(--warn); }
+/* A value a run bound reads as answered, the way an environment's does: it is
+   what the call sends. */
+.env.from-dataset, .env.from-extract, .env.from-run {
+  background: color-mix(in oklab, var(--accent) 16%, transparent);
+  color: var(--accent);
+  box-shadow: inset 0 -1px 0 0 var(--accent);
+}
+button.env {
+  font: inherit;
+  border: 0;
+  cursor: pointer;
+}
+button.env:hover { background: color-mix(in oklab, var(--fail) 30%, transparent); }
+
+/* One frame, not two: the editor squares the corners the strip continues. */
+/* The answer's header, in a pane narrow enough to squeeze it: whole items move
+   to the next line rather than words breaking inside them. */
+.answer-head { flex-wrap: wrap; row-gap: var(--gap-2); }
+.answer-head > * { white-space: nowrap; }
+/* What can be done with the answer stays together and stays to the right, on
+   whichever line it ends up on. */
+.answer-acts { margin-left: auto; flex-wrap: wrap; }
+/* The answer's editor is the pane's body: it takes the room the pane has
+   rather than a fixed box inside it. */
+.editor.is-answer { flex: 1 1 auto; min-height: 9rem; display: flex; }
+.editor.is-answer > * { flex: 1 1 auto; min-width: 0; }
+.editor:has(+ .env-strip) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+/* The strip under an editor listing the variables the body actually uses.
+   Tinted and framed on its own, it floated below the editor as a separate
+   card; it belongs to the editor, so it hangs off its bottom edge and shares
+   its frame. */
+.env-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--gap-2);
+  margin-top: calc(var(--gap-2) * -1);
+  padding: var(--gap-2) var(--gap-4);
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  background: var(--surface-sunken);
+  font-size: var(--ui-2xs);
+}
+.env-strip .label { flex: 0 0 auto; }
+.env-strip .grow { min-width: 0; }
+.env-unresolved { flex: 0 0 auto; color: var(--fail); }
+.fail { color: var(--fail); }
+.schema-view { min-height: 0; height: 100%; }
+/* Not `.schema-source` — that is the method-list provenance bar, and a second
+   meaning for one class name is how the last collision started. */
+.proto-source {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: var(--gap-3) var(--gap-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+  font-size: var(--ui-2xs);
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 2;
+}
+.assert-diff { gap: var(--gap-2); min-width: 0; }
+.assert-diff .diff { margin: 0; max-height: 18rem; overflow: auto; }
+/* Reading a call: a panel beside the rail, anchored to its row. Opening a tab
+   to see what a call sent was the whole cost this removes. */
+.history-peek {
+  position: fixed;
+  left: calc(15.625rem + 0.5rem);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-3);
+  width: min(34rem, calc(100vw - 17rem));
+  max-height: 26rem;
+  padding: var(--gap-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.35);
+}
+.history-peek .peek-endpoint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.peek-conn { flex: 0 0 auto; gap: var(--gap-2); font-size: var(--ui-2xs); }
+.peek-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--gap-4); min-height: 0; overflow: hidden; }
+.peek-half { display: flex; flex-direction: column; gap: var(--gap-2); min-height: 0; min-width: 0; }
+.peek-json {
+  margin: 0;
+  overflow: auto;
+  padding: var(--gap-2) var(--gap-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+  font-size: var(--ui-2xs);
+  white-space: pre;
+}
+.peek-foot { flex: 0 0 auto; }
+.history-row.is-peeked { background: var(--surface-hover); }
+.crash { display: flex; align-items: center; justify-content: center; height: 100vh; padding: var(--gap-6); }
+.crash-card { max-width: 34rem; gap: var(--gap-4); }
+.crash-title { margin: 0; font-size: var(--ui-title); font-weight: 600; }
+.crash-what {
+  margin: 0;
+  padding: var(--gap-3) var(--gap-4);
+  border: 1px solid var(--fail);
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+  color: var(--fail);
+  font-size: var(--ui-2xs);
+  white-space: pre-wrap;
+}
+.event .at {
+  display: flex;
+  align-items: baseline;
+  gap: var(--gap-2);
+  color: var(--ink-muted);
+}
+.event .gap { color: var(--warn); }
+/* The shortcuts panel: one column of rows, one keycap column every group
+   aligns to. It was four lists in CSS columns inside a dialog too narrow for
+   them — the third column flowed off the right edge, the footer was cut
+   mid-sentence, and a filter left holes where it emptied a group. */
+.keys-body { padding-block: var(--gap-5); }
+.keys-search { flex: 1 1 auto; max-width: 16rem; }
+.keys-count { flex: 0 0 auto; font-size: var(--ui-2xs); }
+/* One grid for the whole list, so `max-content` is measured across every row:
+   each keycap column is as wide as the widest cap in it and no wider. */
+.keys-list { display: grid; grid-template-columns: max-content minmax(0, 1fr); margin: 0; column-gap: var(--gap-7); }
+.keys-group { display: contents; }
+.keys-group-name {
+  grid-column: 1 / -1;
+  margin-top: var(--gap-6);
+  padding: var(--gap-2) var(--gap-7);
+  border-bottom: 1px solid var(--line);
+  color: var(--label-ink);
+  font-size: var(--ui-2xs);
+  letter-spacing: var(--title-tracking);
+  text-transform: var(--title-transform);
+}
+.keys-group:first-child > .keys-group-name { margin-top: 0; }
+.keys-row { display: contents; }
+.keys-row > dt, .keys-row > dd { margin: 0; padding: var(--gap-2) 0; }
+/* The caps hug the words they belong to: left-aligned in a `max-content`
+   column they trail off towards a ragged edge. */
+.keys-row > dt { justify-self: end; padding-left: var(--gap-7); }
+.keys-row > dd { padding-right: var(--gap-7); }
+/* The place a local key belongs to is words, not a keycap, so it reads as a
+   quiet label rather than as something to press. */
+.keys-where { color: var(--ink-muted); font-size: var(--ui-2xs); }
+.keys-local { font-size: var(--ui-2xs); }
+.keys-local .keys-row > dt { white-space: nowrap; }
+.keys-foot { justify-content: flex-start; gap: var(--gap-2); color: var(--ink-muted); font-size: var(--ui-2xs); }
+/* As wide as the word it holds — `GET` had six rems of it and `PROPFIND` had
+   to fit in the same box — with a hairline between it and the path, so the two
+   read as the two things they are. */
+.http-endpoint > .http-verb {
+  flex: 0 0 auto;
+  width: calc(var(--verb-ch, 3) * 1.35ch + 2 * var(--gap-3) + 2px);
+  min-width: 3.5rem;
+  max-width: 9rem;
+  padding-inline: var(--gap-3);
+  border-right: 1px solid var(--line);
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+/* What the method does to the thing it names. */
+/* Where the browser can size a field to its own value, it does it exactly. */
+@supports (field-sizing: content) {
+  .http-endpoint > .http-verb { field-sizing: content; width: auto; }
+}
+/* A verb nobody answers: sent as written, so the field says so rather than
+   refusing it. */
+.http-verb.is-bad { color: var(--warn); text-decoration: underline wavy var(--warn) from-font; }
+.http-verb.is-read { color: var(--kind-simple); }
+.http-verb.is-write { color: var(--kind-up); }
+.http-verb.is-destructive { color: var(--fail); }
+.http-verb.is-other { color: var(--ink-muted); }
+.http-endpoint > .field + .field { padding-left: var(--gap-4); }
+/* Names the call will send as braces. */
+.unresolved-vars { flex: 0 0 auto; }
+
+/* What a templated path comes to, beside the path — the same thing the address
+   band shows for a templated address. */
+.http-resolved {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The query, edited where it lives. */
+.http-params { flex: 0 0 auto; gap: var(--gap-2); font-size: var(--ui-2xs); color: var(--ink-muted); }
+.http-params.is-on { color: var(--ink); }
+.params-menu { min-width: 26rem; padding: var(--gap-3); gap: var(--gap-2); }
+.params-menu .field { min-width: 0; }
+
+.http-issue { flex: 0 0 auto; padding-right: var(--gap-3); font-size: var(--ui-2xs); color: var(--warn); }
+
+.status-keys { padding-inline: var(--gap-2); }
+.status-version { gap: var(--gap-2); padding-inline: var(--gap-2); }
+.status-target { gap: var(--gap-2); }
+/* The suite as a reader sees it: pages on the left, the page on the right. */
+.docs-scope { flex: 1; text-align: right; font-size: var(--ui-2xs); }
+.docs-body { display: grid; grid-template-columns: 14rem minmax(0, 1fr); gap: var(--gap-6); min-height: min(70vh, 40rem); }
+.docs-pages { display: flex; flex-direction: column; gap: var(--gap-hair); overflow: auto; max-height: min(70vh, 40rem); }
+.docs-page { min-width: 0; }
+.docs-ladder {
+  margin: var(--gap-3) 0;
+  padding: var(--gap-3) var(--gap-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+}
+.ladder-heads { display: flex; gap: var(--gap-5); margin-bottom: var(--gap-3); font-size: var(--ui-2xs); color: var(--ink-muted); }
+.ladder-head { padding-bottom: var(--gap-1); border-bottom: 1px solid var(--line-strong); }
+.ladder-step { display: flex; align-items: baseline; gap: var(--gap-3); padding: var(--gap-1) 0; font-size: var(--ui-2xs); }
+.ladder-step.is-answer { color: var(--ink-muted); }
+.ladder-arrow { color: var(--accent); }
+.ladder-step.is-answer .ladder-arrow { color: var(--ok); }
+.ladder-label { flex: 1; min-width: 0; }
+.ladder-who { flex: 0 0 auto; }
+.docs-markdown {
+  margin: 0;
+  flex: 1;
+  max-height: 24rem;
+  overflow: auto;
+  padding: var(--gap-3) var(--gap-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+  font-size: var(--ui-2xs);
+  white-space: pre-wrap;
+}
+/* A failure: what happened, the transport's own words under it, and what to do
+   about it. */
+.failure { display: flex; flex-direction: column; gap: var(--gap-2); }
+/* Servers write failures in several lines — a stub that did not match prints
+   the input it compared. Flattened into a paragraph it was unreadable. */
+.failure > .assert span:last-child { white-space: pre-wrap; overflow-wrap: anywhere; }
+.failure-detail {
+  font-size: var(--ui-2xs);
+  color: var(--ink-muted);
+  padding-inline-start: var(--gap-5);
+  overflow-wrap: anywhere;
+}
+.failure-fixes {
+  margin: 0;
+  padding-inline-start: var(--gap-5);
+  font-size: var(--ui-xs);
+  color: var(--ink-muted);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-1);
+  list-style: none;
+}
+/* What to do reads as a step, not as another line of what went wrong. */
+.failure-fixes > li { display: flex; gap: var(--gap-2); }
+.failure-fixes > li::before { content: '→'; color: var(--accent); }
+
+.modal.golf { width: min(32rem, calc(100vw - 2rem)); }
+.golf-round { font-size: var(--ui-2xs); }
+.golf-ask { display: flex; align-items: baseline; gap: var(--gap-4); font-size: var(--ui-sm); }
+.golf-input {
+  max-height: 11rem;
+  overflow: auto;
+  margin: 0;
+  padding: var(--gap-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  color: var(--ink-muted);
+  font-size: var(--ui-2xs);
+}
+.golf-field.is-ok { border-color: var(--ok); }
+.golf-strokes { padding-right: var(--gap-3); font-size: var(--ui-2xs); }
+.golf-out { min-height: 1.25rem; font-size: var(--ui-2xs); }
+.golf-want { font-size: var(--ui-2xs); }
+.status-keys { padding-inline: var(--gap-2); }
+.status-version { gap: var(--gap-2); padding-inline: var(--gap-2); }
+.status-target { gap: var(--gap-2); }
+/* The suite as a reader sees it: pages on the left, the page on the right. */
+.docs-scope { flex: 1; text-align: right; font-size: var(--ui-2xs); }
+.docs-body { display: grid; grid-template-columns: 14rem minmax(0, 1fr); gap: var(--gap-6); min-height: min(70vh, 40rem); }
+.docs-pages { display: flex; flex-direction: column; gap: var(--gap-hair); overflow: auto; max-height: min(70vh, 40rem); }
+.docs-page { min-width: 0; }
+.docs-ladder {
+  margin: var(--gap-3) 0;
+  padding: var(--gap-3) var(--gap-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+}
+.ladder-heads { display: flex; gap: var(--gap-5); margin-bottom: var(--gap-3); font-size: var(--ui-2xs); color: var(--ink-muted); }
+.ladder-head { padding-bottom: var(--gap-1); border-bottom: 1px solid var(--line-strong); }
+.ladder-step { display: flex; align-items: baseline; gap: var(--gap-3); padding: var(--gap-1) 0; font-size: var(--ui-2xs); }
+.ladder-step.is-answer { color: var(--ink-muted); }
+.ladder-arrow { color: var(--accent); }
+.ladder-step.is-answer .ladder-arrow { color: var(--ok); }
+.ladder-label { flex: 1; min-width: 0; }
+.ladder-who { flex: 0 0 auto; }
+.docs-markdown {
+  margin: 0;
+  flex: 1;
+  max-height: 24rem;
+  overflow: auto;
+  padding: var(--gap-3) var(--gap-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+  font-size: var(--ui-2xs);
+  white-space: pre-wrap;
+}
+/* A failure: what happened, the transport's own words under it, and what to do
+   about it. */
+.failure { display: flex; flex-direction: column; gap: var(--gap-2); }
+/* Servers write failures in several lines — a stub that did not match prints
+   the input it compared. Flattened into a paragraph it was unreadable. */
+.failure > .assert span:last-child { white-space: pre-wrap; overflow-wrap: anywhere; }
+.failure-detail {
+  font-size: var(--ui-2xs);
+  color: var(--ink-muted);
+  padding-inline-start: var(--gap-5);
+  overflow-wrap: anywhere;
+}
+.failure-fixes {
+  margin: 0;
+  padding-inline-start: var(--gap-5);
+  font-size: var(--ui-xs);
+  color: var(--ink-muted);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-1);
+  list-style: none;
+}
+/* What to do reads as a step, not as another line of what went wrong. */
+.failure-fixes > li { display: flex; gap: var(--gap-2); }
+.failure-fixes > li::before { content: '→'; color: var(--accent); }
+
+.modal.merge { width: min(24rem, calc(100vw - 2rem)); }
+.status-keys { padding-inline: var(--gap-2); }
+.status-version { gap: var(--gap-2); padding-inline: var(--gap-2); }
+.status-target { gap: var(--gap-2); }
+/* The suite as a reader sees it: pages on the left, the page on the right. */
+.docs-scope { flex: 1; text-align: right; font-size: var(--ui-2xs); }
+.docs-body { display: grid; grid-template-columns: 14rem minmax(0, 1fr); gap: var(--gap-6); min-height: min(70vh, 40rem); }
+.docs-pages { display: flex; flex-direction: column; gap: var(--gap-hair); overflow: auto; max-height: min(70vh, 40rem); }
+.docs-page { min-width: 0; }
+.docs-ladder {
+  margin: var(--gap-3) 0;
+  padding: var(--gap-3) var(--gap-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+}
+.ladder-heads { display: flex; gap: var(--gap-5); margin-bottom: var(--gap-3); font-size: var(--ui-2xs); color: var(--ink-muted); }
+.ladder-head { padding-bottom: var(--gap-1); border-bottom: 1px solid var(--line-strong); }
+.ladder-step { display: flex; align-items: baseline; gap: var(--gap-3); padding: var(--gap-1) 0; font-size: var(--ui-2xs); }
+.ladder-step.is-answer { color: var(--ink-muted); }
+.ladder-arrow { color: var(--accent); }
+.ladder-step.is-answer .ladder-arrow { color: var(--ok); }
+.ladder-label { flex: 1; min-width: 0; }
+.ladder-who { flex: 0 0 auto; }
+.docs-markdown {
+  margin: 0;
+  flex: 1;
+  max-height: 24rem;
+  overflow: auto;
+  padding: var(--gap-3) var(--gap-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+  font-size: var(--ui-2xs);
+  white-space: pre-wrap;
+}
+/* A failure: what happened, the transport's own words under it, and what to do
+   about it. */
+.failure { display: flex; flex-direction: column; gap: var(--gap-2); }
+/* Servers write failures in several lines — a stub that did not match prints
+   the input it compared. Flattened into a paragraph it was unreadable. */
+.failure > .assert span:last-child { white-space: pre-wrap; overflow-wrap: anywhere; }
+.failure-detail {
+  font-size: var(--ui-2xs);
+  color: var(--ink-muted);
+  padding-inline-start: var(--gap-5);
+  overflow-wrap: anywhere;
+}
+.failure-fixes {
+  margin: 0;
+  padding-inline-start: var(--gap-5);
+  font-size: var(--ui-xs);
+  color: var(--ink-muted);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-1);
+  list-style: none;
+}
+/* What to do reads as a step, not as another line of what went wrong. */
+.failure-fixes > li { display: flex; gap: var(--gap-2); }
+.failure-fixes > li::before { content: '→'; color: var(--accent); }
+
+/* runner — five clicks on the version. The board is one <pre>: the same board
+   in every theme, and nothing to lay out. */
+.modal.runner { width: min(34rem, calc(100vw - 2rem)); }
+.docs-preview {
+  flex: 1;
+  max-height: min(68vh, 38rem);
+  overflow: auto;
+  padding: var(--gap-4) var(--gap-5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+}
+.docs-h { margin: var(--gap-5) 0 var(--gap-3); letter-spacing: var(--title-tracking); }
+.docs-h1 { font-size: var(--ui-lg); }
+.docs-h2 { font-size: var(--ui-base); color: var(--accent); }
+.docs-h3 { font-size: var(--ui-sm); color: var(--label-ink); }
+.docs-p { margin: var(--gap-3) 0; font-size: var(--ui-xs); }
+.docs-rule { margin: var(--gap-5) 0; border: 0; border-top: 1px solid var(--line); }
+.docs-code {
+  position: relative;
+  margin: var(--gap-3) 0;
+  padding: var(--gap-3) var(--gap-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  font-size: var(--ui-2xs);
+  overflow: auto;
+}
+.docs-lang { position: absolute; top: var(--gap-2); right: var(--gap-6); color: var(--ink-muted); font-size: var(--ui-2xs); }
+/* One command per block, and the block is what a reader came for. Shown on
+   hover so a page being read is a page, not a row of buttons. */
+.docs-copy { position: absolute; top: var(--gap-1); right: var(--gap-1); opacity: 0; }
+.docs-code:hover .docs-copy, .docs-copy:focus-visible { opacity: 1; }
+/* The chip's own padding read as a space in the sentence around it — `docs`.
+   came out as `docs` . — so the padding is pulled back out of the line box:
+   the background still breathes, the full stop still sits against the word. */
+.docs-inline-code {
+  padding: 0 var(--gap-1);
+  margin: 0 calc(-1 * var(--gap-1));
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+}
+.docs-link { color: var(--accent); }
+/* A link to a page this dialog holds, which is every link `docs` writes. */
+.docs-link.is-page { background: none; border: 0; padding: 0; font: inherit; cursor: pointer; }
+.docs-link.is-page:hover, .docs-link.is-page:focus-visible { text-decoration: underline; }
+/* The url the row is about: long, so it may wrap out of the way rather than
+   push the fields it belongs to off the line. */
+.http-url {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-muted);
+}
+.http-url:hover, .http-url:focus-visible { color: var(--ink); }
+/* Dialled, and not what was written — a caution, not a refusal. */
+.addr-warn.is-note { color: var(--ink-muted); }
+.layout-pick { margin-right: var(--gap-1); }
+.layout-pick button { padding-inline: var(--gap-2); }
+.docs-filter { margin-bottom: var(--gap-2); font-size: var(--ui-2xs); }
+.docs-none { padding: var(--gap-2); font-size: var(--ui-2xs); }
+.docs-list { margin: var(--gap-3) 0; padding-left: var(--gap-5); font-size: var(--ui-xs); }
+.docs-list li { margin: var(--gap-1) 0; }
+.docs-table { width: 100%; border-collapse: collapse; font-size: var(--ui-2xs); }
+.docs-table th, .docs-table td { padding: var(--gap-2) var(--gap-3); border-bottom: 1px solid var(--line); text-align: left; }
+.docs-table th { color: var(--label-ink); }
+.conn-order { display: flex; flex-direction: column; gap: var(--gap-hair); }
+.conn-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--gap-3);
+  padding: var(--gap-hair) var(--gap-2);
+  border-left: 2px solid transparent;
+  color: var(--ink-muted);
+  font-size: var(--ui-2xs);
+}
+.conn-step.is-on { border-left-color: var(--accent); color: var(--ink); }
+.conn-step-name { flex: 0 0 9rem; }
+/* Basis zero, or a value longer than the column asked the wrapped row for a
+   line of its own and `localhost:50051` dropped under its own name. */
+.conn-step-value { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-method-name { color: var(--accent); margin-right: var(--gap-2); }
+.history-burst {
+  border: 0;
+  padding: 0 var(--gap-2);
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.history-burst:hover, .history-burst.is-on { background: color-mix(in oklab, var(--accent) 20%, transparent); color: var(--accent); }
+.run-tail { flex: 0 0 auto; }
+/* A report is a file to take away: an icon on its own said nothing about what
+   was written, or that anything had been. */
+.run-report { flex: 0 1 auto; min-width: 0; gap: var(--gap-2); font-size: var(--ui-2xs); }
+.run-report .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-data { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--ui-2xs); }
+.run-summary {
+  min-width: 0;
+  background:
+    linear-gradient(to right, var(--accent-soft) var(--progress, 0%), transparent var(--progress, 0%)),
+    var(--surface-raised);
+}
+.run-summary .count { flex: 0 0 auto; }
+
+/* Why a red run was red: the reasons counted once, each one a way to narrow the
+   rail to the files that failed that way. */
+/* Written as `.summary.run-why` because `.summary` sets `align-items: center`
+   further down the file, and one class against one class is the later rule. */
+.summary.run-why {
+  /* One reason a line: three of them side by side in a rail this wide left
+     `36 At lea…`, `1 A…`, `1 Expecte…` — counts with nothing to count. */
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--gap-1);
+  font-size: var(--ui-2xs);
+  text-align: left;
+}
+.run-why-one {
+  display: flex;
+  align-items: baseline;
+  gap: var(--gap-2);
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+}
+.run-why-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* What `check` made of a row, beside what a run made of it: a shield and its
+   count on one line — the two stacked when the icon and the number were laid
+   out as text. */
+.row-note.is-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  white-space: nowrap;
+}
+
+.run-lost { flex: 0 0 auto; color: var(--warn); font-size: var(--ui-2xs); }
+.env.is-muted { text-decoration: line-through; }
+
+/* Monaco paints these on {{VARIABLE}} spans inside a request body. They were
+   injected as a <style> block of hex literals; the tokens make them follow the
+   theme, and the class names stay because monaco-env-hover assigns them. */
+.env-var-active {
+  border-radius: var(--radius-xs);
+  background: color-mix(in oklab, var(--ok) 14%, transparent);
+  border-bottom: 2px solid var(--ok);
+  cursor: pointer;
+}
+.env-var-secret {
+  border-radius: var(--radius-xs);
+  background: color-mix(in oklab, var(--warn) 14%, transparent);
+  border-bottom: 2px solid var(--warn);
+  cursor: pointer;
+}
+.env-var-muted {
+  border-radius: var(--radius-xs);
+  background: color-mix(in oklab, var(--fail) 14%, transparent);
+  border-bottom: 2px solid var(--fail);
+  cursor: pointer;
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+.env-var-runtime {
+  border-radius: var(--radius-xs);
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+  border-bottom: 2px solid var(--accent);
+  cursor: pointer;
+}
+.env-var-unknown {
+  border-radius: var(--radius-xs);
+  background: color-mix(in oklab, var(--ink-muted) 14%, transparent);
+  border-bottom: 2px dashed var(--ink-muted);
+  cursor: pointer;
+}
+
+/* One request message: its header row, its editor, its variables. */
+.msg + .msg { margin-top: var(--gap-4); }
+/* A refusal the server wrote over several lines: kept as written, wrapped. */
+.pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* The source a run is driven over, on the control that starts it. */
+.run-over { display: inline-flex; align-items: center; gap: var(--gap-1); }
+/* The file's own text for a message the editor shows as JSON. */
+.body-as-written { font-size: var(--ui-2xs); border-bottom: 1px dashed currentColor; cursor: help; }
+/* A message a run never sends: still editable, no longer indistinguishable. */
+.msg.is-skipped .editor { opacity: 0.55; }
+.msg-head { margin-bottom: var(--gap-3); font-size: var(--ui-xs); color: var(--ink-muted); }
+/* What the call carries, said where the body is: the declared one is a fact,
+   the inferred one is a control that turns it into one. */
+.content-type { font-size: var(--ui-2xs); }
+.content-type.is-guess { cursor: pointer; border-bottom: 1px dashed currentColor; }
+.content-type.is-guess:hover, .content-type.is-guess:focus-visible { color: var(--ink); }
+.msg-index {
+  padding: var(--gap-0) var(--gap-3);
+  border-radius: var(--radius-xs);
+  background: var(--surface-hover);
+  color: var(--ink-muted);
+  font-size: var(--ui-2xs);
+  font-weight: 600;
+}
+.msg-error { display: inline-flex; align-items: center; gap: var(--gap-1); max-width: 22rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fail); font-size: var(--ui-2xs); }
+.shape-warn { color: var(--warn); }
+
+.assert {
+  display: flex;
+  gap: var(--gap-4);
+  padding: var(--gap-2) var(--gap-4);
+  border-left: max(var(--output-edge), 2px) solid transparent;
+  font-family: var(--font-code);
+  font-size: var(--ui-xs);
+}
+.assert.is-ok { border-left-color: var(--ok); }
+.assert.is-ok .assert-mark { color: var(--ok); }
+.assert.is-fail {
+  border-left-color: var(--fail);
+  background: color-mix(in oklab, var(--fail) 8%, transparent);
+}
+.assert.is-fail .assert-mark { color: var(--fail); }
+/* Five rows, five crosses down the right edge: a rare action drawn as often as
+   the lines it deletes. It comes out when the row is under the pointer or the
+   keyboard is in it. */
+.assert-remove { opacity: 0; }
+.assert:hover .assert-remove, .assert:focus-within .assert-remove { opacity: 1; }
+/* The mark keeps its column while a line has no verdict, so the expressions
+   line up before a run and after it. */
+.assert-mark { width: 0.875rem; flex: 0 0 auto; text-align: center; color: var(--line-strong); }
+
+.kv > dt { color: var(--ink-muted); }
+.kv > dd { margin: 0; min-width: 0; }
+/* A metadata value is something to take somewhere else, so taking it is a
+   click on the value rather than a button beside it. */
+.meta-value {
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.meta-value:hover:not(:disabled) { color: var(--accent); }
+.meta-value:disabled { cursor: default; }
+
+/* What fmt would rewrite this line to — the optimizer's own rule, so applying
+   it is what the file becomes anyway. */
+.assert-hint {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
+  padding-top: var(--gap-0);
+  color: var(--accent);
+  font-size: var(--ui-2xs);
+}
+.assert-hint .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Under a failed assertion: what was asked for and what came back, in two
+   columns so the values line up under each other rather than trailing two
+   labels of different lengths. */
+.assert-why {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--gap-0) var(--gap-4);
+  padding-top: var(--gap-1);
+  font-size: var(--ui-2xs);
+}
+.assert-key { color: var(--ink-muted); }
+.assert-why .mono { color: var(--fail); overflow-wrap: anywhere; }
+/* A message stands where a pair would, across both columns. */
+/* The remedy under a failed check: it is advice, not evidence, so it sits
+   under the two values in the muted voice the notes use. Its own name, because
+   it used to share `.assert-hint` with what `fmt` would rewrite a line to — two
+   different things, and the second rule repainted the first. */
+.assert-remedy { grid-column: 1 / -1; color: var(--ink-muted); font-size: var(--ui-2xs); line-height: 1.5; }
+.assert-remedy code, .assert-remedy .mono { color: var(--ink); }
+
+.assert-said { grid-column: 1 / -1; color: var(--fail); }
+/* The line number is the way into the file, so it looks like one. */
+.binary-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--gap-2);
+}
+.tab-list-btn { gap: var(--gap-2); padding-inline: var(--gap-3); }
+.tab-list { min-width: 20rem; max-height: 22rem; overflow-y: auto; }
+.tab-list-row { display: flex; align-items: center; gap: var(--gap-4); cursor: pointer; }
+.tab-list-row.is-cursor { background: var(--surface-hover); }
+.tab-list-row .tab-dirty { flex: 0 0 auto; }
+/* A schema chip is two controls: pick it, or take it out of the project. */
+.chip-name { background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 0; }
+
+/* A measurement running under another file: a way to it, not its numbers. */
+.bench-elsewhere { align-self: flex-start; }
+
+/* The one line the workbench says about what it did before anyone touched it:
+   full width, above the panes, gone when it is read. */
+.startup-note { margin: 0 var(--gap-4) var(--gap-3); display: flex; align-items: center; gap: var(--gap-3); }
+
+/* The request's sections, in a pane narrow enough to hold fewer of them than
+   there are: the strip was simply cut off at the edge, and `SOURCE` and `PLAN`
+   could not be reached at all. It scrolls, without a bar of its own — the tabs
+   keep their width and the strip slides. */
+.section-strip { overflow-x: auto; scrollbar-width: none; }
+.section-strip::-webkit-scrollbar { display: none; }
+.section-strip > .tab { flex: 0 0 auto; }
+
+/* A window narrow enough to squeeze the connection band: the address keeps a
+   smaller floor and the badge a shorter tail, so the band stays inside its
+   column instead of running under the controls at the end of the bar. */
+@media (max-width: 900px) {
+  .topbar-conn > .field-frame > .field { min-width: 5rem; }
+  .addr-file { max-width: 6rem; }
+  /* The identity column is the first thing to give: the project chip and the
+     folder it serves are said again in the rail below, and the room they take
+     is the room the connection band was overflowing by — its transport chip
+     was drawn past the end of the window. */
+  .topbar-ident .badge.is-info, .topbar-workspace { display: none; }
+}
+
+/* A credential-shaped name whose value is in the shared file: the mark says
+   which row, the lock beside it is the fix. */
+.env-secret { font-size: var(--ui-2xs); cursor: help; }
+.btn.is-urged { color: var(--warn); }
+
+/* The rail's own header: two tabs and the run control. The control grows with
+   what it has to say — a count, an unsaved badge, the source a run is driven
+   over — and the tabs were shrinking under it until their labels ran into each
+   other. The labels keep their width; the control takes the next line when
+   there is no room for it on this one. */
+.sidebar > .tabs { flex-wrap: wrap; }
+.sidebar > .tabs > .tab { flex: 0 0 auto; white-space: nowrap; }
+.sidebar > .tabs > .picker { min-width: 0; }
+
+/* A tab whose file is not on disk any more: the name is struck through in the
+   strip and in the list, so which tabs still have a file is a glance. */
+/* The message a failure must carry is often several lines: a textarea sized to
+   what it holds, sitting in a row of chips. */
+.expect-error-text { resize: vertical; min-height: var(--gap-7); font: inherit; }
+
+/* Colour, not a badge: a strip of forty tabs cannot carry a chip on each of
+   them, and the name is the thing that is gone. */
+.tab-row.is-gone .tab-label,
+.tab-list-row .is-gone {
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in oklab, var(--fail) 60%, transparent);
+  color: color-mix(in oklab, var(--fail) 70%, var(--ink-muted));
+}
+.tab-list-path { flex: 0 0 auto; }
+.menu-empty { padding: var(--gap-3) var(--gap-4); color: var(--ink-muted); }
+.preview-frame {
+  flex: 1;
+  min-height: 18rem;
+  width: 100%;
+  border: var(--gap-hair) solid var(--line);
+  border-radius: var(--radius-sm);
+  background: white;
+}
+.preview-seg { flex: 0 0 auto; }
+.check-group + .check-group { margin-top: var(--gap-3); }
+.check-step {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-4);
+  width: 100%;
+  padding: var(--gap-2) var(--gap-3);
+  border: 0;
+  border-bottom: var(--gap-hair) solid var(--line);
+  background: transparent;
+  color: var(--ink-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.check-step:hover { color: var(--accent); }
+.assert-at {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.assert-at:hover:not(:disabled) { color: var(--accent); text-decoration: underline; }
+.assert-at:disabled { cursor: default; }
+
+/* A key-value list laid out as rows rather than a two-column grid. */
+.kv > .bar > dt { min-width: 9rem; color: var(--ink-muted); }
+.kv > .bar > dd { margin: 0; overflow-wrap: anywhere; }
+
+/* A section's raw value, printed as written. */
+
+.extract-name { color: var(--accent); }
+.extract-eq { flex: 0 0 auto; }
+.extract-kind { flex: 0 0 auto; }
+
+.caret {
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  background: var(--accent);
+  vertical-align: text-bottom;
+  animation: blink 1.05s steps(1, end) infinite;
+}
+@keyframes blink { 0%, 45% { opacity: 1; } 46%, 100% { opacity: 0; } }
+
+.spinner {
+  width: 0.875rem;
+  height: 0.875rem;
+  border: 2px solid color-mix(in oklab, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  border-radius: var(--radius-pill);
+  animation: spin 700ms linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.drop {
+  display: grid;
+  place-items: center;
+  gap: var(--gap-2);
+  padding: var(--gap-7);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-sunken);
+  color: var(--ink-muted);
+  font-size: var(--ui-xs);
+  text-align: center;
+}
+.drop.is-over { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+
+/* headers / env editor: a repeating key-value row */
+/* A bordered well that holds a small editor — header rows, env rows. */
+.editor-frame {
+  padding: var(--gap-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+
+/* The "add another" affordance: dashed, so it reads as an opening rather than
+   a control with weight of its own. */
+.add-row { align-self: flex-start; border-style: dashed; color: var(--ink-muted); }
+
+.kv-mark { display: flex; justify-content: center; color: var(--ink-muted); }
+.kvrow.is-bad .kv-mark { color: var(--fail); }
+.kvrow.is-note .kv-mark { color: var(--warn); }
+.kv-why { grid-column: 2 / -1; font-size: var(--ui-2xs); color: var(--ink-muted); }
+.kvrow.is-bad .kv-why { color: var(--fail); }
+.kvrow + .kvrow { margin-top: var(--gap-3); }
+
+/* .gctf source view — the file is the unit of work, so it gets its own colours */
+
+.summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: var(--gap-3);
+  padding: var(--gap-2) var(--gap-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  font-size: var(--ui-xs);
+  white-space: nowrap;
+}
+.summary > a { flex: 0 0 auto; }
+.summary.is-fail { border-color: var(--fail); color: var(--fail); }
+.summary .count { font-family: var(--font-code); font-weight: 600; }
+/* The counts are buttons: clicking one filters the tree to those files. */
+.summary button.count {
+  padding: 0 var(--gap-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  font-size: inherit;
+  cursor: pointer;
+}
+.summary button.count:hover:not(:disabled) { border-color: currentColor; }
+.summary button.count.is-on { border-color: currentColor; background: color-mix(in oklab, currentColor 14%, transparent); }
+.summary button.count:disabled { opacity: 0.4; cursor: default; }
+.summary .count.is-ok { color: var(--ok); }
+.summary .count.is-fail { color: var(--fail); }
+.summary .count.is-skip { color: var(--ink-muted); }
+
+/* segmented control — protocol, run mode */
+/* A choice with nothing behind it looked like every other choice. */
+
+/* the file preview in the save dialog — a plain block, not `.code`'s
+   line-number grid, because a diff line carries its own gutter */
+
+/* a click target that turns a response field into an assertion */
+.pick {
+  cursor: copy;
+  border-radius: var(--radius-xs);
+  /* Inline in the JSON, so it keeps the text's own metrics and colour and
+     brings no button chrome with it. */
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: inherit;
+}
+.pick:hover { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+
+.events { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: var(--gap-4); }
+.event { display: flex; align-items: center; gap: var(--gap-4); padding: var(--gap-2) var(--gap-3); border-radius: var(--radius-xs); font-family: var(--font-code); font-size: var(--ui-xs); cursor: pointer; }
+.event:nth-child(odd) { background: var(--row-alt); }
+.event:hover { background: var(--surface-hover); }
+.event.is-on { background: var(--accent-soft); box-shadow: inset var(--output-edge) 0 0 0 var(--accent); }
+.event .arrow { flex: 0 0 auto; width: 1rem; text-align: center; }
+.event.is-up .arrow { color: var(--kind-up); }
+.event.is-down .arrow { color: var(--kind-down); }
+.event.is-end .arrow { color: var(--ok); }
+.event.is-err .arrow { color: var(--fail); }
+.event .body { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.palette { width: 100%; padding: 0; border: 1px solid var(--line-strong); border-radius: var(--radius-lg); background: var(--surface-raised); box-shadow: var(--shadow-lg); overflow: hidden; }
+.palette > .field { border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; font-size: var(--ui-base); padding: var(--gap-4) var(--gap-6); }
+.palette > .field:focus { box-shadow: none; }
+
+/* The chain rail. A .gctf with more than one ENDPOINT is a sequence of steps
+   with EXTRACT variables flowing between them, and fail-fast after the first
+   failure — so the rail is vertical: the flow is the content, and a row has
+   room for the target and the variables a chip never had. A single-document
+   file renders no rail at all. */
+.rail { display: grid; gap: 0; }
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-4);
+  width: 100%;
+  padding: var(--gap-2) var(--gap-4) var(--gap-2) var(--gap-3);
+  border: 0;
+  border-left: var(--output-edge) solid transparent;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--ui-xs);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color calc(var(--motion-fast) * var(--motion-scale)) ease;
+}
+.step:hover { background: var(--surface-hover); }
+.step.is-on { background: var(--accent-soft); border-left-color: var(--accent); }
+.step.is-skip { opacity: 0.5; }
+
+/* The marker column doubles as the connector: a rule runs from each marker to
+   the next, so the rail reads as one thread rather than four rows. */
+.step .mark {
+  position: relative;
+  flex: 0 0 1.25rem;
+  display: grid; place-items: center;
+  align-self: stretch;
+  font-family: var(--font-code);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--ui-2xs);
+  color: var(--ink-muted);
+}
+.step .mark::after {
+  content: '';
+  position: absolute; top: 50%; bottom: -0.5rem; left: 50%;
+  width: 1px; margin-left: -0.5px;
+  background: var(--line);
+}
+.step:last-of-type .mark::after, .step.is-last .mark::after { content: none; }
+.step.is-ok .mark { color: var(--ok); }
+.step.is-fail .mark { color: var(--fail); }
+.step .what { display: flex; align-items: center; gap: var(--gap-3); min-width: 0; }
+.step .method { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-code); }
+.step > .badge { flex: 0 0 auto; }
+.step > .took { margin-left: auto; }
+.step.is-on .method { font-weight: 600; color: var(--accent); }
+.step.is-fail .method { color: var(--fail); }
+.step .took { font-family: var(--font-code); font-size: var(--ui-2xs); color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+
+/* What this step changes about the connection, shown only when it differs from
+   the step before — preambles attach to the step they configure, and a step
+   with no ADDRESS silently dials the default, which is worth saying out loud. */
+.step-note { display: flex; flex: 0 1 auto; min-width: 0; gap: var(--gap-3); overflow: hidden; white-space: nowrap; font-size: var(--ui-2xs); color: var(--ink-muted); }
+.step-note .warn { display: inline-flex; align-items: center; gap: var(--gap-2); color: var(--warn); }
+
+/* The variables travelling between two steps. */
+.step-flow {
+  display: flex; align-items: center; gap: var(--gap-3);
+  margin-left: 1.5rem;
+  padding: var(--gap-0) 0 var(--gap-0) var(--gap-4);
+  border-left: 1px solid var(--line);
+  font-size: var(--ui-2xs); color: var(--ink-muted);
+}
+
+/* a plot drawn from tokens, no library */
+
+/* scenario picker */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: var(--gap-4); }
+.card:hover { border-color: var(--accent); background: var(--accent-soft); }
+.card.is-on { border-color: var(--accent); background: var(--accent-soft); box-shadow: var(--glow-accent); }
+.card .name { font-weight: 600; letter-spacing: var(--title-tracking); text-transform: var(--title-transform); }
+.card .why { color: var(--ink-muted); font-size: var(--ui-2xs); }
+
+/* verdict gutter for the assert playground */
+.verdicts { display: grid; grid-template-columns: 1.25rem 1fr auto; gap: var(--gap-0) var(--gap-4); align-items: start; font-family: var(--font-code); font-size: var(--ui-xs); }
+.verdicts .mark { text-align: center; }
+.verdicts .is-ok { color: var(--ok); }
+.verdicts .is-fail { color: var(--fail); }
+.verdicts .is-warn { color: var(--warn); }
+.verdicts .why { grid-column: 2 / -1; color: var(--ink-muted); font-size: var(--ui-2xs); }
+.verdicts .t { color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.layer { font-size: var(--ui-2xs); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-muted); border: 1px dashed var(--line-strong); border-radius: var(--radius-xs); padding: 0 var(--gap-2); }
+
+/* results tree */
+
+/* ============================================================
+   app.css — shells
+   ============================================================ */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+/* Three zones, not one centred cluster: who and where you are on the left, the
+   connection you are working over next to it, and the session's own controls at
+   the far end. Centring put the most-used control in the emptiest place. */
+.topbar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--gap-5);
+  flex: 0 0 auto;
+  /* An instrument strip, not a masthead: the bar is as tall as the controls it
+     holds plus a hairline of air. */
+  height: 2.5rem;
+  padding: 0 var(--gap-4);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-raised);
+}
+.topbar-ident, .topbar-tools { display: flex; align-items: center; gap: var(--gap-3); min-width: 0; }
+.topbar-tools { justify-self: end; }
+.topbar-tools .btn { height: var(--h-sm); }
+/* What the last run said, where the window's own state lives. */
+.topbar-run { gap: var(--gap-3); font-variant-numeric: tabular-nums; }
+.run-pass { color: var(--ok); }
+.run-fail { color: var(--fail); }
+.topbar-workspace {
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ui-2xs);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-3);
+  font-size: var(--ui-xs);
+  font-weight: 700;
+  letter-spacing: calc(0.02em + var(--title-tracking));
+  text-transform: var(--title-transform);
+  color: var(--ink);
+}
+.brand-mark { color: var(--accent); }
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-4);
+  flex: 0 0 auto;
+  height: 1.5rem;
+  padding: 0 var(--gap-4);
+  border-top: 1px solid var(--line);
+  background: var(--surface-raised);
+  color: var(--ink-muted);
+  font-size: var(--ui-2xs);
+}
+.statusbar .sep { opacity: 0.35; }
+.statusbar .btn { height: 1.25rem; padding: 0 var(--gap-2); font-size: var(--ui-2xs); }
+.status-totals { gap: var(--gap-2); }
+.status-run { gap: var(--gap-2); color: var(--accent); }
+
+.body { display: flex; flex: 1; min-height: 0; }
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 15.625rem;
+  flex: 0 0 auto;
+  background: var(--surface-raised);
+  border-right: 1px solid var(--line);
+}
+/* The rail's own head — the filter field, the tag chips, the counts — used to
+   scroll away with the list under it: eighty files down, narrowing them meant
+   scrolling back up first. The body holds the panels; each panel scrolls its
+   own list. */
+.sidebar-body { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; padding: var(--gap-4); }
+.rail-panel, .history { flex: 1; min-height: 0; }
+.rail-panel > .tree, .history > .history-calls { flex: 1; min-height: 0; overflow: auto; }
+
+/* Twelve pixels of target for four of paint: a hairline is to be seen, not to
+   be hit. The overlay grows only across the handle, so it never covers a
+   scrollbar at the pane's edge. */
+/* A separator the keyboard can move must show where the keyboard is, and that
+   is not the state the pointer leaves behind. */
+
+/* Element selector, not `.main` — Monaco's suggest widget has its own `.main`
+   class inside every list row, and a class rule here zeroed its width, which
+   made completion labels invisible. There is exactly one <main>. */
+main { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.main-scroll { display: flex; flex-direction: column; gap: var(--gap-4); flex: 1; min-height: 0; overflow: auto; padding: var(--gap-6); }
+
+/* The chain, collapsed: one line that still carries the verdict. */
+/* The chain is a bar first: the verdict and the ways to run it, with the steps
+   underneath only when they are asked for. */
+.chain {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+.chain-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-4);
+  padding: var(--gap-2) var(--gap-3);
+  font-size: var(--ui-2xs);
+  color: var(--ink-muted);
+}
+.chain-toggle {
+  letter-spacing: calc(0.06em + var(--title-tracking));
+  text-transform: var(--title-transform);
+}
+.chain.is-open > .rail { padding: 0 var(--gap-2) var(--gap-3); }
+/* A step opens under itself, indented past the marker column it belongs to. */
+/* What can be done to the selected step, under the step itself. */
+.step-row { position: relative; display: flex; flex-direction: column; }
+/* Sits over the right end of the step it belongs to. */
+.step-remove { position: absolute; top: 50%; right: var(--gap-4); transform: translateY(-50%); }
+/* And every row keeps that corner clear: the button was drawn on top of the
+   duration, and reserving it on the selected row alone would step the column of
+   durations in and out as the selection moved. */
+.rail .step { padding-right: 2.75rem; }
+.step-detail {
+  margin: 0 var(--gap-3) var(--gap-3) 2rem;
+  padding: var(--gap-4);
+  border-left: 1px solid var(--line);
+  font-size: var(--ui-2xs);
+}
+.rail-dots { display: inline-flex; gap: var(--gap-2); align-items: center; }
+.rail-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--line-strong);
+  cursor: pointer;
+  transition:
+    transform calc(var(--motion-fast) * var(--motion-scale)) ease,
+    box-shadow calc(var(--motion-fast) * var(--motion-scale)) ease;
+}
+.rail-dot:hover { transform: scale(1.35); }
+/* The step the editors are pointing at: the dot takes the accent, nothing is
+   drawn around it. */
+.rail-dot.is-on { background: var(--accent); }
+.rail-dot.is-pass { background: var(--ok); }
+.rail-dot.is-fail { background: var(--fail); }
+.rail-dot.is-skip { background: var(--line); }
+
+/* What is left of the rail once it is closed: a way back. */
+.rail-stub {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 1.25rem;
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: var(--surface-raised);
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+.rail-stub:hover { color: var(--accent); background: var(--surface-hover); }
+
+/* The workspace: response beside the request by default, stacked on request. */
+/* A gap around the handle: at four pixels with the panes against it, the
+   hairline read as the request pane's own bottom border rather than as
+   something to drag. */
+.workspace { display: flex; flex: 1 1 auto; align-items: stretch; gap: var(--gap-2); min-height: 26rem; min-width: 0; }
+.workspace.is-columns { flex-direction: row; }
+.workspace.is-rows { flex-direction: column; min-height: 0; }
+.workspace.is-columns > .request-pane { height: 100%; min-width: 18rem; }
+.workspace.is-columns > .response-pane { flex: 1; min-width: 0; height: 100%; overflow: auto; }
+/* Rows: the workbench is a page. Each pane takes the height its content needs
+   and `.main-scroll` scrolls — the two panes used to fight over one viewport,
+   and whichever lost got a porthole. */
+.workspace.is-rows > .request-pane { width: auto; flex: 0 0 auto; height: auto; }
+.workspace.is-rows > .request-pane > .panel { height: auto; }
+.workspace.is-rows > .request-pane .section-body { overflow: visible; }
+/* The response takes what the request left: a workbench that ends halfway
+   down the window reads as unfinished, and the empty state has somewhere to
+   sit. It only ever grows — a long response still pushes the page. */
+.workspace.is-rows > .response-pane { flex: 1 0 auto; min-height: 0; overflow: visible; }
+.workspace.is-rows > .response-pane > .panel { height: 100%; }
+.workspace.is-rows > .response-pane > .panel > .panel-body { height: 100%; }
+/* The handle sizes the request pane, always. It used to cap it only once a
+   response had come back, and a cap does nothing to a pane shorter than it —
+   so on a short request the splitter moved a number nothing read. An editor
+   pane takes the handle's height; a form keeps the page's, because a form is
+   read down the page rather than in a box. */
+.workspace.is-rows:not(.is-form) > .request-pane {
+  /* The handle is a ceiling, not a floor: a request with no body — a GET, a
+     DELETE — was held at the splitter's height with most of it empty, above an
+     answer that had somewhere to put the room. */
+  height: auto;
+  max-height: var(--editor-h);
+  overflow: hidden;
+}
+.workspace.is-rows:not(.is-form) > .request-pane > .panel { height: 100%; }
+/* The pane is capped by the handle and the editor inside it keeps a floor of
+   its own, so a file longer than the cap was simply cut off: fifteen lines, a
+   pane that shows seven, and no way to reach the other eight — the clipping
+   happened on the pane, where there was nothing to scroll. The section body is
+   what scrolls. */
+.workspace.is-rows:not(.is-form) > .request-pane .section-body { overflow: auto; min-height: 0; }
+.workspace.is-rows:not(.is-idle) > .response-pane {
+  flex: 1 1 auto;
+  min-height: 14rem;
+  overflow: auto;
+}
+
+/* With room to spare the empty state sits in the middle of it, not pinned
+   under the legend. */
+.response-pane .empty { flex: 1 1 auto; justify-content: center; }
+.start-hint { max-width: 28rem; text-align: center; }
+/* The editors keep a height of their own: the request editor is the one the
+   splitter sizes, the response viewer stops at two thirds of the screen and
+   scrolls itself rather than pushing everything else off the page. */
+.workspace.is-rows .body-editor.is-single .editor {
+  flex: 0 0 auto;
+  /* The message decides, between a floor and the splitter's height. */
+  height: clamp(9rem, calc(var(--body-lines, 1) * 1.35em + 2.5rem), var(--editor-h));
+}
+.workspace.is-rows .response-pane .editor { flex: 0 0 auto; max-height: 60vh; min-height: 10rem; }
+/* The whole file is longer than a message, and the page scrolls: give the raw
+   editor the splitter's height with a floor, or it collapses to nothing. */
+.workspace.is-rows .section-body.is-fill > .stack > .editor,
+.workspace.is-rows .section-body.is-fill > .editor { flex: 0 0 auto; height: max(24rem, var(--editor-h)); }
+/* Nothing has come back and the handle has not been dragged: the file is what
+   the screen is for, so the editor takes the room the empty answer gave back
+   instead of stopping at the splitter's default with whitespace under it. */
+.workspace.is-rows.is-idle:not(.is-sized):not(.is-form) > .request-pane .section-body.is-fill > .stack > .editor,
+.workspace.is-rows.is-idle:not(.is-sized):not(.is-form) > .request-pane .section-body.is-fill > .editor {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: max(24rem, var(--editor-h));
+}
+/* A short window has less height than the request pane's own content plus an
+   answer that has not come back: something has to give, and what gave was the
+   editor — a three-line body shown one line tall, cut under the PROBLEMS row,
+   with the rest reachable only by a scrollbar inside a 91-pixel box. Nothing
+   has come back yet, so the placeholder is a hint and the file being written is
+   the thing on screen: the hint is what shrinks, and it keeps both its lines by
+   scrolling inside what it is given. */
+@media (max-height: 46rem) {
+  .workspace.is-idle > .response-pane { max-height: 8rem; overflow: auto; }
+}
+
+/* Columns with no room for two of them is the rows layout in all but name, and
+   what makes rows work on a short window are its height rules: the request
+   capped by the handle and scrolling inside itself, the answer taking what is
+   left and never less than 14 rem. Given a flat 22 rem instead, the request
+   held a third of the window for a three-line body and the answer that came
+   back was 95 pixels tall. */
+@media (max-width: 64rem) {
+  .workspace.is-columns { flex-direction: column; }
+  .workspace.is-columns > .split { display: none; }
+  .workspace.is-columns > .request-pane {
+    width: auto !important;
+    height: auto;
+    max-height: var(--editor-h);
+    overflow: hidden;
+  }
+  .workspace.is-columns > .request-pane .section-body { overflow: auto; min-height: 0; }
+  .workspace.is-columns > .response-pane { flex: 1 0 auto; min-height: 0; height: auto; overflow: visible; }
+  .workspace.is-columns:not(.is-idle) > .response-pane { flex: 1 1 auto; min-height: 14rem; overflow: auto; }
+}
+
+/* The response is one view, so its editor takes the height the pane has. */
+.response-pane .panel-body > .stack { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.response-pane .editor { flex: 1; min-height: 8rem; }
+/* One message fills the pane; several keep their own height and scroll. */
+/* Several messages stack, so each takes the height of what it holds between a
+   floor and a ceiling — two `{}` bodies used to reserve 360 px between them. */
+.body-editor:not(.is-single) .editor {
+  height: clamp(5.5rem, calc(var(--body-lines, 1) * 1.35em + 2.5rem), 22rem);
+}
+/* An expectation is as tall as the message it states, the same way a request
+   message is — an expected `{}` does not deserve a screenful. */
+.expect-message .editor {
+  height: clamp(5.5rem, calc(var(--body-lines, 1) * 1.35em + 2.5rem), 22rem);
+}
+.expect-modes { flex-wrap: wrap; }
+.expect-modes .label { margin-right: var(--gap-2); }
+.expect-message { gap: var(--gap-3); }
+.expect-message .tolerance { gap: var(--gap-2); }
+select.field.is-narrow { width: 13rem; }
+
+.body-editor.is-single { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.body-editor.is-single > .msg { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.body-editor.is-single .editor { flex: 1; min-height: 6rem; }
+
+/* A pane's panel fills it in either layout; inside, only the section body
+   scrolls, so the endpoint row, the tabs and Problems never scroll away. */
+.request-pane > .panel, .response-pane > .panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.request-pane > .panel > .panel-body,
+.response-pane > .panel > .panel-body { flex: 1; min-height: 0; }
+.section-body { flex: 1; min-height: 0; overflow: auto; }
+.section-body.is-fill { display: flex; flex-direction: column; }
+.section-body.is-fill > * { flex: 1; min-height: 0; }
+
+/* Nothing has run: the request keeps the height its content asks for and the
+   outcome pane closes the page under it. It used to hold a strip and leave the
+   rest of the window as bare background — the same pixels empty either way,
+   except that a workbench ending halfway down reads as broken, and the empty
+   state had nowhere to sit. It never takes room from the request: the pane
+   above is sized by its content, not by this. */
+/* Nothing has come back, and the tab on screen is an editor: the room belongs
+   to the file being written, not to the sentence saying nothing has come back —
+   reading a file in the source tab meant 240 px of editor above 300 px of `no
+   response yet`. The editor grows into it, so the page still ends at its
+   bottom. */
+.workspace.is-rows.is-idle:not(.is-form) > .response-pane { min-height: 5rem; flex: 0 0 auto; }
+/* A form is as tall as its fields, so there the empty answer is what keeps the
+   page from ending halfway down over bare background. */
+.workspace.is-rows.is-idle.is-form > .response-pane { min-height: 5rem; flex: 1 1 auto; }
+/* Nothing has come back, so there is nothing to divide: the request takes the
+   height its content asks for — a four-line body used to sit above 150 px of
+   nothing, because the pane was held at the splitter's height. The splitter's
+   height is what it means once there are two panes to share. */
+/* Content-sized, with a floor: its endpoint row, its section strip and
+   Problems. The tools drawer leaves the workspace a few hundred pixels, and
+   this pane — the one that owns the room by the rule above — was shrunk to
+   49 px behind `overflow: hidden`, so while the drawer was open there was no
+   way to execute, to save, or to change section. */
+.workspace.is-rows.is-idle:not(.is-form) > .request-pane { height: auto; flex: 1 1 auto; min-height: 9rem; }
+/* Once the handle has been dragged, the height it holds is the height of the
+   pane — in every state, or the handle is writing a number nothing reads. */
+.workspace.is-rows.is-sized:not(.is-form) > .request-pane { height: var(--editor-h); flex: 0 0 auto; overflow: hidden; }
+
+/* A pane with a height of its own holds its parts. The pane itself used to
+   scroll: dragging the handle down slid the endpoint row and the tabs out
+   through the top while Problems stayed pinned to the bottom, so the one row
+   that could not be pushed away looked nailed to the pane. Now the section
+   body is what scrolls, and Problems is the pane's floor rather than a sticker
+   on its content. */
+.workspace.is-boxed > .request-pane .section-body { overflow: auto; }
+.workspace.is-boxed .section-body.is-fill > .stack > .editor,
+.workspace.is-boxed .section-body.is-fill > .editor { flex: 1 1 0; height: auto; }
+/* Opened in a short pane, a list with a height of its own took half of it and
+   the request went off the top. It takes what the pane can spare instead. */
+.workspace.is-boxed .problems { display: flex; flex-direction: column; max-height: 50%; }
+.workspace.is-boxed .problems-list { flex: 1 1 auto; max-height: none; }
+
+/* The connection band: it takes the width the brand leaves, and stops before
+   the address turns into a runway. */
+/* Three controls that describe one connection, drawn as one control: an
+   environment, a target and a transport read as a single band with hairlines
+   between them, instead of three chips adrift in a wide bar. */
+.topbar-mid {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--gap-5);
+  min-width: 0;
+}
+/* Its own control, a step left of the connection it is not part of — and the
+   same height as it: out of the band the button kept its own padding and stood
+   shorter than the address beside it. */
+.topbar-env {
+  flex: 0 0 auto;
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+}
+.topbar-env > .btn {
+  height: var(--h-control);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+}
+.topbar-conn {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  min-width: 0;
+  /* Pushed to the right of its column: the address and the transport sit beside
+     the session's own controls instead of stranded mid-bar. */
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  /* Wide enough for a long host and a templated address, and no wider — the
+     column's leftover room is quiet space, not something to fill.
+
+     It does take the room the column is not using, though: a url is longer than
+     a `host:port` by a scheme and a domain, and `https://api.example.com` was
+     being cut to `https://api.example.c` beside an empty half of the bar. */
+  flex: 1 1 auto;
+  max-width: 46rem;
+}
+.topbar-conn > * + * { border-left: 1px solid var(--line); }
+/* The band cannot clip: both pickers open a menu out of the bottom of it, and
+   `overflow: hidden` here made the environment list and the transport panel
+   invisible. The ends are rounded on the children instead. */
+.topbar-conn > :first-child, .topbar-conn > :first-child > .btn {
+  border-start-start-radius: var(--radius-sm);
+  border-end-start-radius: var(--radius-sm);
+}
+.topbar-conn > :last-child, .topbar-conn > :last-child > .btn {
+  border-start-end-radius: var(--radius-sm);
+  border-end-end-radius: var(--radius-sm);
+}
+.topbar-conn > .picker > .btn,
+.topbar-conn .conn-chip {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.topbar-conn > .field-frame {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  position: relative;
+  flex: 1 1 20rem;
+  min-width: 11rem;
+  padding-inline: var(--gap-4);
+}
+.topbar-conn > .field-frame:focus-within { box-shadow: none; }
+/* The band itself takes the focus ring, so a focused address does not draw a
+   second box inside the first. */
+.topbar-conn:focus-within { border-color: var(--line-strong); }
+/* The band strips its children's borders, so a field's own `is-warn` had
+   nothing to paint and an unusable address showed only as a triangle. The band
+   owns the edge, so the band carries the state. */
+.topbar-conn:has(> .field-frame.is-warn) { border-color: var(--warn); }
+.topbar-conn:has(> .field-frame.is-bad) { border-color: var(--fail); }
+/* An address is `host:port`, not a paragraph: the field takes what it needs and
+   stops, and the connection chip holds the far end of the row. */
+/* An address is `host:port`, not a runway: it takes what it needs and leaves
+   the rest of the column empty rather than stretching across the bar. */
+/* The address is the one you type in, so it takes the band's spare room while
+   the two pickers stay the width of what they say. */
+.topbar-conn > .picker { flex: 0 0 auto; flex: 0 0 auto; }
+
+/* What the field says about itself: the grade of what is typed, and what was
+   dialled before. */
+.addr-warn { display: flex; flex: 0 0 auto; color: var(--warn); }
+/* Reads as part of the field it corrects, and is a button because the fix is
+   one click: take the address the file will actually dial. */
+.conn-file { flex: 0 0 auto; }
+/* It carries an address, and a badge uppercases what is in it: the file this
+   tab dials read `FILE: HTTP://127.0.0.1:8899`. */
+/* What the transport will put in front of an address that names no scheme. */
+.addr-scheme { flex: 0 0 auto; font-size: var(--ui-2xs); opacity: 0.65; }
+/* Flush against the value it is a prefix of. */
+.addr-scheme + .field { padding-left: 0; }
+
+/* The badge sits inside the address field, and it was the one thing in there
+   that never gave way: at a narrow window the address itself was squeezed to
+   two characters — `lc` where `localhost:4770` belongs — beside a badge in
+   full. The address keeps a floor, the badge gives up its tail first. */
+.addr-file {
+  flex: 0 1 auto;
+  /* `inline-block`, not the badge's own flex: an ellipsis is a property of a
+     block box, and a flex badge simply cut its text off mid-word. */
+  display: inline-block;
+  min-width: 0;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.topbar-conn > .field-frame > .field { min-width: 8rem; }
+.addr-file:hover { color: var(--ink); }
+.addr-menu {
+  position: absolute;
+  top: calc(100% + var(--gap-2));
+  left: 0;
+  right: 0;
+  z-index: 100;
+  max-height: 16rem;
+  overflow: auto;
+}
+/* One height across the band, so the row is a band and not three sizes. */
+.topbar-conn .btn, .topbar-conn .field-frame { min-height: var(--h-control); }
+.topbar-conn > .picker > .btn, .topbar-conn .conn-chip, .topbar-conn > .field-frame { height: var(--h-control); }
+.wrap { display: flex; flex-wrap: wrap; gap: var(--gap-3); }
+
+/* Save dialog: the form and the bytes it will write, side by side — an
+   overwrite is a diff, not a leap. */
+.save-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: var(--gap-6); }
+/* A long line — a server's failure written into ERROR is one — used to push
+   the preview sideways and take the buttons with it. */
+.save-preview { max-height: 22rem; overflow: auto; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.save-note { margin: 0 var(--gap-6) var(--gap-4); font-size: var(--ui-2xs); }
+.save-folder-search { margin-bottom: var(--gap-2); }
+.folder-list { max-height: 12rem; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); }
+
+@media (max-width: 52rem) {
+  .save-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* the response as a clickable tree — .pick is the leaf, the menu is anchored
+   inside the tree so it scrolls with it */
+.pick-tree { position: relative; }
+.pick-menu { position: fixed; z-index: 200; max-width: 22rem; max-height: 60vh; overflow: auto; }
+/* the group line here is a jq path, not a heading — case is meaning */
+/* Why the equality above is refused: a note under the choice it belongs to,
+   not a tooltip on a disabled button nobody can hover. */
+.pick-note { border-bottom: 0; text-transform: none; letter-spacing: normal; white-space: normal; }
+/* A line the workbench will not write, and why — struck through, because the
+   text above is still the line that was asked for. */
+.assert-line.is-refused { opacity: 0.55; text-decoration: line-through; }
+.assert-refused { margin-top: var(--gap-2); }
+/* The file's expectation against the answer on screen — said where the
+   expectation is edited, not left for a run to discover. */
+.expect-disagrees { display: flex; align-items: center; gap: var(--gap-3); }
+/* A metadata row and what can be asserted about it: the control appears when
+   the row is under the pointer or the keyboard is in it — a column of them down
+   a list of headers is a column of noise. */
+/* Three columns rather than the list's two: the name, the value, and what can
+   be asserted about it. The `.kv` row is a grid, so a third child needs a track
+   of its own or it lands under the name. */
+.kv > .bar.meta-row {
+  grid-template-columns: var(--kv-cols) auto;
+  align-items: center;
+}
+.meta-pick { opacity: 0; }
+.meta-row:hover .meta-pick,
+.meta-row:focus-within .meta-pick,
+/* An open menu keeps its own control visible: the pointer moves onto the menu,
+   which is not the row, and the row it belongs to would fade underneath it. */
+.meta-pick:has([aria-expanded="true"]) { opacity: 1; }
+/* Anchored to the button rather than to the row, and pulled left so a menu at
+   the panel's right edge stays inside it. */
+.pick-menu .menu-group { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: normal; font-family: var(--font-code); }
+
+.regex-subject { padding: var(--gap-3) var(--gap-4); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); white-space: pre-wrap; word-break: break-all; }
+.regex-hit { background: color-mix(in oklab, var(--ok) 30%, transparent); color: var(--ink); border-radius: var(--radius-xs); }
+
+/* Problems: what `grpctestify check` would say, continuously. Collapsed to a
+   single row of counts until someone wants the detail. */
+.problems {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  /* The pane's floor, not a card resting on it. Framed and inset, it read as a
+     third panel wedged between the request and the response — a block of its
+     own kind in a workbench where every other frame is a pane. It reaches the
+     panel's edges and carries one hairline, the way the tab strip carries one
+     at the top. */
+  margin: 0 calc(var(--gap-4) * -1) calc(var(--gap-4) * -1);
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  background: var(--surface-sunken);
+}
+.problems-head { gap: 0; padding-right: var(--gap-4); }
+.problems-toggle {
+  display: flex; align-items: center; gap: var(--gap-3);
+  flex: 1; min-width: 0; padding: var(--gap-3) var(--gap-4);
+  border: 0; background: transparent; color: var(--ink);
+  font: inherit; font-size: var(--ui-xs); text-align: left; cursor: pointer;
+}
+.problems-toggle:hover { background: var(--surface-hover); }
+.problems-list { border-top: 1px solid var(--line); max-height: 12rem; overflow: auto; }
+.problem {
+  display: flex; align-items: center; gap: var(--gap-3);
+  width: 100%; padding-right: var(--gap-4);
+  border-left: var(--output-edge) solid transparent;
+  color: var(--ink); font-size: var(--ui-2xs);
+}
+/* The row opens the line; the fix beside it is its own control, so the row is a
+   container rather than a button with a button inside it. */
+.problem-open {
+  display: flex; align-items: baseline; gap: var(--gap-4);
+  flex: 1; min-width: 0;
+  padding: var(--gap-2) var(--gap-4) var(--gap-2) 1.25rem;
+  border: 0; background: transparent; color: inherit;
+  font: inherit; font-size: inherit; text-align: left; cursor: pointer;
+}
+.problem-fix { flex: 0 0 auto; }
+/* A collapsed expected message is one line: its name, and enough of what it
+   says to recognise it by. */
+.expect-message.is-shut { gap: 0; }
+.expect-rules { flex: 0 0 auto; }
+.expect-peek { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.problem:hover { background: var(--surface-hover); }
+.problem.is-error { border-left-color: var(--fail); }
+.problem.is-warning { border-left-color: var(--warn); }
+.problem.is-info { border-left-color: var(--accent); }
+.problem.is-error .problem-mark { color: var(--fail); }
+.problem.is-warning .problem-mark { color: var(--warn); }
+.problem.is-info .problem-mark { color: var(--accent); }
+.problem-loc { color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.problem-msg { flex: 1; min-width: 0; }
+
+/* The tools drawer: jq and regex operate on any JSON, so they belong to the
+   window, not to the open file. */
+.drawer:focus { outline: none; }
+.drawer { display: flex; flex-direction: column; flex: 0 0 auto; min-height: 0; border-top: 1px solid var(--line); background: var(--surface-raised); }
+.drawer > .hsplit { width: 100%; }
+.drawer-head { display: flex; align-items: center; gap: var(--gap-4); padding: 0 var(--gap-4); border-bottom: 1px solid var(--line); }
+.drawer-head > .tabs { border-bottom: 0; }
+.drawer-body { flex: 1; min-height: 0; overflow: auto; padding: var(--gap-4) var(--gap-6); }
+
+/* Where the schema comes from — a badge that is also the way to change it. */
+/* Where the method list came from, inside the menu that lists them. */
+.schema-source {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-3);
+  padding: var(--gap-2) var(--gap-4);
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-muted);
+  font-size: var(--ui-2xs);
+}
+.schema-source.is-fail { color: var(--fail); }
+.schema-source > .grow { min-width: 0; }
+.schema-source .mono { color: var(--ink); }
+.schema-source .btn { flex: 0 0 auto; border-color: var(--line-strong); }
+.schema-hint { display: block; }
+
+/* The whole window is the drop target while a file is over it. */
+.file-drop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: var(--gap-7);
+  background: color-mix(in oklab, var(--surface) 70%, transparent);
+}
+.file-drop > .drop { width: min(28rem, 80vw); }
+
+/* A payload too big to lay out is offered, not painted. */
+.huge-payload { display: grid; place-items: center; gap: var(--gap-3); padding: var(--gap-7); }
+
+/* Report formats: a checkbox row that says what a run will write. */
+
+/* The plan reads as two columns: what will run, and what the parser saw. */
+/* The diagram source, folded away until it is asked for. */
+.mermaid-block > summary {
+  cursor: pointer;
+  padding: var(--gap-2) 0;
+  font-size: var(--ui-2xs);
+  letter-spacing: var(--title-tracking);
+  text-transform: var(--title-transform);
+  color: var(--ink-muted);
+}
+.mermaid-block > summary:hover { color: var(--ink); }
+
+/* The chain, drawn: the same sequence `explain --format mermaid` describes,
+   in the panel rather than as source to paste elsewhere. */
+.chain-diagram {
+  margin: 0;
+  padding: var(--gap-2) 0;
+  overflow-x: auto;
+}
+.chain-diagram svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-width: 30rem;
+  max-width: 44rem;
+  margin: 0 auto;
+  font-family: var(--font-code);
+}
+.chain-diagram .cd-band { fill: var(--ink); opacity: 0.03; }
+.rail-dot.is-grouped { border-radius: var(--radius-xs); box-shadow: 0 3px 0 -1px var(--accent); }
+
+.chain-diagram .cd-group rect { fill: none; stroke: var(--accent); stroke-dasharray: 3 3; opacity: 0.55; }
+.chain-diagram .cd-group text { fill: var(--accent); font-size: 9px; letter-spacing: 0.04em; opacity: 0.9; }
+.chain-diagram .cd-lane rect { fill: var(--surface-raised); stroke: var(--line); }
+.chain-diagram .cd-lane text {
+  fill: var(--ink);
+  font-size: 11px;
+  text-anchor: middle;
+}
+.chain-diagram .cd-life { stroke: var(--line); stroke-dasharray: 2 4; }
+.chain-diagram .cd-step {
+  fill: var(--ink-muted);
+  font-size: 10px;
+  text-anchor: middle;
+}
+.chain-diagram .cd-out { stroke: var(--accent); stroke-width: 1.2; }
+.chain-diagram .cd-out.is-stream { stroke-dasharray: 3 3; opacity: 0.7; }
+.chain-diagram .cd-in { stroke: var(--ink-muted); stroke-width: 1.2; stroke-dasharray: 4 3; }
+.chain-diagram .cd-head { fill: var(--accent); }
+.chain-diagram .cd-head.is-back { fill: var(--ink-muted); }
+.chain-diagram .cd-label {
+  fill: var(--ink);
+  font-size: 11px;
+  text-anchor: middle;
+}
+.chain-diagram .cd-label.is-back { fill: var(--ink-muted); font-size: 10px; }
+.chain-diagram .cd-note rect { fill: var(--surface-raised); stroke: var(--line); }
+.chain-diagram .cd-note text {
+  fill: var(--ink-muted);
+  font-size: 10px;
+  text-anchor: middle;
+}
+
+/* The command that answers the same question on the terminal. */
+.plan-cli { font-size: var(--ui-2xs); }
+
+/* Bench summary tiles reuse the design's `.tile`; only the failing value and
+   the generator-limited banner are new. */
+
+/* Bench scenarios: the shape of a run, picked before its numbers are tuned. */
+.scenarios { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: var(--gap-2); }
+.scenario {
+  display: grid;
+  gap: var(--gap-hair);
+  padding: var(--gap-3) var(--gap-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.scenario:hover { border-color: var(--line-strong); background: var(--surface-hover); }
+.scenario.is-on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft); }
+.scenario-title { font-size: var(--ui-2xs); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.scenario-detail { color: var(--ink-muted); font-size: var(--ui-2xs); }
+
+/* The config tab: six sections as rows that say what they hold while closed. */
+.config { gap: var(--gap-2); }
+.config-row { border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); }
+.config-row.is-open { border-color: var(--line-strong); }
+.config-head {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-3);
+  width: 100%;
+  min-height: var(--h-control);
+  padding: 0 var(--gap-4);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--ui-xs);
+  text-align: left;
+  cursor: pointer;
+}
+.config-headrow { display: flex; align-items: center; padding-right: var(--gap-3); }
+.config-headrow > .config-head { flex: 1; min-width: 0; }
+.config-head:hover { background: var(--surface-hover); }
+.config-name { text-transform: uppercase; letter-spacing: 0.06em; font-size: var(--ui-2xs); color: var(--ink-muted); min-width: 4.5rem; }
+.config-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-muted); font-size: var(--ui-2xs); }
+.config-body { padding: var(--gap-4); border-top: 1px solid var(--line); }
+
+/* The connection, folded into one chip that still reads out its state. */
+/* Wide enough for the longest state it can read out, so switching plaintext
+   to tls never moves the address field beside it. */
+.conn-chip { gap: var(--gap-2); min-width: 12.5rem; justify-content: flex-start; font-size: var(--ui-2xs); }
+/* An HTTP file's chip reads out one word — the scheme its address names — so
+   it takes the width of that word and leaves the rest to the address, which
+   was being cut off mid-host. */
+.conn-chip.is-derived { min-width: 5.5rem; }
+/* A run of this file would dial somewhere else. Amber on the chip, because a
+   green result against the wrong server is the failure this prevents. */
+.conn-chip.is-warn { border-color: var(--warn); color: var(--warn); }
+.conn-chip > svg:last-child { margin-left: auto; }
+/* The mark the design puts on the environment picker, so the chip reads as an
+   environment and not as a word. */
+.env-mark { flex: 0 0 auto; color: var(--ink-muted); font-size: var(--ui-2xs); }
+.picker-trigger:hover .env-mark { color: var(--accent); }
+
+.conn-sep { color: var(--ink-muted); }
+@media (max-width: 78rem) {
+  .conn-fold-late { display: none; }
+  .conn-chip { min-width: 8.5rem; }
+}
+@media (max-width: 62rem) {
+  .conn-fold { display: none; }
+  .conn-chip { min-width: 5.5rem; }
+}
+.conn-panel { width: 17rem; padding: var(--gap-4); }
+.conn-field { gap: var(--gap-2); }
+/* The row a run never reads, marked where it sits. */
+/* Under the row, not beside it: sharing the line, the note squeezed
+   `localhost:4770` down to `l.…` in a 250 px panel. */
+.conn-step-note { font-size: var(--ui-2xs); flex: 1 0 100%; padding-left: 9rem; }
+.conn-run-note, .bench-stale { display: flex; align-items: flex-start; gap: var(--gap-2); }
+.conn-field > .seg { width: 100%; }
+.conn-field > .seg > button { flex: 1; }
+.method-menu-head { gap: var(--gap-2); padding-bottom: var(--gap-2); }
+
+/* The palette opens near the top, where the eye already is after ⌘K. */
+.modal.palette { width: min(34rem, 92vw); margin-top: 12vh; padding: var(--gap-4); }
+.palette-list { position: static; max-height: 22rem; overflow: auto; margin-top: var(--gap-3); border: 0; background: transparent; }
+.palette-list .menu-item > .kbd { margin-left: var(--gap-4); }
+
+/* The run bar sits between the filter that chooses the files and the rows the
+   run marks up, because that is the order the decision is made in. */
+.run-control { gap: 0; flex: 0 0 auto; }
+.run-control .btn { padding-inline: var(--gap-2); }
+/* The rail is 250 px wide by default, and a summary that refuses to wrap spent
+   that on ellipses: two report buttons reading `r…` and `j…`, which is a file
+   nobody can identify and a click nobody will risk. It wraps instead — the
+   counts keep the first line, whatever does not fit takes the next one whole. */
+.summary.run-summary { padding: var(--gap-2) var(--gap-4); flex-wrap: wrap; row-gap: var(--gap-2); }
+.summary.run-summary .run-report { flex: 0 0 auto; }
+/* Said quietly beside the counts: it is context for them, not a verdict. */
+.run-coverage { flex: 0 0 auto; font-size: var(--ui-2xs); }
+.run-coverage-picker { flex: 0 0 auto; }
+/* A list of methods is long: it scrolls rather than running off the rail. */
+.coverage-menu { max-height: 18rem; overflow: auto; min-width: 16rem; }
+/* Beside the toggle, not inside it. */
+.problems-rewrite { flex: 0 0 auto; margin-left: var(--gap-2); }
+
+/* A row of the menu that takes a value rather than an answer. */
+.menu-item.is-field { display: flex; align-items: center; gap: var(--gap-2); cursor: default; }
+.menu-item.is-field .field { flex: 1; min-width: 0; }
+.run-failure:hover { background: var(--surface-hover); }
+/* Two lines of the reason rather than one ellipsis: in a 250 px rail every
+   failure read `The server at localhost:500…`, which names nothing and made
+   thirty-six different failures look like one. The rest is still in the title,
+   and the file itself has all of it. */
+.run-failure-line {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+
+/* the jq / regex tools */
+.tool-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--gap-6); }
+@media (max-width: 60rem) { .tool-grid { grid-template-columns: minmax(0, 1fr); } }
+
+.tool-subject { min-height: 4rem; }
+
+.tool-flags { flex-wrap: wrap; gap: var(--gap-2); font-size: var(--ui-2xs); }
+.chip.is-warn { --tag: var(--warn); }
+.matches { border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
+.match-row { display: flex; align-items: center; gap: var(--gap-4); padding: var(--gap-2) var(--gap-4); font-size: var(--ui-2xs); }
+.match-row + .match-row { border-top: 1px solid var(--line); }
+
+.expr-frame { display: flex; align-items: center; }
+.expr-gutter { flex: 0 0 auto; padding: 0 var(--gap-3); color: var(--ink-muted); font-size: var(--ui-2xs); }
+.expr-frame.is-bad { border-color: var(--fail); }
+.tool-menu { max-height: 16rem; overflow: auto; min-width: 18rem; }
+.tool-paths { gap: var(--gap-2); }
+.tool-paths .chip { max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.drawer-body > .stack { min-height: 100%; }
+/* The tool grid takes the room the drawer has; the input and the output grow
+   with it instead of leaving a band of empty space above the assertion line. */
+/* The grid may fill the drawer but not be squeezed to nothing: at half a short
+   window the columns were shrunk until the paths row under the input was cut in
+   half, in a body that could have scrolled to it. Below this it scrolls. */
+.drawer-body > .stack > .tool-grid { flex: 1; min-height: 12rem; }
+.tool-grid > .stack { min-height: 0; }
+.tool-input, .tool-subject { flex: 1; min-height: 4rem; resize: none; }
+.tool-out, .matches { flex: 1; min-height: 4rem; overflow: auto; }
+
+/* The line this pane exists to produce — pinned, so it never scrolls away. */
+.assert-preview {
+  position: sticky;
+  bottom: -0.625rem;
+  z-index: 2;
+  margin-top: auto;
+  padding: var(--gap-4) 0 var(--gap-4);
+  border-top: 1px solid var(--line);
+  background: var(--surface-raised);
+}
+.assert-line { padding: var(--gap-3) var(--gap-4); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); color: var(--accent); white-space: pre-wrap; }
+
+.opt-row { grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: end; }
+.opt-field { gap: var(--gap-2); min-width: 0; }
+
+.dataset {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow: auto;
+  overflow-x: auto;
+}
+/* A column nothing reads still multiplies the run — say so where the column
+   is named. */
+.label.is-unused { color: var(--warn); text-decoration: underline dotted; }
+.dataset-row { display: grid; align-items: center; gap: var(--gap-2); padding: var(--gap-2) var(--gap-2); }
+.dataset-row + .dataset-row { border-top: 1px solid var(--line); }
+.dataset-row.is-head { background: var(--surface-sunken); padding: var(--gap-3) var(--gap-4); }
+.dataset-row .field { min-height: var(--h-sm); padding: var(--gap-0) var(--gap-3); border-color: transparent; background: transparent; }
+.dataset-row .field:focus { border-color: var(--accent); background: var(--surface-sunken); }
+
+/* `auto-fill`, not `auto-fit`: a group with one setting in it kept the empty
+   tracks' width for the field, and a lone `warmup` stretched across the whole
+   workbench like a search box. */
+.bench-row { grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); align-items: start; gap: var(--gap-4); }
+/* A choice of five needs the room of two fields, or it wraps into a ragged
+   second line that reads as a broken control. */
+.bench-row > .opt-field:has(.bench-seg) { grid-column: span 2; }
+.bench-seg { flex-wrap: wrap; }
+/* A name and the number it must stay under belong beside each other: across a
+   1200 px panel the pair was a name at one end and a `<200` at the other. */
+.threshold-row { max-width: 34rem; }
+.bench-seg > button { font-size: var(--ui-2xs); }
+/* Two meanings had been sharing `is-bad`: a wrong value, and an address that
+   may simply not be up yet. The second declaration won everywhere, so the
+   warning was painted as an error. One class each. */
+
+/* The request pane is height-resizable, so its own content scrolls rather than
+   spilling over the response below it. */
+.request-pane { display: flex; flex-direction: column; flex: 0 0 auto; min-height: 0; overflow: auto; }
+.request-pane > .panel { flex: 0 0 auto; }
+.main-scroll > .hsplit { width: 100%; }
+
+/* The file's own summary, above the lenses: one line, read before anything is
+   opened. */
+/* The two versions of a file in conflict, side by side. This used to reuse
+   `.split` — the 4 px splitter handle — so both of them were drawn one
+   character wide in the one dialog that appears when work is at risk. */
+.conflict-panes { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--gap-6); }
+.conflict-diff { max-height: 22rem; overflow: auto; }
+.conflict-raw > summary { cursor: pointer; color: var(--ink-muted); font-size: var(--ui-2xs); }
+
+/* The first problem, on the closed row: what is wrong, not just how many. */
+.problems-first {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-muted);
+  font-size: var(--ui-2xs);
+}
+
+/* What an extraction would take from the response on screen. */
+.extract-rows { gap: var(--gap-2); }
+/* A row is one line: the pair, who reads it, what it takes, and the remove.
+   The list used to sit in `.kv`, whose two grid columns wrapped a four-part
+   row onto two lines. */
+.extract-rows > .bar { min-width: 0; }
+.extract-reach { flex: 0 0 auto; }
+.extract-value { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--ui-2xs); }
+/* A name, an `=`, and the filter that fills it: the filter is the longer of
+   the two and takes the room to match. */
+.extract-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 2fr) auto;
+  gap: var(--gap-3);
+  align-items: center;
+}
+.extract-value.is-value, .extract-value.is-many { color: var(--ok); }
+.extract-value.is-none, .extract-value.is-null { color: var(--warn); }
+.extract-value.is-error { color: var(--fail); }
+
+/* A dataset grid: a wide one scrolls rather than squeezing every cell into a
+   few characters, and a column's name is editable in place. */
+.dataset-head { display: flex; align-items: center; gap: var(--gap-2); min-width: 0; }
+.dataset-name {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: var(--ui-2xs);
+  letter-spacing: var(--title-tracking);
+}
+.dataset-name:focus { color: var(--ink); }
+.dataset-name.is-unused { color: var(--warn); }
+
+/* The bench tables: columns from classes, so the header and the rows under it
+   cannot drift apart. */
+.sweep-c { flex: 0 0 3rem; }
+.cmp-metric { flex: 0 0 7rem; }
+.cmp-value { flex: 0 0 6rem; text-align: right; font-variant-numeric: tabular-nums; }
+/* Every percentile the run reported, as a row of pairs. */
+.latency-row { gap: var(--gap-6) var(--gap-7); }
+.latency-cell { display: inline-flex; gap: var(--gap-3); align-items: baseline; font-variant-numeric: tabular-nums; }
+
+/* The sections lens: one column for the name, one for the lines it spans, so
+   the text after them starts at the same place down the list. */
+.plan-section-name { flex: 0 0 7rem; }
+/* The runtime rows are the sections rows with a value in the middle: same
+   table, so the two lenses read as two views of one file rather than two
+   widgets. A default is what the row says when the file said nothing, and it
+   stays quiet; the row the file decided is the one worth seeing from across
+   the panel. */
+.plan-runtime-value { flex: 0 0 7rem; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.plan-runtime-from { color: var(--ink-muted); }
+.plan-runtime.is-set .plan-runtime-value { color: var(--ink); }
+.plan-runtime.is-set .plan-runtime-from { color: var(--accent); }
+.plan-section-lines { flex: 0 0 4.5rem; font-variant-numeric: tabular-nums; }
+/* The row a run would not agree with: the file names no transport, and the
+   workbench sends over another one. */
+.plan-runtime.is-drift .plan-runtime-value { color: var(--warn); }
+.plan-runtime.is-drift .plan-runtime-from { color: var(--warn); }
+.plan-drift { display: flex; align-items: center; gap: var(--gap-3); }
+/* `OPTIONS` is how the file spells it, and the button offers to write exactly
+   that — the lowercase every other control wears would name a section that
+   does not exist. */
+.plan-drift .btn { text-transform: none; }
+
+/* Which row one call is made with. A select rather than a menu: it is a choice
+   among the file's own rows, and it must be reachable the way the fields
+   beside it are. */
+.dataset-pick { flex: 0 1 auto; max-width: 16rem; font-size: var(--ui-2xs); }
+
+/* What a row with no value will be written as. It is a reading of the row
+   first and a control second, so it wears the muted voice rather than a
+   button's. */
+.param-empty { flex: 0 0 auto; color: var(--ink-muted); font-size: var(--ui-2xs); }
+
+/* What a section is for, under its name in the add menu: the name is the
+   choice, the line under it is why. */
+.menu-item.is-tall { align-items: flex-start; gap: var(--gap-0); }
+.menu-note { font-size: var(--ui-2xs); text-transform: none; letter-spacing: normal; white-space: normal; }
+
+/* What the card's `sent` half does not show: the names the wire carried values
+   for, and the row this call was. */
+.peek-filled { font-size: var(--ui-2xs); }
+
+/* The project badge is a control now — it carries the path and copies it — but
+   it is still a badge to look at. */
+.status-project { padding: 0; }
+
+.plan-headline {
+  padding: var(--gap-3) var(--gap-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--ink);
+  font-size: var(--ui-xs);
+}
+.plan-warn { display: inline-flex; align-items: center; gap: var(--gap-2); margin-left: var(--gap-3); color: var(--warn); }
+/* Where a target came from, said at the volume it deserves: the file's own
+   words are quiet, an environment is a fact about this project, and a target
+   only this window knows is the one a run in CI will not find. */
+/* Why a new file is not on the name its endpoint suggests. */
+.save-taken { font-size: var(--ui-2xs); }
+
+/* What a bench is doing, where the counts sit for a test run. */
+.run-bench { font-size: var(--ui-2xs); color: var(--ink-muted); }
+
+.conn-health { gap: var(--gap-2); }
+/* A target nothing answers on is the one thing in this panel worth a colour:
+   every call from here will fail the same way, before it is sent. */
+.conn-health.is-cold > .muted { color: var(--warn); }
+
+.plan-from { display: inline-flex; align-items: center; gap: var(--gap-2); margin-left: var(--gap-3); }
+.plan-from.is-file { color: var(--ink-muted); }
+.plan-from.is-environment { color: var(--ink); }
+.plan-from.is-workbench { color: var(--warn); }
+
+@media (prefers-reduced-motion: reduce) {
+  :root, :root[data-theme] { --motion-scale: 0 !important; }
+  .caret, .animate-spin, .spinner { animation: none; }
+}
+
+/* ============================================================
+   app.css — Tailwind escape hatches
+   ============================================================ */
+/* Tailwind's radii and shadows are a fixed scale; the theme's are not. A
+   utility written in JSX answers to the theme, so a square theme comes out
+   square everywhere. */
+

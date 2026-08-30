@@ -1,9 +1,3 @@
-// Proxy environment variable detection.
-//
-// gRPC transport (tonic/hyper 1.x) does not support HTTP CONNECT proxies natively.
-// This module reads the conventional proxy env vars and surfaces them for logging
-// so operators are not surprised when proxy settings appear to be ignored.
-
 use std::env;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,7 +8,6 @@ pub struct ProxyEnv {
 }
 
 impl ProxyEnv {
-    /// Read proxy settings from the environment (lowercase wins over uppercase).
     pub fn from_env() -> Self {
         Self {
             http_proxy: read_proxy_var("http_proxy", "HTTP_PROXY"),
@@ -23,7 +16,6 @@ impl ProxyEnv {
         }
     }
 
-    /// Build from explicit values (used in tests and for dependency injection).
     pub fn new(
         http_proxy: Option<String>,
         https_proxy: Option<String>,
@@ -36,13 +28,10 @@ impl ProxyEnv {
         }
     }
 
-    /// Returns true if any proxy variable is set.
     pub fn any_set(&self) -> bool {
         self.http_proxy.is_some() || self.https_proxy.is_some() || self.no_proxy.is_some()
     }
 
-    /// Emit tracing warnings when proxy vars that will be ignored are detected.
-    /// NO_PROXY is intentionally excluded — it is informational only.
     pub fn warn_if_set(&self) {
         if let Some(v) = &self.http_proxy {
             tracing::warn!(
@@ -61,7 +50,6 @@ impl ProxyEnv {
     }
 }
 
-/// Read a proxy variable: lowercase takes priority over uppercase.
 fn read_proxy_var(lower: &str, upper: &str) -> Option<String> {
     env::var(lower).ok().or_else(|| env::var(upper).ok())
 }
@@ -96,12 +84,8 @@ mod tests {
 
     #[test]
     fn lowercase_wins_over_uppercase() {
-        // Simulate the priority without touching the real env:
-        // read_proxy_var prefers lowercase; if lowercase is set, uppercase is ignored.
-        // We verify the logic by constructing values directly.
         let lower = Some("http://lower:3128".to_string());
         let upper = Some("http://upper:3128".to_string());
-        // Mimics: lower.or(upper)
         let result = lower.clone().or(upper);
         assert_eq!(result, lower);
     }

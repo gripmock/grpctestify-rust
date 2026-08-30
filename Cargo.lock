@@ -120,12 +120,11 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "apif-assert"
-version = "0.2.2"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "apif-ast",
  "console",
- "dissimilar",
  "jaq-core",
  "jaq-json",
  "jaq-std",
@@ -136,7 +135,7 @@ dependencies = [
 
 [[package]]
 name = "apif-ast"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "apif-cfg-runtime",
  "indexmap",
@@ -160,7 +159,7 @@ dependencies = [
 
 [[package]]
 name = "apif-execution"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "apif-ast",
@@ -179,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "apif-grpc-transport"
-version = "0.3.4"
+version = "0.3.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -199,6 +198,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "apif-http-transport"
+version = "0.2.3"
+dependencies = [
+ "reqwest",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "apif-optimizer"
 version = "0.1.3"
 dependencies = [
@@ -213,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "apif-parser"
-version = "0.2.4"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "apif-ast",
@@ -228,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "apif-plugins"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "apif-assert",
@@ -260,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "apif-report"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "apif-cfg-runtime",
@@ -291,7 +299,7 @@ version = "0.1.0"
 
 [[package]]
 name = "apif-source-row"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "apif-ast",
@@ -313,7 +321,7 @@ dependencies = [
 
 [[package]]
 name = "apif-state"
-version = "0.1.2"
+version = "0.1.4"
 dependencies = [
  "apif-ast",
  "apif-cfg-runtime",
@@ -327,7 +335,7 @@ version = "0.1.3"
 
 [[package]]
 name = "apif-utils"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "globset",
@@ -1051,12 +1059,6 @@ dependencies = [
  "quote",
  "syn 3.0.3",
 ]
-
-[[package]]
-name = "dissimilar"
-version = "1.0.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aeda16ab4059c5fd2a83f2b9c9e9c981327b18aa8e3b313f7e6563799d4f093e"
 
 [[package]]
 name = "dunce"
@@ -2244,7 +2246,7 @@ dependencies = [
 
 [[package]]
 name = "grpctestify"
-version = "1.10.3"
+version = "1.10.8"
 dependencies = [
  "anyhow",
  "apif-assert",
@@ -2252,6 +2254,7 @@ dependencies = [
  "apif-diagnostics",
  "apif-execution",
  "apif-grpc-transport",
+ "apif-http-transport",
  "apif-optimizer",
  "apif-parser",
  "apif-plugins",
@@ -2293,6 +2296,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "sha2",
  "sysinfo",
  "tempfile",
  "tokio",

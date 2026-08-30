@@ -36,6 +36,35 @@ impl TransportRef {
         }
     }
 
+    pub fn method_info(&self, service: &str, method: &str) -> Option<MethodInfo> {
+        match self {
+            TransportRef::Tonic(client) => client
+                .list_methods(service)
+                .into_iter()
+                .find(|m| m.name == method),
+            TransportRef::Http => None,
+        }
+    }
+
+    pub async fn execute_streaming(
+        &mut self,
+        config: &GrpcClientConfig,
+        service: &str,
+        method: &str,
+        bodies: Vec<Value>,
+        rpc_mode: Option<RpcMode>,
+    ) -> TransportResult {
+        match self {
+            TransportRef::Tonic(client) => {
+                execute_tonic_stream(client, service, method, bodies).await
+            }
+            TransportRef::Http => {
+                let body = bodies.into_iter().next().unwrap_or(Value::Null);
+                self.execute(config, service, method, body, rpc_mode).await
+            }
+        }
+    }
+
     pub async fn execute(
         &mut self,
         config: &GrpcClientConfig,
@@ -51,11 +80,9 @@ impl TransportRef {
                     Ok(resp) => resp.into(),
                     Err(e) => TransportResult {
                         messages: vec![],
+                        message_offsets_ms: vec![],
                         headers: HashMap::new(),
                         trailers: HashMap::new(),
-                        // Transport-level failure with no gRPC status of its own
-                        // (connect refused, non-JSON HTTP error, …) → UNKNOWN(2),
-                        // matching the code the old string parser produced.
                         error: Some(GrpcError::new(2, e.to_string())),
                     },
                 }
@@ -78,15 +105,23 @@ async fn execute_tonic(
     method: &str,
     body: Value,
 ) -> TransportResult {
+    execute_tonic_stream(client, service, method, vec![body]).await
+}
+
+async fn execute_tonic_stream(
+    client: &mut Box<dyn GrpcClientTrait>,
+    service: &str,
+    method: &str,
+    bodies: Vec<Value>,
+) -> TransportResult {
     use crate::grpc::StreamItem;
-    let stream = Box::pin(futures::stream::iter(vec![body]));
+    let stream = Box::pin(futures::stream::iter(bodies));
     let (headers, mut response_stream) = match client.call_stream(service, method, stream).await {
         Ok(r) => r,
-        // Carry the structured status straight through — code/message/details
-        // and metadata are preserved instead of being flattened to a string.
         Err(e) => {
             return TransportResult {
                 messages: vec![],
+                message_offsets_ms: vec![],
                 headers: HashMap::new(),
                 trailers: HashMap::new(),
                 error: Some(e),
@@ -94,12 +129,17 @@ async fn execute_tonic(
         }
     };
     let mut messages = Vec::new();
+    let mut message_offsets_ms = Vec::new();
     let mut trailers = HashMap::new();
     let mut error: Option<GrpcError> = None;
     use futures::StreamExt;
+    let started = std::time::Instant::now();
     while let Some(item) = response_stream.next().await {
         match item {
-            Ok(StreamItem::Message(msg)) => messages.push(msg),
+            Ok(StreamItem::Message(msg)) => {
+                messages.push(msg);
+                message_offsets_ms.push(started.elapsed().as_millis() as u64);
+            }
             Ok(StreamItem::Trailers(t)) => {
                 trailers.extend(t.clone());
                 if let Some(status) = t.get("grpc-status")
@@ -114,6 +154,7 @@ async fn execute_tonic(
     }
     TransportResult {
         messages,
+        message_offsets_ms,
         headers,
         trailers,
         error,

@@ -7,9 +7,10 @@
     "dev": "vite",
     "clean": "rm -rf dist/assets",
     "build": "npm run clean && tsc -b && vite build",
-    "lint": "oxlint",
+    "lint": "oxlint --deny-warnings",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "check": "tsc -b && oxlint --deny-warnings && vitest run"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

@@ -26,7 +26,6 @@ pub async fn handle_gen(args: &GenArgs) -> Result<()> {
 async fn handle_gen_grpcurl(args: &GenGrpcurlArgs, output: Option<&Path>) -> Result<String> {
     let parsed = ParsedGrpcurl::parse(&args.grpcurl_args)?;
     let mut options = parsed.options.clone();
-    // Native mode defaults to plaintext when TLS is not configured.
     options.remove("plaintext");
 
     let mut builder = GctfDocumentBuilder::new()
@@ -57,19 +56,12 @@ async fn handle_gen_grpcurl(args: &GenGrpcurlArgs, output: Option<&Path>) -> Res
     Ok(builder.render())
 }
 
-/// Dial the target address and run the parsed invocation as one live RPC
-/// call, using the same native gRPC client `.gctf` test execution uses —
-/// no `grpcurl` binary involved (see memory [[native-zero-dependency]]).
 async fn execute_call(
     builder: &GctfDocumentBuilder,
     parsed: &ParsedGrpcurl,
     output: Option<&Path>,
 ) -> Result<Vec<Value>, String> {
     let document = builder.clone().build();
-    // Relative TLS/proto paths (-cacert, -proto, ...) must resolve the same
-    // way the saved .gctf will resolve them later, so use the real output
-    // path when writing to a file, and a bare (parent-less) name — resolving
-    // against CWD — when the doc only ever goes to stdout.
     let document_path = output.unwrap_or_else(|| Path::new("gen.gctf"));
 
     let (package, service, method) = document
@@ -130,8 +122,6 @@ mod tests {
     use super::*;
     use crate::parser::GctfDocumentBuilder;
 
-    /// Build a rendered .gctf from grpcurl args exactly like `handle_gen_grpcurl`
-    /// (without the `--execute` side effects).
     fn render_from_grpcurl(args: &[&str]) -> String {
         let grpcurl_args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
         let parsed = ParsedGrpcurl::parse(&grpcurl_args).expect("parse grpcurl args");
@@ -153,10 +143,6 @@ mod tests {
         builder.render()
     }
 
-    /// Regression for the gen-grpcurl TLS round-trip drop: the TLS section keys
-    /// emitted here must be exactly the ones `build_tls_config` reads back, so a
-    /// generated .gctf actually keeps its TLS configuration instead of silently
-    /// running plaintext/unverified.
     #[test]
     fn gen_grpcurl_tls_round_trips_through_build_tls_config() {
         let rendered = render_from_grpcurl(&[

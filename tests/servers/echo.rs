@@ -130,3 +130,54 @@ pub async fn start_echo_server(
 
     Ok(TestServerHandle { handle: server })
 }
+
+/// The echo service on an ephemeral port with no reflection at all — the shape
+/// of most real servers, and the one that shows whether a caller read the
+/// document's `PROTO` section. Returns the address it is listening on.
+pub async fn spawn_echo_server_without_reflection() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local addr");
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
+    tokio::spawn(async move {
+        Server::builder()
+            .add_service(EchoServiceServer::new(EchoServiceImpl))
+            .serve_with_incoming(incoming)
+            .await
+            .expect("echo server run");
+    });
+
+    addr.to_string()
+}
+
+/// The echo service on an ephemeral port, with reflection, for tests that call
+/// it through the play server — which reaches for descriptors before it dials.
+/// Returns the address it is listening on.
+pub async fn spawn_echo_server_with_reflection() -> String {
+    let reflection = tonic_reflection::server::Builder::configure()
+        .register_encoded_file_descriptor_set(include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/test_servers_descriptor.bin"
+        )))
+        .build_v1()
+        .expect("build reflection service");
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local addr");
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
+    tokio::spawn(async move {
+        Server::builder()
+            .add_service(EchoServiceServer::new(EchoServiceImpl))
+            .add_service(reflection)
+            .serve_with_incoming(incoming)
+            .await
+            .expect("echo server run");
+    });
+
+    addr.to_string()
+}

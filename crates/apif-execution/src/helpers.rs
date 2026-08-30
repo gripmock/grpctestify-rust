@@ -1,9 +1,3 @@
-//! Helper utilities for the test runner.
-//!
-//! Contains pure functions and static helpers used by the test runner
-//! that don't require `self` access: variable substitution, TLS defaults,
-//! JSON formatting, and metadata conversion.
-
 use apif_ast::GctfDocument;
 use apif_cfg_runtime as runtime;
 use apif_grpc_transport::{
@@ -15,21 +9,13 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 
-/// Buffer size for the request message channel.
-/// Controls back-pressure for client streaming: larger values allow more
-/// buffered requests but consume more memory.
 pub const REQUEST_CHANNEL_BUFFER: usize = 100;
 
-/// Default TLS configuration from environment variables.
-///
-/// Read once. `getenv` takes a process-wide lock on macOS, and the TLS block
-/// alone accounted for four calls on every request.
 pub fn tls_env_defaults() -> &'static apif_ast::OrderedStringMap {
     static CACHE: std::sync::OnceLock<apif_ast::OrderedStringMap> = std::sync::OnceLock::new();
     CACHE.get_or_init(read_tls_env_defaults)
 }
 
-/// Uncached read, for callers that must observe an environment change.
 pub fn read_tls_env_defaults() -> apif_ast::OrderedStringMap {
     let mut defaults = apif_ast::OrderedStringMap::new();
 
@@ -57,7 +43,6 @@ pub fn read_tls_env_defaults() -> apif_ast::OrderedStringMap {
     defaults
 }
 
-/// Parse truthy values from config-style strings.
 pub fn parse_bool_flag(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
@@ -65,29 +50,36 @@ pub fn parse_bool_flag(value: &str) -> bool {
     )
 }
 
-/// Resolve effective address using ADDRESS section, env var, then protocol-dependent default.
-/// `protocol_override` takes precedence over OPTIONS.protocol from the document.
 pub fn effective_address(
     document: &GctfDocument,
     protocol_override: Option<WireProtocol>,
 ) -> String {
-    static ADDRESS: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    let env_address = ADDRESS.get_or_init(|| std::env::var("GRPCTESTIFY_ADDRESS").ok());
-    document
-        .get_address(env_address.as_deref())
-        .unwrap_or_else(|| {
-            let proto = protocol_override.unwrap_or_else(|| {
-                document
-                    .get_options()
-                    .and_then(|o| o.get("protocol").cloned())
-                    .map(|s| s.parse().unwrap_or_default())
-                    .unwrap_or_default()
-            });
-            default_address_for(proto).to_string()
-        })
+    effective_address_with(document, protocol_override, None)
 }
 
-/// Resolve compression setting from OPTIONS section with env fallback.
+pub fn effective_address_with(
+    document: &GctfDocument,
+    protocol_override: Option<WireProtocol>,
+    env: Option<&str>,
+) -> String {
+    static ADDRESS: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let process = ADDRESS.get_or_init(|| std::env::var("GRPCTESTIFY_ADDRESS").ok());
+    let fallback = env
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .or(process.as_deref());
+    document.get_address(fallback).unwrap_or_else(|| {
+        let proto = protocol_override.unwrap_or_else(|| {
+            document
+                .get_options()
+                .and_then(|o| o.get("protocol").cloned())
+                .map(|s| s.parse().unwrap_or_default())
+                .unwrap_or_default()
+        });
+        default_address_for(proto).to_string()
+    })
+}
+
 pub fn parse_compression_option(options: &apif_ast::OrderedStringMap) -> Option<CompressionMode> {
     options
         .get("compression")
@@ -99,17 +91,11 @@ pub fn parse_compression_option(options: &apif_ast::OrderedStringMap) -> Option<
         })
 }
 
-/// Resolve the effective compression mode honoring the canonical precedence
-/// `section attribute > OPTIONS > env default`. An explicit-but-unknown value
-/// at either level is a configuration error (never a silent fall-back).
 pub fn resolve_compression(
     document: &GctfDocument,
     options: &apif_ast::OrderedStringMap,
     env_default: CompressionMode,
 ) -> Result<CompressionMode, String> {
-    // `get_compression` only yields validated "gzip"/"none" (an invalid attribute
-    // value is filtered to None and falls through to OPTIONS/env, matching
-    // `resolve_effective_runtime_options`).
     if let Some(attr) = document
         .sections
         .iter()
@@ -308,10 +294,6 @@ pub fn resolve_effective_runtime_options(
         }
     };
 
-    // Canonical compression precedence: section attribute > OPTIONS > env/CLI default.
-    // `execution::runner` resolves the effective mode via `resolve_compression`
-    // (same precedence), so this reporting path and the runner agree; both error
-    // on an explicit-but-invalid value rather than silently falling back.
     let compression_from_attr = document
         .sections
         .iter()
@@ -323,8 +305,6 @@ pub fn resolve_effective_runtime_options(
             source: RuntimeOptionSource::SectionAttribute,
         }
     } else if let Some(raw) = options.get("compression") {
-        // An explicit-but-unknown OPTIONS.compression is a configuration error,
-        // not a silent fall-back to `none`.
         let mode = parse_compression_option(&options).ok_or_else(|| {
             format!(
                 "OPTIONS.compression must be 'gzip' or 'none', got '{}'",
@@ -357,7 +337,6 @@ pub fn resolve_effective_runtime_options(
     })
 }
 
-/// Resolve a TLS file path relative to document or CWD.
 pub fn resolve_tls_path(value: &str, from_env: bool, document_path: &Path) -> String {
     let path = Path::new(value);
     if path.is_absolute() {
@@ -378,7 +357,6 @@ pub fn resolve_tls_path(value: &str, from_env: bool, document_path: &Path) -> St
         .to_string()
 }
 
-/// Build TLS config using TLS section and env defaults, matching run behavior.
 pub fn build_tls_config(document: &GctfDocument, document_path: &Path) -> Option<TlsConfig> {
     let tls_defaults = tls_env_defaults();
     let tls_section = document.get_tls_config();
@@ -431,7 +409,6 @@ pub fn build_tls_config(document: &GctfDocument, document_path: &Path) -> Option
     }
 }
 
-/// Build proto config with document-relative path resolution, matching run behavior.
 pub fn build_proto_config(document: &GctfDocument, document_path: &Path) -> Option<ProtoConfig> {
     document.get_proto_config().map(|proto_map| {
         let files = proto_map
@@ -474,7 +451,6 @@ pub fn build_proto_config(document: &GctfDocument, document_path: &Path) -> Opti
     })
 }
 
-/// Build full service name from package and service.
 pub fn full_service_name(package: &str, service: &str) -> String {
     if package.is_empty() {
         service.to_string()
@@ -483,14 +459,10 @@ pub fn full_service_name(package: &str, service: &str) -> String {
     }
 }
 
-/// Format JSON value for display.
 pub fn format_json_pretty(value: &Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }
 
-/// Interpolate variables in a string template.
-/// Replaces `{{var}}` patterns with values from the variables map.
-/// Returns `None` if no substitutions were made.
 pub fn interpolate_variables(template: &str, variables: &HashMap<String, Value>) -> Option<String> {
     let mut out = String::with_capacity(template.len());
     let mut cursor = 0usize;
@@ -533,15 +505,9 @@ pub fn interpolate_variables(template: &str, variables: &HashMap<String, Value>)
     if changed { Some(out) } else { None }
 }
 
-/// Recursively substitute variables in a JSON value.
-/// If a string is exactly `{{var}}`, it's replaced with the actual Value type.
-/// Otherwise, string interpolation is performed.
 pub fn substitute_variables(value: &mut Value, variables: &HashMap<String, Value>) {
     match value {
         Value::String(s) => {
-            // Without this, every placeholder-free string still pays for
-            // `interpolate_variables`'s `String::with_capacity` + full copy
-            // before it can report "nothing changed".
             if !s.contains("{{") {
                 return;
             }
@@ -572,21 +538,12 @@ pub fn substitute_variables(value: &mut Value, variables: &HashMap<String, Value
     }
 }
 
-/// True when `body` is a single well-formed variable identifier, i.e. the kind
-/// of placeholder `interpolate_variables`/`substitute_variables` treat as a
-/// variable reference. This deliberately rejects anything with spaces or
-/// punctuation so ordinary strings that merely contain `{{` (JSON fragments,
-/// free text) are never mistaken for an unresolved placeholder.
 fn is_variable_placeholder(body: &str) -> bool {
     let mut chars = body.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
-/// Append the names of unresolved `{{ identifier }}` placeholders found in
-/// `text` to `out`. A placeholder is unresolved when its body is a well-formed
-/// variable identifier that is absent from `variables` (i.e. the substitutor
-/// would have left it verbatim). Names are de-duplicated, order preserved.
 pub fn find_unresolved_placeholders(
     text: &str,
     variables: &HashMap<String, Value>,
@@ -610,8 +567,6 @@ pub fn find_unresolved_placeholders(
     }
 }
 
-/// Recursively collect unresolved `{{ identifier }}` placeholders from all
-/// string values in a JSON `value` (used to guard outgoing request bodies).
 pub fn collect_unresolved_placeholders(
     value: &Value,
     variables: &HashMap<String, Value>,
@@ -633,7 +588,6 @@ pub fn collect_unresolved_placeholders(
     }
 }
 
-/// Format unresolved variable names back as `{{a}}, {{b}}` for error messages.
 pub fn format_unresolved_placeholders(names: &[String]) -> String {
     names
         .iter()
@@ -642,7 +596,6 @@ pub fn format_unresolved_placeholders(names: &[String]) -> String {
         .join(", ")
 }
 
-/// Convert tonic metadata map to HashMap.
 pub fn metadata_map_to_hashmap(metadata: &tonic::metadata::MetadataMap) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for kv in metadata.iter() {
@@ -660,8 +613,6 @@ pub fn metadata_map_to_hashmap(metadata: &tonic::metadata::MetadataMap) -> HashM
 #[cfg(test)]
 mod tests {
 
-    // The hot path must not call `getenv` again on every request; caching is
-    // the point of the wrapper, so assert it is actually one shared value.
     #[test]
     fn tls_env_defaults_is_read_once() {
         let first = tls_env_defaults();
@@ -694,6 +645,36 @@ mod tests {
             attributes: Vec::new(),
             span: SectionSpan::default(),
         }
+    }
+
+    #[test]
+    fn an_environment_address_carries_a_file_that_names_none() {
+        let doc = make_doc(vec![]);
+        assert_eq!(
+            effective_address_with(&doc, None, Some("staging:4770")),
+            "staging:4770"
+        );
+    }
+
+    #[test]
+    fn a_file_that_names_its_own_address_keeps_it() {
+        let doc = make_doc(vec![make_section(
+            SectionType::Address,
+            SectionContent::Single("pinned:9000".to_string()),
+        )]);
+        assert_eq!(
+            effective_address_with(&doc, None, Some("staging:4770")),
+            "pinned:9000"
+        );
+    }
+
+    #[test]
+    fn a_blank_environment_address_falls_through() {
+        let doc = make_doc(vec![]);
+        assert_eq!(
+            effective_address_with(&doc, None, Some("   ")),
+            effective_address(&doc, None)
+        );
     }
 
     fn make_section_with_attrs(
@@ -1154,8 +1135,6 @@ mod tests {
 
     #[test]
     fn resolve_compression_invalid_options_value_errors() {
-        // An explicit-but-unknown OPTIONS.compression must be a hard error, not
-        // a silent fall-back to `none`.
         let doc = make_doc(vec![
             make_section(SectionType::Options, kv(&[("compression", "brotli")])),
             make_section(
@@ -1258,7 +1237,6 @@ mod tests {
         );
     }
 
-    // (1) An undefined variable in a request body must be reported, not sent.
     #[test]
     fn collect_unresolved_placeholder_undefined_in_body() {
         let vars = HashMap::new();
@@ -1270,7 +1248,6 @@ mod tests {
         assert_eq!(format_unresolved_placeholders(&unresolved), "{{missing}}");
     }
 
-    // (2) A defined variable still substitutes and is not flagged.
     #[test]
     fn collect_unresolved_placeholder_bound_variable_ok() {
         let mut vars = HashMap::new();
@@ -1284,9 +1261,6 @@ mod tests {
         assert!(unresolved.is_empty());
     }
 
-    /// The placeholder-free early return must be a pure fast path: strings
-    /// without `{{` are left exactly as they were, at every nesting depth,
-    /// and non-string scalars are untouched.
     #[test]
     fn substitute_variables_leaves_placeholder_free_values_alone() {
         let mut vars = HashMap::new();
@@ -1302,12 +1276,9 @@ mod tests {
         assert_eq!(body["plain"], original["plain"]);
         assert_eq!(body["braces"], original["braces"]);
         assert_eq!(body["nested"], original["nested"]);
-        // An unclosed `{{` has no matching `}}`, so it stays literal.
         assert_eq!(body["half"], original["half"]);
     }
 
-    /// Substitution still reaches inside arrays and nested objects — the
-    /// recursion the runner used to own its own copy of.
     #[test]
     fn substitute_variables_recurses_into_arrays_and_objects() {
         let mut vars = HashMap::new();
@@ -1324,7 +1295,6 @@ mod tests {
         assert_eq!(body["obj"]["inner"]["id"], Value::from(7));
     }
 
-    // (3) An unresolved placeholder in a header value is detected.
     #[test]
     fn find_unresolved_placeholder_in_header_value() {
         let vars = HashMap::new();
@@ -1335,7 +1305,6 @@ mod tests {
         assert_eq!(unresolved, vec!["token".to_string()]);
     }
 
-    // (4) A legitimate literal that merely contains braces is not false-flagged.
     #[test]
     fn collect_unresolved_placeholder_ignores_non_placeholder_literals() {
         let vars = HashMap::new();
@@ -1348,5 +1317,24 @@ mod tests {
         let mut unresolved = Vec::new();
         collect_unresolved_placeholders(&body, &vars, &mut unresolved);
         assert!(unresolved.is_empty(), "unexpected: {:?}", unresolved);
+    }
+
+    #[test]
+    fn a_value_that_names_another_variable_is_not_read_again() {
+        let mut variables = HashMap::new();
+        variables.insert(
+            "GREETING".to_string(),
+            Value::String("Hello {{USER}}".to_string()),
+        );
+        variables.insert("USER".to_string(), Value::String("Ada".to_string()));
+
+        assert_eq!(
+            interpolate_variables("{{GREETING}}", &variables).as_deref(),
+            Some("Hello {{USER}}")
+        );
+        assert_eq!(
+            interpolate_variables("{{USER}} and {{USER}}", &variables).as_deref(),
+            Some("Ada and Ada")
+        );
     }
 }

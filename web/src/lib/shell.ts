@@ -1,4 +1,3 @@
-
 export function parseShell(cmd: string): string[] {
   const args: string[] = [];
   let current = '';

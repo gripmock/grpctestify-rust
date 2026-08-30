@@ -33,10 +33,6 @@ impl ParsedGrpcurl {
                     options.insert("compression".to_string(), "gzip".to_string());
                 }
                 "-insecure" => {
-                    // Key names must match exactly what `apif_execution::helpers::build_tls_config`
-                    // parses back out of the generated TLS section, otherwise the round-trip
-                    // silently drops TLS (see build_tls_config: ca_cert/client_cert/client_key/
-                    // server_name/insecure).
                     tls.insert("insecure".to_string(), "true".to_string());
                 }
                 "-H" | "-rpc-header" | "-reflect-header" => {
@@ -47,7 +43,6 @@ impl ParsedGrpcurl {
                 }
                 "-d" => {
                     let value = next_value(args, i, "-d")?;
-                    // -d @ means "read from stdin" — in import context, skip body
                     if value == "@" {
                         request_body = Some(Value::Object(serde_json::Map::new()));
                     } else {
@@ -170,8 +165,11 @@ fn flag_takes_value(flag: &str) -> bool {
             | "-max-call-send-msg-size"
             | "-authority"
             | "-format"
-            | "-msg-template"
             | "-connect-timeout"
+            | "-keepalive-time"
+            | "-user-agent"
+            | "-protoset-out"
+            | "-unix-socket"
     )
 }
 
@@ -650,5 +648,34 @@ mod tests {
             let result = p(tc.args);
             (tc.check)(&result);
         }
+    }
+
+    #[test]
+    fn a_boolean_flag_does_not_eat_the_address() {
+        let args: Vec<String> = ["-msg-template", "localhost:50051", "foo.Bar/Baz"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let parsed = ParsedGrpcurl::parse(&args).expect("parses");
+        assert_eq!(parsed.address, "localhost:50051");
+        assert_eq!(parsed.symbol, "foo.Bar/Baz");
+        assert_eq!(
+            parsed.options.get("msg-template").map(String::as_str),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn a_value_flag_keeps_its_value_off_the_positionals() {
+        let args: Vec<String> = ["-user-agent", "mine/1.0", "localhost:50051", "foo.Bar/Baz"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let parsed = ParsedGrpcurl::parse(&args).expect("parses");
+        assert_eq!(parsed.address, "localhost:50051");
+        assert_eq!(
+            parsed.options.get("user-agent").map(String::as_str),
+            Some("mine/1.0")
+        );
     }
 }

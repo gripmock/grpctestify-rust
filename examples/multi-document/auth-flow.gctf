@@ -18,6 +18,8 @@ auth.AuthService/Login
 }
 
 --- EXTRACT ---
+token = .token
+// Document 2: fetch user profile using the token
 
 --- ENDPOINT ---
 users.UserService/GetUser
@@ -61,6 +63,8 @@ Authorization: Bearer {{token}}
 }
 
 --- EXTRACT ---
+order_count = .orders | length
+// Document 4: public settings endpoint (no auth required)
 
 --- ENDPOINT ---
 settings.SettingsService/GetPublicSettings

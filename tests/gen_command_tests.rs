@@ -242,10 +242,11 @@ async fn gen_grpcurl_execute_appends_error_section_on_failure() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(
-        section_body(&stdout, "--- ERROR ---"),
-        "No descriptors loaded via reflection"
-    );
+    /* Four different problems used to arrive as one sentence — "No descriptors
+    loaded via reflection" — and this test still asked for it. An unreachable
+    port says so, and names the port. */
+    let error = section_body(&stdout, "--- ERROR ---");
+    assert!(error.starts_with("Could not reach 127.0.0.1:1:"), "{error}");
 }
 
 /// Regression: `tracing` output used to share stdout with a command's actual

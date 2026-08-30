@@ -10,7 +10,7 @@
         "connection": {
           "address": "<env:GRPCTESTIFY_ADDRESS>",
           "source": "Environment variable (implicit)",
-          "backend": "default"
+          "backend": "grpc"
         },
         "target": {
           "endpoint": "grpc.health.v1.Health/Check",
@@ -22,6 +22,7 @@
         "requests": [
           {
             "index": 1,
+            "skipped": false,
             "content": {},
             "content_type": "json",
             "line_start": 3,
@@ -31,6 +32,7 @@
         "expectations": [
           {
             "index": 1,
+            "skipped": false,
             "expectation_type": "response",
             "content": {
               "status": "SERVING"
@@ -50,6 +52,7 @@
         "assertions": [
           {
             "index": 1,
+            "skipped": false,
             "assertions": [
               ".status == \"SERVING\""
             ],
@@ -67,6 +70,7 @@
           "error_expected": false,
           "assertion_blocks": 1,
           "variable_extractions": 0,
+          "skipped_sections": 0,
           "rpc_mode_name": "Unary"
         }
       },
@@ -83,7 +87,7 @@
         "connection": {
           "address": "<env:GRPCTESTIFY_ADDRESS>",
           "source": "Environment variable (implicit)",
-          "backend": "default"
+          "backend": "grpc"
         },
         "target": {
           "endpoint": "grpc.health.v1.Health/Watch",
@@ -95,6 +99,7 @@
         "requests": [
           {
             "index": 1,
+            "skipped": false,
             "content": {},
             "content_type": "json",
             "line_start": 15,
@@ -104,6 +109,7 @@
         "expectations": [
           {
             "index": 1,
+            "skipped": false,
             "expectation_type": "error",
             "content": {
               "code": 5
@@ -130,6 +136,7 @@
           "error_expected": true,
           "assertion_blocks": 0,
           "variable_extractions": 0,
+          "skipped_sections": 0,
           "rpc_mode_name": "Unary Error"
         }
       },

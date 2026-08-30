@@ -1,0 +1,925 @@
+/* luvo — controls
+   The vocabulary a screen is written in: buttons, fields, badges,
+   chips, segmented choices, menus, rows, key-value lists, panels,
+   modals, toasts, tabs, splitters.
+   Every rule reads a token from `tokens.css`; none names a colour, radius,
+   shadow, duration or font of its own. */
+
+/* ============================================================
+   app.css — primitives
+   ============================================================ */
+.label {
+  /* a label may carry a leading icon, and it must sit on the same line */
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-2);
+  font-size: var(--ui-2xs);
+  font-weight: 600;
+  letter-spacing: calc(0.06em + var(--title-tracking));
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.mono { font-family: var(--font-code); }
+
+.muted { color: var(--ink-muted); }
+
+.btn {
+  display: inline-flex;
+  text-transform: lowercase;
+  align-items: center;
+  justify-content: center;
+  gap: var(--gap-3);
+  /* The design's own button: 6/12, not the 3/8 the density pass shrank it to.
+     `is-sm` keeps the tight version for dense rows. */
+  padding: var(--gap-3) var(--gap-6);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--ui-sm);
+  font-weight: 500;
+  line-height: var(--line-control);
+  min-height: var(--h-control);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color calc(var(--motion-fast) * var(--motion-scale)) ease,
+    border-color calc(var(--motion-fast) * var(--motion-scale)) ease,
+    color calc(var(--motion-fast) * var(--motion-scale)) ease;
+}
+.btn:hover, .btn.is-hover { border-color: var(--accent); background: var(--accent-soft); }
+.btn.is-primary {
+  border-color: var(--accent-fill);
+  background: var(--accent-fill);
+  color: var(--accent-ink);
+  font-weight: 600;
+  box-shadow: var(--glow-accent);
+}
+.btn.is-primary:hover, .btn.is-primary.is-hover { background: color-mix(in oklab, var(--accent-fill) 88%, var(--ink)); }
+.btn.is-quiet { border-color: var(--line); background: transparent; color: var(--ink-muted); }
+.btn.is-quiet:hover, .btn.is-quiet.is-hover { border-color: var(--accent); background: var(--accent-soft); color: var(--ink); }
+.btn.is-ghost { border-color: transparent; background: transparent; color: var(--ink-muted); }
+.btn.is-ghost:hover, .btn.is-ghost.is-hover { border-color: transparent; background: var(--surface-hover); color: var(--ink); }
+.btn.is-danger { border-color: transparent; background: transparent; color: var(--fail); }
+/* A destructive confirm is the primary action of its dialog, so it is filled
+   like one — in the failure hue rather than the accent. */
+.btn.is-primary.is-danger { border-color: var(--fail); background: var(--fail); color: var(--accent-ink); }
+.btn.is-primary.is-danger:hover { background: color-mix(in oklab, var(--fail) 85%, black); color: var(--accent-ink); }
+.btn.is-danger:hover, .btn.is-danger.is-hover {
+  border-color: color-mix(in oklab, var(--fail) 45%, transparent);
+  background: color-mix(in oklab, var(--fail) 12%, transparent);
+}
+.btn.is-sm { min-height: var(--h-sm); padding: var(--gap-2) var(--gap-4); font-size: var(--ui-xs); }
+.btn.is-icon { width: var(--h-control); height: var(--h-control); min-height: var(--h-control); padding: 0; }
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+/* A split control: run + its mode menu, sharing one outline. */
+.btn-split { display: inline-flex; }
+.btn-split > .btn:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.btn-split > .btn:last-child {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left-color: color-mix(in oklab, var(--accent-ink) 35%, transparent);
+  padding-inline: var(--gap-3);
+}
+
+.field {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--h-control);
+  padding: var(--gap-3) var(--gap-5);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--ui-sm);
+  transition:
+    border-color calc(var(--motion-fast) * var(--motion-scale)) ease,
+    box-shadow calc(var(--motion-fast) * var(--motion-scale)) ease;
+}
+.field::placeholder { color: var(--ink-muted); }
+.field:disabled { opacity: 0.5; cursor: default; }
+.field:focus, .field.is-focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), var(--glow-accent); }
+
+.field-frame {
+  display: flex;
+  align-items: center;
+  min-height: var(--h-control);
+  gap: var(--gap-2);
+  min-width: 0;
+  padding-right: var(--gap-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  transition:
+    border-color calc(var(--motion-fast) * var(--motion-scale)) ease,
+    box-shadow calc(var(--motion-fast) * var(--motion-scale)) ease;
+}
+.field-frame:focus-within, .field-frame.is-focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), var(--glow-accent); }
+/* A leading icon is an icon, not a flexible column: left to the flex rules it
+   shrank by a pixel and sat against the border, which every frame that forgot
+   `inset-start no-shrink` looked like. */
+.field-frame > svg:first-child { flex: none; margin-left: var(--gap-3); }
+.field-frame > .field { min-height: 0; border: 0; background: transparent; }
+.field-frame > .field:focus, .field.is-focus { box-shadow: none; }
+
+.panel {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-sm);
+}
+.panel > legend {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
+  margin-left: var(--gap-4);
+  padding-inline: var(--label-pad);
+  background: var(--label-fill);
+  color: var(--label-ink);
+  font-size: var(--ui-2xs);
+  font-weight: 600;
+  letter-spacing: calc(0.06em + var(--title-tracking));
+  text-transform: uppercase;
+}
+.panel-body { padding: var(--gap-4); }
+
+.tabs {
+  display: flex;
+  align-items: stretch;
+  min-height: 2rem;
+  border-bottom: 1px solid var(--line);
+}
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-3);
+  padding: var(--gap-3) var(--gap-5);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--ink-muted);
+  font: inherit;
+  font-size: var(--ui-xs);
+  letter-spacing: var(--title-tracking);
+  text-transform: var(--title-transform);
+  cursor: pointer;
+  transition:
+    color calc(var(--motion-fast) * var(--motion-scale)) ease,
+    background-color calc(var(--motion-fast) * var(--motion-scale)) ease;
+}
+.tab:hover, .tab.is-hover { color: var(--ink); background: var(--surface-hover); }
+.tab.is-on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.tab:hover .tab-close { opacity: 0.7; }
+.tab-dirty { width: 6px; height: 6px; border-radius: var(--radius-pill); background: var(--warn); }
+
+/* The document tab strip: scrolls horizontally, with its own scrollbar hidden
+   and a fade button at each end when there is more than fits. */
+.tab-strip { align-items: center; gap: 0; margin-bottom: var(--gap-4); overflow: hidden; }
+.tab-scroller { position: relative; flex: 1; min-width: 0; }
+.tab-scroller.has-left > .tabs-scroll { padding-left: 1.5rem; }
+.tab-scroller.has-right > .tabs-scroll { padding-right: 1.5rem; }
+.tabs-scroll {
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+  /* The strip keeps its own overscroll: past the last tab the gesture stops
+     here rather than becoming a back-navigation. */
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.tabs-scroll::-webkit-scrollbar { display: none; }
+
+/* Tabs give up width before the strip gives up tabs: they shrink to a floor
+   where the name is still a name, and only then does the strip scroll. */
+/* A document tab is a file name, and a file name is identity: it keeps the
+   case it was saved with. Only navigational tabs take the theme's caps. */
+.tab-row {
+  position: relative;
+  flex: 0 1 11.25rem;
+  min-width: 7rem;
+  padding-right: var(--gap-3);
+  text-transform: none;
+  letter-spacing: 0;
+}
+/* Dragging a tab: the one being carried fades, and a line stands where it
+   would land — between two tabs, because a drop lands before or after one, not
+   on it. */
+.tab-row.is-dragging { opacity: 0.4; }
+.tab-row.is-drop-before::before,
+.tab-row.is-drop-after::after {
+  content: '';
+  position: absolute;
+  inset-block: var(--gap-2);
+  width: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+}
+.tab-row.is-drop-before::before { left: calc(var(--gap-1) * -1); }
+.tab-row.is-drop-after::after { right: calc(var(--gap-1) * -1); }
+.tab-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* One slot, two meanings: the dot while at rest, the close button on hover. */
+.tab-slot { position: relative; width: 1.125rem; height: 1.125rem; flex-shrink: 0; }
+.tab-slot > .tab-dirty { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
+.tab-close {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.tab-row:hover .tab-close { opacity: 0.7; }
+.tab-row:hover .tab-dirty { opacity: 0; }
+.tab-close:hover { opacity: 1; background: var(--surface-hover); }
+.tab-close:focus-visible { opacity: 1; }
+
+.tab-scroll-btn {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1.5rem;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+.tab-scroll-btn.is-left { left: 0; background: linear-gradient(to right, var(--surface-raised), transparent); }
+.tab-scroll-btn.is-right { right: 0; background: linear-gradient(to left, var(--surface-raised), transparent); }
+
+
+/* The sidebar rail holds panel names, which must fit 15rem without clipping. */
+.sidebar .tabs > .tab { justify-content: center; min-width: 0; padding-inline: var(--gap-4); }
+.sidebar .tabs > .picker { padding-right: var(--gap-2); }
+.sidebar .tabs > .tab > span { overflow: hidden; text-overflow: ellipsis; }
+
+/* A preview tab is provisional: it reads as italic and reuses its slot until
+   something pins it. */
+.tab-row.is-preview .tab-label { font-style: italic; }
+
+/* The + and its menu of ways in. */
+.new-tab { position: relative; display: inline-flex; align-items: center; }
+
+/* A trigger with a menu hanging off it: the environment picker, the cert
+   popover, the ways-in menu. */
+.picker { position: relative; display: inline-flex; align-items: center; }
+.picker.grow { display: flex; }
+.picker.grow > .field-frame { flex: 1 1 auto; }
+.picker-trigger { max-width: 11rem; }
+.picker-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A menu is as wide as the words in it, not as the control it hangs from:
+   "Manage environments…" wrapped to two lines under a narrow trigger. */
+.picker-menu { position: absolute; top: 100%; left: 0; z-index: 100; margin-top: var(--gap-0); min-width: 13rem; }
+
+/* A menu that escapes its pane. Anchored inside a scrolling panel, an absolute
+   menu is cut by that panel's edge — no z-index reaches past a clip. This one
+   is placed at the trigger and drawn at the top of the document instead. */
+.popover { position: fixed; z-index: 400; }
+.popover > .menu { position: static; margin: 0; max-height: inherit; overflow: inherit; }
+.picker-menu.is-right { left: auto; right: 0; }
+/* Hung from the window, not from the rail: the rail clips, and this menu is
+   wider than it. */
+.run-menu { min-width: 17rem; max-width: min(24rem, 90vw); max-height: 70vh; overflow: auto; }
+.picker-meta { display: flex; gap: var(--gap-3); font-size: var(--ui-2xs); color: var(--ink-muted); }
+.picker-meta .is-secret-note { color: var(--warn); }
+
+/* A ghost button that is holding something — an active env, a loaded cert. */
+
+.cert-field { gap: var(--gap-0); padding: var(--gap-2) var(--gap-2); }
+.cert-note { padding: var(--gap-2); font-size: var(--ui-2xs); }
+
+.timeout-field { width: 5.5rem; padding-right: var(--gap-4); }
+.timeout-field > .field { padding-right: var(--gap-2); text-align: right; }
+.timeout-field > .field::-webkit-outer-spin-button,
+.timeout-field > .field::-webkit-inner-spin-button { margin: 0; appearance: none; }
+.timeout-field > .label { flex: 0 0 auto; padding: 0; }
+
+/* An address carrying {{variables}} says so at its border. */
+.field-frame.is-templated { border-color: var(--accent); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--h-badge);
+  gap: var(--gap-2);
+  padding: var(--gap-hair) var(--gap-3);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: var(--ui-2xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+/* A badge that carries a value carries it as written: an address, a path, a
+   resolved variable. Three of them had been fixed one at a time before the
+   rule was stated once. */
+.badge.mono { text-transform: none; }
+.badge.is-ok { color: var(--ok); }
+.badge.is-fail { color: var(--fail); }
+.badge.is-pending { color: var(--warn); }
+.badge.is-warn { color: var(--warn); }
+.badge.is-info { color: var(--accent); }
+.badge.is-kind {
+  color: var(--kind);
+  border-color: color-mix(in oklab, var(--kind) 45%, transparent);
+  background: color-mix(in oklab, var(--kind) var(--tint-badge), transparent);
+}
+
+/* A badge that writes something when clicked says so by behaving like a
+   control: the picker icon rides along, dim until the pointer is on it. */
+button.badge.is-pick { cursor: pointer; }
+button.badge.is-pick > svg { opacity: 0.5; }
+button.badge.is-pick:hover,
+button.badge.is-pick:focus-visible {
+  background: color-mix(in oklab, currentColor var(--tint-badge), transparent);
+}
+button.badge.is-pick:hover > svg,
+button.badge.is-pick:focus-visible > svg { opacity: 1; }
+
+/* The shape hue lives on the shape badge. It used to paint the panel border
+   and its legend as well, so two containers wore a colour that means
+   "unary" — next to verdict green, which means something else entirely. */
+
+.kind-simple { --kind: var(--kind-simple); }
+.kind-down { --kind: var(--kind-down); }
+.kind-up { --kind: var(--kind-up); }
+.kind-duplex { --kind: var(--kind-duplex); }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-3);
+  padding: var(--gap-1) var(--gap-4);
+  border: 1px solid color-mix(in oklab, var(--tag, var(--accent)) 35%, transparent);
+  border-radius: var(--radius-pill);
+  background: color-mix(in oklab, var(--tag, var(--accent)) var(--tint-chip), transparent);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--ui-xs);
+  cursor: pointer;
+  transition:
+    background-color calc(var(--motion-fast) * var(--motion-scale)) ease,
+    border-color calc(var(--motion-fast) * var(--motion-scale)) ease;
+}
+.chip::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--tag, var(--accent));
+}
+/* A chip that toggles is a switch, not a tag. A tag wears its colour to say
+   which tag it is; a switch wearing it says "on", and `partial` sat there
+   looking on while it was off. */
+.chip[aria-pressed="false"] {
+  border-color: var(--line-strong);
+  background: transparent;
+  color: var(--ink-muted);
+}
+.chip[aria-pressed="false"]::before { background: var(--line-strong); }
+.chip[aria-pressed="false"]:hover { background: color-mix(in oklab, var(--accent) 12%, transparent); }
+.chip:hover, .chip.is-hover { background: color-mix(in oklab, var(--tag, var(--accent)) 22%, transparent); }
+.chip.is-on {
+  border-color: var(--tag, var(--accent));
+  background: var(--tag, var(--accent));
+  color: var(--accent-ink);
+  box-shadow: var(--glow-accent);
+}
+.chip.is-on::before { background: color-mix(in oklab, var(--accent-ink) 80%, transparent); }
+/* Refused: struck through and drained, so `−flaky` reads as a subtraction
+   rather than as another selection. */
+.chip.is-off {
+  border-color: var(--line-strong);
+  background: transparent;
+  color: var(--ink-muted);
+  text-decoration: line-through;
+}
+.chip.is-off::before { background: var(--line-strong); }
+
+.menu {
+  min-width: 11rem;
+  padding: var(--gap-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-lg);
+}
+.menu-foot {
+  padding: var(--gap-1) var(--gap-4);
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-muted);
+  font-size: var(--ui-2xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.menu-group {
+  padding: var(--gap-3) var(--gap-4) var(--gap-2);
+  font-size: var(--ui-2xs);
+  font-weight: 600;
+  letter-spacing: calc(0.06em + var(--title-tracking));
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-4);
+  width: 100%;
+  padding: var(--gap-3) var(--gap-4);
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--ui-xs);
+  text-align: left;
+  cursor: pointer;
+}
+.menu-item:hover, .menu-item.is-hover { background: var(--surface-hover); color: var(--accent); }
+.menu-item.is-on { color: var(--accent); background: var(--accent-soft); }
+.menu-item.is-danger { color: var(--fail); }
+/* Two controls that read as one: the flip, and where the rest of the theme is
+   chosen. The chevron is narrower than a button — it is a lid, not a control of
+   its own. */
+.theme-picker { gap: 0; }
+.theme-more { width: 1rem; padding-inline: 0; }
+.theme-menu { min-width: 17rem; }
+/* Light, dark or system: one row of three, inside the menu's padding. */
+.theme-modes { margin: var(--gap-2) var(--gap-4) var(--gap-3); }
+/* The note is a note: it never pushes the name it describes. */
+.theme-menu .menu-item > .muted { white-space: nowrap; }
+.theme-menu .menu-item > .grow { white-space: nowrap; }
+.theme-swatch {
+  flex: 0 0 auto;
+  width: 0.875rem;
+  height: 0.875rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  background: linear-gradient(135deg, var(--surface) 50%, var(--accent) 50%);
+}
+
+/* ── modal, key-value list, segmented choice, card, splitter ──────────────
+   Moved out of the app's layer after the first split: every one of these is a
+   primitive, and none of them is overridden by an app rule of equal weight —
+   checked selector by selector, because moving a rule earlier only matters
+   where two rules of the same specificity disagree. */
+
+.modal {
+  /* A <dialog> centres itself with auto margins, which the reset zeroes; without
+     this the modal sits in the top-left corner. */
+  margin: auto;
+  width: min(30rem, calc(100vw - 2rem));
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  color: var(--ink);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.modal::backdrop {
+  /* the theme's own darkest ink, so the dimming never reads as a cold cast */
+  background: color-mix(in oklab, var(--void) 66%, transparent);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-7);
+  padding: var(--gap-6) var(--gap-7);
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-title {
+  margin: 0;
+  font-size: var(--ui-lg);
+  font-weight: 600;
+  letter-spacing: var(--title-tracking);
+  text-transform: var(--title-transform);
+  color: var(--label-ink);
+}
+
+.modal-body {
+  max-height: min(72vh, 40rem);
+  overflow: auto;
+  padding: var(--gap-7);
+  font-size: var(--ui-sm);
+}
+
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--gap-4);
+  padding: var(--gap-6) var(--gap-7);
+  border-top: 1px solid var(--line);
+}
+
+.kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.25rem;
+  padding: var(--gap-0) var(--gap-3);
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+  color: var(--ink);
+  font-family: var(--font-code);
+  font-size: var(--ui-2xs);
+}
+
+.kv {
+  /* Declared here, not in tokens.css: the columns belong to this list, not to
+     the palette — a `kv` row reads it to keep the same two. */
+  --kv-cols: minmax(6rem, auto) minmax(0, 1fr);
+  display: grid;
+  grid-template-columns: var(--kv-cols);
+  gap: var(--gap-0) var(--gap-6);
+  font-family: var(--font-code);
+  font-size: var(--ui-xs);
+}
+
+/* A row that wraps its own pair takes the whole width and keeps the same two
+   columns — two of them used to share one line, so `grpc-status 0` and
+   `grpc-message (empty)` read as one four-part row. */
+.kv > .bar {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: var(--kv-cols);
+  gap: inherit;
+  align-items: baseline;
+}
+
+.empty {
+  display: grid;
+  place-items: center;
+  gap: var(--gap-3);
+  padding: 2rem var(--gap-7);
+  color: var(--ink-muted);
+  font-size: var(--ui-xs);
+  text-align: center;
+}
+
+.kvrow {
+  display: grid;
+  grid-template-columns: 0.75rem minmax(0, 0.8fr) minmax(0, 2fr) auto;
+  gap: var(--gap-3);
+  align-items: center;
+}
+
+.seg { display: inline-flex; align-items: center; min-height: var(--h-seg); padding: 2px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); }
+.seg > button:hover { color: var(--ink); }
+.seg > button.is-on { background: var(--surface-raised); color: var(--accent); font-weight: 600; box-shadow: var(--shadow-sm); }
+.seg > button:disabled { opacity: 0.4; cursor: default; }
+.seg > button:disabled:hover { color: var(--ink-muted); }
+.seg > button {
+  padding: var(--gap-1) var(--gap-4);
+  border: 0;
+  border-radius: max(0px, calc(var(--radius-sm) - 2px));
+  background: transparent;
+  color: var(--ink-muted);
+  font: inherit;
+  font-size: var(--ui-2xs);
+  letter-spacing: var(--title-tracking);
+  text-transform: var(--title-transform);
+  cursor: pointer;
+  transition: background-color calc(var(--motion-fast) * var(--motion-scale)) ease, color calc(var(--motion-fast) * var(--motion-scale)) ease;
+}
+
+.card {
+  display: grid; gap: var(--gap-2); padding: var(--gap-4) var(--gap-4);
+  border: 1px solid var(--line); border-radius: var(--radius-md);
+  background: var(--surface-raised); color: var(--ink);
+  font: inherit; font-size: var(--ui-xs); text-align: left; cursor: pointer;
+}
+
+/* One handle, drawn once. Three rules used to set its hover colour from three
+   places and the last one silently won; one of them also gave it a 4 px bar at
+   rest, heavier than every hairline it sits between. */
+.split, .hsplit {
+  position: relative;
+  flex: 0 0 auto;
+  background: transparent;
+}
+
+/* A hairline at rest, four pixels under the pointer, and the box stays 4 px
+   either way so nothing reflows when it thickens. */
+.split::before, .hsplit::before {
+  content: '';
+  position: absolute;
+  border-radius: var(--radius-pill);
+  background: var(--line);
+  transition:
+    background calc(var(--motion-fast) * var(--motion-scale)) ease,
+    inset calc(var(--motion-fast) * var(--motion-scale)) ease;
+}
+
+.split:hover::before, .hsplit:hover::before {
+  inset: 0;
+  background: var(--accent-soft);
+}
+
+/* ── row, toast, splitter, note, dot, stack, bar ──────────────────────────
+   The rest of the vocabulary. Same rule as above: moved only where no app
+   rule of equal weight disagrees, so the cascade reads as it did. */
+
+.stack.is-tight { gap: var(--gap-2); }
+
+.stack.is-hair { gap: var(--gap-1); }
+
+.stack.is-flush { gap: 0; }
+
+.stack.is-cell { gap: 0; flex: 1; min-width: 0; }
+
+.bar.is-tight { gap: var(--gap-3); }
+
+.stack.is-centred { align-items: center; }
+
+.bar.menu-check { padding-block: var(--gap-hair); }
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-3);
+  width: 100%;
+  padding: var(--gap-1) var(--gap-3);
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--ui-xs);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color calc(var(--motion-fast) * var(--motion-scale)) ease;
+}
+
+.row:hover, .row.is-hover { background: var(--surface-hover); }
+
+.row.is-on {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: inset var(--output-edge) 0 0 0 var(--accent);
+}
+
+.row.is-drop {
+  background: color-mix(in oklab, var(--accent) 16%, transparent);
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}
+
+.row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.row-note { flex: 0 0 auto; white-space: nowrap; color: var(--ink-muted); font-size: var(--ui-2xs); }
+
+/* What a fixture is, said once beside its name: quiet enough to read past when
+   scanning the tests, there when the question is why this file runs alone. */
+.row-role {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  color: var(--ink-muted);
+  font-size: var(--ui-2xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+
+/* The end of a tree row: what the row says about itself at rest, what can be
+   done with it under the pointer — one slot, so nothing moves. */
+.row-tail {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--gap-3);
+  margin-left: auto;
+  min-height: 1.25rem;
+}
+
+.row-acts {
+  position: absolute;
+  inset: 0 -0.125rem 0 auto;
+  display: none;
+  align-items: center;
+  gap: var(--gap-0);
+  padding-left: var(--gap-4);
+  background: var(--surface-hover);
+}
+
+.row:hover .row-acts, .row:focus-within .row-acts { display: flex; }
+
+.row.is-on .row-acts { background: color-mix(in oklab, var(--accent) 12%, var(--surface-raised)); }
+
+.row-acts .btn { height: 1.25rem; padding-inline: var(--gap-2); }
+
+/* The unchosen half of a two-state row: an empty ring the check replaces. */
+.radio { display: block; width: 0.875rem; height: 0.875rem; border: 2px solid var(--line-strong); border-radius: var(--radius-pill); }
+
+.dot { width: 0.4375rem; height: 0.4375rem; border-radius: var(--radius-pill); background: var(--ink-muted); flex: 0 0 auto; }
+
+.dot.is-ok { background: var(--ok); box-shadow: var(--glow-accent); }
+
+.dot.is-fail { background: var(--fail); }
+
+.dot.is-warn { background: var(--warn); }
+
+/* The toast stack: fixed to the corner, clicks pass through the gaps. */
+.toasts {
+  position: fixed;
+  right: 0.75rem;
+  /* Above the status bar, not over it — a toast used to sit on the theme
+     toggle and the shortcuts button and swallow their clicks. */
+  bottom: calc(1.5rem + 0.75rem);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-3);
+  pointer-events: none;
+}
+
+.toasts > .toast {
+  pointer-events: auto;
+  max-width: 24rem;
+  animation: toast-in calc(var(--motion-base) * var(--motion-scale)) ease;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-4);
+  padding: var(--gap-4) var(--gap-5);
+  border: 1px solid color-mix(in oklab, var(--toast-ink, var(--accent)) 45%, var(--surface-raised));
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--toast-ink, var(--accent)) 14%, var(--surface-raised));
+  color: var(--toast-ink, var(--accent));
+  font-size: var(--ui-xs);
+  box-shadow: var(--shadow-md);
+}
+
+.toast.is-ok { --toast-ink: var(--ok); }
+
+.toast.is-fail { --toast-ink: var(--fail); }
+
+/* A warning is not a failure: it is amber, and it stays until it is closed. */
+.toast.is-warn { --toast-ink: var(--warn); }
+.toast.is-info { --toast-ink: var(--accent); }
+
+.note { padding: var(--gap-3) var(--gap-4); border-left: 2px solid var(--warn); background: color-mix(in oklab, var(--warn) 10%, transparent); color: var(--ink); font-size: var(--ui-2xs); }
+
+.split { width: 6px; cursor: col-resize; }
+
+.hsplit { height: 6px; cursor: row-resize; }
+
+.split::before { inset-block: 0; inset-inline: 2.5px; }
+
+.hsplit::before { inset-inline: 0; inset-block: 2.5px; }
+
+.split::after, .hsplit::after { content: ''; position: absolute; }
+
+.split::after { inset-block: 0; inset-inline: -5px; }
+
+.hsplit::after { inset-inline: 0; inset-block: -5px; }
+
+.split:focus-visible, .hsplit:focus-visible { outline: none; }
+
+.split:focus-visible::before, .hsplit:focus-visible::before { inset: 0; background: var(--accent); }
+
+.bar { display: flex; align-items: center; gap: var(--gap-3); }
+
+.stack { display: flex; flex-direction: column; gap: var(--gap-4); }
+
+.note.is-warn { border-left-color: var(--warn); }
+
+
+.row-note.is-fail { color: var(--fail); }
+
+.row-note.is-pass { color: var(--ok); }
+
+.row-note.is-running { color: var(--accent); }
+/* A duration shows only where it is worth reading, so it is said quietly — the
+   verdict beside it is the news. */
+.row-note.is-slow { color: var(--ink-muted); }
+.row-note.is-warn { color: var(--warn); }
+
+.row-note.is-skip { color: var(--ink-muted); }
+
+.row-note > .count { font-weight: 600; }
+
+/* ── sizes, states, diff, tiles, editor frame ─────────────────────────────
+   The last of the vocabulary: the modal's widths, a field frame's widths and
+   its two states, the diff, the tiles a number is read from, and the helpers
+   (`.grow`, `.mono`, `.muted`) every screen leans on. */
+
+.modal.is-wide { width: min(34rem, calc(100vw - 2rem)); }
+
+.modal.is-md { width: min(42rem, calc(100vw - 2rem)); }
+
+.modal.is-lg { width: min(60rem, calc(100vw - 2rem)); }
+
+.modal.is-xl { width: min(84rem, calc(100vw - 3rem)); }
+
+.modal:not([open]) { display: none; }
+
+/* Fields sized to what they hold rather than to the row they sit in. */
+.field-frame.is-tiny { width: 5rem; }
+
+.field-frame.is-narrow { max-width: 8rem; }
+
+.field-frame.is-short { max-width: 10rem; }
+
+.field-frame.is-mid { max-width: 11rem; }
+
+.field.is-short { max-width: 10rem; }
+
+.no-shrink { flex-shrink: 0; }
+
+.inset-start { margin-left: var(--gap-3); }
+
+.is-hidden { display: none; }
+
+.diff.is-flush { margin: 0; }
+
+.field.is-bad { border-color: var(--fail); }
+
+.editor {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  overflow: hidden;
+}
+
+.empty .mark { font-size: 1.25rem; opacity: 0.5; }
+
+.diff {
+  display: block;
+  margin: 0;
+  padding: var(--gap-4) 0;
+  font-family: var(--font-code);
+  font-size: var(--ui-sm);
+  line-height: 1.55;
+  color: var(--ink);
+  white-space: pre;
+  overflow: auto;
+}
+
+.diff > span { display: block; padding-left: var(--gap-3); border-left: 2px solid transparent; }
+
+/* The mark is the column a diff is read down. It carries what a strike-through
+   used to say, and says it over the indent instead of crossing it out. */
+.diff .diff-mark { opacity: 0.55; }
+
+.diff .add { border-left-color: var(--ok); background: color-mix(in oklab, var(--ok) 10%, transparent); }
+
+.diff .del { border-left-color: var(--fail); background: color-mix(in oklab, var(--fail) 10%, transparent); opacity: 0.7; }
+
+
+/* stat tiles */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr)); gap: var(--gap-4); }
+
+.tile { padding: var(--gap-4) var(--gap-4); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); }
+
+.tile .k { display: block; font-size: var(--ui-2xs); letter-spacing: calc(0.06em + var(--title-tracking)); text-transform: uppercase; color: var(--ink-muted); }
+
+.tile .v { display: block; margin-top: var(--gap-0); font-family: var(--font-code); font-size: var(--ui-lg); font-variant-numeric: tabular-nums; color: var(--ink); }
+
+.tile.is-ok .v { color: var(--ok); }
+
+.tile.is-fail .v { color: var(--fail); }
+
+.tile.is-accent .v { color: var(--accent); }
+
+.field.is-narrow { width: 5rem; flex: 0 0 auto; }
+
+.grow { flex: 1; min-width: 0; }
+
+/* the assert playground: input on the left, verdicts on the right */
+.code-input { font-family: var(--font-code); font-size: var(--ui-sm); line-height: 1.5; resize: vertical; }
+
+.tile .v.is-fail { color: var(--fail); }
+
+.field-frame.is-bad { border-color: var(--fail); }
+
+.field-frame.is-warn { border-color: var(--warn); }
+
+/* build marker for the update check */

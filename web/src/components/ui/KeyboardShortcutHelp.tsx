@@ -1,7 +1,9 @@
-import { useEffect, useRef } from 'react';
-import { createPortal } from 'react-dom';
-import { X } from 'lucide-react';
-import { SHORTCUT_DEFINITIONS, formatHotkey, CATEGORY_LABELS, CATEGORY_ORDER } from '../../lib/hotkeys';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Search, X } from 'lucide-react';
+import { formatHotkey } from 'luvo/input/hotkeys';
+import { LOCAL_KEYS } from '../../lib/hotkeys';
+import { hotkeyCommands } from '../../lib/commands';
+import { filterRows, groupRows, shortcutRows } from '../../lib/shortcut-rows';
 
 interface Props {
   open: boolean;
@@ -9,111 +11,96 @@ interface Props {
 }
 
 export function KeyboardShortcutHelp({ open, onClose }: Props) {
-  const closeRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const [search, setSearch] = useState('');
+  const close = () => { setSearch(''); onClose(); };
+
+  const all = useMemo(() => shortcutRows(), []);
+  const rows = filterRows(all, search);
+  const groups = groupRows(rows);
+  const needle = search.trim().toLowerCase();
+  const locals = LOCAL_KEYS.filter(k => needle === '' || `${k.where} ${k.keys}`.toLowerCase().includes(needle));
+  const paletteKey = hotkeyCommands().find(c => c.id === 'view.palette')?.hotkey;
 
   useEffect(() => {
-    if (!open) return;
-    closeRef.current?.focus();
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [open, onClose]);
+    const el = dialogRef.current;
+    if (!el) return;
+    if (open && !el.open) el.showModal();
+    if (!open && el.open) el.close();
+  }, [open]);
 
-  if (!open) return null;
-
-  return createPortal(
-    <div
-      role="dialog"
-      aria-modal="true"
+  return (
+    <dialog
+      ref={dialogRef}
+      className="modal is-md"
       aria-label="Keyboard shortcuts"
-      onClick={onClose}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 9999,
-        background: 'rgba(0,0,0,0.5)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        animation: 'fadeIn 0.15s ease',
-      }}
+      onCancel={e => { e.preventDefault(); close(); }}
+      onClose={() => close()}
+      onClick={e => { if (e.target === dialogRef.current) close(); }}
     >
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{
-          background: 'var(--bg-primary)',
-          border: '1px solid var(--border)',
-          borderRadius: 8,
-          padding: 24,
-          maxWidth: 520,
-          width: '90%',
-          maxHeight: '80vh',
-          overflow: 'auto',
-          boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
-        }}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>
-            Keyboard shortcuts
-          </h2>
-          <button
-            ref={closeRef}
-            onClick={onClose}
-            aria-label="Close"
-            style={{
-              background: 'none', border: 'none', cursor: 'pointer',
-              color: 'var(--text-muted)', padding: 4,
-              borderRadius: 4, display: 'flex',
-            }}
-          >
-            <X size={14} />
-          </button>
+      <div className="modal-head">
+        <h2 className="modal-title">Keyboard shortcuts</h2>
+        <div className="field-frame keys-search">
+          <Search size={12} className="muted" />
+          <input
+            className="field"
+            value={search}
+            autoFocus
+            placeholder="key or what it does…"
+            onChange={e => setSearch(e.target.value)}
+          />
+          {search && (
+            <button className="btn is-ghost is-icon is-sm" onClick={() => setSearch('')} aria-label="Clear filter">
+              <X size={11} />
+            </button>
+          )}
         </div>
+        {search && <span className="muted keys-count">{rows.length + locals.length} of {all.length + LOCAL_KEYS.length}</span>}
+        <button className="btn is-ghost is-icon" onClick={close} aria-label="Close">
+          <X size={14} />
+        </button>
+      </div>
 
-        {CATEGORY_ORDER.map(cat => {
-          const items = SHORTCUT_DEFINITIONS.filter(d => d.category === cat);
-          if (items.length === 0) return null;
-          return (
-            <div key={cat} style={{ marginBottom: 16 }}>
-              <div style={{
-                fontSize: 11, fontWeight: 600, textTransform: 'uppercase',
-                letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 8,
-              }}>
-                {CATEGORY_LABELS[cat]}
-              </div>
-              {items.map((def, i) => (
-                <div
-                  key={i}
-                  style={{
-                    display: 'flex', justifyContent: 'space-between',
-                    alignItems: 'center', padding: '4px 0',
-                  }}
-                >
-                  <span style={{ fontSize: 13, color: 'var(--text-primary)' }}>
-                    {def.description}
-                  </span>
-                  <kbd style={{
-                    fontSize: 11, fontFamily: 'monospace',
-                    padding: '2px 6px', borderRadius: 4,
-                    background: 'var(--bg-secondary)',
-                    border: '1px solid var(--border)',
-                    color: 'var(--text-secondary)',
-                    whiteSpace: 'nowrap',
-                  }}>
-                    {formatHotkey(def)}
-                  </kbd>
+      <div className="modal-body keys-body">
+        <dl className="keys-list">
+          {groups.map(g => (
+            <div key={g.group} className="keys-group" role="presentation">
+              <div className="keys-group-name">{g.group}</div>
+              {g.rows.map(r => (
+                <div key={`${g.group}-${r.keys}-${r.what}`} className="keys-row">
+                  <dt><kbd className="kbd">{r.keys}</kbd></dt>
+                  <dd>{r.what}</dd>
                 </div>
               ))}
             </div>
-          );
-        })}
+          ))}
 
-        <div style={{
-          marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border)',
-          fontSize: 11, color: 'var(--text-muted)',
-        }}>
-          Press <kbd style={{ padding: '1px 4px', background: 'var(--bg-secondary)', borderRadius: 3, border: '1px solid var(--border)' }}>?</kbd> or click the button in the status bar to open this panel.
-        </div>
+        </dl>
+
+        {locals.length > 0 && (
+          <dl className="keys-list keys-local">
+            <div className="keys-group" role="presentation">
+              <div className="keys-group-name">Inside a control</div>
+              {locals.map(k => (
+                <div key={k.where} className="keys-row">
+                  <dt className="keys-where">{k.where}</dt>
+                  <dd className="mono">{k.keys}</dd>
+                </div>
+              ))}
+            </div>
+          </dl>
+        )}
+
+        {rows.length === 0 && locals.length === 0 && (
+          <div className="empty">Nothing matches “{search}”.</div>
+        )}
       </div>
-    </div>,
-    document.getElementById('modal-root') || document.body
+
+      <div className="modal-foot keys-foot">
+        <kbd className="kbd">?</kbd> opens this panel
+        <span className="muted"> · </span>
+        <kbd className="kbd">{paletteKey ? formatHotkey(paletteKey) : '?'}</kbd> runs any command by name
+      </div>
+    </dialog>
   );
 }

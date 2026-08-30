@@ -4,7 +4,6 @@ use crate::cli::args::PlayArgs;
 use crate::serve::project;
 
 pub async fn handle_play(args: &PlayArgs) -> Result<()> {
-    // If --init, create the .grpctestify directory and exit
     if args.init {
         let dir = &args.dir;
         project::init_project_dir(dir)
@@ -15,7 +14,7 @@ pub async fn handle_play(args: &PlayArgs) -> Result<()> {
              \x20 .grpctestify/\n\
              \x20 ├── settings.json        — project settings (in git)\n\
              \x20 ├── .env.example         — template for environments (in git)\n\
-             \x20 ├── .gitignore           — ignores *.local (in git)\n\
+             \x20 ├── .gitignore           — keeps *.local, history/, shares/ and reports/ out of git\n\
               \x20 ├── collections/         — .gctf test files (in git)\n\
               \x20 └── history/             — shared history (in git, per-session)\n\
              \n\

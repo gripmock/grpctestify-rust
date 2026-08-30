@@ -1,6 +1,3 @@
-// Header plugin for EXTRACT section
-// Extracts values from gRPC metadata headers
-
 use anyhow::Result;
 use serde_json::Value;
 
@@ -9,7 +6,6 @@ use crate::{
 };
 use apif_assert::engine::AssertionResult;
 
-/// Header plugin - extracts header values
 #[derive(Debug, Clone, Default)]
 pub struct HeaderExtractPlugin;
 
@@ -68,7 +64,6 @@ impl Plugin for HeaderExtractPlugin {
             }
         };
 
-        // Case-insensitive header lookup
         let value = headers
             .iter()
             .find(|(k, _)| k.to_lowercase() == header_name)
@@ -81,7 +76,6 @@ impl Plugin for HeaderExtractPlugin {
     }
 }
 
-/// HasHeader plugin - checks if header exists (returns boolean for assertions)
 #[derive(Debug, Clone, Default)]
 pub struct HasHeaderPlugin;
 
@@ -140,7 +134,6 @@ impl Plugin for HasHeaderPlugin {
             }
         };
 
-        // Case-insensitive header lookup
         let exists = headers.iter().any(|(k, _)| k.to_lowercase() == header_name);
 
         Ok(PluginResult::Value(Value::Bool(exists)))

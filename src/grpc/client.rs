@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use anyhow::Result;
 use apif_grpc_transport::client::GrpcClient as _;
 use futures::stream::{Stream, StreamExt};
@@ -29,7 +29,10 @@ impl GrpcClient {
             }),
             apif_grpc_transport::config::WireProtocol::GrpcWeb
             | apif_grpc_transport::config::WireProtocol::ConnectRpc => {
-                let pool = build_pool_from_config(&config);
+                let pool = match build_pool_from_config(&config) {
+                    Some(pool) => Some(pool),
+                    None => crate::grpc::web_reflection::pool_for(&config).await,
+                };
                 Ok(Self {
                     inner: ClientInner::Http { config, pool },
                 })
@@ -44,10 +47,6 @@ impl GrpcClient {
         }
     }
 
-    /// Ask the server what shape this method is, over the same HTTP port the
-    /// call itself uses. Only Connect needs it: gRPC and gRPC-Web frame every
-    /// mode identically, while Connect switches both the content type and the
-    /// framing on it. Used only when no local descriptor answered first.
     pub async fn reflect_rpc_mode(&self, service_name: &str, method_name: &str) -> Option<RpcMode> {
         match &self.inner {
             ClientInner::Http { config, .. }
@@ -139,9 +138,6 @@ impl GrpcClient {
                 use crate::grpc::TransportRef;
                 use futures::stream;
 
-                // Client-streaming and bidi RPCs must always use envelope
-                // framing, whatever the message count: a single message sent as
-                // a plain unary body is not valid Connect or gRPC-Web.
                 let needs_collect = matches!(
                     rpc_mode,
                     Some(crate::grpc::RpcMode::ClientStream | crate::grpc::RpcMode::Bidi)
@@ -209,12 +205,6 @@ impl GrpcClient {
         })
     }
 
-    /// Convert TransportResult fields into a Vec of StreamItems for unified stream output.
-    ///
-    /// The error arrives already structured (`Option<GrpcError>`), so it is
-    /// carried straight through — code/message/details verbatim. Response
-    /// trailers and headers are folded into the error metadata (headers do not
-    /// override trailer entries), preserving the prior StreamItem error shape.
     fn convert_result(
         messages: Vec<Value>,
         trailers: HashMap<String, String>,
@@ -258,8 +248,6 @@ mod convert_result_tests {
         let mut headers = HashMap::new();
         headers.insert("x-h".to_string(), "hv".to_string());
 
-        // A message that itself contains the old formatting markers must survive
-        // verbatim — the exact bug the deleted string parser had.
         let nasty = "bad: code=42 message=nested details=[inline]";
         let err = GrpcError::with_details(3, nasty, b"[{\"k\":\"v\"}]".to_vec());
 
@@ -317,9 +305,6 @@ pub use apif_grpc_transport::config::{
 pub use apif_grpc_transport::error::GrpcError;
 pub use apif_grpc_transport::types::{RpcMode, StreamItem};
 
-/// Send every request message as one framed stream body.
-///
-/// Returns `(messages, trailers, error, headers)`.
 async fn send_framed_stream(
     config: &apif_grpc_transport::config::GrpcClientConfig,
     service_name: &str,

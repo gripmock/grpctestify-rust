@@ -1,24 +1,10 @@
-//! Trust gate for `.rhai` scripts.
-//!
-//! Rhai runs a script's top-level statements, not just the hook bodies it
-//! defines, so cloning someone else's repository used to be enough to execute
-//! their code. Approval is per script *content*: an edit is a new decision.
-//!
-//! The store lives under the user's home, never in the repository — a trust
-//! file a repository could ship would defeat the point. It is the one thing
-//! this crate creates in `~/.grpctestify`, and only on an explicit `y`.
-
 use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
-/// Opt-in for CI, where the checkout is already trusted.
 const TRUST_ALL_ENV: &str = "GRPCTESTIFY_TRUST_PLUGINS";
-/// Kill switch, wins over everything else.
 const NO_PLUGINS_ENV: &str = "GRPCTESTIFY_NO_PLUGINS";
 
-/// From the home directory, not from `plugins/` — a project-only user has no
-/// `~/.grpctestify/plugins` and still needs their approvals remembered.
 fn store_path() -> Option<PathBuf> {
     Some(store_path_in(&crate::rhai_plugin::user_state_dir()?))
 }
@@ -64,7 +50,6 @@ fn key(path: &Path) -> String {
         .to_string()
 }
 
-/// Terminal only — a non-interactive run must never block, so it denies.
 fn confirm(path: &Path, digest: &str) -> bool {
     if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
         tracing::warn!(
@@ -82,7 +67,6 @@ fn confirm(path: &Path, digest: &str) -> bool {
     eprintln!("  sha256 {}", digest);
     eprintln!("It runs with your privileges. Only allow scripts you have read.");
     if store_path().is_none() {
-        // Otherwise the prompt silently reappears every run.
         eprintln!("(No home directory resolved, so this answer cannot be remembered.)");
     }
     eprint!("Execute it? [y/N] ");
@@ -96,7 +80,6 @@ fn confirm(path: &Path, digest: &str) -> bool {
     matches!(answer.trim(), "y" | "Y" | "yes" | "YES")
 }
 
-/// The part of the decision that needs no prompt. `None` means "ask".
 fn settled(
     no_plugins: bool,
     trust_all: bool,
@@ -115,8 +98,6 @@ fn settled(
     None
 }
 
-/// `digest` must hash the bytes that were compiled, not a fresh read —
-/// otherwise the user approves contents that are not the ones about to run.
 pub fn is_trusted(path: &Path, digest: &str) -> bool {
     let entry = key(path);
     let mut store = read_store();
@@ -158,8 +139,6 @@ mod tests {
         assert_eq!(settled(false, false, None, "d"), None);
     }
 
-    // Not driven through `GRPCTESTIFY_HOME`: `cargo test` runs these on threads
-    // of one process, so mutating a var production code reads is a data race.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn an_approval_creates_the_state_dir_and_round_trips() {
@@ -175,7 +154,6 @@ mod tests {
         assert_eq!(read_store_at(&path).get("k").map(String::as_str), Some("d"));
     }
 
-    // A hand-mangled store must not wedge the gate; it reads as empty.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn a_corrupt_store_reads_as_empty_rather_than_failing() {

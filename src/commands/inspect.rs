@@ -178,10 +178,6 @@ fn print_json_report(
     let mut optimization_hints: Vec<crate::report::Diagnostic> = Vec::new();
     let file_str = file_path.to_string_lossy().to_string();
 
-    // Deprecation warnings (HEADERS alias, kebab OPTIONS keys, kebab attrs)
-    // from the one shared `detect_deprecations` (§7.1) — same source the text
-    // mode and `check` use, so JSON output no longer diverges (it used to emit
-    // only a differently-worded HEADERS warning and miss kebab entirely).
     if let Some(source) = doc.metadata.source.as_deref() {
         for dep in parser::detect_deprecations(&parser::tokenize_gctf(source)) {
             let line = dep.range.start.line + 1;
@@ -202,7 +198,6 @@ fn print_json_report(
     }
 
     for (doc_idx, d) in doc.iter_chain().enumerate() {
-        // detached: from_document_with_analysis is chain-aware internally too
         let w = Workflow::from_document_with_analysis(&d.detached());
         for err in workflow_validation_errors(&w) {
             let msg = if doc.is_single_document() {
@@ -218,8 +213,6 @@ fn print_json_report(
             ));
         }
         for section in &d.sections {
-            // (HEADERS/kebab deprecations come from the shared detector pass
-            // above, not a per-section scan here.)
             if !section.attributes.is_empty() {
                 for attr in &section.attributes {
                     if attr.name == "skip" && attr.value == "true" {
@@ -433,7 +426,6 @@ fn print_detailed_analysis(
     );
     println!();
 
-    // Multi-document: show each document
     if !doc.is_single_document() {
         let total_docs = doc.document_count();
         println!("DOCUMENTS: {}", total_docs);
@@ -453,7 +445,6 @@ fn print_detailed_analysis(
             println!();
             print_variables(d);
             println!();
-            // detached: from_document_with_analysis is chain-aware internally too
             let w = Workflow::from_document_with_analysis(&d.detached());
             print_logic_flow(d, &w);
             println!();
@@ -477,7 +468,6 @@ fn print_detailed_analysis(
         return;
     }
 
-    // Single document: original format
     println!("AST OVERVIEW");
     println!("────────────");
     print_ast_overview(doc);
@@ -691,7 +681,6 @@ fn print_variables(doc: &parser::GctfDocument) {
         }
     }
 
-    // Check for variable usage
     let mut var_usages = Vec::new();
     for section in &doc.sections {
         if let SectionContent::Json(value) = &section.content {
@@ -866,7 +855,6 @@ fn print_warnings_for_doc(doc: &parser::GctfDocument, _doc_num: usize) {
         has_warnings = true;
     }
 
-    // Semantic analysis
     let workflow = Workflow::from_document_with_analysis(doc);
     for event in workflow.semantic_analysis() {
         if let crate::execution::WorkflowEvent::SemanticAnalysis {

@@ -1,5 +1,3 @@
-// pre-filling the REQUEST body from the request message descriptor.
-
 use anyhow::{Context, Result, bail};
 use prost_reflect::{DescriptorPool, MethodDescriptor};
 use std::path::{Path, PathBuf};
@@ -8,12 +6,10 @@ use crate::cli::args::ScaffoldArgs;
 use crate::config;
 use crate::grpc::{GrpcClient, GrpcClientConfig, TlsConfig, WireProtocol};
 
-/// PROTO section to embed so the generated draft can resolve descriptors at run
-/// time exactly the way it was scaffolded.
-struct ProtoRef {
-    files: Vec<String>,
-    import_paths: Vec<String>,
-    descriptor: Option<String>,
+pub struct ProtoRef {
+    pub files: Vec<String>,
+    pub import_paths: Vec<String>,
+    pub descriptor: Option<String>,
 }
 
 pub async fn handle_scaffold(args: &ScaffoldArgs) -> Result<()> {
@@ -44,7 +40,6 @@ pub async fn handle_scaffold(args: &ScaffoldArgs) -> Result<()> {
         &method,
     );
 
-    // Never emit a broken skeleton: parse + validate before writing.
     let doc = crate::parser::parse_gctf_from_str(&content, "<scaffold>")
         .context("generated scaffold failed to parse")?;
     crate::parser::validate_document_chain(&doc).context("generated scaffold failed validation")?;
@@ -126,9 +121,6 @@ fn load_from_descriptor(descriptor: &Path) -> Result<(DescriptorPool, ProtoRef)>
     Ok((pool, proto_ref))
 }
 
-/// Resolve `--plaintext`/`--tls`/`--insecure` into a `TlsConfig` (or `None`
-/// for plaintext) — pulled out of [`load_via_reflection`] so it's testable
-/// without a live server.
 fn resolve_tls_config(
     plaintext: bool,
     tls: bool,
@@ -149,8 +141,6 @@ fn resolve_tls_config(
             None,
             None,
             None,
-            // `--tls` demands verification even for a bare host:port address
-            // that would otherwise fall back to skip-verify below.
             !tls && (insecure || !address.starts_with("https://")),
         ))
     })
@@ -184,7 +174,7 @@ async fn load_via_reflection(args: &ScaffoldArgs, service: &str) -> Result<Descr
     Ok(client.descriptor_pool().clone())
 }
 
-fn render_scaffold(
+pub fn render_scaffold(
     endpoint: &str,
     address: &str,
     protocol: &str,
@@ -193,8 +183,9 @@ fn render_scaffold(
 ) -> String {
     let mut out = String::new();
 
-    out.push_str(&format!("/// TEST: Scaffold for {endpoint}\n"));
-    out.push_str("/// EXPECT: PASS\n");
+    out.push_str(&format!(
+        "// Scaffolded from the schema of {endpoint} — replace the placeholders below.\n"
+    ));
 
     out.push_str("--- ADDRESS ---\n");
     out.push_str(address);
@@ -221,7 +212,6 @@ fn render_scaffold(
         out.push('\n');
     }
 
-    // Protocol is a run-time (CLI) concern; record it as a hint when non-default.
     if protocol != "grpc" {
         out.push_str("--- OPTIONS ---\n");
         out.push_str(&format!(
@@ -238,16 +228,16 @@ fn render_scaffold(
     out.push_str("--- ASSERTS ---\n");
     let output = method.output();
     let field_names: Vec<String> = output.fields().map(|f| f.json_name().to_string()).collect();
-    out.push_str(&format!("# Response type: {}\n", output.full_name()));
+    out.push_str(&format!("// Response type: {}\n", output.full_name()));
     if field_names.is_empty() {
-        out.push_str("# (no response fields) — add assertions once the shape is known.\n");
+        out.push_str("// (no response fields) — add assertions once the shape is known.\n");
     } else {
-        out.push_str(&format!("# Fields: {}\n", field_names.join(", ")));
-        out.push_str("# Replace the placeholder below with real expectations.\n");
+        out.push_str(&format!("// Fields: {}\n", field_names.join(", ")));
+        out.push_str("// Replace the placeholder below with real expectations.\n");
         out.push_str(&format!(".{} != null\n", field_names[0]));
     }
 
-    out
+    format!("{}\n", out.trim_end())
 }
 
 fn emit(content: &str, output: Option<&Path>, force: bool) -> Result<()> {
@@ -369,8 +359,6 @@ mod tests {
         }
     }
 
-    /// Build an in-memory pool with a message that exercises scalars, a nested
-    /// message, a repeated field, and an enum, plus a service to scaffold.
     fn sample_pool() -> DescriptorPool {
         let inner = DescriptorProto {
             name: Some("Inner".to_string()),
@@ -405,6 +393,7 @@ mod tests {
                 field("inner", 4, Type::Message, Some(".demo.Inner")),
                 tags,
                 field("color", 6, Type::Enum, Some(".demo.Color")),
+                field("payload", 7, Type::Bytes, None),
             ],
             ..Default::default()
         };
@@ -461,8 +450,49 @@ mod tests {
             1,
             "one example element"
         );
-        // Enum → first value name.
         assert_eq!(obj["color"], serde_json::json!("RED"));
+    }
+
+    #[test]
+    fn a_scaffolded_bytes_field_is_base64() {
+        let pool = sample_pool();
+        let method = sample_method(&pool);
+        let content = render_scaffold("demo.Svc/Do", "localhost:4770", "grpc", None, &method);
+        let body = content
+            .split("--- REQUEST ---\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\n\n").next())
+            .expect("a request body");
+        let json: serde_json::Value = serde_json::from_str(body).expect("valid JSON");
+        let payload = json["payload"].as_str().expect("bytes as a string");
+        assert!(!payload.contains(' '), "base64 has no spaces: {payload}");
+    }
+
+    #[test]
+    fn a_scaffold_is_already_formatted() {
+        let pool = sample_pool();
+        let method = sample_method(&pool);
+        let content = render_scaffold("demo.Svc/Do", "localhost:4770", "grpc", None, &method);
+        let formatted = crate::commands::fmt::format_gctf_content_with_level(
+            &content,
+            "scaffold.gctf",
+            crate::optimizer::OptimizeLevel::None,
+        )
+        .expect("formats");
+        assert_eq!(formatted, content);
+    }
+
+    #[test]
+    fn the_header_promises_nothing_the_format_cannot_keep() {
+        let pool = sample_pool();
+        let method = sample_method(&pool);
+        let content = render_scaffold("demo.Svc/Do", "localhost:4770", "grpc", None, &method);
+        assert!(!content.contains("EXPECT: PASS"), "{content}");
+        assert!(!content.contains("/// TEST:"), "{content}");
+        assert!(
+            content.starts_with("// Scaffolded from the schema of demo.Svc/Do"),
+            "{content}"
+        );
     }
 
     #[test]
@@ -481,7 +511,6 @@ mod tests {
         assert!(content.contains("--- ASSERTS ---"));
         assert!(content.contains("demo.Resp"));
         assert!(content.contains(".result != null"));
-        // Default protocol → no OPTIONS section.
         assert!(!content.contains("--- OPTIONS ---"));
     }
 
@@ -522,10 +551,8 @@ mod tests {
 
         let err = emit("new content", Some(&path), false).unwrap_err();
         assert!(err.to_string().contains("Refusing to overwrite"));
-        // Original untouched.
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "existing");
 
-        // With --force it overwrites.
         emit("new content", Some(&path), true).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "new content");
 

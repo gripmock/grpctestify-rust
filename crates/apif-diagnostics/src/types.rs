@@ -1,27 +1,17 @@
-// Diagnostic types for parse and validation errors
-// Foundation for LSP diagnostics
-
 use serde::Serialize;
 
-/// Diagnostic severity level
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DiagnosticSeverity {
-    /// Critical error that prevents execution
     Error,
-    /// Warning that might cause issues
     Warning,
-    /// Informational message
     Information,
-    /// Hint for improvement
     Hint,
 }
 
-/// Diagnostic error codes for categorization
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticCode {
-    // Parse errors (1000-1999)
     JsonParseError = 1001,
     Json5ParseError = 1002,
     UnexpectedEndOfFile = 1003,
@@ -30,7 +20,6 @@ pub enum DiagnosticCode {
     UnclosedBracket = 1006,
     UnclosedString = 1007,
 
-    // Section errors (2000-2999)
     MissingSection = 2001,
     InvalidSectionHeader = 2002,
     DuplicateSection = 2003,
@@ -39,14 +28,12 @@ pub enum DiagnosticCode {
     UnknownSectionType = 2006,
     DuplicateKey = 2007,
 
-    // Syntax errors (3000-3999)
     InvalidSyntax = 3001,
     UnexpectedToken = 3002,
     MissingToken = 3003,
     InvalidEscape = 3004,
     InvalidUnicodeEscape = 3005,
 
-    // Semantic errors (4000-4999)
     UndefinedVariable = 4001,
     UnusedVariable = 4002,
     TypeMismatch = 4003,
@@ -55,13 +42,11 @@ pub enum DiagnosticCode {
     InvalidArgumentCount = 4006,
     InvalidArgumentType = 4007,
 
-    // Validation errors (5000-5999)
     MissingRequiredField = 5001,
     InvalidFieldValue = 5002,
     ValidationError = 5003,
     ConstraintViolation = 5004,
 
-    // LSP-specific (6000-6999)
     UndefinedSymbol = 6001,
     UnusedSymbol = 6002,
     DeprecatedSymbol = 6003,
@@ -70,7 +55,6 @@ pub enum DiagnosticCode {
 impl DiagnosticCode {
     pub fn as_str(&self) -> &'static str {
         match self {
-            // Parse errors
             DiagnosticCode::JsonParseError => "json_parse_error",
             DiagnosticCode::Json5ParseError => "json5_parse_error",
             DiagnosticCode::UnexpectedEndOfFile => "unexpected_eof",
@@ -79,7 +63,6 @@ impl DiagnosticCode {
             DiagnosticCode::UnclosedBracket => "unclosed_bracket",
             DiagnosticCode::UnclosedString => "unclosed_string",
 
-            // Section errors
             DiagnosticCode::MissingSection => "missing_section",
             DiagnosticCode::InvalidSectionHeader => "invalid_section_header",
             DiagnosticCode::DuplicateSection => "duplicate_section",
@@ -88,14 +71,12 @@ impl DiagnosticCode {
             DiagnosticCode::UnknownSectionType => "unknown_section_type",
             DiagnosticCode::DuplicateKey => "duplicate_key",
 
-            // Syntax errors
             DiagnosticCode::InvalidSyntax => "invalid_syntax",
             DiagnosticCode::UnexpectedToken => "unexpected_token",
             DiagnosticCode::MissingToken => "missing_token",
             DiagnosticCode::InvalidEscape => "invalid_escape",
             DiagnosticCode::InvalidUnicodeEscape => "invalid_unicode_escape",
 
-            // Semantic errors
             DiagnosticCode::UndefinedVariable => "undefined_variable",
             DiagnosticCode::UnusedVariable => "unused_variable",
             DiagnosticCode::TypeMismatch => "type_mismatch",
@@ -104,13 +85,11 @@ impl DiagnosticCode {
             DiagnosticCode::InvalidArgumentCount => "invalid_argument_count",
             DiagnosticCode::InvalidArgumentType => "invalid_argument_type",
 
-            // Validation errors
             DiagnosticCode::MissingRequiredField => "missing_required_field",
             DiagnosticCode::InvalidFieldValue => "invalid_field_value",
             DiagnosticCode::ValidationError => "validation_error",
             DiagnosticCode::ConstraintViolation => "constraint_violation",
 
-            // LSP-specific
             DiagnosticCode::UndefinedSymbol => "undefined_symbol",
             DiagnosticCode::UnusedSymbol => "unused_symbol",
             DiagnosticCode::DeprecatedSymbol => "deprecated_symbol",
@@ -118,7 +97,6 @@ impl DiagnosticCode {
     }
 }
 
-/// Source position in the document
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 pub struct Position {
     pub line: usize,
@@ -131,7 +109,6 @@ impl Position {
     }
 }
 
-/// Source range in the document
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 pub struct Range {
     pub start: Position,
@@ -151,50 +128,37 @@ impl Range {
     }
 }
 
-/// Related diagnostic information
 #[derive(Debug, Clone, Serialize)]
 pub struct DiagnosticRelatedInformation {
     pub location: DiagnosticLocation,
     pub message: String,
 }
 
-/// Location of a diagnostic
 #[derive(Debug, Clone, Serialize)]
 pub struct DiagnosticLocation {
     pub file: String,
     pub range: Range,
 }
 
-/// Main diagnostic structure
 #[derive(Debug, Clone, Serialize)]
 pub struct Diagnostic {
-    /// Diagnostic code for categorization
     pub code: DiagnosticCode,
-    /// Severity level
     pub severity: DiagnosticSeverity,
-    /// Human-readable message
     pub message: String,
-    /// Source location
     pub range: Range,
-    /// Optional file path (defaults to current file)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
-    /// Optional source of the diagnostic
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
-    /// Optional related information
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub related_information: Vec<DiagnosticRelatedInformation>,
-    /// Optional suggestions for fixing
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub suggestions: Vec<String>,
-    /// Optional context showing the problematic code
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
 }
 
 impl Diagnostic {
-    /// Create a new error diagnostic
     pub fn error(code: DiagnosticCode, message: impl Into<String>, range: Range) -> Self {
         Self {
             code,
@@ -209,7 +173,6 @@ impl Diagnostic {
         }
     }
 
-    /// Create a new warning diagnostic
     pub fn warning(code: DiagnosticCode, message: impl Into<String>, range: Range) -> Self {
         Self {
             code,
@@ -224,7 +187,6 @@ impl Diagnostic {
         }
     }
 
-    /// Create a new information diagnostic
     pub fn info(code: DiagnosticCode, message: impl Into<String>, range: Range) -> Self {
         Self {
             code,
@@ -239,7 +201,6 @@ impl Diagnostic {
         }
     }
 
-    /// Create a new hint diagnostic
     pub fn hint(code: DiagnosticCode, message: impl Into<String>, range: Range) -> Self {
         Self {
             code,
@@ -254,31 +215,26 @@ impl Diagnostic {
         }
     }
 
-    /// Set the file path
     pub fn with_file(mut self, file: impl Into<String>) -> Self {
         self.file = Some(file.into());
         self
     }
 
-    /// Add a suggestion
     pub fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
         self.suggestions.push(suggestion.into());
         self
     }
 
-    /// Add multiple suggestions
     pub fn with_suggestions(mut self, suggestions: Vec<String>) -> Self {
         self.suggestions.extend(suggestions);
         self
     }
 
-    /// Set context
     pub fn with_context(mut self, context: impl Into<String>) -> Self {
         self.context = Some(context.into());
         self
     }
 
-    /// Add related information
     pub fn with_related_info(
         mut self,
         location: DiagnosticLocation,
@@ -292,7 +248,6 @@ impl Diagnostic {
     }
 }
 
-/// Collection of diagnostics
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct DiagnosticCollection {
     pub diagnostics: Vec<Diagnostic>,
@@ -446,7 +401,6 @@ mod tests {
             .with_suggestions(vec!["fix1".into(), "fix2".into()]);
         assert_eq!(diag.suggestions.len(), 2);
 
-        // Builder-style with context
         let diag2 = Diagnostic::error(DiagnosticCode::JsonParseError, "err", Range::default())
             .with_context("ctx")
             .with_suggestion("fix");

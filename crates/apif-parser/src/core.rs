@@ -1,6 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
-// GCTF file parser - converts .gctf text to AST
-// Handles section extraction, comment removal, and inline option parsing
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::content_parser::{self, parse_attribute};
 use anyhow::{Context, Result};
@@ -20,32 +18,24 @@ type CurrentSection = Option<(
     Vec<GctfAttribute>,
 )>;
 
-/// Parse a .gctf file into an AST
 pub fn parse_gctf(file_path: &Path) -> Result<GctfDocument> {
     let (document, _) = parse_gctf_with_diagnostics(file_path)?;
     Ok(document)
 }
 
-/// Parse .gctf content from string (for LSP/editor use).
-/// Documents are split on `ENDPOINT` boundaries — each `ENDPOINT` with
-/// meaningful content already accumulated before it starts a new document,
-/// pulling any trailing preamble sections (`ADDRESS`/`TLS`/`PROTO`/`OPTIONS`/
-/// `REQUEST_HEADERS`) forward into that new document with it (see
-/// `document_splitter::split_sections_by_boundary_owned`).
 pub fn parse_gctf_from_str(content: &str, file_path: &str) -> Result<GctfDocument> {
-    let (all_sections, _) = parse_sections_from_str(content)?;
+    let (all_sections, _) =
+        parse_sections_from_str_for(crate::ast::Family::of(file_path), content)?;
     let source_lines: Vec<&str> = content.lines().collect();
 
     let documents = crate::document_splitter::split_sections_by_boundary_owned(all_sections);
 
     if documents.is_empty() {
-        // Return empty single document for backward compatibility
         let mut document = GctfDocument::new(file_path.to_string());
         document.metadata.source = Some(content.to_string());
         return Ok(document);
     }
 
-    // Build chain in reverse order
     let mut head: Option<GctfDocument> = None;
 
     for doc_sections in documents.into_iter().rev() {
@@ -62,7 +52,6 @@ pub fn parse_gctf_from_str(content: &str, file_path: &str) -> Result<GctfDocumen
     head.ok_or_else(|| anyhow::anyhow!("No documents parsed"))
 }
 
-/// Extract source lines for a document from the original content.
 fn extract_doc_source_from_lines(sections: &[Section], lines: &[&str]) -> String {
     if sections.is_empty() {
         return String::new();
@@ -93,8 +82,6 @@ pub struct ParseDiagnostics {
     pub timings: ParseTimings,
 }
 
-/// Parse .gctf and return AST + diagnostics useful for inspect/debug.
-/// Supports multiple documents with implicit boundaries (ENDPOINT after terminal section).
 pub fn parse_gctf_with_diagnostics(file_path: &Path) -> Result<(GctfDocument, ParseDiagnostics)> {
     let total_start = Instant::now();
 
@@ -104,13 +91,15 @@ pub fn parse_gctf_with_diagnostics(file_path: &Path) -> Result<(GctfDocument, Pa
     let read_ms = read_start.elapsed().as_secs_f64() * 1000.0;
 
     let parse_sections_start = Instant::now();
-    let (sections, section_headers) = parse_sections_from_str(&source)?;
+    let (sections, section_headers) = parse_sections_from_str_for(
+        crate::ast::Family::of(&file_path.to_string_lossy()),
+        &source,
+    )?;
     let parse_sections_ms = parse_sections_start.elapsed().as_secs_f64() * 1000.0;
 
     let documents = crate::document_splitter::split_sections_by_boundary_owned(sections);
 
     let build_start = Instant::now();
-    // Build chain — return head document
     let mut head: Option<GctfDocument> = None;
     for doc_sections in documents.into_iter().rev() {
         let mut document = GctfDocument::new(file_path.display().to_string());
@@ -154,7 +143,15 @@ pub fn parse_gctf_with_diagnostics(file_path: &Path) -> Result<(GctfDocument, Pa
     Ok((document, diagnostics))
 }
 
+#[cfg(test)]
 fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
+    parse_sections_from_str_for(crate::ast::Family::Gctf, source)
+}
+
+fn parse_sections_from_str_for(
+    family: crate::ast::Family,
+    source: &str,
+) -> Result<(Vec<Section>, usize)> {
     let tokens = tokenize_gctf(source);
     let line_offsets = line_start_byte_offsets(source);
     let mut sections = Vec::new();
@@ -168,22 +165,9 @@ fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
                 if let Some((section_type, start_line, content, options, raw_attrs)) =
                     current_section.take()
                 {
-                    // `token.line` is the *next* section's header line —
-                    // usually correct (content includes any blank/comment gap
-                    // lines, since only `AttributeBlock` tokens are diverted
-                    // to `pending_attributes` instead of `content`), but
-                    // overshoots whenever `#[attr]` lines sit between this
-                    // section and the next header — those lines belong to
-                    // the *next* section's `pending_attributes`, not here.
-                    // The correct exclusive bound (index of the first line
-                    // NOT belonging to this section) is always
-                    // `start_line + content.len() + 1` (content starts at
-                    // `start_line + 1`, one entry per line). EOF's
-                    // `end_line` below needs no such fix —
-                    // `source.lines().count()` is already exact there, since
-                    // nothing follows the last section.
                     let end_line = start_line + content.len() + 1;
-                    let mut section = content_parser::build_section(
+                    let mut section = content_parser::build_section_for(
+                        family,
                         section_type,
                         start_line,
                         end_line,
@@ -217,7 +201,14 @@ fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
                         std::mem::take(&mut pending_attributes),
                     ));
                 } else {
-                    return Err(anyhow::anyhow!("Unknown section type: {}", name));
+                    return Err(match SectionType::nearest_keyword(&name) {
+                        Some(meant) => anyhow::anyhow!(
+                            "Unknown section type: {} — did you mean '{}'?",
+                            name,
+                            meant
+                        ),
+                        None => anyhow::anyhow!("Unknown section type: {}", name),
+                    });
                 }
             }
             GctfTokenKind::AttributeBlock(attr_content) => match parse_attribute(&attr_content) {
@@ -245,7 +236,8 @@ fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
 
     if let Some((section_type, start_line, content, options, raw_attrs)) = current_section {
         let end_line = source.lines().count();
-        let mut section = content_parser::build_section(
+        let mut section = content_parser::build_section_for(
+            family,
             section_type,
             start_line,
             end_line,
@@ -260,8 +252,35 @@ fn parse_sections_from_str(source: &str) -> Result<(Vec<Section>, usize)> {
     Ok((sections, section_headers))
 }
 
-/// Format/serialize a GCTF document to string
 pub fn serialize_gctf(doc: &GctfDocument) -> String {
+    write_gctf(doc, false)
+}
+
+pub fn serialize_gctf_as_written(doc: &GctfDocument) -> String {
+    write_gctf(doc, true)
+}
+
+fn write_gctf(doc: &GctfDocument, as_written: bool) -> String {
+    let mut output = serialize_one(doc, as_written);
+    let mut next = doc.next_document.as_deref();
+    while let Some(d) = next {
+        output.push('\n');
+        output.push_str(&serialize_one(d, as_written));
+        next = d.next_document.as_deref();
+    }
+    output
+}
+
+fn section_as_written(section: &Section) -> Option<&str> {
+    let raw = section.raw_content.trim_end();
+    if raw.trim().is_empty() {
+        return None;
+    }
+    let reread = content_parser::parse_section_content(section.section_type, raw).ok()?;
+    (reread == section.content).then_some(raw)
+}
+
+fn serialize_one(doc: &GctfDocument, as_written: bool) -> String {
     use std::fmt::Write;
     let mut output = String::new();
 
@@ -272,8 +291,14 @@ pub fn serialize_gctf(doc: &GctfDocument) -> String {
             let _ = writeln!(output, "{}", attr.format_directive());
         }
 
-        let _ = write!(output, "--- {} ---", section.section_type.as_str());
+        let _ = write!(output, "{}", section.format_header());
         output.push('\n');
+
+        if as_written && let Some(raw) = section_as_written(section) {
+            let _ = writeln!(output, "{}", raw);
+            output.push('\n');
+            continue;
+        }
 
         match &section.content {
             SectionContent::Single(s) => {
@@ -316,20 +341,18 @@ pub fn serialize_gctf(doc: &GctfDocument) -> String {
             }
             SectionContent::Empty => {}
             SectionContent::Extract(vars) => {
-                let mut sorted: Vec<_> = vars.iter().collect();
-                sorted.sort_by(|a, b| a.0.cmp(b.0));
-                for (k, v) in sorted {
-                    let _ = writeln!(output, "{}: {}", k, v);
+                for (k, v) in vars.iter() {
+                    let _ = writeln!(output, "{} = {}", k, v);
                 }
             }
             SectionContent::Meta(meta) => {
                 if let Ok(yaml) = serde_yaml_ng::to_string(meta) {
-                    output.push_str(yaml.trim_end());
+                    let _ = writeln!(output, "{}", yaml.trim_end());
                 }
             }
             SectionContent::Rows(rows) => {
                 if let Ok(yaml) = serde_yaml_ng::to_string(rows) {
-                    output.push_str(yaml.trim_end());
+                    let _ = writeln!(output, "{}", yaml.trim_end());
                 }
             }
         }
@@ -344,20 +367,21 @@ fn sort_sections_for_fmt(sections: &[Section]) -> Vec<Section> {
         return sections.to_vec();
     }
 
-    let first_body_idx = sections
+    let mut preamble: Vec<&Section> = sections
         .iter()
-        .position(|s| s.section_type.preamble_rank().is_none())
-        .unwrap_or(sections.len());
-
-    let mut preamble: Vec<&Section> = sections[..first_body_idx].iter().collect();
+        .filter(|s| s.section_type.preamble_rank().is_some())
+        .collect();
     preamble.sort_by_key(|s| s.section_type.preamble_rank().unwrap());
 
     let mut result = Vec::with_capacity(sections.len());
     for s in &preamble {
         result.push((*s).clone());
     }
-    for s in &sections[first_body_idx..] {
-        result.push((*s).clone());
+    for s in sections
+        .iter()
+        .filter(|s| s.section_type.preamble_rank().is_none())
+    {
+        result.push(s.clone());
     }
     result
 }
@@ -422,6 +446,24 @@ fn bench_key_rank(key: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn serializing_keeps_the_options_a_section_was_read_with() {
+        let source = "--- ENDPOINT ---\na.A/One\n\n--- REQUEST ---\n{\"id\": \"1\"}\n\n\
+--- RESPONSE partial=true tolerance=0.01 redact=[\"token\"] with_asserts=true ---\n{\"ok\": true}\n\n\
+--- ASSERTS ---\n.ok == true\n";
+        let doc = parse_gctf_from_str(source, "t.gctf").unwrap();
+        let again = parse_gctf_from_str(&serialize_gctf(&doc), "t.gctf").unwrap();
+
+        let before = doc.first_section(SectionType::Response).unwrap();
+        let after = again.first_section(SectionType::Response).unwrap();
+        assert_eq!(before.inline_options, after.inline_options);
+        assert!(after.inline_options.partial);
+        assert_eq!(after.inline_options.tolerance, Some(0.01));
+        assert_eq!(after.inline_options.redact, vec!["token".to_string()]);
+        assert!(after.inline_options.with_asserts);
+    }
+
     use super::*;
 
     #[test]
@@ -443,9 +485,6 @@ test.Service/Method
 
     #[test]
     fn malformed_attribute_is_a_hard_error_in_strict_path() {
-        // §3.4: a malformed `#[...]` attribute must not be silently swallowed
-        // by the strict path — `#[]` (empty, `parse_attribute` returns None)
-        // is a hard parse error.
         let input = "--- ENDPOINT ---\nsvc/Method\n#[]\n--- REQUEST ---\n{}\n";
         let err = parse_sections_from_str(input).unwrap_err();
         assert!(err.to_string().contains("Malformed attribute"), "{err}");
@@ -468,9 +507,6 @@ test.Service/Method
             .iter()
             .find(|s| s.section_type == SectionType::Request)
             .unwrap();
-        // The span's byte range, sliced straight out of the original
-        // source, must reproduce exactly the section's own header + content
-        // — no more, no less (not the previous/next section's text either).
         let sliced = &input[request.span.start_byte..request.span.end_byte];
         assert_eq!(sliced, "--- REQUEST ---\n{}\n\n");
         assert_eq!(request.span.start_line, request.start_line);
@@ -479,11 +515,6 @@ test.Service/Method
 
     #[test]
     fn section_end_line_excludes_attribute_lines_of_next_section() {
-        // Regression: `end_line` used to be set to the *next* section's
-        // header line unconditionally, overshooting past `#[attr]` lines
-        // that sit between this section and that header (those lines belong
-        // to the next section's `pending_attributes`, never to this
-        // section's own `content`).
         let input = "\
 --- ENDPOINT ---
 test.Service/Method
@@ -500,9 +531,6 @@ test.Service/Method
             .iter()
             .find(|s| s.section_type == SectionType::Request)
             .unwrap();
-        // Line 6 (0-indexed) is `#[timeout(5)]`; REQUEST's own content ends
-        // at line 5 (the blank line right after `{}`), so `end_line` must
-        // stop there, not overshoot to line 7 (RESPONSE's header).
         assert_eq!(
             request.end_line, 6,
             "REQUEST must not swallow the #[timeout] line ahead of RESPONSE"
@@ -735,6 +763,28 @@ test.Service/Method
     }
 
     #[test]
+    fn a_preserved_section_is_written_as_its_author_wrote_it() {
+        let src = "--- ENDPOINT ---\npkg.Svc/M\n\n--- OPTIONS ---\ntimeout: 7\nretry: 2\n\n--- ASSERTS ---\n# why this matters\n.ok == true\n";
+        let doc = parse_gctf_from_str(src, "t.gctf").expect("parse");
+
+        let as_written = serialize_gctf_as_written(&doc);
+        assert!(as_written.contains("# why this matters"), "{as_written}");
+        assert!(as_written.contains("timeout: 7\nretry: 2"), "{as_written}");
+
+        let canonical = serialize_gctf(&doc);
+        assert!(!canonical.contains("# why this matters"), "{canonical}");
+        assert!(canonical.contains("retry: 2\ntimeout: 7"), "{canonical}");
+
+        assert_eq!(
+            parse_gctf_from_str(&as_written, "t.gctf")
+                .expect("reparse")
+                .get_options(),
+            doc.get_options(),
+            "the author's text still means what it meant"
+        );
+    }
+
+    #[test]
     fn dataset_section_round_trips_through_serialize_gctf() {
         let input = "\
 --- ENDPOINT ---
@@ -762,7 +812,6 @@ test.Service/Method
         let serialized = serialize_gctf(&doc);
         assert!(serialized.contains("--- DATASET ---"));
 
-        // Round-trip: re-parsing the serialized output must yield the same rows.
         let reparsed = parse_gctf_from_str(&serialized, "test.gctf").unwrap();
         let reparsed_section = reparsed.first_section(SectionType::Dataset).unwrap();
         let SectionContent::Rows(reparsed_rows) = &reparsed_section.content else {

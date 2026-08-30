@@ -120,7 +120,7 @@ fn validate_response_with_asserts_fail() {
     match result.status {
         TestExecutionStatus::Fail(msg) => {
             // Updated error message check
-            assert!(msg.contains("Assertion failed (attached to RESPONSE at line 0):"));
+            assert!(msg.contains("Assertion failed (attached to RESPONSE at line 1):"));
         }
         _ => panic!("Expected failure"),
     }

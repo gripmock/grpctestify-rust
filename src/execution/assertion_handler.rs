@@ -8,14 +8,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
-/// Assertion evaluation result
 #[derive(Debug, Clone)]
 pub struct AssertionResult {
     pub passed: bool,
     pub failure_messages: Vec<String>,
-    /// Per-assertion outcome + timing, in source order. Populated by
-    /// [`AssertionHandler::evaluate_assertions_for_section`]; empty for the
-    /// `#[cfg(test)]`-only helper methods below.
     pub records: Vec<apif_state::AssertionRecord>,
 }
 
@@ -23,19 +19,16 @@ pub struct AssertionHandler {
     engine: AssertionEngine,
 }
 
-/// Global plugin registry for assertion evaluation.
 static PLUGIN_REGISTRY: LazyLock<Arc<dyn apif_assert::registry::PluginRegistry>> =
     LazyLock::new(|| Arc::new(crate::execution::plugin_dir::build_plugin_manager()));
 
 impl AssertionHandler {
-    /// Create new assertion handler
     pub fn new(_verbose: bool) -> Self {
         Self {
             engine: AssertionEngine::with_registry(PLUGIN_REGISTRY.clone()),
         }
     }
 
-    /// Evaluate assertions for a document (test-only)
     #[cfg(test)]
     pub fn evaluate_assertions(
         &self,
@@ -69,7 +62,6 @@ impl AssertionHandler {
         }
     }
 
-    /// Evaluate assertions for a specific section (test-only)
     #[cfg(test)]
     pub fn evaluate_section_assertions(
         &self,
@@ -101,13 +93,11 @@ impl AssertionHandler {
         }
     }
 
-    /// Check if section has assertions (test-only)
     #[cfg(test)]
     pub fn has_assertions(&self, section: &Section) -> bool {
         section.section_type == SectionType::Asserts
     }
 
-    /// Get assertion lines from section (test-only)
     #[cfg(test)]
     pub fn get_assertion_lines<'a>(&self, section: &'a Section) -> Vec<&'a String> {
         if let SectionContent::Assertions(lines) = &section.content {
@@ -117,7 +107,6 @@ impl AssertionHandler {
         }
     }
 
-    /// Evaluate a single assertion (test-only)
     #[cfg(test)]
     pub fn evaluate_single_assertion(
         &self,
@@ -131,7 +120,6 @@ impl AssertionHandler {
             .map_err(|e| e.to_string())
     }
 
-    /// Evaluate assertions for a section (convenience method for runner.rs)
     #[expect(clippy::too_many_arguments)]
     pub fn evaluate_assertions_for_section(
         &self,
@@ -163,14 +151,20 @@ impl AssertionHandler {
             let context = format!("{} (assertion at line {})", section_context, line_num);
             append_single_failure(result, &context, &mut failure_messages);
 
-            let (message, expected, actual) = match result {
+            let (message, expected, actual, hint) = match result {
                 crate::assert::AssertionResult::Fail {
                     message,
                     expected,
                     actual,
-                } => (Some(message.clone()), expected.clone(), actual.clone()),
-                crate::assert::AssertionResult::Error(msg) => (Some(msg.clone()), None, None),
-                crate::assert::AssertionResult::Pass => (None, None, None),
+                    hint,
+                } => (
+                    Some(message.clone()),
+                    expected.clone(),
+                    actual.clone(),
+                    hint.clone(),
+                ),
+                crate::assert::AssertionResult::Error(msg) => (Some(msg.clone()), None, None, None),
+                crate::assert::AssertionResult::Pass => (None, None, None, None),
             };
             records.push(apif_state::AssertionRecord {
                 line: line_num,
@@ -181,6 +175,7 @@ impl AssertionHandler {
                 endpoint: None,
                 expected,
                 actual,
+                hint,
             });
         }
 
@@ -202,6 +197,7 @@ fn append_single_failure(
             message,
             expected,
             actual,
+            hint: _,
         } => {
             failure_messages.push(format!("Assertion failed {}: {}", context, message));
             if let (Some(exp), Some(act)) = (expected, actual) {
@@ -215,10 +211,6 @@ fn append_single_failure(
     }
 }
 
-// Every test here constructs an `AssertionHandler`, which lazily initializes
-// the plugin registry via `fs::metadata` on the configured plugin dirs —
-// blocked under miri isolation (`error: unsupported operation: 'statx' not
-// available`), so the whole module is fs-touching.
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;

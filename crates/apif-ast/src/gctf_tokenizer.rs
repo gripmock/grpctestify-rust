@@ -1,17 +1,3 @@
-//! Universal GCTF file tokenizer.
-//!
-//! This is the **only** module that reads raw `.gctf` text.
-//! Pipeline: `text → tokenize_gctf() → Vec<GctfToken> → parser → AST`
-//!
-//! IMPLEMENTATION NOTES:
-//! - No regex, no starts_with, no ends_with, no contains, no find()
-//! - Pure byte-level scanning with exact span tracking
-//! - Only uses .as_bytes() once per line to get byte slice for scanning
-//! - Only uses .to_string() to create owned output (necessary for API)
-//! - All "parsing" done via byte comparisons (bytes[pos] == b'-')
-//!
-//! String operations count: 0 (only .to_string() for output ownership)
-
 use crate::tokenizer::Span;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -105,9 +91,6 @@ fn scan_attribute_block(line_idx: usize, line: &str, bytes: &[u8], len: usize) -
 
     let content_start = pos;
 
-    // A `]` inside a quoted value does not terminate the attribute block.
-    // Track quote state (and backslash escapes within quotes) so values like
-    // `#[tag("a]b")]` are captured whole instead of truncated at the first `]`.
     let mut in_quotes = false;
     let mut escaped = false;
     while pos < len {
@@ -199,13 +182,6 @@ fn scan_section_header(line_idx: usize, line: &str, bytes: &[u8], len: usize) ->
     })
 }
 
-/// Drop whole-line GCTF comments (`#` and `//`) from multi-line `raw`,
-/// returning the surviving lines rejoined with `\n`. Used before handing
-/// META/DATASET content to the YAML parser: YAML understands `#` comments
-/// natively but not GCTF's `//`, so a `//` comment line would otherwise be a
-/// YAML error. Sharing this one rule across the strict and lenient parsers
-/// keeps `check`/`fmt` and `run`/`explain`/etc. from disagreeing on whether a
-/// `//`-commented META/DATASET parses (`--- one comment rule set ---`).
 pub fn strip_gctf_comment_lines(raw: &str) -> String {
     tokenize_gctf(raw)
         .into_iter()
@@ -216,14 +192,6 @@ pub fn strip_gctf_comment_lines(raw: &str) -> String {
         .join("\n")
 }
 
-/// Detect a line *shaped* like a section header (`--- NAME ---`) whose NAME
-/// isn't a valid uppercase section-name token — so `tokenize_gctf` classified
-/// it as `Content` rather than a `SectionHeader`. Returns the raw name (any
-/// case) so the lenient parser can diagnose it (e.g. a miscased
-/// `--- endpoint ---` → hint "did you mean ENDPOINT?"). Returns `None` for
-/// genuine content lines and pure-dash rules. This keeps every byte-level
-/// scan of raw `.gctf` text inside this module — the lenient parser calls
-/// this instead of re-scanning the line itself.
 pub fn scan_miscased_section_header_name(line: &str) -> Option<String> {
     let bytes = line.as_bytes();
     let len = bytes.len();
@@ -233,7 +201,6 @@ pub fn scan_miscased_section_header_name(line: &str) -> Option<String> {
         pos += 1;
     }
 
-    // Leading `---`.
     if pos + 2 >= len || bytes[pos] != b'-' || bytes[pos + 1] != b'-' || bytes[pos + 2] != b'-' {
         return None;
     }
@@ -243,9 +210,6 @@ pub fn scan_miscased_section_header_name(line: &str) -> Option<String> {
         pos += 1;
     }
 
-    // Name: ASCII alphanumeric or `_`, ANY case (unlike `is_section_name_char`,
-    // which is uppercase-only — that difference is exactly why such a line is a
-    // `Content` token and needs this helper).
     let name_start = pos;
     while pos < len && (bytes[pos].is_ascii_alphanumeric() || bytes[pos] == b'_') {
         pos += 1;
@@ -255,7 +219,6 @@ pub fn scan_miscased_section_header_name(line: &str) -> Option<String> {
     }
     let name = slice_str(line, name_start, pos);
 
-    // Trailing `---` (ignoring any inline-option text between name and it).
     let mut trailing = len;
     while trailing > pos && is_ws(bytes[trailing - 1]) {
         trailing -= 1;
@@ -325,8 +288,6 @@ pub fn tokenize_extract_line(line: &str) -> Option<(String, String)> {
     Some((name, value))
 }
 
-/// Like `tokenize_extract_line` but also returns the optional type annotation
-/// from `name:Type = value` syntax.
 pub fn tokenize_extract_line_full(line: &str) -> Option<(String, Option<String>, String)> {
     let bytes = line.as_bytes();
     let len = bytes.len();
@@ -372,7 +333,6 @@ pub fn tokenize_extract_line_full(line: &str) -> Option<(String, Option<String>,
     }
     let value = slice_str(line, val_start, val_end);
 
-    // Parse `name:Type` pattern from the variable name
     let (name, type_annotation) = if let Some(colon_pos) = raw_name.rfind(':') {
         let maybe_type = raw_name[colon_pos + 1..].trim();
         if !maybe_type.is_empty()
@@ -411,8 +371,6 @@ pub fn tokenize_inline_options(raw: &str) -> Vec<(String, String)> {
         let tok_start = pos;
         let mut in_quotes = false;
         let mut escaped = false;
-        // Track bracket nesting so array values like `redact=["a", "b"]` stay a
-        // single token even when they contain spaces after commas.
         let mut bracket_depth: usize = 0;
 
         while pos < len {
@@ -542,9 +500,6 @@ mod tests {
 
     #[test]
     fn test_strip_gctf_comment_lines() {
-        // Both `#` and `//` whole-line comments are dropped; real content
-        // (including a `#` trailing a value, which YAML handles natively) is
-        // preserved verbatim.
         let raw = "# hash comment\nname: Test\n// slash comment\ntags: [a] # inline\n";
         assert_eq!(
             strip_gctf_comment_lines(raw),
@@ -554,9 +509,6 @@ mod tests {
 
     #[test]
     fn test_scan_miscased_section_header_name() {
-        // Miscased/lowercase header shapes are `Content` tokens (the real
-        // scanner is uppercase-only), so the lenient parser uses this to
-        // recover a name for its "did you mean" hint.
         assert_eq!(
             scan_miscased_section_header_name("--- endpoint ---"),
             Some("endpoint".to_string())
@@ -569,7 +521,6 @@ mod tests {
             scan_miscased_section_header_name("  --- garbage ---  "),
             Some("garbage".to_string())
         );
-        // Inline-option text between name and trailing dashes is ignored.
         assert_eq!(
             scan_miscased_section_header_name("--- endpoint with_asserts=true ---"),
             Some("endpoint".to_string())
@@ -578,8 +529,6 @@ mod tests {
 
     #[test]
     fn scan_miscased_section_header_name_rejects_non_headers() {
-        // Genuine content, pure-dash rules, and headers missing their trailing
-        // `---` must not be treated as header attempts.
         assert_eq!(scan_miscased_section_header_name("some random line"), None);
         assert_eq!(scan_miscased_section_header_name("-----"), None);
         assert_eq!(scan_miscased_section_header_name("--- endpoint"), None);
@@ -1008,7 +957,7 @@ test.Service/Method
             line: 1,
             span: Span { start: 0, end: 0 },
         };
-        assert_ne!(t1, t2); // different line
+        assert_ne!(t1, t2);
     }
 
     #[test]
@@ -1073,8 +1022,6 @@ test.Service/Method
 
     #[test]
     fn tokenize_attribute_block_bracket_inside_quotes() {
-        // Regression: a `]` inside a quoted value used to truncate the block at
-        // the first `]`, yielding `tag("a` instead of the full value.
         let tokens = tokenize_gctf(r#"#[tag("a]b")]"#);
         assert_eq!(tokens.len(), 1);
         match &tokens[0].kind {
@@ -1087,8 +1034,6 @@ test.Service/Method
 
     #[test]
     fn tokenize_attribute_block_escaped_quote_inside_quotes() {
-        // An escaped quote must not flip quote state, so a following `]` inside
-        // the string is still treated as literal content.
         let tokens = tokenize_gctf(r#"#[tag("a\"]b")]"#);
         assert_eq!(tokens.len(), 1);
         match &tokens[0].kind {

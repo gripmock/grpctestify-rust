@@ -14,6 +14,7 @@ pub mod regex;
 pub mod rhai_plugin;
 pub mod rhai_stdlib;
 pub mod schema;
+pub mod status;
 pub mod timestamp;
 pub mod timing;
 pub mod trailer_extract;
@@ -30,5 +31,4 @@ pub use core::{
     extract_plugin_call_name, normalize_plugin_name, plugin_signature_map,
 };
 
-// Re-export plugin context types from apif-assert (used by individual plugins)
 pub use apif_assert::{AssertionTiming, PluginContext, PluginResult};

@@ -1,0 +1,47 @@
+# The workbench: types, lint, tests, and the bundle the binary embeds.
+name: Web
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+defaults:
+  run:
+    working-directory: web
+jobs:
+  web:
+    name: Web
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Types
+        run: npx tsc -b
+      - name: Lint
+        run: npx oxlint --deny-warnings
+      - name: Tests
+        run: npx vitest run
+      - name: Build
+        run: npm run build
+      # `web/dist` is what `rust-embed` compiles into the binary, so a stale
+      # bundle means the shipped workbench is not the one in this commit.
+      - name: The bundle matches the source
+        run: |
+          if [ -n "$(git status --porcelain -- dist)" ]; then
+            echo "web/dist differs from a fresh build — rebuild it and commit the result:"
+            git status --porcelain -- dist
+            exit 1
+          fi

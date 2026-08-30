@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use crate::bench::sources::index::SourceIndex;
 use crate::bench::sources::index_builder::{
     build_index_for_source_with_progress, index_path_for_source,

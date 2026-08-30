@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const DEFAULT_MEMORY_LIMIT: u64 = 256 * 1024 * 1024; // 256MB
+const DEFAULT_MEMORY_LIMIT: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildPhase {
@@ -119,14 +119,9 @@ where
 
     let mut index = SourceIndex::with_key_type(key_column, key_type);
     let header_line = read_first_line(&source_path)?;
-    // Fallback only, for a reader that cannot report its position. Summing
-    // decoded field lengths misplaces every row after the first quoted field,
-    // CRLF, comment, blank line or BOM.
     let mut byte_offset = header_line.len() as u64;
 
     let mut row_count = 0u64;
-    // Collected and inserted in one pass: inserting numeric keys one at a time
-    // shifts a `Vec` per row, which is O(n^2) over the file.
     let mut batch: Vec<(String, u64, u32)> = Vec::new();
     on_progress(BuildPhase::Scan, byte_offset.min(source_size), source_size);
     while let Some(row) = reader.next_row()? {
@@ -308,10 +303,6 @@ fn read_first_line(path: &Path) -> Result<String> {
     Ok(line)
 }
 
-/// Byte length of the CSV row as it appears in the source file: the field
-/// values joined by commas. This must match how the row was serialized on
-/// disk so that mmap offsets computed during indexing stay in sync — counting
-/// header/column names here would over-count and corrupt every offset.
 fn estimate_row_size(row: &SourceRow) -> u32 {
     let mut size = 0u32;
     for val in row.values() {
@@ -366,12 +357,6 @@ mod tests {
         assert!(index.contains("3"));
     }
 
-    /// Regression (BUG 1): an index built on disk must store offsets/lengths
-    /// that slice the exact source-row bytes back out via the mmap read path.
-    /// The old math seeded the offset with `header.len() + 1` (double-counting
-    /// the newline the reader already retains) and sized rows by summing
-    /// column-NAME lengths, so every stored offset/length was wrong and this
-    /// round-trip read out-of-bounds garbage (or bailed) instead of the row.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn index_roundtrip_reads_exact_source_rows() {
@@ -405,8 +390,6 @@ mod tests {
             Some("R02,Saint Petersburg".to_string())
         );
 
-        // A span runs to the end of the line terminator; consumers slicing raw
-        // entries trim it themselves.
         let entries = index.lookup_all("R02").unwrap();
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
@@ -417,10 +400,6 @@ mod tests {
         );
     }
 
-    /// One-at-a-time insertion of numeric keys shifts a `Vec` per row, so index
-    /// build time grew quadratically with the file. `batch_insert` sorts once.
-    /// The bound is generous — this asserts the *shape*, not a wall-clock
-    /// figure: quadratic growth would put the larger file far past it.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn index_build_time_grows_linearly_with_row_count() {
@@ -429,8 +408,6 @@ mod tests {
 
         let build = |rows: usize, name: &str| {
             let mut data = String::from("id,name\n");
-            // Descending ids are the worst case for insertion: every key lands
-            // at the front of the vector.
             for i in (0..rows).rev() {
                 data.push_str(&format!("{i},user-{i}\n"));
             }
@@ -449,8 +426,6 @@ mod tests {
             elapsed
         };
 
-        // Minimum of three: a scheduling hiccup on a loaded runner inflates a
-        // single timing, and the ratio is what carries the signal.
         let best = |rows: usize, name: &str| {
             (0..3)
                 .map(|_| build(rows, name))
@@ -468,10 +443,6 @@ mod tests {
         );
     }
 
-    /// Offsets came from summing decoded field lengths, which assumes the
-    /// encoding: a quoted field, a CRLF, a comment line or a BOM each shift
-    /// every later row, and the lookup then lands mid-record and parses into a
-    /// plausible but wrong row. Each of these rows exercises one of those.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn offsets_survive_quoting_crlf_comments_and_a_bom() {

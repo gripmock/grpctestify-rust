@@ -1,17 +1,3 @@
-//! `Reporter` implementations backed by user-authored `.rhai` scripts, loaded
-//! from the same convention directories as assertion plugins (see
-//! `apif_plugins::rhai_plugin::{user_plugin_dir, project_plugin_dir}`).
-//!
-//! A script opts into being a reporter simply by defining one or more of
-//! `on_test_start(name)`, `on_test_end(name, result)`, `on_suite_end(results)`
-//! — no separate flag or directory needed; a script can be an assertion
-//! plugin (`fn check(...)`), a reporter, or (unusually) both, purely by
-//! which functions it declares. `result`/`results` are the same
-//! `TestResult`/`TestResults` shape every other reporter sees, serialized to
-//! a rhai value. Output happens through rhai's own `print`/`debug` (wired to
-//! stdout/stderr by `Engine::new()` by default) — no file/network access is
-//! granted, matching the assertion-plugin side's pure-function-only v1 scope.
-
 use anyhow::{Context, Result};
 use apif_report::Reporter;
 use apif_state::{TestResult, TestResults};
@@ -25,8 +11,6 @@ pub struct RhaiReporter {
     has_on_test_start: bool,
     has_on_test_end: bool,
     has_on_suite_end: bool,
-    /// `call_fn` evaluates the AST's top level too, so an untrusted script
-    /// must not reach any of the three hooks.
     path: std::path::PathBuf,
     digest: String,
     trusted: std::sync::OnceLock<bool>,
@@ -39,9 +23,6 @@ impl RhaiReporter {
             .get_or_init(|| apif_plugins::trust::is_trusted(&self.path, &self.digest))
     }
 
-    /// `None` when the script defines none of the three Reporter hooks —
-    /// not every `.rhai` file under `--plugin-dir` is a reporter (most are
-    /// assertion plugins), so this isn't an error, just "not applicable".
     pub fn load(path: &Path) -> Result<Option<Self>> {
         let name = path
             .file_stem()
@@ -74,10 +55,6 @@ impl RhaiReporter {
 }
 
 impl RhaiReporter {
-    /// Real logic behind `Reporter::on_test_start` — split out so tests can
-    /// observe the `Result` directly (the trait method returns `()`, so a
-    /// wrong-data bug inside the script would otherwise only ever show up as
-    /// a `tracing::error!` log, invisible to a unit test).
     fn call_on_test_start(&self, test_name: &str) -> Result<()> {
         if !self.has_on_test_start {
             return Ok(());
@@ -164,10 +141,6 @@ impl Reporter for RhaiReporter {
     }
 }
 
-/// Load every `.rhai` file directly under `dir` that declares at least one
-/// Reporter hook. A file with no hooks (an assertion plugin, or a script
-/// that fails to compile) is silently skipped here — `rhai_plugin` covers
-/// the assertion-plugin side of the same directory.
 pub fn load_rhai_reporters(dir: &Path) -> Vec<Box<dyn Reporter>> {
     let mut reporters: Vec<Box<dyn Reporter>> = Vec::new();
     let entries = match std::fs::read_dir(dir) {
@@ -194,12 +167,6 @@ pub fn load_rhai_reporters(dir: &Path) -> Vec<Box<dyn Reporter>> {
     reporters
 }
 
-/// Load reporter scripts from every configured convention directory — the
-/// user-global and project-local plugin dirs
-/// (`apif_plugins::rhai_plugin::user_plugin_dir`/`project_plugin_dir`).
-/// Unlike assertion plugins, reporters aren't name-keyed — a script
-/// defining the same hooks in both tiers just runs as two active
-/// reporters, no precedence/override needed.
 pub fn load_all_configured_reporters() -> Vec<Box<dyn Reporter>> {
     let mut reporters = Vec::new();
     let project_dir = apif_plugins::rhai_plugin::project_plugin_dir();
@@ -217,7 +184,6 @@ pub fn load_all_configured_reporters() -> Vec<Box<dyn Reporter>> {
 #[cfg(all(test, not(miri)))]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    /// `load` + pre-approve, so a temp script doesn't hit `apif_plugins::trust`.
     fn load_trusted(path: &std::path::Path) -> super::RhaiReporter {
         let reporter = super::RhaiReporter::load(path).unwrap().unwrap();
         let _ = reporter.trusted.set(true);
@@ -253,9 +219,6 @@ mod tests {
     #[test]
     fn on_test_end_receives_the_real_name_and_status() {
         let dir = tempfile::tempdir().unwrap();
-        // Throws (call_fn errors) if the received data doesn't match —
-        // asserted directly via `call_on_test_end`'s `Result`, not just
-        // "didn't panic" (the trait method itself returns `()`).
         let path = write_script(
             dir.path(),
             "check_data.rhai",
@@ -272,9 +235,6 @@ mod tests {
 
     #[test]
     fn on_test_end_actually_fails_when_data_is_wrong() {
-        // Proves the throw mechanism the test above relies on really does
-        // propagate as an `Err` — without this, a bug that fed the script
-        // the wrong data would go unnoticed by every "throws if wrong" test.
         let dir = tempfile::tempdir().unwrap();
         let path = write_script(
             dir.path(),
@@ -324,9 +284,6 @@ mod tests {
 
     #[test]
     fn meta_and_optional_fields_serialize_without_error() {
-        // Regression: TestResult carries several Option/skip_serializing_if
-        // fields (meta, exchange, retried, ...) — confirm a populated one
-        // still converts cleanly through serde_json -> rhai::serde.
         let dir = tempfile::tempdir().unwrap();
         let path = write_script(
             dir.path(),

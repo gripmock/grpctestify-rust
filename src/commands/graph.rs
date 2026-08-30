@@ -1,11 +1,3 @@
-// Graph command - visualize per-directory fixture topology and multi-document chains.
-//
-// No new grammar, no new persistent state — this renders structure that
-// already exists: `_setup.gctf`/`_teardown.gctf` directory fixtures (same
-// convention `run` uses, via `run::partition_fixtures`) and multi-document
-// chain steps within a single file. Two cheap text formats (tree, Mermaid
-// flowchart) — no interactive HTML graph library.
-
 use anyhow::Result;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -48,8 +40,6 @@ pub fn handle_graph(args: &GraphArgs) -> Result<()> {
     Ok(())
 }
 
-/// One directory's tests plus its `_setup`/`_teardown` fixtures, sorted for
-/// stable output.
 struct DirGroup {
     tests: Vec<PathBuf>,
     fixtures: DirFixtures,
@@ -85,16 +75,18 @@ fn group_by_directory(files: Vec<PathBuf>) -> BTreeMap<PathBuf, DirGroup> {
     by_dir
 }
 
-/// Per-document endpoint method names for a file, in chain order — empty if
-/// the file doesn't parse or has no ENDPOINT. Used to annotate a
-/// multi-document chain inline instead of expanding it (full per-step
-/// request/response detail is `docs`'s job, not this bird's-eye view).
 fn chain_steps(path: &Path) -> Vec<String> {
     let Ok(doc) = parser::parse_gctf(path) else {
         return Vec::new();
     };
     doc.iter_chain()
         .map(|d| {
+            if d.transport() == crate::parser::ast::Transport::Http {
+                return d
+                    .parse_http_endpoint()
+                    .map(|(method, path)| format!("{method} {path}"))
+                    .unwrap_or_else(|| "?".to_string());
+            }
             d.parse_endpoint()
                 .map(|(_, _, method)| method)
                 .unwrap_or_else(|| "?".to_string())
@@ -108,8 +100,6 @@ fn file_name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-/// A file's display label: bare name, or `name (Step1 → Step2 → Step3)` when
-/// it's a multi-document chain.
 fn node_label(path: &Path) -> String {
     let name = file_name(path);
     let steps = chain_steps(path);
@@ -324,6 +314,22 @@ mod tests {
         .unwrap();
         let label = node_label(&file);
         assert_eq!(label, "chain.gctf (AddItem → Checkout)");
+    }
+
+    #[test]
+    fn node_label_names_the_steps_of_an_http_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("chain.httf");
+        std::fs::write(
+            &file,
+            "--- ADDRESS ---\nhttp://api.example.com\n\n--- ENDPOINT ---\nGET /v1/users\n\n--- ASSERTS ---\n@status() == 200\n\n--- ENDPOINT ---\nPOST /v1/users/7/orders\n\n--- ASSERTS ---\n@status() == 201\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            node_label(&file),
+            "chain.httf (GET /v1/users → POST /v1/users/7/orders)",
+        );
     }
 
     #[test]

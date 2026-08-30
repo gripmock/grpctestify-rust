@@ -1,7 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
-//! Section content parser for GCTF files.
-//!
-//! Parses the content of different section types based on their structure.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use anyhow::Result;
 use std::collections::HashSet;
@@ -15,17 +12,8 @@ use crate::gctf_tokenizer::{
 use crate::json_mod;
 use crate::json_stream_parser;
 
-/// Inline-option keys a loaded `.rhai` plugin has declared via `@inline_option`
-/// (`apif_plugins::rhai_plugin::load_all_inline_option_keys`) — set once at
-/// process/command startup, same `OnceLock`-set-once-early pattern as
-/// `apif_optimizer::register_extra_boolean_plugins` and
-/// `apif_semantics::register_extra_plugin_names`. Never set (e.g. a bare
-/// library use of this crate) means no plugin-provided keys, not a panic.
 static EXTRA_INLINE_OPTION_KEYS: OnceLock<HashSet<String>> = OnceLock::new();
 
-/// Register plugin-declared inline-option keys. Call once, early, before
-/// parsing any `.gctf` file — a plugin loaded mid-session needs a restart to
-/// take effect, same caveat as the sibling registries.
 pub fn register_extra_inline_option_keys(keys: HashSet<String>) {
     let _ = EXTRA_INLINE_OPTION_KEYS.set(keys);
 }
@@ -36,8 +24,15 @@ pub(crate) fn is_extra_inline_option_key(key: &str) -> bool {
         .is_some_and(|keys| keys.contains(key))
 }
 
-/// Parse section content based on section type.
 pub fn parse_section_content(section_type: SectionType, content: &str) -> Result<SectionContent> {
+    parse_section_content_for(crate::ast::Family::Gctf, section_type, content)
+}
+
+pub fn parse_section_content_for(
+    family: crate::ast::Family,
+    section_type: SectionType,
+    content: &str,
+) -> Result<SectionContent> {
     let content = content.trim();
 
     if content.is_empty() {
@@ -45,9 +40,6 @@ pub fn parse_section_content(section_type: SectionType, content: &str) -> Result
     }
 
     match section_type {
-        // Single value sections. A `//`/`#` line here is a comment, not part
-        // of the value — without stripping it, `--- ADDRESS ---` preceded by a
-        // comment resolved to the comment text and `check` still passed.
         SectionType::Address | SectionType::Endpoint => {
             let stripped = strip_gctf_comment_lines(content);
             let stripped = stripped.trim();
@@ -57,21 +49,16 @@ pub fn parse_section_content(section_type: SectionType, content: &str) -> Result
             Ok(SectionContent::Single(stripped.to_string()))
         }
 
-        // JSON sections
         SectionType::Request => {
-            // Primary mode: a single JSON/JSON5 value (unary request).
             if let Ok(json_value) = json_mod::from_str(content) {
                 return Ok(SectionContent::Json(json_value));
             }
 
-            // Streaming mode: multiple self-delimiting JSON payloads in one
-            // REQUEST block — the client/bidi-streaming counterpart to
-            // RESPONSE's own JsonLines mode, additive and no-divider/no-threshold
-            // for the same reason (see `json_stream_parser`).
             if let Some(values) = json_stream_parser::parse_response_json_values(content) {
                 Ok(SectionContent::JsonLines(values))
+            } else if family.allows_http() {
+                Ok(SectionContent::Single(content.to_string()))
             } else {
-                // Preserve original parse error behavior for malformed single-value requests.
                 let json_value = json_mod::from_str(content)?;
                 Ok(SectionContent::Json(json_value))
             }
@@ -81,22 +68,20 @@ pub fn parse_section_content(section_type: SectionType, content: &str) -> Result
             Ok(SectionContent::Json(json_value))
         }
         SectionType::Response => {
-            // Primary mode: a single JSON/JSON5 value
             if let Ok(json_value) = json_mod::from_str(content) {
                 return Ok(SectionContent::Json(json_value));
             }
 
-            // Streaming mode: multiple JSON payloads within one RESPONSE block
             if let Some(values) = json_stream_parser::parse_response_json_values(content) {
                 Ok(SectionContent::JsonLines(values))
+            } else if family.allows_http() {
+                Ok(SectionContent::Single(content.to_string()))
             } else {
-                // Preserve original parse error behavior for malformed single-content responses
                 let json_value = json_mod::from_str(content)?;
                 Ok(SectionContent::Json(json_value))
             }
         }
 
-        // Key-value sections
         SectionType::RequestHeaders
         | SectionType::Tls
         | SectionType::Proto
@@ -109,7 +94,6 @@ pub fn parse_section_content(section_type: SectionType, content: &str) -> Result
             Ok(SectionContent::KeyValues(key_values))
         }
 
-        // Extract section - support ternary expressions via AST
         SectionType::Extract => {
             let mut key_values = crate::ast::OrderedStringMap::new();
             for line in content.lines() {
@@ -129,30 +113,23 @@ pub fn parse_section_content(section_type: SectionType, content: &str) -> Result
             Ok(SectionContent::Extract(key_values))
         }
 
-        // Assertion sections
         SectionType::Asserts => {
             let assertions = parse_assertions(content)?;
             Ok(SectionContent::Assertions(assertions))
         }
 
-        // META section - parse as YAML (comments allowed). A malformed or
-        // unknown-field META is a hard parse error, not a silent default —
-        // same "fail loud" rule as DATASET below. GCTF `//` comment lines are
-        // stripped first (YAML only understands `#`) so the strict path
-        // accepts the same comment styles every other context does.
         SectionType::Meta => {
             let cleaned = crate::gctf_tokenizer::strip_gctf_comment_lines(content);
-            let meta = serde_yaml_ng::from_str::<FileMeta>(&cleaned)
-                .map_err(|e| anyhow::anyhow!("Invalid META: {e}"))?;
+            let meta = serde_yaml_ng::from_str::<FileMeta>(&cleaned).map_err(|e| {
+                let said = e.to_string();
+                match crate::meta_list_problem(&said) {
+                    Some(problem) => anyhow::anyhow!("{}", problem.message),
+                    None => anyhow::anyhow!("Invalid META: {said}"),
+                }
+            })?;
             Ok(SectionContent::Meta(meta))
         }
 
-        // DATASET section - a YAML list of row objects, each becoming one
-        // `dataset.<field>` template expansion. Unlike META, a malformed
-        // DATASET is a hard parse error rather than silently defaulting to
-        // empty — it drives test execution, so a typo here should fail loud
-        // and early rather than quietly running zero rows. GCTF `//` comment
-        // lines are stripped first (see META above).
         SectionType::Dataset => {
             let cleaned = crate::gctf_tokenizer::strip_gctf_comment_lines(content);
             let rows: Vec<serde_json::Value> = serde_yaml_ng::from_str(&cleaned)
@@ -167,7 +144,6 @@ pub fn parse_section_content(section_type: SectionType, content: &str) -> Result
     }
 }
 
-/// Build a section from parsed content.
 pub fn build_section(
     section_type: SectionType,
     start_line: usize,
@@ -176,8 +152,28 @@ pub fn build_section(
     inline_options: InlineOptions,
     attributes: Vec<GctfAttribute>,
 ) -> Result<Section> {
+    build_section_for(
+        crate::ast::Family::Gctf,
+        section_type,
+        start_line,
+        end_line,
+        content,
+        inline_options,
+        attributes,
+    )
+}
+
+pub fn build_section_for(
+    family: crate::ast::Family,
+    section_type: SectionType,
+    start_line: usize,
+    end_line: usize,
+    content: &[String],
+    inline_options: InlineOptions,
+    attributes: Vec<GctfAttribute>,
+) -> Result<Section> {
     let raw_content = content.join("\n");
-    let section_content = parse_section_content(section_type, &raw_content)?;
+    let section_content = parse_section_content_for(family, section_type, &raw_content)?;
 
     Ok(Section {
         section_type,
@@ -187,23 +183,16 @@ pub fn build_section(
         start_line,
         end_line,
         attributes,
-        // The caller (`core.rs::parse_sections_from_str`) knows the whole
-        // document's byte offsets and overwrites this with the real span
-        // right after calling this function.
         span: crate::ast::SectionSpan::default(),
     })
 }
 
-/// Parse key=value options from section header inline options string.
-/// Unknown keys and unparseable values are hard errors, not silently dropped
-/// — a typo'd inline option (e.g. `tolerance=abc`) should fail the parse,
-/// not run with a silently-defaulted value.
 pub fn parse_inline_options(s: &str) -> Result<InlineOptions> {
     let mut inline_options = InlineOptions::default();
 
     for (key, value) in tokenize_inline_options(s) {
         match key.as_str() {
-            "with_asserts" | "partial" | "unordered_arrays" => {
+            "with_asserts" | "partial" | "unordered_arrays" | "parallel" => {
                 let parsed = match value.as_str() {
                     "true" | "1" => true,
                     "false" | "0" => false,
@@ -212,13 +201,11 @@ pub fn parse_inline_options(s: &str) -> Result<InlineOptions> {
                 match key.as_str() {
                     "with_asserts" => inline_options.with_asserts = parsed,
                     "partial" => inline_options.partial = parsed,
+                    "parallel" => inline_options.parallel = parsed,
                     _ => inline_options.unordered_arrays = parsed,
                 }
             }
             "tolerance" => {
-                // Digit separators (`1_000`) are valid in JSON5 payloads —
-                // accept them here too instead of erroring on a form that
-                // works everywhere else a number can appear.
                 inline_options.tolerance =
                     Some(value.replace('_', "").parse::<f64>().map_err(|_| {
                         anyhow::anyhow!("invalid numeric value for tolerance: {value}")
@@ -236,6 +223,9 @@ pub fn parse_inline_options(s: &str) -> Result<InlineOptions> {
             _ if is_extra_inline_option_key(&key) => {
                 inline_options.extra.insert(key, value);
             }
+            _ if key.chars().all(|c| c.is_ascii_digit()) => anyhow::bail!(
+                "unknown inline option: {key} — a status is not written in the header; check it in ASSERTS with `@status() == {key}`"
+            ),
             _ => anyhow::bail!("unknown inline option: {key}"),
         }
     }
@@ -243,8 +233,6 @@ pub fn parse_inline_options(s: &str) -> Result<InlineOptions> {
     Ok(inline_options)
 }
 
-/// Parse a GCTF attribute from `#[name(value)]` content string.
-/// Returns `None` if content is empty or invalid.
 pub fn parse_attribute(content: &str) -> Option<GctfAttribute> {
     let content = content.trim();
     if content.is_empty() {
@@ -343,10 +331,6 @@ fn is_ws(b: u8) -> bool {
     b == b' ' || b == b'\t'
 }
 
-/// Resolve attributes for a section, applying inheritance rules:
-/// - Attributes from parent sections apply to child sections
-/// - Child section attributes override parent attributes
-/// - Attributes with the same name are overridden (not merged)
 pub fn resolve_attributes(
     section_attrs: &[GctfAttribute],
     inherited_attrs: &[GctfAttribute],
@@ -368,14 +352,8 @@ pub fn resolve_attributes(
     resolved
 }
 
-/// Attributes that configure one section only. `#[skip]` is documented as
-/// "the test continues with subsequent sections" and `#[repeat(N)]` as
-/// "re-execute *this* section", so neither may propagate — inheriting them
-/// let a single `#[skip]` disable the whole rest of the test while the run
-/// still reported a pass.
 pub const SECTION_SCOPED_ATTRIBUTES: &[&str] = &["skip", "repeat"];
 
-/// The subset of a section's resolved attributes that later sections inherit.
 pub fn inheritable_attributes(resolved: &[GctfAttribute]) -> Vec<GctfAttribute> {
     resolved
         .iter()
@@ -384,7 +362,6 @@ pub fn inheritable_attributes(resolved: &[GctfAttribute]) -> Vec<GctfAttribute> 
         .collect()
 }
 
-/// Parse key-value section (one per line: key: value).
 fn parse_key_value_section(content: &str) -> Result<crate::ast::OrderedStringMap> {
     let mut key_values = crate::ast::OrderedStringMap::new();
 
@@ -402,12 +379,6 @@ fn parse_key_value_section(content: &str) -> Result<crate::ast::OrderedStringMap
     Ok(key_values)
 }
 
-/// Like `parse_key_value_section`, but an indented line is appended (with its
-/// original indentation) to the previous key's value instead of being
-/// tokenized on its own — needed for `sources:`'s nested YAML list.
-/// BENCH is the one key-value section whose values may span lines: `sources:`
-/// carries a nested YAML list on indented continuation lines. Shared with the
-/// recovering parser so both paths agree on what `sources` contains.
 pub(crate) fn parse_bench_section(content: &str) -> Result<crate::ast::OrderedStringMap> {
     let mut key_values: crate::ast::OrderedStringMap = crate::ast::OrderedStringMap::new();
     let mut current_key: Option<String> = None;
@@ -432,10 +403,7 @@ pub(crate) fn parse_bench_section(content: &str) -> Result<crate::ast::OrderedSt
     Ok(key_values)
 }
 
-/// Parse assertions section (one assertion per line).
 fn parse_assertions(content: &str) -> Result<Vec<String>> {
-    // No normalization needed — regex literals /pattern/ are now handled
-    // by the assertion AST parser as Expr::RegExp nodes.
     let assertions: Vec<String> = content
         .lines()
         .filter_map(strip_assertion_comments)
@@ -448,9 +416,6 @@ fn parse_assertions(content: &str) -> Result<Vec<String>> {
 mod tests {
     use super::*;
 
-    // Regression: a comment line above the address became the address. The
-    // file still dialed, `check` still passed, and `explain` reported
-    // `Address: // staging only`.
     #[test]
     fn a_comment_line_is_not_part_of_a_single_value_section() {
         for (input, expected) in [
@@ -470,7 +435,6 @@ mod tests {
             parse_section_content(SectionType::Endpoint, "// note\ns.S/M").unwrap(),
             SectionContent::Single("s.S/M".to_string())
         );
-        // Comments only: nothing is left to dial.
         assert_eq!(
             parse_section_content(SectionType::Address, "// note").unwrap(),
             SectionContent::Empty
@@ -483,7 +447,6 @@ mod tests {
         let kv = parse_bench_section(content).unwrap();
         assert_eq!(kv.get("mode").map(String::as_str), Some("fixed"));
         let sources = kv.get("sources").expect("sources key");
-        // No stray top-level keys from the nested list.
         assert!(!kv.contains_key("- name"));
         assert!(!kv.contains_key("file"));
         let defs: Vec<serde_yaml_ng::Value> = serde_yaml_ng::from_str(sources).unwrap();
@@ -492,9 +455,6 @@ mod tests {
 
     #[test]
     fn key_values_and_extract_preserve_source_order_not_hash_order() {
-        // §2.3: KV/EXTRACT storage is insertion-ordered (IndexMap), so iteration
-        // follows the author's source order deterministically — a HashMap would
-        // give a per-process-random order and make this assertion flaky.
         let opts = "zeta: 1\nalpha: 2\nmiddle: 3\nbeta: 4\n";
         let SectionContent::KeyValues(kv) =
             parse_section_content(SectionType::Options, opts).unwrap()
@@ -554,8 +514,6 @@ mod tests {
 
     #[test]
     fn parse_dataset_section_preserves_nested_structure() {
-        // Unlike `--data` (CSV/TSV, everything a flat string), DATASET's
-        // native YAML keeps real types and nested objects.
         let content = "- id: 1\n  active: true\n  meta:\n    tier: gold\n";
         let result = parse_section_content(SectionType::Dataset, content).unwrap();
         let SectionContent::Rows(rows) = result else {
@@ -639,9 +597,6 @@ mod tests {
 
     #[test]
     fn parse_section_content_request_jsonlines() {
-        // Symmetric with RESPONSE: a REQUEST block of self-delimiting JSON
-        // values (client/bidi-streaming) parses into JsonLines, same as a
-        // multi-message RESPONSE.
         let input = "{\"a\":1}\n{\"b\":2}\n{\"c\":3}";
         let result = parse_section_content(SectionType::Request, input).unwrap();
         assert!(matches!(result, SectionContent::JsonLines(v) if v.len() == 3));
@@ -649,7 +604,6 @@ mod tests {
 
     #[test]
     fn parse_section_content_request_single_value_stays_json() {
-        // A single-value REQUEST must stay unary — existing files unchanged.
         let result = parse_section_content(SectionType::Request, r#"{"key": "value"}"#).unwrap();
         assert!(matches!(result, SectionContent::Json(_)));
     }
@@ -759,6 +713,26 @@ mod tests {
     }
 
     #[test]
+    fn a_status_in_the_header_says_where_a_status_belongs() {
+        let said = parse_inline_options("201")
+            .expect_err("not an option")
+            .to_string();
+        assert!(
+            said.contains("a status is not written in the header"),
+            "{said}"
+        );
+        assert!(said.contains("@status() == 201"), "{said}");
+    }
+
+    #[test]
+    fn an_option_that_is_not_a_number_keeps_its_own_message() {
+        let said = parse_inline_options("wobble=1")
+            .expect_err("not an option")
+            .to_string();
+        assert_eq!(said, "unknown inline option: wobble");
+    }
+
+    #[test]
     fn parse_inline_options_all_fields() {
         let result = parse_inline_options(
             "with_asserts=true partial=true tolerance=0.5 unordered_arrays=true",
@@ -790,25 +764,18 @@ mod tests {
 
     #[test]
     fn parse_inline_options_invalid_boolean_errors() {
-        // §3.4 fixed this from a silent fallback to a hard error in the strict
-        // path — a non-boolean value for a boolean option must not be silently
-        // accepted.
         let err = parse_inline_options("with_asserts=maybe").unwrap_err();
         assert!(err.to_string().contains("with_asserts"), "{err}");
     }
 
     #[test]
     fn parse_section_content_meta_malformed_yaml_errors() {
-        // §3.1: malformed META YAML must hard-error in the strict path, not
-        // silently default to an empty FileMeta.
         let err = parse_section_content(SectionType::Meta, "name: [unterminated").unwrap_err();
         assert!(err.to_string().contains("META"), "{err}");
     }
 
     #[test]
     fn parse_section_content_meta_unknown_field_errors() {
-        // §3.2: `deny_unknown_fields` — a `tag:` typo (real field is `tags:`)
-        // must error, not silently vanish.
         let err = parse_section_content(SectionType::Meta, "tag: oops").unwrap_err();
         assert!(err.to_string().contains("META"), "{err}");
     }
@@ -846,9 +813,7 @@ mod tests {
     #[test]
     fn parse_inline_options_redact_malformed() {
         let result = parse_inline_options("redact=not_an_array").unwrap();
-        // Current tokenizer splits by spaces, so this becomes tokens
-        // This is a known limitation - redact with spaces in value
-        assert!(!result.redact.is_empty()); // tokenizer splits "not_an_array" into parts
+        assert!(!result.redact.is_empty());
     }
 
     #[test]
@@ -893,11 +858,6 @@ tags: [a]
 
     #[test]
     fn parse_section_content_meta_slash_comments() {
-        // Regression: the strict path used to pass META content straight to
-        // the YAML parser, which errors on GCTF's `//` comment (YAML only
-        // understands `#`) — so a `//`-commented META parsed fine under the
-        // lenient path (`run`) but hard-failed under `check`/`fmt`. Now both
-        // strip `//` first via the shared `strip_gctf_comment_lines`.
         let result = parse_section_content(
             SectionType::Meta,
             "// a GCTF comment\nname: Test\ntags: [a]\n",

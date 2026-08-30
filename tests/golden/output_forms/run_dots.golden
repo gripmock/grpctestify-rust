@@ -20,14 +20,14 @@ grpctestify ══════════════════════�
 ❌ Failed Tests:
    • <TMPDIR>/b_fail.gctf (<MS>ms)
       Error: Validation failed:
-  - Assertion failed at line 9 (assertion at line 11): Assertion failed: .status == "NOT_SERVING" (Values: String("SERVING") vs String("NOT_SERVING"))
-  -     Expected: == String("NOT_SERVING")
-    Actual:   String("SERVING")
+  - Assertion failed at line 10 (assertion at line 11): Assertion failed: .status == "NOT_SERVING" (Values: "SERVING" vs "NOT_SERVING")
+  -     Expected: == "NOT_SERVING"
+    Actual:   "SERVING"
 ────────────────────────────────────────────────────────────────────────────────
 🔧 Environment:
-   • gRPC Address: localhost:4770
+   • Address: localhost:4770 (the gRPC default, where a file names none)
    • Sort Mode: path
-   • Dry Run: Disabled (real gRPC calls)
+   • Dry Run: Disabled (real calls)
 ✨ No warnings detected
 ════════════════════════════════════════════════════════════════════════════════
 

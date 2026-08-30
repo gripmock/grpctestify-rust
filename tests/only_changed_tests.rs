@@ -111,6 +111,57 @@ fn run_only_changed_dry_run_skips_unmodified_files() {
     assert!(!stdout.contains("a.gctf"), "stdout: {stdout}");
 }
 
+/// A branch that touched no test file is the ordinary case this flag exists
+/// for; it reached the same "no test files found" as a typo'd path and failed
+/// the build.
+#[cfg_attr(miri, ignore)]
+#[test]
+#[cfg(not(miri))]
+fn a_run_with_nothing_changed_is_not_a_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo(dir.path());
+    write_commit(
+        &repo,
+        dir.path(),
+        None,
+        &[
+            ("a.gctf", UNARY),
+            (
+                "b.httf",
+                "--- ADDRESS ---\nhttp://127.0.0.1:1\n\n--- ENDPOINT ---\nGET /x\n\n--- ASSERTS ---\n@status() == 200\n",
+            ),
+        ],
+        "init",
+    );
+
+    let output = cli_command()
+        .current_dir(dir.path())
+        .args(["run", ".", "--only-changed"])
+        .output()
+        .expect("failed to run CLI");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "stdout: {stdout}");
+    assert!(stdout.contains("no test file changed"), "stdout: {stdout}");
+}
+
+/// A path that matches nothing is still a mistake, flag or no flag.
+#[cfg_attr(miri, ignore)]
+#[test]
+#[cfg(not(miri))]
+fn a_path_that_matches_nothing_still_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+
+    let output = cli_command()
+        .current_dir(dir.path())
+        .args(["run", ".", "--only-changed"])
+        .output()
+        .expect("failed to run CLI");
+
+    assert!(!output.status.success());
+}
+
 #[cfg_attr(miri, ignore)]
 #[test]
 #[cfg(not(miri))]
@@ -136,13 +187,14 @@ fn run_only_changed_since_a_branch() {
         .args(["run", ".", "--only-changed", "--dry-run"])
         .output()
         .expect("failed to run CLI");
+    /* Nothing changed is not "nothing found": the run says so and succeeds. */
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("No test files found")
-            || String::from_utf8_lossy(&output.stderr).contains("No test files found"),
+        String::from_utf8_lossy(&output.stdout).contains("no test file changed"),
         "expected nothing changed vs HEAD: stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(output.status.success());
 
     // Changed relative to main.
     let output = cli_command()

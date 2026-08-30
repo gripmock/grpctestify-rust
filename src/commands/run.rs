@@ -1,6 +1,6 @@
 use anyhow::Result;
 use futures::stream::StreamExt;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -15,23 +15,17 @@ use crate::report;
 use crate::state::{TestMeta, TestResult, TestResults};
 use crate::utils::FileUtils;
 
-/// A single unit of work fed through the parallel execution stream.
-///
-/// Without `--data`, files map 1:1 to a [`WorkItem::File`]. With `--data`, each
-/// target file is treated as a template and expanded up-front into one
-/// [`WorkItem::Row`] per data row (all sharing the parsed template document), or
-/// a single [`WorkItem::Error`] when the source is empty/unreadable.
 enum WorkItem {
-    /// Ordinary file: parsed and executed as today.
     File(PathBuf),
-    /// One parameterized row: shared template + row variables.
     Row {
         doc: Arc<GctfDocument>,
         vars: HashMap<String, serde_json::Value>,
         name: String,
     },
-    /// A pre-determined failure (empty source, bad source, `--write` with `--data`).
-    Error { name: String, message: String },
+    Error {
+        name: String,
+        message: String,
+    },
 }
 
 impl WorkItem {
@@ -43,8 +37,6 @@ impl WorkItem {
     }
 }
 
-/// Render a row value the way a human/report would want to read it: strings
-/// unquoted, everything else via its JSON form.
 fn stringify_row_value(v: &serde_json::Value) -> String {
     match v {
         serde_json::Value::String(s) => s.clone(),
@@ -52,9 +44,11 @@ fn stringify_row_value(v: &serde_json::Value) -> String {
     }
 }
 
-/// Render a row's variables into a stable, human-readable identity suffix so
-/// each expanded case reports distinctly: `<file>#[row=<i> k=v k=v]`.
-fn format_row_name(file: &str, index: usize, vars: &HashMap<String, serde_json::Value>) -> String {
+pub(crate) fn format_row_name(
+    file: &str,
+    index: usize,
+    vars: &HashMap<String, serde_json::Value>,
+) -> String {
     let mut keys: Vec<&String> = vars.keys().collect();
     keys.sort();
     let fields = keys
@@ -65,9 +59,6 @@ fn format_row_name(file: &str, index: usize, vars: &HashMap<String, serde_json::
     format!("{}#[row={} {}]", file, index, fields)
 }
 
-/// Render a row's variables as sorted (key, value) pairs — the structured
-/// form kept on the reportable `TestResult` (e.g. surfaced as Allure
-/// parameters), as opposed to `format_row_name`'s single identity string.
 fn row_params(vars: &HashMap<String, serde_json::Value>) -> Vec<(String, String)> {
     let mut keys: Vec<&String> = vars.keys().collect();
     keys.sort();
@@ -76,14 +67,7 @@ fn row_params(vars: &HashMap<String, serde_json::Value>) -> Vec<(String, String)
         .collect()
 }
 
-/// Read every row of a `--data` source into template variables.
-///
-/// The source is fed through the same `SourceDrivenConfig` data plane used by
-/// `bench`, so each row's columns arrive namespaced under the source name
-/// (`<source>.<column>`). The source path is resolved against the current
-/// working directory (absolutised) so it is independent of any template's
-/// location. `format` overrides the extension-inferred source format.
-fn collect_data_rows(
+pub(crate) fn collect_data_rows(
     data: &Path,
     format: Option<crate::bench::sources::SourceFormat>,
 ) -> Result<Vec<HashMap<String, serde_json::Value>>> {
@@ -115,11 +99,6 @@ fn collect_data_rows(
     Ok(rows)
 }
 
-/// Expand every template file across the rows of a `--data` source.
-///
-/// Each file becomes one [`WorkItem::Row`] per row (sharing the parsed template
-/// document). An empty source, an unreadable source, or a `--write` request all
-/// resolve to a single failing item per file so CI cannot silently pass.
 fn expand_templates_over_data(
     files: Vec<PathBuf>,
     data: &Path,
@@ -136,8 +115,6 @@ fn expand_templates_over_data(
             .collect()
     };
 
-    // `--write` snapshots a response back into the template; with N rows the
-    // target is ambiguous, so we reject it rather than silently pick a row.
     if write {
         return per_file_error(
             files,
@@ -174,7 +151,6 @@ fn expand_templates_over_data(
     for file in files {
         let doc = match parser::parse_gctf(&file) {
             Ok(d) => Arc::new(d),
-            // Let the normal file path surface the parse error once.
             Err(_) => {
                 items.push(WorkItem::File(file));
                 continue;
@@ -193,31 +169,20 @@ fn expand_templates_over_data(
     items
 }
 
-/// A DATASET row must be a JSON object; its fields become `dataset.<field>`
-/// template variables — the same `<source>.<column>` namespacing `--data`
-/// uses, just with the fixed source name `dataset` since a DATASET section
-/// has no external file to name it after.
-fn dataset_row_vars(row: &serde_json::Value) -> HashMap<String, serde_json::Value> {
+pub(crate) fn environment_address(dir: &std::path::Path) -> Option<String> {
+    crate::serve::project::address_of(&crate::serve::project::project_variables(dir))
+}
+
+pub(crate) fn dataset_row_vars(row: &serde_json::Value) -> HashMap<String, serde_json::Value> {
     match row {
         serde_json::Value::Object(fields) => fields
             .iter()
             .map(|(k, v)| (format!("dataset.{k}"), v.clone()))
             .collect(),
-        // `parse_section_content` already rejects non-object rows at parse
-        // time (a DATASET can't even be constructed this way) — this arm
-        // only matters for the error-recovery parser, which is lenient by
-        // design and may hand back an as-yet-unvalidated row.
         _ => HashMap::new(),
     }
 }
 
-/// Split `files` into (files without a DATASET section, DATASET-bearing file
-/// paths, work items already expanded from those files' own rows).
-///
-/// A DATASET section makes its file self-contained — no `--data` needed —
-/// expanding through the identical [`WorkItem::Row`] mechanism `--data`
-/// uses, just sourced from the document's own `--- DATASET ---` rows
-/// instead of an external file.
 fn expand_dataset_files(
     files: Vec<PathBuf>,
     write: bool,
@@ -229,7 +194,6 @@ fn expand_dataset_files(
     for file in files {
         let doc = match parser::parse_gctf(&file) {
             Ok(d) => d,
-            // Let the normal file path surface the parse error once.
             Err(_) => {
                 plain.push(file);
                 continue;
@@ -239,9 +203,6 @@ fn expand_dataset_files(
             plain.push(file);
             continue;
         };
-        // An empty section parses to `Empty`, not `Rows([])`, so matching only
-        // on `Rows` sent a row-less DATASET down the plain path and ran it once
-        // with its `{{var}}` placeholders unresolved instead of reporting it.
         let rows = match &section.content {
             SectionContent::Rows(rows) => rows.clone(),
             SectionContent::Empty => Vec::new(),
@@ -254,9 +215,6 @@ fn expand_dataset_files(
         let file_str = file.to_string_lossy().to_string();
         dataset_files.push(file.clone());
 
-        // Same rationale as `--data`: a DATASET run parameterizes into N
-        // cases, so `--write`'s "snapshot the response back into the file"
-        // has no single target to write to.
         if write {
             items.push(WorkItem::Error {
                 name: file_str,
@@ -334,10 +292,6 @@ pub(crate) fn extract_test_meta(doc: &parser::ast::GctfDocument) -> TestMeta {
     meta
 }
 
-/// Does a document's tag set satisfy `--tags` (all must be present) and
-/// `--skip-tags` (none may be present)?
-///
-/// Shared with `bench`, which advertises the same two flags.
 pub(crate) fn tags_match(
     file_tags: &[String],
     tags_include: &[String],
@@ -351,32 +305,32 @@ pub(crate) fn tags_match(
     !(!skip_tags.is_empty() && file_tags.iter().any(|t| skip_tags.contains(t)))
 }
 
-fn file_matches_meta(path: &Path, tags_include: &[String], skip_tags: &[String]) -> bool {
+fn file_matches_meta(
+    path: &Path,
+    tags_include: &[String],
+    skip_tags: &[String],
+    noticed: &mut Vec<String>,
+) -> bool {
     let parse_result = parser::parse_with_recovery(path);
-    // `extract_test_meta` also honours per-section `#[tag(...)]` attributes.
-    // Reading only `META.tags` here meant an attribute-tagged test was
-    // *displayed* as tagged but never selected by `--tags`.
+    for diagnostic in &parse_result.diagnostics.diagnostics {
+        if diagnostic.message.contains("Invalid META") {
+            let said = format!(
+                "{}: {} — its tags are not what --tags reads",
+                path.display(),
+                diagnostic.message
+            );
+            warn!("{said}");
+            noticed.push(said);
+        }
+    }
     let file_tags = extract_test_meta(&parse_result.document).tags;
     tags_match(&file_tags, tags_include, skip_tags)
 }
 
-/// gRPC status codes that indicate a transient transport/availability failure
-/// worth retrying. Application-level failures and, crucially, assertion
-/// mismatches are never retryable.
 fn is_retryable_grpc_code(code: u32) -> bool {
-    matches!(
-        code,
-        4  // DEADLINE_EXCEEDED
-        | 14 // UNAVAILABLE
-    )
+    matches!(code, 4 | 14)
 }
 
-/// Extract a gRPC status code from a failure message, but only when it is part
-/// of the canonical transport-error token (`gRPC error[:] code=<N>`). This
-/// deliberately avoids substring matching of arbitrary text: an assertion
-/// failure whose expected/actual payload merely contains the word "timeout" or
-/// a JSON `"code": N` field carries no such token and is therefore never
-/// classified as retryable.
 fn extract_transport_grpc_code(message: &str) -> Option<u32> {
     let marker = message.find("gRPC error")?;
     let after = &message[marker..];
@@ -388,44 +342,26 @@ fn extract_transport_grpc_code(message: &str) -> Option<u32> {
     digits.parse::<u32>().ok()
 }
 
-/// Decide whether a failed test should be retried.
-///
-/// Retry is driven by the actual gRPC transport status code, not by loose
-/// substring matching. Assertion/validation failures (which never carry a
-/// retryable transport status) are never retried.
 fn should_retry_message(message: &str) -> bool {
     extract_transport_grpc_code(message).is_some_and(is_retryable_grpc_code)
 }
 
-/// Decide whether a completed attempt should be retried. Retries are gated on
-/// BOTH the structured failure kind (transport-level) AND a retryable gRPC
-/// status code. The `failure_kind` guard structurally guarantees that assertion
-/// and validation failures are never retried, independent of their message text.
-fn should_retry_result(result: &execution::TestExecutionResult) -> bool {
+pub(crate) fn should_retry_result(result: &execution::TestExecutionResult) -> bool {
     match &result.status {
         execution::TestExecutionStatus::Pass => false,
         execution::TestExecutionStatus::Fail(msg) => {
             result.failure_kind == Some(execution::FailureKind::Transport)
-                && should_retry_message(msg)
+                && (should_retry_message(msg) || extract_transport_grpc_code(msg).is_none())
         }
     }
 }
 
-/// Per-directory FIXTURES discovered by convention. `_setup.gctf` runs once
-/// before a directory's tests (seeding their initial variables); `_teardown.gctf`
-/// runs once after, always. They live in the normal `.gctf` glob, so they are
-/// split out of the test set here rather than executed as ordinary tests.
 #[derive(Debug, Default)]
 pub(crate) struct DirFixtures {
     pub(crate) setup: Option<PathBuf>,
     pub(crate) teardown: Option<PathBuf>,
 }
 
-/// Split collected `.gctf` files into ordinary tests and per-directory fixtures.
-///
-/// `_setup.gctf`/`_teardown.gctf` are pulled out of the test set entirely and
-/// grouped by their parent directory (exact-directory scope: a dir's fixtures
-/// apply only to tests in that same dir, never to nested subdirectories).
 pub(crate) fn partition_fixtures(
     files: Vec<PathBuf>,
 ) -> (Vec<PathBuf>, HashMap<PathBuf, DirFixtures>) {
@@ -433,17 +369,36 @@ pub(crate) fn partition_fixtures(
     let mut fixtures: HashMap<PathBuf, DirFixtures> = HashMap::new();
     for file in files {
         let dir = file.parent().map(Path::to_path_buf).unwrap_or_default();
-        match file.file_name().and_then(|n| n.to_str()) {
-            Some("_setup.gctf") => fixtures.entry(dir).or_default().setup = Some(file),
-            Some("_teardown.gctf") => fixtures.entry(dir).or_default().teardown = Some(file),
-            _ => tests.push(file),
+        match fixture_role(&file) {
+            Some(FixtureRole::Setup) => fixtures.entry(dir).or_default().setup = Some(file),
+            Some(FixtureRole::Teardown) => fixtures.entry(dir).or_default().teardown = Some(file),
+            None => tests.push(file),
         }
     }
     (tests, fixtures)
 }
 
-/// Directory a work item belongs to, used to look up its fixtures. `Error` items
-/// (pre-determined failures) have no directory context.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum FixtureRole {
+    Setup,
+    Teardown,
+}
+
+pub(crate) fn fixture_role(file: &Path) -> Option<FixtureRole> {
+    let known = file
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| ["gctf", "httf", "apif"].contains(&ext.to_ascii_lowercase().as_str()));
+    if !known {
+        return None;
+    }
+    match file.file_stem().and_then(|n| n.to_str()) {
+        Some("_setup") => Some(FixtureRole::Setup),
+        Some("_teardown") => Some(FixtureRole::Teardown),
+        _ => None,
+    }
+}
+
 fn work_item_dir(item: &WorkItem) -> Option<PathBuf> {
     match item {
         WorkItem::File(path) => path.parent().map(Path::to_path_buf),
@@ -452,16 +407,15 @@ fn work_item_dir(item: &WorkItem) -> Option<PathBuf> {
     }
 }
 
-/// A test is skipped (never executed) when its directory's setup fixture failed;
-/// its teardown still runs (unconditionally, in `run_tests`).
-fn item_skipped_by_setup(item_dir: Option<&Path>, dirs_setup_failed: &HashSet<PathBuf>) -> bool {
-    item_dir.is_some_and(|d| dirs_setup_failed.contains(d))
+fn item_skipped_by_setup<'a>(
+    item_dir: Option<&Path>,
+    dirs_setup_failed: &'a HashMap<PathBuf, String>,
+) -> Option<&'a str> {
+    item_dir
+        .and_then(|d| dirs_setup_failed.get(d))
+        .map(String::as_str)
 }
 
-/// Run one fixture file as its own reportable unit, mirroring the reporter
-/// lifecycle of a normal test. Returns `(passed, captured_vars, result)`: the
-/// captured vars are the fixture's EXTRACT bindings (empty for teardown or on
-/// any failure) that seed the directory's tests.
 async fn run_fixture(
     runner: &execution::TestRunner,
     file: &Path,
@@ -517,9 +471,6 @@ async fn run_fixture(
     (passed, vars, result)
 }
 
-/// Decide whether to buffer the captured request/response exchange for this
-/// run: an explicit `--capture-exchange`, verbose console, or a selected file
-/// format that renders it (only once `--log-output` makes that format active).
 fn should_capture_exchange(
     explicit: bool,
     verbose_console: bool,
@@ -529,13 +480,6 @@ fn should_capture_exchange(
     explicit || verbose_console || (format_uses_exchange && has_log_output)
 }
 
-/// Resolve the output path for one `--log-format` entry.
-///
-/// A single requested format keeps the exact `--log-output` path the user
-/// gave (a file, or a directory for allure). When several formats are
-/// requested from one run, `base` becomes a directory holding one
-/// `<format>.<ext>` file per format instead (allure gets its own
-/// `allure/` subdirectory, since it already writes many files).
 fn report_output_path(base: &Path, format: crate::cli::LogFormat, multiple: bool) -> PathBuf {
     if !multiple {
         return base.to_path_buf();
@@ -552,16 +496,10 @@ fn report_output_path(base: &Path, format: crate::cli::LogFormat, multiple: bool
 }
 
 pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
-    // Unlike the boolean-plugin/unknown-plugin registries (which `run` never
-    // needs — it executes against a real `PluginManager`, not a static
-    // snapshot), `parse_inline_options` runs unconditionally for every
-    // command including this one, so a `.rhai`-declared inline-option key
-    // must be registered here too or a valid file hard-fails to parse.
     crate::parser::register_extra_inline_option_keys(
         crate::plugins::rhai_plugin::load_all_inline_option_keys(),
     );
 
-    // Defensive clamp: buffer_unordered(0) never polls and deadlocks the run.
     let parallel_jobs = cli.parallel_jobs().max(1);
     info!("Parallel jobs: {}", parallel_jobs);
 
@@ -575,9 +513,6 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
 
     let mut collected = Vec::new();
     let exclude_patterns = &args.exclude;
-    // A path that resolves to neither a file nor a directory used to be dropped
-    // silently, so a typo in one of several CI paths skipped that whole suite
-    // and still exited 0.
     let mut missing = Vec::new();
     for path in &args.test_paths {
         if path.is_dir() {
@@ -592,14 +527,9 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
         anyhow::bail!("test path not found: {}", missing.join(", "));
     }
 
-    // Convention-based per-directory fixtures (`_setup.gctf`/`_teardown.gctf`)
-    // are pulled out of the normal test set before any tag filtering so they are
-    // never executed as ordinary tests.
     let (mut test_files, fixtures) = partition_fixtures(collected);
 
-    // `_setup.gctf`/`_teardown.gctf` are deliberately NOT filtered here —
-    // they must still run for any directory that keeps a selected test,
-    // regardless of whether the fixture file itself changed.
+    let mut nothing_changed = false;
     if args.only_changed {
         match crate::only_changed::changed_files(
             &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
@@ -614,6 +544,7 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
                     test_files.len(),
                     args.since
                 );
+                nothing_changed = before > 0 && test_files.is_empty();
             }
             Err(e) => {
                 warn!("--only-changed: {e:#} — running all files instead");
@@ -621,6 +552,7 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
         }
     }
 
+    let mut noticed: Vec<String> = Vec::new();
     let has_meta_filters = !args.tags.is_empty() || !args.skip_tags.is_empty();
 
     if has_meta_filters {
@@ -639,19 +571,22 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
             .filter(|s| !s.is_empty())
             .collect();
 
-        test_files.retain(|path| file_matches_meta(path, &tags_inc, &tags_exc));
+        test_files.retain(|path| file_matches_meta(path, &tags_inc, &tags_exc, &mut noticed));
 
         info!("Filtered to {} test file(s) by META", test_files.len());
     }
 
     info!("Found {} test file(s)", test_files.len());
 
+    if nothing_changed && test_files.is_empty() {
+        println!(
+            "Nothing to run — no test file changed since '{}'.",
+            args.since
+        );
+        return Ok(());
+    }
+
     if test_files.is_empty() {
-        // An empty (or fully filtered) test set is almost always a mistake
-        // (typo in path or --tags); exit non-zero so CI cannot silently pass.
-        // Printed directly to stderr (not via `warn!`, which this binary
-        // routes to stdout) so the message survives even with tracing
-        // filtered down, and scripts checking stderr for warnings see it.
         use crate::report::style::{warn_icon, warn_style};
         eprintln!(
             "{} {}",
@@ -663,24 +598,16 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
 
     FileUtils::sort_files(&mut test_files, &args.sort);
 
-    // Directories with surviving (post-filter) tests. A dir whose tests were all
-    // filtered out is inactive: its setup+teardown are skipped entirely.
     let active_dirs: BTreeSet<PathBuf> = test_files
         .iter()
         .filter_map(|f| f.parent().map(Path::to_path_buf))
         .collect();
-    // Setup+teardown fixtures that will actually run, so the reporter total
-    // accounts for them (they are surfaced as their own results).
     let fixture_count: usize = active_dirs
         .iter()
         .filter_map(|d| fixtures.get(d))
         .map(|fx| usize::from(fx.setup.is_some()) + usize::from(fx.teardown.is_some()))
         .sum();
 
-    // A DATASET section makes its file self-contained (its own row source) —
-    // split those off first so `--data` only ever applies to plain files,
-    // and reject combining the two rather than silently guessing which row
-    // source wins for a file that somehow had both.
     let (test_files, dataset_files, dataset_work_items) =
         expand_dataset_files(test_files, args.write);
     if args.data.is_some() && !dataset_files.is_empty() {
@@ -694,9 +621,6 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
         );
     }
 
-    // With --data, expand each template file into one work item per data row.
-    // Without it, files pass through 1:1. META filtering already ran above (per
-    // file), so every row of a template inherits its file's tags.
     let mut work_items: Vec<WorkItem> = match &args.data {
         Some(data) => {
             expand_templates_over_data(test_files, data, args.data_format.as_deref(), args.write)
@@ -708,7 +632,6 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
     let total_reported = total_work + fixture_count;
 
     if args.stream {
-        // Silent mode - streaming output only
     } else {
         let noun = if total_work == 1 { "test" } else { "tests" };
         let workers = if total_work > 1 && parallel_jobs > 1 {
@@ -727,19 +650,45 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
     let mut reporters: Vec<Box<dyn report::Reporter>> = Vec::new();
 
     let target_address = std::env::var(config::ENV_GRPCTESTIFY_ADDRESS)
-        .unwrap_or_else(|_| config::default_address());
+        .ok()
+        .filter(|a| !a.trim().is_empty())
+        .unwrap_or_else(config::default_address);
+    let address_shown = match std::env::var(config::ENV_GRPCTESTIFY_ADDRESS) {
+        Ok(from_env) if !from_env.trim().is_empty() => {
+            format!("{from_env} (from $GRPCTESTIFY_ADDRESS; a file's own ADDRESS wins)")
+        }
+        _ if !work_items.is_empty()
+            && work_items.iter().all(|item| match item {
+                WorkItem::File(path) => {
+                    crate::parser::ast::Family::of(&path.to_string_lossy())
+                        == crate::parser::ast::Family::Httf
+                }
+                WorkItem::Row { doc, .. } => {
+                    crate::parser::ast::Family::of(&doc.file_path)
+                        == crate::parser::ast::Family::Httf
+                }
+                WorkItem::Error { .. } => true,
+            }) =>
+        {
+            "named by each file (an HTTP call has no default target)".to_string()
+        }
+        _ => format!(
+            "{} (the gRPC default, where a file names none)",
+            config::default_address()
+        ),
+    };
 
     let env_info = report::console::EnvironmentInfo {
-        address: target_address.clone(),
+        address: address_shown,
         parallel_jobs,
         sort_mode: args.sort.clone(),
         dry_run: args.dry_run,
+        warnings: noticed.clone(),
     };
 
     if args.stream {
         reporters.push(Box::new(report::StreamingJsonReporter::new(total_reported)));
     } else {
-        // Always add console reporter (unless streaming)
         let mode = match cli.progress_mode() {
             crate::cli::args::ProgressMode::Dots => report::ConsoleMode::Dots,
             crate::cli::args::ProgressMode::Verbose => report::ConsoleMode::Verbose,
@@ -805,11 +754,6 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
         None
     };
 
-    // Capture the real request/response exchange whenever a reporter can render
-    // it: verbose console (show actual response on failure), a file format
-    // that serialises/attaches it — Allure (attachment), JSON/YAML (serialised),
-    // HTML (detail), JUnit (system-out) — or the user explicitly asked to via
-    // --capture-exchange. Console-only runs otherwise skip the buffering.
     let verbose_console = matches!(cli.progress_mode(), crate::cli::args::ProgressMode::Verbose);
     let format_uses_exchange = cli.log_format_modes().iter().any(|f| {
         matches!(
@@ -829,8 +773,8 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
     );
 
     let start_time = std::time::Instant::now();
-    let runner = Arc::new(
-        execution::TestRunner::new(
+    let runner = Arc::new({
+        let runner = execution::TestRunner::new(
             args.dry_run,
             args.timeout,
             args.no_assert,
@@ -839,17 +783,23 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
             coverage_collector.clone(),
         )
         .with_protocol(args.protocol.parse().unwrap_or_default())
-        .with_capture_exchange(capture_exchange),
-    );
+        .with_capture_exchange(capture_exchange);
+        match environment_address(&std::env::current_dir().unwrap_or_default()) {
+            Some(address) => runner.with_env_address(address),
+            None => runner,
+        }
+    });
 
     let reporters: Arc<Vec<Box<dyn report::Reporter>>> = Arc::new(reporters);
 
-    // Setup barrier: run each active directory's `_setup.gctf` sequentially
-    // before its tests, capturing its EXTRACT bindings as that dir's initial
-    // variables. A setup failure is recorded (its dependent tests are skipped)
-    // but is surfaced as its own result and never suppresses teardown.
+    let project_env: HashMap<String, serde_json::Value> =
+        crate::serve::project::project_variables(&std::env::current_dir().unwrap_or_default())
+            .into_iter()
+            .map(|(k, v)| (k, serde_json::Value::String(v)))
+            .collect();
+
     let mut dir_setup_vars: HashMap<PathBuf, HashMap<String, serde_json::Value>> = HashMap::new();
-    let mut dirs_setup_failed: HashSet<PathBuf> = HashSet::new();
+    let mut dirs_setup_failed: HashMap<PathBuf, String> = HashMap::new();
     let mut fixture_results: Vec<TestResult> = Vec::new();
 
     for dir in &active_dirs {
@@ -861,20 +811,24 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
         if passed {
             dir_setup_vars.insert(dir.clone(), vars);
         } else {
-            dirs_setup_failed.insert(dir.clone());
+            let named = setup
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "_setup".to_string());
+            dirs_setup_failed.insert(dir.clone(), named);
         }
     }
 
     let dir_setup_vars = Arc::new(dir_setup_vars);
     let dirs_setup_failed = Arc::new(dirs_setup_failed);
 
-    // Use a stream for bounded parallelism
     let stream = futures::stream::iter(work_items)
         .map(|item| {
             let runner = runner.clone();
             let reporters = reporters.clone();
             let dir_setup_vars = dir_setup_vars.clone();
             let dirs_setup_failed = dirs_setup_failed.clone();
+            let project_env = project_env.clone();
             let name = item.display_name();
 
             async move {
@@ -885,81 +839,72 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
                 let test_start = std::time::Instant::now();
                 let item_dir = work_item_dir(&item);
 
-                let mut test_result =
-                    if item_skipped_by_setup(item_dir.as_deref(), &dirs_setup_failed) {
-                        TestResult::fail(
-                            name.clone(),
-                            "Skipped: directory setup fixture (_setup.gctf) failed".to_string(),
-                            0,
-                            None,
-                        )
-                    } else {
-                        // Tests in a dir with a passing setup are seeded with its
-                        // captured variables; dirs without setup get an empty map,
-                        // which is byte-for-byte the normal `run_test` path.
-                        let initial_vars = item_dir
-                            .as_ref()
-                            .and_then(|d| dir_setup_vars.get(d))
-                            .cloned()
-                            .unwrap_or_default();
-                        match item {
-                            WorkItem::File(file) => {
-                                let file_path_str = file.to_string_lossy().to_string();
-                                match run_single_test(
-                                    &runner,
-                                    &file,
-                                    initial_vars,
-                                    args.retry,
-                                    args.retry_delay,
-                                    args.no_retry,
-                                )
-                                .await
-                                {
-                                    Ok(res) => execution_result_to_test_result(file_path_str, res),
-                                    Err(e) => TestResult::fail(
-                                        file_path_str,
-                                        format!("Execution error: {}", e),
-                                        0,
-                                        None,
-                                    ),
-                                }
-                            }
-                            WorkItem::Row { doc, vars, name } => {
-                                // Captured before `vars` is merged/consumed below, so
-                                // the report can show which row produced this case
-                                // (e.g. as Allure parameters) independent of execution.
-                                let params = row_params(&vars);
-                                // Fixtures + `--data`: setup vars seed the row, but
-                                // row vars win on key conflicts (row identity is
-                                // explicit and must not be overwritten by a fixture).
-                                let mut merged = initial_vars;
-                                merged.extend(vars);
-                                match run_template_row(
-                                    &runner,
-                                    &doc,
-                                    merged,
-                                    args.retry,
-                                    args.retry_delay,
-                                    args.no_retry,
-                                )
-                                .await
-                                {
-                                    Ok(res) => execution_result_to_test_result(name, res)
-                                        .with_row_params(params),
-                                    Err(e) => TestResult::fail(
-                                        name,
-                                        format!("Execution error: {}", e),
-                                        0,
-                                        None,
-                                    )
-                                    .with_row_params(params),
-                                }
-                            }
-                            WorkItem::Error { name, message } => {
-                                TestResult::fail(name, message, 0, None)
+                let mut test_result = if let Some(fixture) =
+                    item_skipped_by_setup(item_dir.as_deref(), &dirs_setup_failed)
+                {
+                    let mut result = TestResult::pass(name.clone(), 0, None);
+                    result.status = crate::state::TestStatus::Skip;
+                    result.error_message = Some(format!(
+                        "Skipped: directory setup fixture ({fixture}) failed"
+                    ));
+                    result
+                } else {
+                    let mut initial_vars = project_env.clone();
+                    if let Some(vars) = item_dir.as_ref().and_then(|d| dir_setup_vars.get(d)) {
+                        initial_vars.extend(vars.clone());
+                    }
+                    match item {
+                        WorkItem::File(file) => {
+                            let file_path_str = file.to_string_lossy().to_string();
+                            match run_single_test(
+                                &runner,
+                                &file,
+                                initial_vars,
+                                args.retry,
+                                args.retry_delay,
+                                args.no_retry,
+                            )
+                            .await
+                            {
+                                Ok(res) => execution_result_to_test_result(file_path_str, res),
+                                Err(e) => TestResult::fail(
+                                    file_path_str,
+                                    format!("Execution error: {}", e),
+                                    0,
+                                    None,
+                                ),
                             }
                         }
-                    };
+                        WorkItem::Row { doc, vars, name } => {
+                            let params = row_params(&vars);
+                            let mut merged = initial_vars;
+                            merged.extend(vars);
+                            match run_template_row(
+                                &runner,
+                                &doc,
+                                merged,
+                                args.retry,
+                                args.retry_delay,
+                                args.no_retry,
+                            )
+                            .await
+                            {
+                                Ok(res) => execution_result_to_test_result(name, res)
+                                    .with_row_params(params),
+                                Err(e) => TestResult::fail(
+                                    name,
+                                    format!("Execution error: {}", e),
+                                    0,
+                                    None,
+                                )
+                                .with_row_params(params),
+                            }
+                        }
+                        WorkItem::Error { name, message } => {
+                            TestResult::fail(name, message, 0, None)
+                        }
+                    }
+                };
 
                 test_result.duration_ms = test_start.elapsed().as_millis() as u64;
 
@@ -974,9 +919,6 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
 
     let results: Vec<TestResult> = stream.collect().await;
 
-    // Teardown barrier: run each active directory's `_teardown.gctf` after its
-    // tests drain, ALWAYS — whether the tests or the setup passed or failed. A
-    // teardown failure is a distinct failing unit and is reported as such.
     for dir in &active_dirs {
         let Some(teardown) = fixtures.get(dir).and_then(|fx| fx.teardown.as_ref()) else {
             continue;
@@ -1022,8 +964,6 @@ pub async fn run_tests(cli: &Cli, args: &RunArgs) -> Result<()> {
     Ok(())
 }
 
-/// Map a completed execution result onto a reportable [`TestResult`] with the
-/// given identity `name` (a file path, or a per-row identity for table cases).
 fn execution_result_to_test_result(
     name: String,
     res: execution::TestExecutionResult,
@@ -1057,11 +997,6 @@ fn execution_result_to_test_result(
     }
 }
 
-/// Execute a single parameterized row against a shared template document.
-///
-/// Mirrors [`run_single_test`] (validation + retry loop) but runs the already
-/// parsed `doc` with `vars` via the existing `run_test_with_variables`. No
-/// `--write` handling: template runs reject `--write` during expansion.
 async fn run_template_row(
     runner: &execution::TestRunner,
     doc: &GctfDocument,
@@ -1147,7 +1082,6 @@ async fn run_single_test(
         }
     };
 
-    // Extract META for reports
     let test_meta = extract_test_meta(&doc);
     let config_summary = apif_state::ConfigSummary::from_document(&doc);
 
@@ -1187,8 +1121,6 @@ async fn run_single_test(
 
     let mut attempt = 0u32;
     let result = loop {
-        // An empty `initial_vars` map makes this identical to `run_test`; a
-        // non-empty one seeds the chain with a directory's `_setup.gctf` vars.
         let current = runner
             .run_test_with_variables(&doc, initial_vars.clone())
             .await?;
@@ -1208,8 +1140,6 @@ async fn run_single_test(
         }
     };
 
-    // `captured_response` is populated by `--write` *and* by `capture_exchange`,
-    // which report formats turn on. Only `--write` may rewrite the file.
     if runner.is_write_mode()
         && let Some(resp) = &result.captured_response
         && let Err(e) = crate::utils::file::update_test_file(file, &doc, resp)
@@ -1236,8 +1166,6 @@ mod tests {
 
     #[test]
     fn should_capture_exchange_explicit_flag_forces_it() {
-        // No verbose, no report format, no --log-output — would otherwise be
-        // false, but the explicit flag must still force capture on.
         assert!(should_capture_exchange(true, false, false, false));
     }
 
@@ -1277,7 +1205,6 @@ mod tests {
 
     #[test]
     fn retry_only_on_retryable_transport_status() {
-        // Genuine transport failures carry the canonical gRPC error token.
         assert!(should_retry_message(
             "Validation failed:\n  - Failed to start gRPC stream: gRPC error code=14 message=connection refused"
         ));
@@ -1288,7 +1215,6 @@ mod tests {
 
     #[test]
     fn no_retry_on_non_retryable_transport_status() {
-        // NOT_FOUND / INVALID_ARGUMENT and friends are terminal.
         assert!(!should_retry_message(
             "gRPC error: code=5 message=not found"
         ));
@@ -1299,7 +1225,6 @@ mod tests {
 
     #[test]
     fn retry_result_requires_transport_kind() {
-        // A retryable gRPC code but classified as an Assertion failure → no retry.
         let assertion = execution::TestExecutionResult::fail(
             "Validation failed:\n  - gRPC error code=14 message=unavailable".to_string(),
             None,
@@ -1310,7 +1235,6 @@ mod tests {
         );
         assert!(!should_retry_result(&assertion));
 
-        // Same message, but a genuine transport failure → retry.
         let transport = execution::TestExecutionResult::fail(
             "Validation failed:\n  - Failed to start gRPC stream: gRPC error code=14 message=unavailable".to_string(),
             None,
@@ -1318,7 +1242,6 @@ mod tests {
         .with_failure_kind(execution::FailureKind::Transport);
         assert!(should_retry_result(&transport));
 
-        // Transport failure with a terminal code → no retry.
         let transport_terminal = execution::TestExecutionResult::fail(
             "gRPC error code=5 message=not found".to_string(),
             None,
@@ -1326,7 +1249,6 @@ mod tests {
         .with_failure_kind(execution::FailureKind::Transport);
         assert!(!should_retry_result(&transport_terminal));
 
-        // Passing result is never retried.
         assert!(!should_retry_result(&execution::TestExecutionResult::pass(
             None
         )));
@@ -1334,15 +1256,12 @@ mod tests {
 
     #[test]
     fn assertion_failure_with_timeout_text_is_not_retried() {
-        // Regression: an assertion mismatch whose expected text merely contains
-        // the word "timeout" (or "network"/"unavailable") must never be retried.
         assert!(!should_retry_message(
             "Validation failed:\n  - Error mismatch at line 12:\n  - expected \"request timeout exceeded\", got \"ok\""
         ));
         assert!(!should_retry_message(
             "Validation failed:\n  - expected error message to contain 'network unavailable'"
         ));
-        // A JSON `\"code\": 14` field in an assertion payload is not a transport token.
         assert!(!should_retry_message(
             "Validation failed:\n  - expected {\"code\": 14} got {\"code\": 0}"
         ));
@@ -1504,8 +1423,6 @@ mod tests {
 
     #[test]
     fn per_row_failure_fails_the_suite_but_keeps_all_results() {
-        // Rows are independent stream items: a passing row and a failing row
-        // both report, and any failure fails the suite.
         let mut results = TestResults::new();
         results.add(TestResult::pass("t.gctf#[row=0 users.user=alice]", 0, None));
         results.add(TestResult::fail(
@@ -1553,7 +1470,6 @@ mod tests {
         assert!(names.iter().any(|n| n.contains("users.user=alice")));
         assert!(names.iter().any(|n| n.contains("users.user=bob")));
 
-        // Per-row variables are namespaced under the source name and carried through.
         let alice = items
             .iter()
             .find_map(|it| match it {
@@ -1575,7 +1491,6 @@ mod tests {
         let dir = std::env::temp_dir().join("gctf_run_data_empty_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        // Header only — zero data rows.
         std::fs::write(dir.join("users.csv"), "user,role\n").unwrap();
         let gctf = dir.join("template.gctf");
         std::fs::write(&gctf, TEMPLATE_GCTF).unwrap();
@@ -1687,9 +1602,41 @@ mod tests {
     }
 
     #[test]
+    fn a_directory_of_http_tests_has_fixtures_too() {
+        let files = vec![
+            PathBuf::from("api/_setup.httf"),
+            PathBuf::from("api/list.httf"),
+            PathBuf::from("api/_teardown.httf"),
+        ];
+        let (tests, fixtures) = partition_fixtures(files);
+
+        assert_eq!(tests, vec![PathBuf::from("api/list.httf")]);
+        let fx = &fixtures[&PathBuf::from("api")];
+        assert_eq!(fx.setup, Some(PathBuf::from("api/_setup.httf")));
+        assert_eq!(fx.teardown, Some(PathBuf::from("api/_teardown.httf")));
+    }
+
+    #[test]
+    fn only_a_test_file_can_be_a_fixture() {
+        assert_eq!(
+            fixture_role(Path::new("d/_setup.gctf")),
+            Some(FixtureRole::Setup)
+        );
+        assert_eq!(
+            fixture_role(Path::new("d/_setup.httf")),
+            Some(FixtureRole::Setup)
+        );
+        assert_eq!(
+            fixture_role(Path::new("d/_teardown.httf")),
+            Some(FixtureRole::Teardown)
+        );
+        assert_eq!(fixture_role(Path::new("d/_setup.md")), None);
+        assert_eq!(fixture_role(Path::new("d/_setup")), None);
+        assert_eq!(fixture_role(Path::new("d/setup.httf")), None);
+    }
+
+    #[test]
     fn partition_fixtures_excludes_and_groups_by_dir() {
-        // `_setup.gctf`/`_teardown.gctf` must never land in the normal test set;
-        // they are grouped under their exact parent directory.
         let files = vec![
             PathBuf::from("suite/a.gctf"),
             PathBuf::from("suite/_setup.gctf"),
@@ -1719,7 +1666,6 @@ mod tests {
         assert_eq!(suite.setup, Some(PathBuf::from("suite/_setup.gctf")));
         assert_eq!(suite.teardown, Some(PathBuf::from("suite/_teardown.gctf")));
 
-        // Exact-directory scope: nested setup belongs only to the nested dir.
         let nested = fixtures
             .get(Path::new("suite/nested"))
             .expect("nested fixtures");
@@ -1732,7 +1678,6 @@ mod tests {
 
     #[test]
     fn partition_fixtures_no_fixtures_is_passthrough() {
-        // No fixture files → tests pass through unchanged and no dir is tracked.
         let files = vec![PathBuf::from("a.gctf"), PathBuf::from("dir/b.gctf")];
         let (tests, fixtures) = partition_fixtures(files.clone());
         assert_eq!(tests, files);
@@ -1754,15 +1699,18 @@ mod tests {
 
     #[test]
     fn setup_failure_skips_only_dependent_dir_tests() {
-        // Lifecycle decision: a test is skipped iff its directory's setup failed.
-        // Tests in other dirs (and dirless items) are unaffected; teardown is
-        // driven separately and always runs (see `run_tests`).
-        let mut failed = HashSet::new();
-        failed.insert(PathBuf::from("suite"));
+        let mut failed = HashMap::new();
+        failed.insert(PathBuf::from("suite"), "_setup.httf".to_string());
 
-        assert!(item_skipped_by_setup(Some(Path::new("suite")), &failed));
-        assert!(!item_skipped_by_setup(Some(Path::new("other")), &failed));
-        assert!(!item_skipped_by_setup(None, &failed));
+        assert_eq!(
+            item_skipped_by_setup(Some(Path::new("suite")), &failed),
+            Some("_setup.httf")
+        );
+        assert_eq!(
+            item_skipped_by_setup(Some(Path::new("other")), &failed),
+            None
+        );
+        assert_eq!(item_skipped_by_setup(None, &failed), None);
     }
 
     #[test]

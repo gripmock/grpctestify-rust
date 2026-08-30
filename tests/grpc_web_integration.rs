@@ -144,6 +144,31 @@ async fn spawn_web_server() -> String {
     format!("http://{}", addr)
 }
 
+/// The same server, plus the reflection service, so the schema can be asked for
+/// over the very port the calls go to.
+async fn spawn_reflective_web_server() -> String {
+    let incoming = TcpIncoming::bind("127.0.0.1:0".parse().unwrap()).expect("bind ephemeral port");
+    let addr = incoming.local_addr().expect("local addr");
+
+    let reflection = tonic_reflection::server::Builder::configure()
+        .register_encoded_file_descriptor_set(TEST_SERVERS_DESCRIPTOR)
+        .build_v1()
+        .expect("reflection service");
+
+    tokio::spawn(async move {
+        Server::builder()
+            .accept_http1(true)
+            .layer(GrpcWebLayer::new())
+            .add_service(EchoServiceServer::new(WebEcho))
+            .add_service(reflection)
+            .serve_with_incoming(incoming)
+            .await
+            .expect("server run");
+    });
+
+    format!("http://{}", addr)
+}
+
 /// Descriptor file kept alive for the duration of a test (drop = delete).
 fn descriptor_file() -> NamedTempFile {
     let file = NamedTempFile::new().expect("temp descriptor");
@@ -451,4 +476,39 @@ async fn grpc_web_gzip_request_roundtrip() {
     assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
     assert_eq!(resp.messages.len(), 1, "messages: {:?}", resp.messages);
     assert_eq!(resp.messages[0]["message"], json!("Hello, Gzip!"));
+}
+
+/// A gRPC-Web target with no descriptor named still knows its own schema: the
+/// workbench used to report such a server as having no methods at all.
+#[tokio::test]
+async fn grpc_web_reflection_lists_the_servers_services() {
+    let address = spawn_reflective_web_server().await;
+    let mut config = web_config(&address, "", CompressionMode::None);
+    config.proto_config = None;
+
+    let client = grpctestify::grpc::GrpcClient::new(config)
+        .await
+        .expect("client");
+    let services: Vec<String> = client
+        .descriptor_pool()
+        .services()
+        .map(|s| s.full_name().to_string())
+        .collect();
+
+    assert!(
+        services.iter().any(|s| s == "echo.EchoService"),
+        "reflection over grpc-web found {services:?}"
+    );
+
+    let method = client
+        .descriptor_pool()
+        .get_service_by_name("echo.EchoService")
+        .expect("service")
+        .methods()
+        .find(|m| m.name() == "Repeat")
+        .expect("Repeat");
+    assert!(
+        method.is_client_streaming(),
+        "the shape comes with the schema, so a streaming method is not sent as several unary calls"
+    );
 }

@@ -18,6 +18,8 @@ auth.AuthService/Login
 }
 
 --- EXTRACT ---
+session = .session_id
+// Document 2: query data-server with session
 
 --- ADDRESS ---
 data-server:60060
@@ -51,6 +53,8 @@ X-Session: {{session}}
 }
 
 --- EXTRACT ---
+user_ids = [.users[].id]
+// Document 3: fetch metrics from metrics-server (no ADDRESS, uses default)
 
 --- ENDPOINT ---
 metrics.MetricsService/GetCounters

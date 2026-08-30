@@ -29,6 +29,9 @@ api.ItemService/ListItems
 }
 
 --- EXTRACT ---
+next_cursor = .cursor
+item_count = .items | length
+has_more = .has_more
 
 --- ASSERTS ---
 item_count == 2
@@ -64,6 +67,8 @@ api.ItemService/ListItems
 }
 
 --- EXTRACT ---
+next_cursor = .cursor
+page2_count = .items | length
 
 --- ASSERTS ---
 page2_count == 2

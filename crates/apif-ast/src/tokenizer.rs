@@ -1,16 +1,5 @@
-//! Public tokenizer for GCTF assertion expressions.
-//!
-//! Pipeline: `text → tokenize_assertion() → Vec<Token>` where each `Token`
-//! has a `Span { start, end }` with exact byte positions in the source.
-//!
-//! This is used by:
-//! - **LSP semantic tokens** — highlight operators, keywords, plugins, regexes
-//! - **Optimizer** — safe string-literal-aware rule matching (4.3)
-//! - **Semantics** — type-checking operators against TypeInfo
-
 use serde::{Deserialize, Serialize};
 
-/// Byte range in source text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Span {
     pub start: usize,
@@ -27,7 +16,6 @@ impl Span {
     }
 }
 
-/// Token kinds produced by the assertion tokenizer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TokenKind {
     Ident(String),
@@ -51,7 +39,6 @@ pub enum TokenKind {
     VarDelim,
 }
 
-/// A token with its source position.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Token {
     pub kind: TokenKind,
@@ -64,8 +51,6 @@ impl Token {
     }
 }
 
-/// Tokenize an assertion expression string into a list of tokens with
-/// exact byte positions.
 pub fn tokenize_assertion(source: &str) -> Vec<Token> {
     let mut out = Vec::with_capacity(source.len() / 2);
     let cs: Vec<char> = source.chars().collect();
@@ -161,9 +146,6 @@ pub fn tokenize_assertion(source: &str) -> Vec<Token> {
                 ));
             }
             '=' => {
-                // Lone `=` is not a valid GCTF operator (likely a typo for
-                // `==`). Emit it so the parser rejects the expression instead
-                // of silently dropping the character.
                 let s = i;
                 i += 1;
                 out.push(Token::new(
@@ -220,8 +202,6 @@ pub fn tokenize_assertion(source: &str) -> Vec<Token> {
                 while i < cs.len() && cs[i] != '"' {
                     if cs[i] == '\\' && i + 1 < cs.len() {
                         i += 1;
-                        // The value is compared against a JSON payload decoded
-                        // by json5, so this must decode what json5 decodes.
                         match cs[i] {
                             'n' => v.push('\n'),
                             't' => v.push('\t'),
@@ -241,9 +221,6 @@ pub fn tokenize_assertion(source: &str) -> Vec<Token> {
                                         v.push(c);
                                         i += 4;
                                     }
-                                    // Not a well-formed `\uXXXX`: keep the
-                                    // source text rather than silently dropping
-                                    // the backslash.
                                     None => v.push_str("\\u"),
                                 }
                             }
@@ -279,9 +256,6 @@ pub fn tokenize_assertion(source: &str) -> Vec<Token> {
             c if c.is_ascii_digit() => {
                 let s = i;
                 let mut v = String::new();
-                // `_` is a digit separator, not part of the value — `fmt` writes
-                // `1_000_000`, and without this the number lexed as `1` followed
-                // by an identifier and the whole assertion fell back to jq.
                 while i < cs.len()
                     && (cs[i].is_ascii_digit()
                         || cs[i] == '.'
@@ -394,7 +368,6 @@ pub fn tokenize_assertion(source: &str) -> Vec<Token> {
     out
 }
 
-/// Collect all identifier tokens.
 pub fn collect_identifiers(tokens: &[Token]) -> Vec<&str> {
     tokens
         .iter()
@@ -405,7 +378,6 @@ pub fn collect_identifiers(tokens: &[Token]) -> Vec<&str> {
         .collect()
 }
 
-/// Collect all operator tokens.
 pub fn collect_operators(tokens: &[Token]) -> Vec<&str> {
     tokens
         .iter()
@@ -416,7 +388,6 @@ pub fn collect_operators(tokens: &[Token]) -> Vec<&str> {
         .collect()
 }
 
-/// Collect plugin call names with spans.
 pub fn collect_plugin_calls(tokens: &[Token]) -> Vec<(&str, Span)> {
     let mut result = Vec::with_capacity(tokens.len() / 4);
     for [at, ident] in tokens.array_windows::<2>() {
@@ -480,7 +451,6 @@ mod tests {
 
     #[test]
     fn tokenize_regex_flags_preserved() {
-        // Regression: flags were parsed but dropped (`/Foo/i` lost its `i`).
         let tokens = tokenize_assertion("@regex(.x, /Foo/i) == true");
         assert!(tokens.iter().any(|t| matches!(
             &t.kind,
@@ -490,8 +460,6 @@ mod tests {
 
     #[test]
     fn tokenize_lone_equals_emitted() {
-        // Regression: a lone `=` was silently discarded, so `.x = 5`
-        // tokenized as `.x 5` and slipped through as a jq assignment.
         let tokens = tokenize_assertion(".x = 5");
         assert!(
             tokens
@@ -503,7 +471,6 @@ mod tests {
     #[test]
     fn spans_correct() {
         let tokens = tokenize_assertion(".x == 0");
-        // "==" should be at position 3
         if let Some(t) = tokens
             .iter()
             .find(|t| matches!(&t.kind, TokenKind::Op(s) if s == "=="))

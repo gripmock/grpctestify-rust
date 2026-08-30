@@ -13,7 +13,6 @@ use tokio_stream::wrappers::ReceiverStream;
 use super::client::{GrpcClient, GrpcClientConfig, StreamItem};
 use crate::grpc::{TlsConfig, WireProtocol};
 
-/// Factory that creates a native gRPC client.
 pub struct GrpcClientFactory;
 
 #[async_trait]
@@ -47,7 +46,6 @@ fn convert_tls(tls: &apif_execution::TlsConfig) -> TlsConfig {
     }
 }
 
-/// Native gRPC client (tonic).
 pub struct GrpcCallClient(GrpcClient);
 
 #[async_trait]
@@ -91,7 +89,6 @@ impl CallClient for GrpcCallClient {
     }
 }
 
-/// HTTP-based client for gRPC-Web and ConnectRPC.
 pub struct HttpCallClient {
     config: GrpcClientConfig,
 }

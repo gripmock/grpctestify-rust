@@ -8,21 +8,8 @@ use apif_plugins::{PluginSignature, TypeInfo};
 use apif_utils::section_content_line;
 use serde_json::Value as JsonValue;
 
-/// Extra plugin names — `.rhai` scripts' real (loaded) names from the
-/// convention plugin directories — that `collect_unknown_plugin_calls`
-/// should treat as known, on top of `apif_plugins::PLUGIN_SIGNATURES`'s
-/// built-ins-only snapshot. Set once via [`register_extra_plugin_names`],
-/// `OnceLock`-set-once-early — lets deep, widely-shared call chains
-/// (`Workflow::from_document_with_analysis`, used by
-/// `explain`/`inspect`/`lsp`/report `kernel`) pick this up automatically
-/// without threading an extra parameter through a dozen call sites.
 static EXTRA_PLUGIN_NAMES: OnceLock<HashSet<String>> = OnceLock::new();
 
-/// Register the real names of loaded `.rhai` scripts so
-/// `collect_unknown_plugin_calls` (the no-extra-argument form) stops
-/// flagging them as unknown. Must be called before the first semantic
-/// analysis of the run — later calls are no-ops (`OnceLock` only accepts
-/// its first value).
 pub fn register_extra_plugin_names(names: HashSet<String>) {
     let _ = EXTRA_PLUGIN_NAMES.set(names);
 }
@@ -95,7 +82,6 @@ fn extract_plugin_calls(expr: &str) -> Vec<String> {
 
         let start = i + 1;
         let mut end = start;
-        // Match plugin name including dotted type.method syntax
         while end < chars.len()
             && (chars[end].is_ascii_alphanumeric() || chars[end] == '_' || chars[end] == '.')
         {
@@ -107,7 +93,6 @@ fn extract_plugin_calls(expr: &str) -> Vec<String> {
             continue;
         }
 
-        // Skip whitespace before (
         let mut cursor = end;
         while cursor < chars.len() && chars[cursor].is_whitespace() {
             cursor += 1;
@@ -153,8 +138,6 @@ fn best_plugin_suggestion(unknown: &str, known_plugins: &[String]) -> Option<Str
     })
 }
 
-/// Extract variable type annotations from EXTRACT sections across a document chain.
-/// Returns a map of variable name → TypeInfo parsed from `name:Type = .path` lines.
 pub fn extract_variable_types(doc: &parser::GctfDocument) -> HashMap<String, TypeInfo> {
     let mut var_types = HashMap::new();
     for d in doc.iter_chain() {
@@ -180,7 +163,6 @@ pub fn infer_type_from_tokens(
     signatures: &HashMap<String, PluginSignature>,
     var_types: &HashMap<String, TypeInfo>,
 ) -> TypeInfo {
-    // Check for $var_name pattern — look up variable type
     if tokens.len() == 1
         && let TokenKind::Ident(name) = &tokens[0].kind
         && name.starts_with('$')
@@ -191,7 +173,6 @@ pub fn infer_type_from_tokens(
         }
     }
 
-    // Check for `:TypeName` type annotation: `expr:number`
     if tokens.len() >= 2
         && let Some(TokenKind::Ident(name)) = tokens.last().map(|t| &t.kind)
         && let Some(cast_type) = TypeInfo::parse_type_name(name)
@@ -217,7 +198,6 @@ pub fn infer_type_from_tokens(
             _ => "",
         };
         if !name.is_empty() {
-            // Check for @type.method syntax — look up full name including method
             let full_name: String = if tokens.len() >= 5
                 && matches!(&tokens[2].kind, TokenKind::Dot)
                 && let TokenKind::Ident(method) = &tokens[3].kind
@@ -249,8 +229,6 @@ fn detect_type_mismatch(
 ) -> Option<AssertionTypeMismatch> {
     let tokens = tokenize_assertion(expr);
     let (op, op_idx, op_len) = operator_from_tokens(&tokens)?;
-    // Token spans are char indices (the tokenizer iterates over chars), so
-    // convert them to byte offsets before slicing the source string.
     let char_to_byte = |char_idx: usize| -> usize {
         expr.char_indices()
             .nth(char_idx)
@@ -267,7 +245,6 @@ fn detect_type_mismatch(
     let lhs_type = infer_type_from_tokens(&lhs_tokens, signatures, var_types);
     let rhs_type = infer_type_from_tokens(&rhs_tokens, signatures, var_types);
 
-    // Check if the operator is valid for the left-hand side type
     let (valid, reason) = lhs_type.supports_operator(op);
     if !valid {
         return Some(AssertionTypeMismatch {
@@ -285,9 +262,7 @@ fn detect_type_mismatch(
         });
     }
 
-    // For comparison operators, also check type compatibility between LHS and RHS
     if op == "==" || op == "!=" {
-        // Equality is allowed between most types, but flag obvious mismatches
         if lhs_type != TypeInfo::Any
             && rhs_type != TypeInfo::Any
             && !types_compatible(lhs_type, rhs_type)
@@ -352,24 +327,19 @@ fn detect_type_mismatch(
     None
 }
 
-/// Check if two types can be reasonably compared with ==/!=.
 fn types_compatible(a: TypeInfo, b: TypeInfo) -> bool {
     if a == b {
         return true;
     }
-    // Numeric types are compatible
     if a.is_numeric() && b.is_numeric() {
         return true;
     }
-    // Time is compatible with numeric (both support ordering)
     if a == TypeInfo::Time && b.is_numeric() || b == TypeInfo::Time && a.is_numeric() {
         return true;
     }
-    // String-like types are compatible
     if a.is_stringy() && b.is_stringy() {
         return true;
     }
-    // Unknown (Any) is compatible with anything
     if a == TypeInfo::Any || b == TypeInfo::Any {
         return true;
     }
@@ -422,7 +392,7 @@ pub fn collect_deprecated_plugin_calls(doc: &parser::GctfDocument) -> Vec<Deprec
                         ),
                         replacement: format!("@{}", new_name),
                     });
-                    break; // one warning per line
+                    break;
                 }
             }
         }
@@ -439,8 +409,6 @@ pub struct ConstantAssertion {
     pub message: String,
 }
 
-/// Flags `literal == literal` / `literal != literal` assertions — always the
-/// same result regardless of the response, usually a typo for `.field == ...`.
 pub fn collect_constant_assertions(doc: &parser::GctfDocument) -> Vec<ConstantAssertion> {
     let mut constants = Vec::new();
     for section in doc.iter_chain().flat_map(|d| d.sections.iter()) {
@@ -481,9 +449,6 @@ pub struct DuplicateAssertion {
     pub message: String,
 }
 
-/// Flags an ASSERTS line that's an exact repeat of an earlier line in the
-/// same section (comments stripped first, so a trailing `// note` doesn't
-/// hide a duplicate).
 pub fn collect_duplicate_assertions(doc: &parser::GctfDocument) -> Vec<DuplicateAssertion> {
     let mut duplicates = Vec::new();
     for section in doc.iter_chain().flat_map(|d| d.sections.iter()) {
@@ -526,18 +491,6 @@ pub struct RedundantResponseAssertion {
     pub message: String,
 }
 
-/// Flags a `.path == literal` ASSERTS line whose exact value is already
-/// pinned by the `RESPONSE with_asserts` body it's attached to — the
-/// ASSERTS check can never catch anything RESPONSE's own JSON match
-/// wouldn't already have failed on first.
-///
-/// Deliberately conservative: only `RESPONSE with_asserts` immediately
-/// followed by `ASSERTS` (the one shape the runner itself treats as
-/// attached, see `Runner::has_required_followup_asserts`) is considered;
-/// `tolerance`/`redact`/`unordered_arrays` on that `RESPONSE` disable the
-/// check entirely (they weaken what "pinned" means in ways not worth
-/// modeling here), and only scalar leaf values at simple dotted paths
-/// (`.a.b`, no brackets/indices) are matched.
 pub fn collect_redundant_response_assertions(
     doc: &parser::GctfDocument,
 ) -> Vec<RedundantResponseAssertion> {
@@ -604,10 +557,7 @@ fn flatten_scalar_paths(value: &JsonValue, prefix: String, out: &mut HashMap<Str
                 flatten_scalar_paths(v, path, out);
             }
         }
-        // "*" is RESPONSE's own wildcard — it doesn't pin a value at all.
         JsonValue::String(s) if s == "*" => {}
-        // Conservative: arrays aren't modeled (index-path matching, wildcard
-        // elements, unordered comparison already excluded above).
         JsonValue::Array(_) => {}
         _ => {
             if !prefix.is_empty() {
@@ -637,7 +587,6 @@ fn redundant_equality_path(expr: &str, pinned: &HashMap<String, JsonValue>) -> O
         _ => return None,
     };
     let path = path.strip_prefix('.')?;
-    // Simple dotted identifiers only — bracket/index/pipe paths bail out.
     if path.is_empty()
         || !path
             .chars()
@@ -707,10 +656,6 @@ pub fn collect_assertion_type_mismatches(doc: &parser::GctfDocument) -> Vec<Asse
     let var_types = extract_variable_types(doc);
     let mut mismatches = Vec::new();
 
-    // A chain's 2nd+ document is not the head — scan every document, not
-    // just `doc.sections` (the earlier `extract_variable_types` already does
-    // this for EXTRACT; ASSERTS type-checking must match or vars extracted
-    // in one document silently go unchecked wherever they're actually used).
     for section in doc.iter_chain().flat_map(|d| d.sections.iter()) {
         if section.section_type != parser::ast::SectionType::Asserts {
             continue;
@@ -736,11 +681,6 @@ pub fn collect_unknown_plugin_calls(doc: &parser::GctfDocument) -> Vec<UnknownPl
     collect_unknown_plugin_calls_with_extra(doc, extra_plugin_names())
 }
 
-/// Same as [`collect_unknown_plugin_calls`], but a call whose name is in
-/// `extra_known` is also treated as known — the shared way to make `.rhai`
-/// scripts' real (loaded, not guessed-from-filename) names visible to
-/// `check`/`fmt`/`explain`/`inspect`, which otherwise only see
-/// `apif_plugins::PLUGIN_SIGNATURES`'s built-ins-only, process-wide snapshot.
 pub fn collect_unknown_plugin_calls_with_extra(
     doc: &parser::GctfDocument,
     extra_known: &std::collections::HashSet<String>,
@@ -819,18 +759,13 @@ test.Service/Method
 
     #[test]
     fn semantics_multibyte_expression_no_panic() {
-        // Regression: token spans are char indices, but the expression was
-        // byte-sliced — multibyte identifiers panicked on char boundaries.
         let content = "--- ENDPOINT ---\ntest.Service/Method\n\n--- ASSERTS ---\n\u{ef}\u{ef} == 1\n.na\u{ef}ve == \"x\"\n";
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
-        // Must not panic; multibyte lhs/rhs must split on the operator correctly.
         let _ = collect_assertion_type_mismatches(&doc);
 
         let mismatch =
             detect_type_mismatch(".na\u{ef}ve == \"x\"", plugin_signatures(), &HashMap::new());
-        // `.naïve` is Any, `"x"` is String — compatible, so no mismatch,
-        // and crucially no panic or incorrectly split lhs/rhs.
         assert!(mismatch.is_none(), "got: {:?}", mismatch);
     }
 
@@ -860,7 +795,6 @@ test.Service/Method
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
         let mismatches = collect_assertion_type_mismatches(&doc);
         assert_eq!(mismatches.len(), 1);
-        // SEM_T005: startsWith is not valid for non-string LHS (UInt from @len)
         assert_eq!(mismatches[0].rule_id, "SEM_T005");
     }
 
@@ -878,7 +812,6 @@ test.Service/Method
         assert_eq!(unknown.len(), 1);
         assert_eq!(unknown[0].rule_id, "SEM_F001");
         assert_eq!(unknown[0].plugin_name, "regexp");
-        // Suggestion now points to the closest type method match
         assert!(unknown[0].suggestion.is_some());
     }
 
@@ -895,8 +828,6 @@ test.Service/Method
         let unknown = collect_unknown_plugin_calls(&doc);
         assert!(unknown.is_empty());
     }
-
-    // ─── Type cast semantics tests ────────────────────────────────────
 
     #[test]
     fn semantics_type_cast_number_allows_ordering() {
@@ -1045,7 +976,6 @@ test.Service/Method
 
     #[test]
     fn semantics_type_cast_without_annotation_passes() {
-        // Any now supports all operators — no annotation needed for ordering
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1067,8 +997,6 @@ test.Service/Method
             mismatches
         );
     }
-
-    // ─── Variable type tracking tests ─────────────────────────────────
 
     #[test]
     fn extract_variable_types_simple() {
@@ -1118,8 +1046,6 @@ total = .price
 
     #[test]
     fn variable_type_in_assertion() {
-        // When {{price}} is used and its type is known from EXTRACT,
-        // ordering operators should be allowed
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1147,7 +1073,6 @@ $price >= 0
 
     #[test]
     fn variable_type_without_annotation_passes() {
-        // Any supports all operators — untyped $var allows ordering
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1439,8 +1364,6 @@ test.Service/Method
 
     #[test]
     fn collect_deprecated_plugin_finds_second_document_in_chain() {
-        // A chain's 2nd+ document is not `doc.sections` (the head) — this
-        // must scan every document via `doc.iter_chain()`, not just the head.
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1597,9 +1520,6 @@ test.Service/Method
 
     #[test]
     fn collect_redundant_response_assertions_ignores_without_with_asserts() {
-        // RESPONSE (no with_asserts) followed by an unrelated top-level
-        // ASSERTS block isn't "attached" the way the runner treats it —
-        // must not be treated as redundant.
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 

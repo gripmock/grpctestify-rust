@@ -476,17 +476,8 @@ static BOOLEAN_PLUGINS: LazyLock<HashSet<String>> = LazyLock::new(|| {
         .collect()
 });
 
-/// `.rhai` plugins tagged `@pure` with `@returns bool` — set once via
-/// [`register_extra_boolean_plugins`], same `OnceLock`-set-once-early
-/// pattern as `apif_semantics::register_extra_plugin_names`. `BOOLEAN_PLUGINS`
-/// itself stays built-ins-only; `is_boolean_plugin_expr` checks both.
 static EXTRA_BOOLEAN_PLUGINS: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
 
-/// Register `.rhai` plugin names that are safe to treat as boolean/pure for
-/// rewrite purposes (i.e. loaded plugins whose `signature()` reports
-/// `return_type: Bool` and `safe_for_rewrite`/`deterministic`/`idempotent:
-/// true` — the `@pure`+`@returns bool` doc-tag combination). Must be called
-/// before the first optimizer pass of the run — later calls are no-ops.
 pub fn register_extra_boolean_plugins(names: HashSet<String>) {
     let _ = EXTRA_BOOLEAN_PLUGINS.set(names);
 }
@@ -587,7 +578,6 @@ fn suggest_inequality_rewrite(
     None
 }
 
-/// Redundant parentheses: (expr) -> expr (single expression, no ambiguity)
 fn suggest_redundant_parens(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
     if !level.is_enabled(OptimizeLevel::Safe) {
         return None;
@@ -639,10 +629,6 @@ fn suggest_double_negation_rewrite(
     None
 }
 
-/// Replace `needle` with `replacement`, but only where `needle` occurs OUTSIDE
-/// of string literals. This prevents corrupting expected values that happen to
-/// contain the operator text (e.g. `.msg == "run startswith now"`).
-/// Returns `None` when no replacement outside of string literals was made.
 fn replace_outside_string_literals(expr: &str, needle: &str, replacement: &str) -> Option<String> {
     let mut result = String::with_capacity(expr.len());
     let mut in_quotes = false;
@@ -674,7 +660,6 @@ fn replace_outside_string_literals(expr: &str, needle: &str, replacement: &str) 
         if expr[i..].starts_with(needle) {
             result.push_str(replacement);
             replaced = true;
-            // Skip the remaining chars of the matched needle.
             let end = i + needle.len();
             while let Some(&(j, _)) = chars.peek() {
                 if j < end {
@@ -873,7 +858,6 @@ fn suggest_reflexive_idempotent(
     Some((rule_id, result.to_string()))
 }
 
-/// Parse if-then-else expression and extract parts
 fn parse_if_then_else(expr: &str) -> Option<(&str, &str, &str)> {
     let expr = expr.trim();
 
@@ -890,7 +874,6 @@ fn parse_if_then_else(expr: &str) -> Option<(&str, &str, &str)> {
     let mut in_string = false;
     let mut string_char = None;
     while i < bytes.len() {
-        // Handle string literals
         if in_string {
             if let Some(quote) = string_char
                 && bytes[i] == quote
@@ -991,7 +974,6 @@ fn parse_if_then_else(expr: &str) -> Option<(&str, &str, &str)> {
     Some((condition, then_expr, else_expr))
 }
 
-/// Dead branch elimination: if true then A else B = A
 fn suggest_dead_branch_elimination(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
     if !level.is_enabled(OptimizeLevel::Safe) {
         return None;
@@ -1009,7 +991,6 @@ fn suggest_dead_branch_elimination(expr: &str, level: OptimizeLevel) -> Option<(
     None
 }
 
-/// Branch merging: if C then X else X = X
 fn suggest_branch_merging(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
     if !level.is_enabled(OptimizeLevel::Advisory) {
         return None;
@@ -1023,14 +1004,12 @@ fn suggest_branch_merging(expr: &str, level: OptimizeLevel) -> Option<(RuleId, S
     None
 }
 
-/// Nested if simplification: if A then (if A then X else Y) else Z = if A then X else Z
 fn suggest_nested_if_simplification(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
     if !level.is_enabled(OptimizeLevel::Advisory) {
         return None;
     }
     let (outer_cond, inner_expr, else_expr) = parse_if_then_else(expr)?;
 
-    // Strip parentheses from inner expression if present
     let inner_stripped = inner_expr.trim();
     let inner_stripped = if inner_stripped.starts_with('(') && inner_stripped.ends_with(')') {
         &inner_stripped[1..inner_stripped.len() - 1]
@@ -1051,7 +1030,6 @@ fn suggest_nested_if_simplification(expr: &str, level: OptimizeLevel) -> Option<
     None
 }
 
-/// Boolean simplification: if C then true else false = C
 fn suggest_boolean_simplification(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
     if !level.is_enabled(OptimizeLevel::Advisory) {
         return None;
@@ -1091,7 +1069,6 @@ fn negate_condition_expr(condition: &str) -> String {
     }
 }
 
-/// Condition inversion: if C then false else true = !(C)
 fn suggest_condition_inversion(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
     if !level.is_enabled(OptimizeLevel::Advisory) {
         return None;
@@ -1105,8 +1082,6 @@ fn suggest_condition_inversion(expr: &str, level: OptimizeLevel) -> Option<(Rule
     }
 }
 
-/// Boolean identity/absorption: A or true = true, A and false = false
-/// The boolean value of an operand, if it is literally `true`/`false`.
 fn bool_literal(expr: &parser::assertion_ast::AssertionExpr) -> Option<bool> {
     use parser::assertion_ast::{AssertionExpr, Expr, Literal};
     match expr {
@@ -1122,10 +1097,6 @@ fn suggest_boolean_identity_laws(expr: &str, level: OptimizeLevel) -> Option<(Ru
     }
     use parser::assertion_ast::{AssertionExpr, assertion_to_string};
 
-    // The parse tree already applied precedence, so only the operator that
-    // actually joins the expression is at the top: `.a or .b and false` is
-    // `Or(.a, And(.b, false))`, so the fold looks at the `or`, never the `and`
-    // it used to collapse the whole thing on.
     let ast = parser::assertion_ast::parse_assertion(expr.trim());
     match &ast {
         AssertionExpr::Or { left, right } => {
@@ -1156,7 +1127,6 @@ fn suggest_boolean_identity_laws(expr: &str, level: OptimizeLevel) -> Option<(Ru
     }
 }
 
-/// Plugin-specific: @len(.x) == 0 → @is_empty(.x)
 fn suggest_plugin_length_simplification(
     expr: &str,
     level: OptimizeLevel,
@@ -1165,9 +1135,6 @@ fn suggest_plugin_length_simplification(
         return None;
     }
     fn extract_len_inner(s: &str) -> Option<&str> {
-        // Match the close paren belonging to the FIRST `@len(` via depth
-        // counting, and only accept it when that call spans the whole side.
-        // Otherwise `@len(a) and @len(b)` would wrongly extract `a) and @len(b`.
         let rest = s.strip_prefix("@len(")?;
         let mut depth = 1usize;
         for (i, c) in rest.char_indices() {
@@ -1190,13 +1157,6 @@ fn suggest_plugin_length_simplification(
     }
 
     fn rewrite_len_zero_cmp(op: &str, inner: &str, len_on_left: bool) -> Option<String> {
-        // `@len(x)` is unsigned, so it is always `>= 0`. The rewrite must be
-        // operand-side aware: `@len(x) <= 0` collapses to `@is_empty(x)`, but
-        // `0 <= @len(x)` is a tautology and must not become `@is_empty(x)`.
-        // Emit the canonical `is_empty` name directly (not the deprecated
-        // `empty` alias) — otherwise a second `fmt` pass would rename it via
-        // the deprecated-plugin-rename rule, making the rewrite non-idempotent
-        // within a single format call.
         match (op, len_on_left) {
             ("==", _) => Some(format!("@is_empty({})", inner)),
             ("<=", true) => Some(format!("@is_empty({})", inner)),
@@ -1212,7 +1172,6 @@ fn suggest_plugin_length_simplification(
 
     let expr = expr.trim();
 
-    // Patterns: @len(.x) == 0, @len(.x) != 0, @len(.x) > 0
     let operators = [
         (" == ", "=="),
         (" != ", "!="),
@@ -1245,9 +1204,6 @@ fn suggest_plugin_length_simplification(
     None
 }
 
-/// Type-aware numeric comparison optimization.
-/// Uses TypeInfo to detect that certain plugins return unsigned integers,
-/// making comparisons like `@len(.x) >= 0` always true.
 fn suggest_type_aware_numeric_comparison(
     expr: &str,
     level: OptimizeLevel,
@@ -1283,12 +1239,6 @@ fn suggest_type_aware_numeric_comparison(
     }
 }
 
-/// Comparison negation: not (.x == 5) → .x != 5
-/// Positions of `op` that sit at paren depth 0 and outside string literals.
-/// Every boolean rule below used a raw `find`, which happily matched an
-/// operator nested inside parentheses, inside a string, or belonging to a
-/// sub-expression — the source of three rewrites that changed what an
-/// assertion means.
 fn top_level_positions(expr: &str, op: &str) -> Vec<usize> {
     let mut out = Vec::new();
     let mut depth = 0i32;
@@ -1318,12 +1268,8 @@ fn top_level_positions(expr: &str, op: &str) -> Vec<usize> {
     out
 }
 
-/// Arguments of a call whose `(` has already been consumed, plus whatever
-/// follows the matching `)`. Returns `None` if the parenthesis never closes.
 fn split_call_args(after_open_paren: &str) -> Option<(&str, &str)> {
     let mut parens = 0i32;
-    // Brackets are tracked too, so a `)` that belongs to neither a nested call
-    // nor a string cannot end the argument list from inside `[…]`/`{…}`.
     let mut brackets = 0i32;
     let mut quote: Option<char> = None;
     let mut escaped = false;
@@ -1360,7 +1306,6 @@ fn suggest_comparison_negation(expr: &str, level: OptimizeLevel) -> Option<(Rule
     }
     use parser::assertion_ast::{AssertionExpr, BinaryOp};
 
-    // `!(…)` / `not (…)` parse to `Not`; unwrap a single wrapping `Paren`.
     let ast = parser::assertion_ast::parse_assertion(expr.trim());
     let AssertionExpr::Not(inner) = &ast else {
         return None;
@@ -1369,9 +1314,6 @@ fn suggest_comparison_negation(expr: &str, level: OptimizeLevel) -> Option<(Rule
         AssertionExpr::Paren(p) => &**p,
         other => other,
     };
-    // Only a single comparison flips. A compound (`And`/`Or`/…) needs De
-    // Morgan, which this rule doesn't do, so it declines — the parse tree makes
-    // that a shape mismatch instead of a hand-rolled top-level-operator scan.
     let AssertionExpr::Binary { op, left, right } = inner else {
         return None;
     };
@@ -1382,7 +1324,6 @@ fn suggest_comparison_negation(expr: &str, level: OptimizeLevel) -> Option<(Rule
         BinaryOp::Lt => BinaryOp::Ge,
         BinaryOp::Ge => BinaryOp::Lt,
         BinaryOp::Le => BinaryOp::Gt,
-        // Contains/Matches/StartsWith/EndsWith have no single-operator negation.
         _ => return None,
     };
     let rewritten = parser::assertion_ast::assertion_to_string(&AssertionExpr::Binary {
@@ -1417,7 +1358,6 @@ fn negate_comparison_expr(inner: &str) -> Option<String> {
     None
 }
 
-/// Detect redundant type annotations: `@len(.x):uint` → `@len(.x)` when `@len` already returns uint.
 fn suggest_redundant_type_cast(
     expr: &str,
     signatures: &HashMap<String, PluginSignature>,
@@ -1434,7 +1374,6 @@ fn suggest_redundant_type_cast(
     let cast_type_name = &expr[colon_pos + 1..];
     let inner_expr = expr[..colon_pos].trim();
 
-    // Extract the type name (stop at non-alphanumeric chars)
     let cast_type_end = cast_type_name
         .find(|c: char| !c.is_alphanumeric() && c != '_')
         .unwrap_or(cast_type_name.len());
@@ -1443,20 +1382,16 @@ fn suggest_redundant_type_cast(
         return None;
     }
 
-    // Only consider casts into valid TypeInfo names
     let cast_type = TypeInfo::parse_type_name(cast_type_name)?;
 
-    // Infer type of inner expression
     let inner_tokens = parser::tokenizer::tokenize_assertion(inner_expr);
     let empty_vars = std::collections::HashMap::new();
     let inner_type = apif_semantics::infer_type_from_tokens(&inner_tokens, signatures, &empty_vars);
 
-    // If inner type is unknown, cast might be useful — don't flag
     if inner_type == TypeInfo::Any || inner_type == TypeInfo::Yaml || inner_type == TypeInfo::Json {
         return None;
     }
 
-    // If the cast type matches the inferred type, it's redundant
     let cast_base = cast_type.base_type();
     let inner_base = inner_type.base_type();
 
@@ -1467,7 +1402,6 @@ fn suggest_redundant_type_cast(
         return None;
     }
 
-    // Build the rewritten expression by removing the `:type` suffix
     let after_colon = &expr[colon_pos + 1..];
     let rest = after_colon[cast_type_name.len()..].trim();
 
@@ -1480,8 +1414,6 @@ fn suggest_redundant_type_cast(
     Some((rule_ids::T002, rewritten))
 }
 
-/// Detect and rewrite deprecated plugin calls using PluginSignature metadata.
-/// Also handles `!@is_empty(x)` → `@has_value(x)`.
 fn suggest_deprecated_plugin_rename(
     expr: &str,
     signatures: &HashMap<String, PluginSignature>,
@@ -1492,10 +1424,6 @@ fn suggest_deprecated_plugin_rename(
     }
     let trimmed = expr.trim();
 
-    // The call's own parenthesis has to close where the pattern says it does.
-    // Taking "everything up to the last 10 characters" as the argument turned
-    // `@is_empty(.a) and @is_empty(.b) == false` into
-    // `@has_value(.a) and @is_empty(.b)` — both operands inverted the wrong way.
     if let Some(inner) = trimmed.strip_prefix("!@is_empty(")
         && let Some((args, rest)) = split_call_args(inner)
         && rest.is_empty()
@@ -1517,7 +1445,6 @@ fn suggest_deprecated_plugin_rename(
         return Some((rule_ids::R002, format!("@has_value({})", args)));
     }
 
-    // Generic deprecated plugin rename — read from PluginSignature.replacement
     for (name, sig) in signatures {
         let Some(replacement) = sig.replacement else {
             continue;
@@ -1528,14 +1455,12 @@ fn suggest_deprecated_plugin_rename(
         {
             return Some((rule_ids::R001, format!("@{}{}", replacement, rest)));
         }
-        // Handle !@name(...) pattern too — check for known boolean replacements
         let not_at_name = format!("!@{}", name);
         if let Some(rest) = trimmed.strip_prefix(&not_at_name)
             && let Some(inner) = rest.strip_prefix('(')
             && let Some((args, after)) = split_call_args(inner)
             && after.is_empty()
         {
-            // If the canonical replacement is `is_empty`, skip to `@has_value` directly
             if replacement == "is_empty" {
                 return Some((rule_ids::R002, format!("@has_value({})", args)));
             }
@@ -1588,7 +1513,6 @@ fn rewrite_assertion_expression_with_context(
         return Some((rule_id, rewrite));
     }
 
-    // If-then-else optimizations
     if let Some((rule_id, rewrite)) = suggest_dead_branch_elimination(expr, level) {
         return Some((rule_id, rewrite));
     }
@@ -1719,7 +1643,6 @@ pub fn collect_assertion_optimizations(
     let mode = normalization_mode();
     let mut hints = Vec::new();
 
-    // A chain's 2nd+ document is not the head — scan every document.
     for section in doc.iter_chain().flat_map(|d| d.sections.iter()) {
         if section.section_type != parser::ast::SectionType::Asserts {
             continue;
@@ -1759,13 +1682,8 @@ pub fn collect_assertion_optimizations(
 mod tests {
     use super::*;
 
-    /// A rewrite that changes what an assertion *means* is worse than no
-    /// rewrite at all — and these three ran at Safe/Advisory, i.e. inside
-    /// `run`, so a test silently checked something the author never wrote.
     #[test]
     fn compound_negation_is_declined_rather_than_botched() {
-        // `!(A and B)` is `!A or !B`. The old rule split on the first
-        // comparison and emitted `!A and B`.
         assert_eq!(
             suggest_comparison_negation("!(.x == 1 and .y == 2)", OptimizeLevel::Safe),
             None
@@ -1774,7 +1692,6 @@ mod tests {
             suggest_comparison_negation("not (.x == 1 or .y == 2)", OptimizeLevel::Safe),
             None
         );
-        // A single comparison still flips.
         assert_eq!(
             suggest_comparison_negation("!(.x == 1)", OptimizeLevel::Safe)
                 .map(|(_, out)| out)
@@ -1785,7 +1702,6 @@ mod tests {
 
     #[test]
     fn a_comparison_operator_inside_parens_is_not_the_top_level_one() {
-        // The operator to flip is the outermost one, not the first textually.
         assert_eq!(
             negate_comparison_expr("(.a == 1) != .b").as_deref(),
             Some("(.a == 1) == .b")
@@ -1795,8 +1711,6 @@ mod tests {
     #[test]
     fn is_empty_rename_requires_its_own_parenthesis_to_close() {
         let sigs = HashMap::new();
-        // `@is_empty(.a) and @is_empty(.b) == false` used to become
-        // `@has_value(.a) and @is_empty(.b)` — both operands wrong.
         assert_eq!(
             suggest_deprecated_plugin_rename(
                 "@is_empty(.a) and @is_empty(.b) == false",
@@ -1809,7 +1723,6 @@ mod tests {
             suggest_deprecated_plugin_rename("!@is_empty(.a) and .b", &sigs, OptimizeLevel::Safe),
             None
         );
-        // The plain forms still rewrite, including a nested call in the args.
         for (input, expected) in [
             ("@is_empty(.a) == false", "@has_value(.a)"),
             ("!@is_empty(.a)", "@has_value(.a)"),
@@ -1828,8 +1741,6 @@ mod tests {
 
     #[test]
     fn boolean_identities_respect_operator_precedence() {
-        // `and` binds tighter, so this is `.a or (.b and false)` = `.a`,
-        // never `false`.
         assert_eq!(
             suggest_boolean_identity_laws(".a or .b and false", OptimizeLevel::Advisory),
             None
@@ -1838,12 +1749,10 @@ mod tests {
             suggest_boolean_identity_laws(".a or .b and true", OptimizeLevel::Advisory),
             None
         );
-        // A parenthesised operand is not a top-level one either.
         assert_eq!(
             suggest_boolean_identity_laws(".a and (.b or false)", OptimizeLevel::Advisory),
             None
         );
-        // Genuine identities still fold.
         for (input, expected) in [
             (".a or true", "true"),
             (".a or false", ".a"),
@@ -1899,8 +1808,6 @@ test.Service/Method
 
     #[test]
     fn collect_assertion_optimizations_finds_second_document_in_chain() {
-        // A chain's 2nd+ document is not `doc.sections` (the head) — this
-        // must scan every document via `doc.iter_chain()`, not just the head.
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1988,7 +1895,6 @@ test.Service/Method
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
         let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Aggressive);
 
-        // Only '3 > 2' is a strict literal compare and safe to fold here.
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::B006);
         assert_eq!(hints[0].before, "3 > 2");
@@ -2157,7 +2063,6 @@ true == @has_header("x-request-id") // comment should be ignored
 
     #[test]
     fn likely_needs_assertion_rewrite_fast_path() {
-        // Both old and new scope syntax trigger rewrite (contains @ and ==)
         assert!(likely_needs_assertion_rewrite("@scope_message_count()"));
         assert!(likely_needs_assertion_rewrite(
             "@scope.message_count() == 2"
@@ -2167,8 +2072,6 @@ true == @has_header("x-request-id") // comment should be ignored
         assert!(likely_needs_assertion_rewrite(".name startswith \"abc\""));
         assert!(likely_needs_assertion_rewrite("if true then 1 else 2 end"));
     }
-
-    // === If-then-else optimization tests ===
 
     #[test]
     fn dead_branch_elimination_true() {
@@ -2205,8 +2108,6 @@ true == @has_header("x-request-id") // comment should be ignored
 
     #[test]
     fn nested_if_simplification() {
-        // Pattern: if A then (if A then X else Y end) else Z end
-        // Simplified: if A then X else Z end
         let input =
             "if .a > 0 then (if .a > 0 then \"inner\" else \"other\" end) else \"outer\" end";
         let result = suggest_nested_if_simplification(input, OptimizeLevel::Advisory);
@@ -2395,23 +2296,18 @@ if .status == 200 then false else true end
         assert_eq!(else_expr, r#""no""#);
     }
 
-    // === New optimization rules tests ===
-
     #[test]
     fn boolean_identity_or() {
-        // A or true = true
         let (rule_id, rewritten) =
             suggest_boolean_identity_laws(".x or true", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::B009);
         assert_eq!(rewritten, "true");
 
-        // A or false = A
         let (rule_id, rewritten) =
             suggest_boolean_identity_laws(".x or false", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::B009);
         assert_eq!(rewritten, ".x");
 
-        // true or A = true
         let (rule_id, rewritten) =
             suggest_boolean_identity_laws("true or .x", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::B009);
@@ -2420,19 +2316,16 @@ if .status == 200 then false else true end
 
     #[test]
     fn boolean_absorption_and() {
-        // A and true = A
         let (rule_id, rewritten) =
             suggest_boolean_identity_laws(".x and true", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::B010);
         assert_eq!(rewritten, ".x");
 
-        // A and false = false
         let (rule_id, rewritten) =
             suggest_boolean_identity_laws(".x and false", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::B010);
         assert_eq!(rewritten, "false");
 
-        // false and A = false
         let (rule_id, rewritten) =
             suggest_boolean_identity_laws("false and .x", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::B010);
@@ -2441,26 +2334,22 @@ if .status == 200 then false else true end
 
     #[test]
     fn plugin_length_simplification() {
-        // @len(.x) == 0 → @is_empty(.x)
         let (rule_id, rewritten) =
             suggest_plugin_length_simplification("@len(.items) == 0", OptimizeLevel::Advisory)
                 .unwrap();
         assert_eq!(rule_id, rule_ids::P001);
         assert_eq!(rewritten, "@is_empty(.items)");
 
-        // @len(.x) != 0 → @len(.x) > 0
         let (rule_id, rewritten) =
             suggest_plugin_length_simplification("@len(.items) != 0", OptimizeLevel::Advisory)
                 .unwrap();
         assert_eq!(rule_id, rule_ids::P001);
         assert_eq!(rewritten, "@len(.items) > 0");
 
-        // @len(.x) > 0 → no simplification
         let result =
             suggest_plugin_length_simplification("@len(.items) > 0", OptimizeLevel::Advisory);
         assert!(result.is_none());
 
-        // 0 == @len(.x) → @is_empty(.x)
         let (rule_id, rewritten) =
             suggest_plugin_length_simplification("0 == @len(.items)", OptimizeLevel::Advisory)
                 .unwrap();
@@ -2470,14 +2359,12 @@ if .status == 200 then false else true end
 
     #[test]
     fn plugin_length_le_zero_is_operand_side_aware() {
-        // @len(x) <= 0 is `@is_empty(x)` (len is unsigned, so <= 0 means == 0).
         let (rule_id, rewritten) =
             suggest_plugin_length_simplification("@len(.items) <= 0", OptimizeLevel::Advisory)
                 .unwrap();
         assert_eq!(rule_id, rule_ids::P001);
         assert_eq!(rewritten, "@is_empty(.items)");
 
-        // 0 <= @len(x) is always true (len is unsigned) — must NOT become @is_empty(x).
         let (rule_id, rewritten) =
             suggest_plugin_length_simplification("0 <= @len(.items)", OptimizeLevel::Advisory)
                 .unwrap();
@@ -2488,37 +2375,31 @@ if .status == 200 then false else true end
 
     #[test]
     fn comparison_negation() {
-        // not (.x == 5) → .x != 5
         let (rule_id, rewritten) =
             suggest_comparison_negation("not (.x == 5)", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::N002);
         assert_eq!(rewritten, ".x != 5");
 
-        // not (.x != 5) → .x == 5
         let (rule_id, rewritten) =
             suggest_comparison_negation("not (.x != 5)", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::N002);
         assert_eq!(rewritten, ".x == 5");
 
-        // not (.x > 5) → .x <= 5
         let (rule_id, rewritten) =
             suggest_comparison_negation("not (.x > 5)", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::N002);
         assert_eq!(rewritten, ".x <= 5");
 
-        // not (.x >= 5) → .x < 5
         let (rule_id, rewritten) =
             suggest_comparison_negation("not (.x >= 5)", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::N002);
         assert_eq!(rewritten, ".x < 5");
 
-        // !(.x <= 5) -> .x > 5
         let (rule_id, rewritten) =
             suggest_comparison_negation("!(.x <= 5)", OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::N002);
         assert_eq!(rewritten, ".x > 5");
 
-        // malformed/non-comparison inner should not rewrite
         assert!(suggest_comparison_negation("!(.x)", OptimizeLevel::Advisory).is_none());
     }
 
@@ -2994,8 +2875,6 @@ not (.status == 200)
         }
     }
 
-    // ─── Redundant type cast tests ───────────────────────────────────
-
     #[test]
     fn suggest_redundant_type_cast_len_uint() {
         let expr = "@len(.items):uint >= 0";
@@ -3010,7 +2889,6 @@ not (.status == 200)
 
     #[test]
     fn suggest_redundant_type_cast_header_string() {
-        // @header returns String, so :string is redundant
         let expr = "@header(\"x\"):string != null";
         let signatures = plugin_signatures();
         let result = suggest_redundant_type_cast(expr, signatures, OptimizeLevel::Advisory);
@@ -3026,7 +2904,6 @@ not (.status == 200)
 
     #[test]
     fn suggest_redundant_type_cast_len_to_number() {
-        // @len returns UInt, :number is numeric-compatible → redundant
         let expr = "@len(.items):number >= 0";
         let signatures = plugin_signatures();
         let result = suggest_redundant_type_cast(expr, signatures, OptimizeLevel::Advisory);
@@ -3041,7 +2918,6 @@ not (.status == 200)
 
     #[test]
     fn suggest_non_redundant_type_cast_number() {
-        // .price:number is NOT redundant because .price is Any
         let expr = ".price:number >= 0";
         let signatures = plugin_signatures();
         let result = suggest_redundant_type_cast(expr, signatures, OptimizeLevel::Advisory);
@@ -3053,7 +2929,6 @@ not (.status == 200)
 
     #[test]
     fn suggest_non_redundant_type_cast_string() {
-        // .name:string is NOT redundant because .name is Any
         let expr = ".name:string contains \"hello\"";
         let signatures = plugin_signatures();
         let result = suggest_redundant_type_cast(expr, signatures, OptimizeLevel::Advisory);
@@ -3080,8 +2955,6 @@ test.Service/Method
 
     #[test]
     fn operator_canonicalization_skips_string_literals() {
-        // Regression: `startswith`/`endswith` inside a string literal must NOT
-        // be rewritten (previously a blind str::replace corrupted the value).
         assert_eq!(
             suggest_operator_canonicalization(
                 r#".msg == "run startswith now""#,
@@ -3093,7 +2966,6 @@ test.Service/Method
             suggest_operator_canonicalization(r#".msg == "x endswith y""#, OptimizeLevel::Safe),
             None
         );
-        // A genuine operator token is still canonicalized.
         assert_eq!(
             suggest_operator_canonicalization(r#".msg startswith "abc""#, OptimizeLevel::Safe),
             Some((rule_ids::N001, r#".msg startsWith "abc""#.to_string()))
@@ -3102,8 +2974,6 @@ test.Service/Method
 
     #[test]
     fn len_zero_simplification_requires_whole_lhs() {
-        // Regression: the @len(...) call must span the entire compared side.
-        // `@len(a) and @len(b) == 0` must not become `@is_empty(a) and @len(b)`.
         assert_eq!(
             suggest_plugin_length_simplification(
                 "@len(a) and @len(b) == 0",
@@ -3111,12 +2981,10 @@ test.Service/Method
             ),
             None
         );
-        // Simple whole-LHS case still works.
         assert_eq!(
             suggest_plugin_length_simplification("@len(.x) == 0", OptimizeLevel::Advisory),
             Some((rule_ids::P001, "@is_empty(.x)".to_string()))
         );
-        // Nested parens inside the argument are matched correctly.
         assert_eq!(
             suggest_plugin_length_simplification("@len(f(.x)) == 0", OptimizeLevel::Advisory),
             Some((rule_ids::P001, "@is_empty(f(.x))".to_string()))
@@ -3125,8 +2993,6 @@ test.Service/Method
 
     #[test]
     fn deprecated_rename_no_panic_on_unclosed_paren() {
-        // Regression: `!@<deprecated>(` with no closing paren must not panic
-        // on the slice `rest[1..rest.len()-1]`.
         assert_eq!(
             suggest_deprecated_plugin_rename("!@uuid(", plugin_signatures(), OptimizeLevel::Safe),
             None

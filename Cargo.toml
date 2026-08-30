@@ -18,10 +18,11 @@ members = [
   "crates/apif-utils",
   "crates/apif-report",
   "crates/apif-grpc-transport",
+  "crates/apif-http-transport",
 ]
 
 [workspace.package]
-version = "1.10.3"
+version = "1.10.8"
 edition = "2024"
 authors = ["bavix"]
 license = "MIT"
@@ -134,7 +135,7 @@ reqwest = { version = "0.13", default-features = false, features = [
 # Web UI (play command)
 axum = "0.8"
 tower-http = { version = "0.7", features = ["cors", "fs", "trace"] }
-rust-embed = "8"
+rust-embed = { version = "8", features = ["debug-embed"] }
 mime_guess = "2"
 
 # `target/` had grown past 180 GB. The multiplier is this workspace's shape:
@@ -250,6 +251,7 @@ flate2 = "1"
 
 # JSON/YAML
 serde = { workspace = true }
+sha2 = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
 minijinja = { workspace = true }
@@ -296,6 +298,7 @@ apif-query = { path = "crates/apif-query", version = "0.1.0" }
 apif-grpc-transport = { path = "crates/apif-grpc-transport", version = "0.3.0", features = [
   "tonic-transport",
 ] }
+apif-http-transport = { path = "crates/apif-http-transport", version = "0.2.2" }
 rand = "0.10"
 prost-reflect.workspace = true
 futures = "0.3"

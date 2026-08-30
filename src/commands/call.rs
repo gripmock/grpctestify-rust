@@ -13,21 +13,12 @@ use crate::execution::runner_helpers;
 use crate::grpc::{GrpcClient, GrpcClientConfig, client::StreamItem, proxy::ProxyEnv};
 use crate::parser;
 
-/// Resolve the overall request-deadline (seconds) handed to the transport.
-///
-/// The deadline is the configured request timeout (`--max-time`). The
-/// connection phase must fit *within* that deadline, so the connect timeout can
-/// never raise the effective deadline above `max_time`. Previously this used
-/// `connect_timeout.max(max_time)`, which forced a floor of the connect timeout
-/// and silently ignored a smaller `--max-time` (e.g. `--max-time 1` ran for the
-/// full 30s default connect timeout).
 fn resolve_call_timeout_seconds(_connect_timeout: u64, max_time: u64) -> u64 {
-    // The overall deadline is `max_time`; the connect phase is bounded
-    // separately by the transport and must never inflate it.
     max_time
 }
 
 struct CallOptions<'a> {
+    address: Option<String>,
     include_headers: bool,
     verbose: bool,
     very_verbose: bool,
@@ -45,7 +36,6 @@ struct CallOptions<'a> {
     protocol: crate::grpc::WireProtocol,
 }
 
-/// Handle inline call with synthetic document (no file)
 async fn handle_call_document_inline(doc: &parser::GctfDocument, args: &CallArgs) -> Result<()> {
     let mut output_file: Option<File> = if let Some(ref path) = args.output {
         Some(File::create(path)?)
@@ -62,6 +52,7 @@ async fn handle_call_document_inline(doc: &parser::GctfDocument, args: &CallArgs
     let verbose = args.verbose || args.very_verbose;
 
     let opts = CallOptions {
+        address: args.address.clone(),
         include_headers: args.include,
         verbose,
         very_verbose: args.very_verbose,
@@ -85,10 +76,74 @@ async fn handle_call_document_inline(doc: &parser::GctfDocument, args: &CallArgs
     handle_call_document(doc, Path::new("<inline>"), opts).await
 }
 
+fn header_pairs(flags: &[String]) -> Vec<(String, String)> {
+    flags
+        .iter()
+        .filter_map(|h| h.split_once(':'))
+        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .filter(|(k, _)| !k.is_empty())
+        .collect()
+}
+
+fn http_endpoint(endpoint: &str) -> Option<(String, String)> {
+    let (method, path) = endpoint.trim().split_once(' ')?;
+    let (method, path) = (method.trim(), path.trim());
+    if method.is_empty() || path.is_empty() || !crate::parser::ast::is_http_method(method) {
+        return None;
+    }
+    Some((method.to_ascii_uppercase(), path.to_string()))
+}
+
+async fn call_http(method: &str, path: &str, args: &CallArgs) -> Result<()> {
+    let headers: std::collections::HashMap<String, String> =
+        header_pairs(&args.header).into_iter().collect();
+
+    let url = apif_http_transport::url_for(args.address.as_deref(), path);
+    let answer = apif_http_transport::send(apif_http_transport::HttpCall {
+        method: method.to_string(),
+        url,
+        headers,
+        body: args.data.clone().filter(|b| !b.trim().is_empty()),
+        timeout: std::time::Duration::from_secs(resolve_call_timeout_seconds(
+            args.connect_timeout,
+            args.max_time,
+        )),
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    if args.include {
+        vinfo(args.silent, &format!("HTTP {}", answer.status));
+        let mut names: Vec<&String> = answer
+            .headers
+            .keys()
+            .filter(|k| !k.starts_with(':'))
+            .collect();
+        names.sort();
+        for name in names {
+            vinfo(args.silent, &format!("{name}: {}", answer.headers[name]));
+        }
+    }
+
+    let body = match &answer.body {
+        Value::String(text) => text.clone(),
+        other => serde_json::to_string_pretty(other)?,
+    };
+    match &args.output {
+        Some(path) => std::fs::write(path, format!("{body}\n"))?,
+        None => println!("{body}"),
+    }
+
+    if answer.status >= 400 && !args.show_error {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 pub async fn handle_call(args: &CallArgs) -> Result<()> {
-    // --bench mode: forward to benchmark (handles both file and inline)
     if args.bench {
         let bench_args = crate::cli::args::BenchArgs {
+            address: args.address.clone(),
             calibrate: false,
             protocol: args.protocol.clone(),
             test_paths: if args.endpoint.is_some() {
@@ -147,16 +202,26 @@ pub async fn handle_call(args: &CallArgs) -> Result<()> {
         return crate::commands::bench::handle_bench(&bench_args).await;
     }
 
-    // Inline endpoint mode (-e): build synthetic document in memory
     if let Some(ref endpoint) = args.endpoint {
+        if let Some((method, path)) = http_endpoint(endpoint) {
+            return call_http(&method, &path, args).await;
+        }
         let body = args.data.as_deref().unwrap_or("{}");
         let request_value: Value = serde_json::from_str(body)
             .map_err(|e| anyhow::anyhow!("Invalid JSON in -d/--data: {}", e))?;
-        let doc = crate::parser::GctfDocumentBuilder::new()
+        let mut builder = crate::parser::GctfDocumentBuilder::new()
             .with_file_path("<inline>")
             .endpoint(endpoint)
-            .request(request_value)
-            .build();
+            .request(request_value);
+        let headers = header_pairs(&args.header);
+        if !headers.is_empty() {
+            let mut kv = crate::parser::OrderedStringMap::default();
+            for (name, value) in headers {
+                kv.insert(name, value);
+            }
+            builder = builder.request_headers(kv);
+        }
+        let doc = builder.build();
         return handle_call_document_inline(&doc, args).await;
     }
 
@@ -208,6 +273,7 @@ pub async fn handle_call(args: &CallArgs) -> Result<()> {
         matched_docs += 1;
 
         let opts = CallOptions {
+            address: args.address.clone(),
             include_headers: args.include,
             verbose,
             very_verbose: args.very_verbose,
@@ -245,21 +311,18 @@ pub async fn handle_call(args: &CallArgs) -> Result<()> {
     Ok(())
 }
 
-/// Print an info line to stderr (curl `*` prefix).
 fn vinfo(silent: bool, line: &str) {
     if !silent {
         eprintln!("* {}", line);
     }
 }
 
-/// Print a sent-header line to stderr (curl `>` prefix).
 fn vsend(silent: bool, line: &str) {
     if !silent {
         eprintln!("> {}", line);
     }
 }
 
-/// Print a received-header line to stderr (curl `<` prefix).
 fn vrecv(silent: bool, line: &str) {
     if !silent {
         eprintln!("< {}", line);
@@ -282,6 +345,17 @@ fn print_recv_metadata(silent: bool, entries: &std::collections::HashMap<String,
     }
 }
 
+fn dial_address(
+    doc: &parser::GctfDocument,
+    flag: Option<&str>,
+    protocol: crate::grpc::WireProtocol,
+) -> String {
+    match flag {
+        Some(address) => address.to_string(),
+        None => runner_helpers::effective_address(doc, Some(protocol)),
+    }
+}
+
 async fn handle_call_document(
     doc: &parser::GctfDocument,
     gctf_file: &Path,
@@ -293,12 +367,7 @@ async fn handle_call_document(
     };
     let full_service = runner_helpers::full_service_name(&package, &service);
 
-    let address = runner_helpers::effective_address(doc, Some(opts.protocol));
-    // CLI TLS flags win over the file's TLS section (matching how `--protocol`
-    // overrides), and are the *sole* source in inline mode (`-e`, no file).
-    // `--plaintext` forces no TLS; `--tls-ca/-cert/-key` build a fresh config.
-    // With no CLI TLS flag, fall back to the file's TLS section. `--insecure`
-    // then applies on top of whichever source won (below), as before.
+    let address = dial_address(doc, opts.address.as_deref(), opts.protocol);
     let cli_tls_present = opts.plaintext
         || opts.tls_ca.is_some()
         || opts.tls_cert.is_some()
@@ -339,7 +408,6 @@ async fn handle_call_document(
     };
 
     if opts.verbose {
-        // Log proxy env vars curl-style before the connection attempt
         let proxy = ProxyEnv::from_env();
         if let Some(v) = &proxy.no_proxy {
             vinfo(
@@ -392,7 +460,7 @@ async fn handle_call_document(
         address: address.clone(),
         timeout_seconds,
         tls_config,
-        proto_config: None,
+        proto_config: runner_helpers::build_proto_config(doc, gctf_file),
         metadata: doc.get_request_headers().map(|m| m.into_iter().collect()),
         target_service: Some(full_service.clone()),
         compression: Default::default(),
@@ -441,7 +509,6 @@ async fn handle_call_document(
         vrecv(opts.silent, "");
     }
 
-    // -i: print response headers to stdout before body
     if opts.include_headers && !opts.silent && !headers.is_empty() {
         let mut pairs: Vec<_> = headers.iter().collect();
         pairs.sort_by_key(|(k, _)| k.as_str());
@@ -451,7 +518,6 @@ async fn handle_call_document(
         println!();
     }
 
-    // -D: dump response headers to file
     if let Some(f) = opts.header_file.as_mut() {
         let mut pairs: Vec<_> = headers.iter().collect();
         pairs.sort_by_key(|(k, _)| k.as_str());
@@ -484,7 +550,6 @@ async fn handle_call_document(
                     print_recv_metadata(opts.silent, &trailers);
                 }
 
-                // -i: print trailers to stdout after body
                 if opts.include_headers && !opts.silent && !trailers.is_empty() {
                     let mut pairs: Vec<_> = trailers.iter().collect();
                     pairs.sort_by_key(|(k, _)| k.as_str());
@@ -493,7 +558,6 @@ async fn handle_call_document(
                     }
                 }
 
-                // -D: dump trailers to file
                 if let Some(f) = opts.header_file.as_mut() {
                     let mut pairs: Vec<_> = trailers.iter().collect();
                     pairs.sort_by_key(|(k, _)| k.as_str());
@@ -548,21 +612,72 @@ async fn handle_call_document(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_call_timeout_seconds;
+    use super::*;
+
+    #[test]
+    fn an_endpoint_with_a_method_is_an_http_call() {
+        assert_eq!(
+            http_endpoint("GET /v1/users"),
+            Some(("GET".to_string(), "/v1/users".to_string()))
+        );
+        assert_eq!(
+            http_endpoint("propfind /dav/"),
+            Some(("PROPFIND".to_string(), "/dav/".to_string()))
+        );
+        assert_eq!(http_endpoint("users.UserService/GetUser"), None);
+        assert_eq!(http_endpoint("GET"), None);
+    }
+
+    #[test]
+    fn a_header_flag_without_a_colon_names_no_header() {
+        let pairs = header_pairs(&[
+            "authorization: Bearer t0ken".to_string(),
+            "x-empty:".to_string(),
+            "nonsense".to_string(),
+            ": value".to_string(),
+        ]);
+        assert_eq!(
+            pairs,
+            vec![
+                ("authorization".to_string(), "Bearer t0ken".to_string()),
+                ("x-empty".to_string(), String::new()),
+            ]
+        );
+    }
+    use super::{dial_address, resolve_call_timeout_seconds};
 
     #[test]
     fn max_time_below_connect_timeout_is_honored() {
-        // Regression: `--max-time 1` must not be inflated to the 30s connect
-        // timeout default.
         assert_eq!(resolve_call_timeout_seconds(30, 1), 1);
         assert_eq!(resolve_call_timeout_seconds(30, 5), 5);
+    }
+
+    #[test]
+    fn the_address_flag_outranks_the_file() {
+        let doc = crate::parser::GctfDocumentBuilder::new()
+            .with_file_path("<test>")
+            .endpoint("pkg.Svc/M")
+            .address("file-host:4770")
+            .build();
+
+        assert_eq!(
+            dial_address(
+                &doc,
+                Some("flag-host:9000"),
+                crate::grpc::WireProtocol::Grpc
+            ),
+            "flag-host:9000"
+        );
+        assert_eq!(
+            dial_address(&doc, None, crate::grpc::WireProtocol::Grpc),
+            "file-host:4770"
+        );
     }
 
     #[test]
     fn overall_deadline_is_max_time() {
         assert_eq!(resolve_call_timeout_seconds(30, 60), 60);
         assert_eq!(resolve_call_timeout_seconds(10, 10), 10);
-        // Connect timeout never raises the deadline above max_time.
         assert_eq!(resolve_call_timeout_seconds(120, 5), 5);
     }
 }

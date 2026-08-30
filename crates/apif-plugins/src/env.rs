@@ -1,7 +1,3 @@
-// Environment variable plugin
-// Reads environment variables: @env("VAR_NAME") or @env("VAR_NAME", "default_value")
-// Returns: the value of the variable, or the default value if not set
-
 use anyhow::Result;
 use serde_json::Value;
 use std::env;
@@ -12,7 +8,6 @@ use crate::{
 };
 use apif_assert::engine::AssertionResult;
 
-/// Environment variable plugin
 #[derive(Debug, Clone, Default)]
 pub struct EnvPlugin;
 
@@ -80,18 +75,6 @@ impl Plugin for EnvPlugin {
             None
         };
 
-        // SECURITY: `@env` exposes the process environment to test files. Any
-        // variable readable by the process (including secrets such as tokens or
-        // credentials) can be pulled into a test via `@env("SECRET")`. There is
-        // currently no allowlist mechanism in the plugin context to scope this,
-        // so operators should treat `.apif`/`.gctf` files as trusted input and
-        // avoid running them in environments holding sensitive variables.
-        //
-        // Get environment variable. We deliberately distinguish the three cases:
-        //   * present + valid UTF-8 -> return the value
-        //   * present + non-UTF-8   -> hard error (do NOT silently fall back to
-        //     the default or Null, which would mask a real misconfiguration)
-        //   * not present           -> default value, else Null
         match env::var(var_name) {
             Ok(value) => Ok(PluginResult::Value(Value::String(value))),
             Err(VarError::NotUnicode(_)) => Ok(PluginResult::Assertion(AssertionResult::fail(
@@ -115,13 +98,11 @@ mod tests {
 
     #[test]
     fn env_plugin_exists() {
-        // Arrange
         let plugin = EnvPlugin;
         unsafe {
             env::set_var("TEST_VAR", "test_value");
         }
 
-        // Act
         let result = plugin
             .execute(
                 &[Value::String("TEST_VAR".to_string())],
@@ -129,7 +110,6 @@ mod tests {
             )
             .unwrap();
 
-        // Assert
         assert!(matches!(result, PluginResult::Value(Value::String(s)) if s == "test_value"));
 
         unsafe {
@@ -139,10 +119,8 @@ mod tests {
 
     #[test]
     fn env_plugin_not_exists() {
-        // Arrange
         let plugin = EnvPlugin;
 
-        // Act
         let result = plugin
             .execute(
                 &[Value::String("NONEXISTENT_VAR_12345".to_string())],
@@ -150,21 +128,17 @@ mod tests {
             )
             .unwrap();
 
-        // Assert
         assert!(matches!(result, PluginResult::Value(Value::Null)));
     }
 
     #[test]
     fn env_plugin_no_args() {
-        // Arrange
         let plugin = EnvPlugin;
 
-        // Act
         let result = plugin
             .execute(&[], &PluginContext::new(&Value::Null))
             .unwrap();
 
-        // Assert
         assert!(matches!(
             result,
             PluginResult::Assertion(AssertionResult::Fail { .. })
@@ -173,10 +147,8 @@ mod tests {
 
     #[test]
     fn env_plugin_too_many_args() {
-        // Arrange
         let plugin = EnvPlugin;
 
-        // Act — 3 args is too many (max 2)
         let result = plugin
             .execute(
                 &[
@@ -188,7 +160,6 @@ mod tests {
             )
             .unwrap();
 
-        // Assert
         assert!(matches!(
             result,
             PluginResult::Assertion(AssertionResult::Fail { .. })
@@ -197,10 +168,8 @@ mod tests {
 
     #[test]
     fn env_plugin_with_default_value() {
-        // Arrange
         let plugin = EnvPlugin;
 
-        // Act — var doesn't exist, should return default
         let result = plugin
             .execute(
                 &[
@@ -211,19 +180,16 @@ mod tests {
             )
             .unwrap();
 
-        // Assert
         assert!(matches!(result, PluginResult::Value(Value::String(s)) if s == "/home/user"));
     }
 
     #[test]
     fn env_plugin_var_exists_ignores_default() {
-        // Arrange
         let plugin = EnvPlugin;
         unsafe {
             env::set_var("TEST_VAR_DEFAULT", "actual_value");
         }
 
-        // Act — var exists, should return actual value not default
         let result = plugin
             .execute(
                 &[
@@ -234,7 +200,6 @@ mod tests {
             )
             .unwrap();
 
-        // Assert
         assert!(matches!(result, PluginResult::Value(Value::String(s)) if s == "actual_value"));
 
         unsafe {
@@ -244,10 +209,8 @@ mod tests {
 
     #[test]
     fn env_plugin_wrong_type() {
-        // Arrange
         let plugin = EnvPlugin;
 
-        // Act
         let result = plugin
             .execute(
                 &[Value::Number(123.into())],
@@ -255,7 +218,6 @@ mod tests {
             )
             .unwrap();
 
-        // Assert
         assert!(matches!(
             result,
             PluginResult::Assertion(AssertionResult::Fail { .. })
@@ -268,14 +230,11 @@ mod tests {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
 
-        // Arrange: set a variable to a value that is not valid UTF-8.
         let plugin = EnvPlugin;
         unsafe {
             env::set_var("TEST_VAR_NON_UTF8", OsStr::from_bytes(&[0x66, 0x80, 0x6f]));
         }
 
-        // Act: a default is supplied, but a present-but-non-UTF8 var must NOT
-        // silently fall back to it — it is a distinct error condition.
         let result = plugin
             .execute(
                 &[
@@ -286,7 +245,6 @@ mod tests {
             )
             .unwrap();
 
-        // Assert
         assert!(matches!(
             result,
             PluginResult::Assertion(AssertionResult::Fail { .. })

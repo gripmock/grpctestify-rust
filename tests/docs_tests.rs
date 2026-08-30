@@ -127,7 +127,7 @@ users.UserService/GetUser
     std::fs::write(
         &coverage_path,
         r#"{
-  "files": [{"uri": "grpc://UserService", "statements": {"covered": 1, "total": 4}, "methods": []}],
+  "files": [{"uri": "grpc://users.UserService", "statements": {"covered": 1, "total": 4}, "methods": []}],
   "messages": [],
   "summary": {"covered": 1, "total": 4},
   "field_summary": {"covered": 0, "total": 0}
@@ -156,7 +156,7 @@ users.UserService/GetUser
     let page = std::fs::read_to_string(out_dir.join("users.UserService.md")).unwrap();
     assert!(
         page.contains("**Coverage:** 1/4 methods called (25.0%)"),
-        "packaged service must match coverage by its bare service name: {page}"
+        "a service matches its coverage by its full name: {page}"
     );
 }
 
@@ -274,6 +274,29 @@ fn cli_reference_lists_every_command() {
 /// introduction — used `@uuid` too.
 ///
 /// Prose *about* the deprecation is fine; this only inspects ```gctf blocks.
+/// The HTTP family's own snippets, by its own rules: `GET /v1/users` is an
+/// endpoint here and a parse error in a `.gctf`.
+#[test]
+fn every_docs_httf_block_parses() {
+    let blocks = support::markdown_httf_blocks();
+    assert!(!blocks.is_empty(), "expected ```httf blocks in the docs");
+
+    let mut failures = Vec::new();
+    for (path, line, body) in &blocks {
+        let label = format!("{}:{line}.httf", path.display());
+        if let Err(e) = grpctestify::parser::parse_gctf_from_str(body, &label) {
+            failures.push(format!("{label}: {e}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} http snippets do not parse:\n{}",
+        failures.len(),
+        blocks.len(),
+        failures.join("\n")
+    );
+}
+
 #[test]
 fn docs_snippets_use_canonical_plugin_names() {
     let deprecated = ["uuid", "email", "ip", "url", "timestamp", "empty"];

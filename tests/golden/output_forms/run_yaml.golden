@@ -4,6 +4,7 @@ failed: 1
 skipped: 0
 results:
 - name: <TMPDIR>/a_pass.gctf
+  family: gctf
   status: Pass
   duration_ms: 0
   call_duration_ms: 0
@@ -34,24 +35,25 @@ results:
     - ASSERTS
     chain_steps: 1
 - name: <TMPDIR>/b_fail.gctf
+  family: gctf
   status: Fail
   duration_ms: 0
   call_duration_ms: 0
   error_message: |-
     Validation failed:
-      - Assertion failed at line 9 (assertion at line 11): Assertion failed: .status == "NOT_SERVING" (Values: String("SERVING") vs String("NOT_SERVING"))
-      -     Expected: == String("NOT_SERVING")
-        Actual:   String("SERVING")
+      - Assertion failed at line 10 (assertion at line 11): Assertion failed: .status == "NOT_SERVING" (Values: "SERVING" vs "NOT_SERVING")
+      -     Expected: == "NOT_SERVING"
+        Actual:   "SERVING"
   execution_time: <EPOCH_S>
   assertions:
   - line: 11
     expression: .status == "NOT_SERVING"
     passed: false
     elapsed_ms: 0
-    message: 'Assertion failed: .status == "NOT_SERVING" (Values: String("SERVING") vs String("NOT_SERVING"))'
+    message: 'Assertion failed: .status == "NOT_SERVING" (Values: "SERVING" vs "NOT_SERVING")'
     endpoint: grpc.health.v1.Health/Check
-    expected: == String("NOT_SERVING")
-    actual: String("SERVING")
+    expected: == "NOT_SERVING"
+    actual: '"SERVING"'
   exchange:
     headers:
       content-type: application/grpc
@@ -79,6 +81,6 @@ metrics:
   sum_test_ms: 0
   parallel_jobs: 1
 report_context:
-  tool: apif
+  tool: grpctestify
   version: <VERSION>
   generated_at: <EPOCH_S>

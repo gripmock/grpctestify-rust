@@ -80,7 +80,6 @@ mod tests {
     #[test]
     fn system_clock_timestamp() {
         let ts = SystemClock::timestamp();
-        // Should be a reasonable timestamp (after 2020, before 2100)
         assert!(
             ts > 1577836800,
             "timestamp should be after 2020-01-01, got {}",
@@ -92,7 +91,6 @@ mod tests {
     #[test]
     fn system_clock_rfc3339() {
         let rfc = SystemClock::rfc3339();
-        // RFC3339 format: YYYY-MM-DDTHH:MM:SS+00:00 or similar
         assert!(
             rfc.len() >= 20,
             "RFC3339 should be at least 20 chars, got {}",
@@ -104,7 +102,6 @@ mod tests {
     #[test]
     fn system_clock_unix_millis() {
         let ms = SystemClock::unix_millis();
-        // Should be a reasonable millis value (after 2020)
         assert!(
             ms > 1577836800000,
             "unix_millis should be after 2020, got {}",
