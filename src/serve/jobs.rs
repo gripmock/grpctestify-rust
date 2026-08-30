@@ -4,7 +4,9 @@ use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::convert::Infallible;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
@@ -597,6 +599,9 @@ async fn bench_job(job: Arc<Job>, files: Vec<(String, std::path::PathBuf)>) {
 
 type DataRows = Vec<std::collections::HashMap<String, Value>>;
 
+type CallInFlight<'a> =
+    std::pin::Pin<Box<dyn Future<Output = (Value, HashMap<String, Value>)> + Send + 'a>>;
+
 async fn run_job(
     job: Arc<Job>,
     files: Vec<JobFile>,
@@ -694,9 +699,8 @@ async fn run_job(
 
     let collected = std::sync::Mutex::new(fixture_results);
 
-    let tasks = futures::StreamExt::map(
-        futures::stream::iter(work),
-        |(rel, path, vars, blocked)| {
+    let tasks =
+        futures::StreamExt::map(futures::stream::iter(work), |(rel, path, vars, blocked)| {
             let job = job.clone();
             let env_address = env_address.clone();
             let coverage = Some(coverage.clone());
@@ -738,6 +742,14 @@ async fn run_job(
 
                 let started = std::time::Instant::now();
                 let mut cancelled = job.cancel_signal.subscribe();
+                let call: CallInFlight<'_> = Box::pin(run_one(
+                    &rel,
+                    path,
+                    up_to_step,
+                    vars,
+                    env_address.as_deref().map(|a| a.as_str()),
+                    coverage.clone(),
+                ));
                 let event = tokio::select! {
                     biased;
                     _ = cancelled.wait_for(|stop| *stop) => json!({
@@ -746,7 +758,7 @@ async fn run_job(
                         "interrupted": true,
                         "message": "Cancelled — the call had already gone out",
                     }),
-                    e = run_one(&rel, path, up_to_step, vars, env_address.as_deref().map(|a| a.as_str()), coverage.clone()) => e.0,
+                    e = call => e.0,
                 };
                 let duration = started.elapsed().as_millis() as u64;
 
@@ -767,8 +779,7 @@ async fn run_job(
                 }
                 job.emit(event);
             }
-        },
-    );
+        });
     futures::StreamExt::collect::<Vec<()>>(futures::StreamExt::buffer_unordered(tasks, workers))
         .await;
 
