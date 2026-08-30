@@ -3,7 +3,6 @@ use super::runner_helpers;
 use super::{AssertionHandler, RequestHandler, RequestSendResult, ResponseHandler};
 use crate::assert::{AssertionEngine, JsonComparator, get_json_diff};
 use crate::grpc::{GrpcClient, GrpcClientConfig};
-use crate::optimizer;
 use crate::parser::ast::{SectionContent, SectionType};
 use crate::plugins::AssertionTiming;
 use crate::report::CoverageCollector;
@@ -337,13 +336,7 @@ impl ExecutionPlan {
             .enumerate()
             .map(|(i, section)| {
                 let assertions = if let SectionContent::Assertions(lines) = &section.content {
-                    lines
-                        .iter()
-                        .map(|line| {
-                            optimizer::rewrite_assertion_expression_fixed_point_if_changed_with_level(line, optimizer::OptimizeLevel::Safe)
-                                .unwrap_or_else(|| line.clone())
-                        })
-                        .collect()
+                    lines.clone()
                 } else {
                     vec![]
                 };
@@ -3154,26 +3147,8 @@ impl TestRunner {
         start_line: usize,
         assertion_context: AssertionContext<'_>,
     ) {
-        let mut optimized_lines: Option<Vec<String>> = None;
-
-        for (idx, line) in lines.iter().enumerate() {
-            if let Some(rewritten) =
-                optimizer::rewrite_assertion_expression_fixed_point_if_changed_with_level(
-                    line,
-                    optimizer::OptimizeLevel::Safe,
-                )
-            {
-                let vec = optimized_lines.get_or_insert_with(|| lines[..idx].to_vec());
-                vec.push(rewritten);
-            } else if let Some(vec) = optimized_lines.as_mut() {
-                vec.push(line.clone());
-            }
-        }
-
-        let lines_to_evaluate: &[String] = optimized_lines.as_deref().unwrap_or(lines);
-
         let result = self.assertion_handler.evaluate_assertions_for_section(
-            lines_to_evaluate,
+            lines,
             target_value,
             assertion_context.headers,
             assertion_context.trailers,

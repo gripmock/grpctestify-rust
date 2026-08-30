@@ -94,6 +94,42 @@ fn validate_response_with_asserts() {
 }
 
 #[test]
+fn a_failure_quotes_the_assertion_as_the_file_wrote_it() {
+    let runner = TestRunner::new(false, 5, false, false, false, None);
+    let mut doc = create_empty_doc();
+
+    let options = InlineOptions {
+        with_asserts: true,
+        ..Default::default()
+    };
+    doc.sections
+        .push(create_response_section(json!({"foo": "bar"}), options));
+    doc.sections.push(create_asserts_section(vec![
+        "(.foo) == \"baz\"".to_string(),
+        "@uuid(.foo) == true".to_string(),
+    ]));
+
+    let mut response = GrpcResponse::new();
+    response.messages.push(json!({"foo": "bar"}));
+
+    let result = runner.validate_response(&doc, &response);
+
+    match result.status {
+        TestExecutionStatus::Fail(msg) => {
+            assert!(
+                msg.contains("(.foo) == \"baz\""),
+                "the optimizer's canonical form must not stand in for what the file says: {msg}"
+            );
+            assert!(
+                msg.contains("@uuid(.foo)"),
+                "the deprecated spelling the file wrote is what the report shows: {msg}"
+            );
+        }
+        other => panic!("expected failure, got {other:?}"),
+    }
+}
+
+#[test]
 fn validate_response_with_asserts_fail() {
     let runner = TestRunner::new(false, 5, false, false, false, None);
     let mut doc = create_empty_doc();

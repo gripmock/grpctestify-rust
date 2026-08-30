@@ -151,11 +151,10 @@ fn parse_single_with_recovery(content: &str, file_path: &str) -> ErrorRecoveryRe
                 if let Some(pending) = current.as_mut() {
                     pending.content_lines.push(text.clone());
                     pending.last_line = token.line;
-                } else if matches!(token.kind, gctf_tokenizer::GctfTokenKind::Content(_)) {
-                    if let Some(raw_name) = gctf_tokenizer::scan_miscased_section_header_name(text)
-                    {
-                        warn_unknown_section(&raw_name, token.line, &mut diagnostics);
-                    }
+                } else if matches!(token.kind, gctf_tokenizer::GctfTokenKind::Content(_))
+                    && let Some(raw_name) = gctf_tokenizer::scan_miscased_section_header_name(text)
+                {
+                    warn_unknown_section(&raw_name, token.line, &mut diagnostics);
                 }
             }
             gctf_tokenizer::GctfTokenKind::Blank => {

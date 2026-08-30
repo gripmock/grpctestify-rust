@@ -946,6 +946,34 @@ mod tests {
     }
 
     #[test]
+    fn a_conditional_assertion_keeps_the_verdict_it_had_under_jq() {
+        let engine = AssertionEngine::new();
+        let response = json!({
+            "flag": true,
+            "off": false,
+            "absent": null,
+            "name": "Ada",
+            "zero": 0
+        });
+
+        for (assertion, expected) in [
+            ("if .flag then .name else .absent end", true),
+            ("if .off then .name else .absent end", false),
+            ("if .absent then .name else .name end", true),
+            ("if .flag then .zero else .absent end", true),
+            ("if .flag == true then .name else .absent end", true),
+            ("if .flag then 1 else 2 end", true),
+        ] {
+            let result = engine.evaluate(assertion, &response, None, None).unwrap();
+            assert_eq!(
+                result == AssertionResult::Pass,
+                expected,
+                "{assertion} -> {result:?}"
+            );
+        }
+    }
+
+    #[test]
     fn assertion_with_numeric_digit_separators_matches_the_plain_number() {
         let engine = AssertionEngine::new();
         let response = json!({"amount": 1_000_000});

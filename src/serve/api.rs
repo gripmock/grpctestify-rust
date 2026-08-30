@@ -2947,28 +2947,31 @@ pub async fn generate_call_command(
 
     Json(CallCommandResponse {
         command: crate::commands::call_line::grpctestify_call(
-            &req.endpoint,
-            req.address.as_deref(),
-            req.protocol.as_deref(),
-            body.as_deref(),
-            tls && req.tls_insecure.unwrap_or(false),
-            !tls,
-            &{
-                let mut headers: Vec<(String, String)> = req
-                    .headers
-                    .clone()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect();
-                headers.sort();
-                headers
+            crate::commands::call_line::CallSpec {
+                endpoint: &req.endpoint,
+                address: req.address.as_deref(),
+                protocol: req.protocol.as_deref(),
+                body: body.as_deref(),
+                headers: &{
+                    let mut headers: Vec<(String, String)> = req
+                        .headers
+                        .clone()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect();
+                    headers.sort();
+                    headers
+                },
+                tls: crate::commands::call_line::TlsPaths {
+                    ca: req.tls_ca.as_deref(),
+                    cert: req.tls_cert.as_deref(),
+                    key: req.tls_key.as_deref(),
+                },
+                insecure: tls && req.tls_insecure.unwrap_or(false),
+                plaintext: !tls,
+                max_time: req.timeout_seconds,
+                ..Default::default()
             },
-            crate::commands::call_line::TlsPaths {
-                ca: req.tls_ca.as_deref(),
-                cert: req.tls_cert.as_deref(),
-                key: req.tls_key.as_deref(),
-            },
-            req.timeout_seconds,
         ),
     })
 }
@@ -5283,7 +5286,6 @@ mod tests {
         assert_ne!(now.hash, held.hash, "the change is in the hash");
     }
 
-    use super::*;
     #[cfg(not(miri))]
     use std::path::PathBuf;
     #[cfg(not(miri))]

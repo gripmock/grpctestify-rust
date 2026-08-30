@@ -175,7 +175,8 @@ sequenceDiagram
     Server--xClient: error
 ```
 
-`graph` visualizes directory-fixture topology (`_setup` → sibling tests → `_teardown`, in either file family) across a whole directory:
+`graph` visualizes directory-fixture topology (`_setup` → sibling tests → `_teardown`,
+in either file family) across a whole directory:
 
 ```bash
 grpctestify graph tests/ --format mermaid

@@ -42,7 +42,7 @@ protocol: grpc-web
 - `--protocol` on the command line still wins, so a suite can be swept across transports without
   editing files.
 - An unknown value is an error, not a fall back to `grpc` — a typo like `grpcweb` is exactly the
-  mis-run this key exists to prevent.
+  mistaken run this key exists to prevent.
 - When `ADDRESS` is absent, the default target follows the protocol
   (`localhost:4770` for gRPC, the protocol's own default otherwise).
 

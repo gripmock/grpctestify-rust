@@ -2229,7 +2229,7 @@ describe('a save while the workbench is gone', () => {
   const originalFetch = globalThis.fetch;
   afterEach(() => { globalThis.fetch = originalFetch; });
 
-  it('says so in the workbenchs own words', async () => {
+  it("says so in the workbench's own words", async () => {
     globalThis.fetch = (async () => { throw new TypeError('Failed to fetch'); }) as never;
     const parsed = makeParsed();
     useStore.setState({

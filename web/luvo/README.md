@@ -16,7 +16,7 @@ not know what a `.gctf` file is.** Nothing here imports from `src/`, and
 luvo is a CSS framework first: three stylesheets that a screen is written in,
 and the small amount of TypeScript those styles need to behave.
 
-**The stylesheets**
+## The stylesheets
 
 - `tokens.css` — the palettes and the scales. Two palettes, each in two modes,
   written in `rgb()` so a contrast grader can read them without a browser.
@@ -28,7 +28,7 @@ and the small amount of TypeScript those styles need to behave.
 Every rule reads a token. None names a colour, radius, shadow, duration or font
 of its own — `theme-reach.test.ts` fails the suite if one does.
 
-**The behaviour those styles need**
+## The behaviour those styles need
 
 - `theme/` — the palette registry, light/dark/system resolution, the grader
 - `input/` — hotkeys by physical key, dismissal, menu placement, tab-strip keys

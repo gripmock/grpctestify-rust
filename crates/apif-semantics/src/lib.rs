@@ -262,26 +262,25 @@ fn detect_type_mismatch(
         });
     }
 
-    if op == "==" || op == "!=" {
-        if lhs_type != TypeInfo::Any
-            && rhs_type != TypeInfo::Any
-            && !types_compatible(lhs_type, rhs_type)
-        {
-            return Some(AssertionTypeMismatch {
-                rule_id: "SEM_T001".to_string(),
-                line: 0,
-                expression: expr.to_string(),
-                message: format!(
-                    "Type-incompatible comparison: {} is {}, but {} is {}",
-                    lhs,
-                    lhs_type.display_name(),
-                    rhs,
-                    rhs_type.display_name()
-                ),
-                expected: lhs_type.display_name().to_string(),
-                actual: rhs_type.display_name().to_string(),
-            });
-        }
+    if (op == "==" || op == "!=")
+        && lhs_type != TypeInfo::Any
+        && rhs_type != TypeInfo::Any
+        && !types_compatible(lhs_type, rhs_type)
+    {
+        return Some(AssertionTypeMismatch {
+            rule_id: "SEM_T001".to_string(),
+            line: 0,
+            expression: expr.to_string(),
+            message: format!(
+                "Type-incompatible comparison: {} is {}, but {} is {}",
+                lhs,
+                lhs_type.display_name(),
+                rhs,
+                rhs_type.display_name()
+            ),
+            expected: lhs_type.display_name().to_string(),
+            actual: rhs_type.display_name().to_string(),
+        });
     }
 
     if matches!(op, ">" | "<" | ">=" | "<=")

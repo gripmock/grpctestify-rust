@@ -465,34 +465,36 @@ fn build_flow_step(
     };
     let insecure = tls_config.as_ref().is_some_and(|t| t.insecure_skip_verify);
     let call_line = endpoint.as_ref().filter(|_| !streaming_request).map(|ep| {
-        crate::commands::call_line::grpctestify_call(
-            ep,
-            address.as_deref(),
-            protocol.as_deref(),
-            body.as_deref(),
+        crate::commands::call_line::grpctestify_call(crate::commands::call_line::CallSpec {
+            endpoint: ep,
+            address: address.as_deref(),
+            protocol: protocol.as_deref(),
+            body: body.as_deref(),
+            headers: &headers,
+            tls: tls_paths,
             insecure,
-            !tls && !insecure,
-            &headers,
-            tls_paths,
+            plaintext: !tls && !insecure,
             max_time,
-        )
+            ..Default::default()
+        })
     });
     let protoset = source
         .and_then(|file| crate::execution::runner_helpers::build_proto_config(d, file))
         .and_then(|proto| proto.descriptor);
     let grpc_wire = protocol.as_deref().unwrap_or("grpc") == "grpc";
     let grpcurl_line = endpoint.as_ref().filter(|_| grpc_wire).map(|ep| {
-        crate::commands::call_line::grpcurl_line(
-            ep,
-            address.as_deref().unwrap_or("localhost:4770"),
-            grpcurl_body.as_deref(),
-            !tls && !insecure,
-            &headers,
-            protoset.as_deref(),
-            tls_paths,
+        crate::commands::call_line::grpcurl_line(crate::commands::call_line::CallSpec {
+            endpoint: ep,
+            address: address.as_deref(),
+            body: grpcurl_body.as_deref(),
+            headers: &headers,
+            tls: tls_paths,
+            protoset: protoset.as_deref(),
             insecure,
+            plaintext: !tls && !insecure,
             max_time,
-        )
+            ..Default::default()
+        })
     });
 
     FlowStep {
@@ -1538,7 +1540,7 @@ mod tests {
         )
         .expect("write");
 
-        let pages = render_pages(&[dir.clone()], None);
+        let pages = render_pages(std::slice::from_ref(&dir), None);
         let index = pages
             .iter()
             .find(|p| p.name == "index.md")

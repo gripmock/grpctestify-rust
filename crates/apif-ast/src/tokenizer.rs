@@ -360,8 +360,13 @@ pub fn tokenize_assertion(source: &str) -> Vec<Token> {
                     out.push(Token::new(TokenKind::Slash, Span { start: s, end: i }));
                 }
             }
-            _ => {
+            other => {
+                let s = i;
                 i += 1;
+                out.push(Token::new(
+                    TokenKind::Op(other.to_string()),
+                    Span { start: s, end: i },
+                ));
             }
         }
     }

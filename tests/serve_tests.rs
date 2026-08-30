@@ -1182,8 +1182,8 @@ async fn diagnostics_reports_optimizer_finding() {
     assert!(
         diags
             .iter()
-            .any(|d| d["code"].as_str().unwrap_or("").contains("B017")),
-        "{body:#}"
+            .any(|d| d["code"].as_str().unwrap_or("").contains("C001")),
+        "the first step offered for `!!x` is its canonical spelling: {body:#}"
     );
 }
 

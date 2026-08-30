@@ -20,6 +20,17 @@ extend-ignore-re = [
   # Ignore intentional test typos in LSP handlers and validators
   "load-schdule",
   "load_shedule",
+  # Misspellings the suggestion engines are tested against: each fixture is the
+  # wrong spelling whose correction is the assertion.
+  "concurency",
+  "compresion",
+  "timeuot",
+  "PSOT",
+  "psot",
+  "ENDPIONT",
+  "REQEUST",
+  # A truncated label quoted from the UI: "1 Expecte…".
+  "Expecte…",
   # Ignore fpr (false positive rate) variable name in benchmarks
   "fpr",
   # A \uXXXX escape splits the word it sits in ("café"), leaving a

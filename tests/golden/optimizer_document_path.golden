@@ -23,16 +23,16 @@
      .a or .b and false
    .a and (.b or false)
      .a and (.b or false)
-   if true then .a else .b end
-     if true then .a else .b end
-   if false then .a else .b end
-     if false then .a else .b end
+-> if true then .a else .b end
+     .a
+-> if false then .a else .b end
+     .b
 -> if true then "yes" else "no" end
      "yes"
    if .c then .x else .x end
      if .c then .x else .x end
-   if .c then (if .c then .a else .b end) else .z end
-     if .c then (if .c then .a else .b end) else .z end
+-> if .c then (if .c then .a else .b end) else .z end
+     if .c then if .c then .a else .b end else .z end
    if .c then true else false end
      if .c then true else false end
    if .c then false else true end
@@ -55,8 +55,8 @@
      @has_value(.a)
 -> @is_empty(.a) == false
      @has_value(.a)
-   @is_empty(.a) and @is_empty(.b) == false
-     @is_empty(.a) and @is_empty(.b) == false
+-> @is_empty(.a) and @is_empty(.b) == false
+     @is_empty(.a) and @has_value(.b)
    @len(.x) >= 0
      @len(.x) >= 0
    .x:number == 1
@@ -88,24 +88,24 @@
      .a
 -> .a and false
      false
-   .a or .b and false
-     .a or .b and false
-   .a and (.b or false)
-     .a and (.b or false)
-   if true then .a else .b end
-     if true then .a else .b end
-   if false then .a else .b end
-     if false then .a else .b end
+-> .a or .b and false
+     .a
+-> .a and (.b or false)
+     .a and .b
+-> if true then .a else .b end
+     .a
+-> if false then .a else .b end
+     .b
 -> if true then "yes" else "no" end
      "yes"
-   if .c then .x else .x end
-     if .c then .x else .x end
+-> if .c then .x else .x end
+     .x
 -> if .c then (if .c then .a else .b end) else .z end
      if .c then .a else .z end
-   if .c then true else false end
-     if .c then true else false end
-   if .c then false else true end
-     if .c then false else true end
+-> if .c then true else false end
+     .c
+-> if .c then false else true end
+     !.c
    .c ? .a : .b
      .c ? .a : .b
 -> .name startswith("a")
@@ -123,9 +123,9 @@
 -> !@is_empty(.a)
      @has_value(.a)
 -> @is_empty(.a) == false
-     !@is_empty(.a)
-   @is_empty(.a) and @is_empty(.b) == false
-     @is_empty(.a) and @is_empty(.b) == false
+     @has_value(.a)
+-> @is_empty(.a) and @is_empty(.b) == false
+     @is_empty(.a) and @has_value(.b)
    @len(.x) >= 0
      @len(.x) >= 0
    .x:number == 1
@@ -157,24 +157,24 @@
      .a
 -> .a and false
      false
-   .a or .b and false
-     .a or .b and false
-   .a and (.b or false)
-     .a and (.b or false)
-   if true then .a else .b end
-     if true then .a else .b end
-   if false then .a else .b end
-     if false then .a else .b end
+-> .a or .b and false
+     .a
+-> .a and (.b or false)
+     .a and .b
+-> if true then .a else .b end
+     .a
+-> if false then .a else .b end
+     .b
 -> if true then "yes" else "no" end
      "yes"
-   if .c then .x else .x end
-     if .c then .x else .x end
+-> if .c then .x else .x end
+     .x
 -> if .c then (if .c then .a else .b end) else .z end
      if .c then .a else .z end
-   if .c then true else false end
-     if .c then true else false end
-   if .c then false else true end
-     if .c then false else true end
+-> if .c then true else false end
+     .c
+-> if .c then false else true end
+     !.c
    .c ? .a : .b
      .c ? .a : .b
 -> .name startswith("a")
@@ -192,9 +192,9 @@
 -> !@is_empty(.a)
      @has_value(.a)
 -> @is_empty(.a) == false
-     !@is_empty(.a)
-   @is_empty(.a) and @is_empty(.b) == false
-     @is_empty(.a) and @is_empty(.b) == false
+     @has_value(.a)
+-> @is_empty(.a) and @is_empty(.b) == false
+     @is_empty(.a) and @has_value(.b)
 -> @len(.x) >= 0
      true
    .x:number == 1

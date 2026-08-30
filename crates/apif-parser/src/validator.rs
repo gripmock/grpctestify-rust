@@ -1762,59 +1762,55 @@ fn validate_bench_sources_exist(document: &GctfDocument, errors: &mut Vec<Valida
         let Some(sources_yaml) = bench_content.get("sources") else {
             continue;
         };
-        match serde_yaml_ng::from_str::<Vec<SourceConfig>>(sources_yaml) {
-            Ok(ref defs) => {
-                for def in defs {
-                    let resolved = std::path::Path::new(&document.file_path)
-                        .parent()
-                        .unwrap_or(std::path::Path::new("."))
-                        .join(&def.file);
-                    if !resolved.exists() {
-                        errors.push(ValidationError {
-                            message: format!(
-                                "BENCH data source file not found: {} (resolved: {})",
-                                def.file,
-                                resolved.display()
-                            ),
-                            line: Some(section.start_line),
-                            severity: ErrorSeverity::Warning,
-                        });
-                    }
+        if let Ok(ref defs) = serde_yaml_ng::from_str::<Vec<SourceConfig>>(sources_yaml) {
+            for def in defs {
+                let resolved = std::path::Path::new(&document.file_path)
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .join(&def.file);
+                if !resolved.exists() {
+                    errors.push(ValidationError {
+                        message: format!(
+                            "BENCH data source file not found: {} (resolved: {})",
+                            def.file,
+                            resolved.display()
+                        ),
+                        line: Some(section.start_line),
+                        severity: ErrorSeverity::Warning,
+                    });
                 }
+            }
 
-                if defs.len() > 1 {
-                    let mut adj: std::collections::BTreeMap<&str, Vec<&str>> =
-                        std::collections::BTreeMap::new();
-                    for def in defs {
-                        let name = def.name.as_deref().unwrap_or("primary");
-                        if let Some(idx) = &def.indexed_by {
-                            let cols: Vec<&str> = idx.iter().map(|s| s.as_str()).collect();
-                            for col in cols {
-                                if let Some(target) = col.strip_prefix('@') {
-                                    adj.entry(name).or_default().push(target);
-                                }
+            if defs.len() > 1 {
+                let mut adj: std::collections::BTreeMap<&str, Vec<&str>> =
+                    std::collections::BTreeMap::new();
+                for def in defs {
+                    let name = def.name.as_deref().unwrap_or("primary");
+                    if let Some(idx) = &def.indexed_by {
+                        let cols: Vec<&str> = idx.iter().map(|s| s.as_str()).collect();
+                        for col in cols {
+                            if let Some(target) = col.strip_prefix('@') {
+                                adj.entry(name).or_default().push(target);
                             }
                         }
                     }
-                    let mut visited: std::collections::BTreeSet<&str> =
-                        std::collections::BTreeSet::new();
-                    let mut stack: std::collections::BTreeSet<&str> =
-                        std::collections::BTreeSet::new();
-                    for node in adj.keys().copied().collect::<Vec<_>>() {
-                        if has_cycle(&adj, node, &mut visited, &mut stack) {
-                            errors.push(ValidationError {
-                                message: format!(
-                                    "Circular dimension join detected involving source '{}'",
-                                    node
-                                ),
-                                line: Some(section.start_line),
-                                severity: ErrorSeverity::Error,
-                            });
-                        }
+                }
+                let mut visited: std::collections::BTreeSet<&str> =
+                    std::collections::BTreeSet::new();
+                let mut stack: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+                for node in adj.keys().copied().collect::<Vec<_>>() {
+                    if has_cycle(&adj, node, &mut visited, &mut stack) {
+                        errors.push(ValidationError {
+                            message: format!(
+                                "Circular dimension join detected involving source '{}'",
+                                node
+                            ),
+                            line: Some(section.start_line),
+                            severity: ErrorSeverity::Error,
+                        });
                     }
                 }
             }
-            Err(_) => {}
         }
     }
 }

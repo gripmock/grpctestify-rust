@@ -789,7 +789,9 @@ fn apply_optimizer_rewrites(
         let line = &mut lines[line_idx];
         if let Some(start) = line.find(&hint.before) {
             let end = start + hint.before.len();
-            line.replace_range(start..end, &hint.after);
+            let settled =
+                optimizer::rewrite_assertion_expression_fixed_point_with_level(&hint.before, level);
+            line.replace_range(start..end, &settled);
         }
     }
 
@@ -1034,6 +1036,33 @@ mod tests {
             once, twice
         );
         once
+    }
+
+    #[test]
+    fn formatting_settles_an_assertion_in_one_pass() {
+        let src = format!("{HDR}--- ASSERTS ---\n!!@has_header(\"x\")\n@is_empty(.a) == false\n");
+        let out = assert_idempotent(&src);
+        assert!(
+            out.contains("@has_header(\"x\")") && !out.contains("not not"),
+            "a single pass must reach the settled form: {out}"
+        );
+        assert!(out.contains("@has_value(.a)"), "{out}");
+    }
+
+    #[test]
+    fn a_conditional_assertion_survives_formatting() {
+        let src = format!(
+            "{HDR}--- ASSERTS ---\nif .a then .b else .c end\nif .flag then true else false end\nif .a then .b\n"
+        );
+        let out = assert_idempotent(&src);
+        for line in [
+            "if .a then .b else .c end",
+            "if .flag then true else false end",
+            "if .a then .b",
+        ] {
+            assert!(out.contains(line), "missing {line}: {out}");
+        }
+        assert!(!out.contains("missing\n"), "no placeholder text: {out}");
     }
 
     #[test]

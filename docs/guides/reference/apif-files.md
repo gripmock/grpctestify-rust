@@ -44,7 +44,7 @@ authorization: Bearer {{token}}
 Each step's own `ENDPOINT` says how it is dialled:
 
 | `ENDPOINT` | transport |
-|---|---|
+| --- | --- |
 | `package.Service/Method` | gRPC |
 | `<METHOD> <path>` — `GET /v1/orders`, `POST /v1/users` | HTTP |
 

@@ -410,15 +410,18 @@ fn parse_unary(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> Asser
 }
 
 fn parse_if(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> AssertionExpr {
+    let start = *p;
     *p += 1;
     let cond = parse_pipe(ts, p, d + 1);
     if *p >= ts.len() || !is_keyword(ts, *p, "then") {
-        return AssertionExpr::Raw("if..then missing".into());
+        *p = start;
+        return AssertionExpr::Raw(String::new());
     }
     *p += 1;
     let then_b = parse_pipe(ts, p, d + 1);
     if *p >= ts.len() || !is_keyword(ts, *p, "else") {
-        return AssertionExpr::Raw("if..else missing".into());
+        *p = start;
+        return AssertionExpr::Raw(String::new());
     }
     *p += 1;
     let else_b = parse_pipe(ts, p, d + 1);
@@ -628,8 +631,10 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> Assert
         }
         TokenKind::Dot | TokenKind::Ident(_) => {
             let mut path = String::with_capacity(24);
+            let mut after_dot = false;
             while *p < ts.len() {
                 if let TokenKind::Ident(s) = &ts[*p].kind
+                    && !after_dot
                     && (is_bin_op_keyword(s) || is_keyword_token(&ts[*p].kind))
                 {
                     break;
@@ -637,10 +642,12 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> Assert
                 match &ts[*p].kind {
                     TokenKind::Dot => {
                         path.push('.');
+                        after_dot = true;
                         *p += 1;
                     }
                     TokenKind::Ident(s) => {
                         path.push_str(s);
+                        after_dot = false;
                         *p += 1;
                     }
                     TokenKind::StringLit(s) => {
@@ -648,14 +655,17 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> Assert
                         path.push('"');
                         path.push_str(s);
                         path.push('"');
+                        after_dot = false;
                         *p += 1;
                     }
                     TokenKind::Op(op) if op == "-" || op == ":" => {
                         path.push_str(op);
+                        after_dot = false;
                         *p += 1;
                     }
                     TokenKind::LBracket => {
                         path.push('[');
+                        after_dot = false;
                         *p += 1;
                         while *p < ts.len() && !matches!(ts[*p].kind, TokenKind::RBracket) {
                             if let TokenKind::NumberLit(n) = &ts[*p].kind {
@@ -754,7 +764,8 @@ fn is_keyword_token(k: &TokenKind) -> bool {
             if matches!(
                 s.as_str(),
                 "and" | "or" | "xor" | "contains" | "matches" | "startsWith"
-                    | "endsWith" | "startswith" | "endswith"
+                    | "endsWith" | "startswith" | "endswith" | "if" | "then" | "else" | "end"
+                    | "true" | "false" | "null"
             )
     )
 }
@@ -1224,6 +1235,67 @@ mod tests {
         } else {
             panic!("Expected IfThenElse");
         }
+    }
+
+    #[test]
+    fn a_path_condition_does_not_swallow_then() {
+        assert_eq!(
+            parse_assertion(".a then"),
+            AssertionExpr::Raw(".a then".to_string()),
+            "the keyword is left over, not glued onto the path"
+        );
+        for src in [
+            "if .a then .b else .c end",
+            "if .a then true else false end",
+            "if .a and .b then 1 else 2 end",
+            "if .a == 1 then .b else .c end",
+        ] {
+            assert!(
+                matches!(parse_assertion(src), AssertionExpr::IfThenElse { .. }),
+                "{src} parsed as {:?}",
+                parse_assertion(src)
+            );
+            assert_eq!(assertion_to_string(&parse_assertion(src)), src);
+        }
+    }
+
+    #[test]
+    fn a_field_named_like_a_keyword_stays_a_field() {
+        for src in [
+            ".then", ".else", ".end", ".and", ".a.end", ".end.x", ".true", ".false", ".a.null",
+        ] {
+            assert_eq!(
+                parse_assertion(src),
+                AssertionExpr::Atom(Expr::JqPath(src.to_string())),
+                "{src}"
+            );
+        }
+        assert!(matches!(
+            parse_assertion(".a and .b"),
+            AssertionExpr::And { .. }
+        ));
+    }
+
+    #[test]
+    fn a_literal_is_not_swallowed_into_a_path() {
+        for src in [".c true", ".a null", ".c ? true : false", ".c ? .a : .b"] {
+            assert_eq!(
+                parse_assertion(src),
+                AssertionExpr::Raw(src.to_string()),
+                "{src} must stay untouched rather than scan as one path"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unparsed_if_keeps_the_text_that_was_written() {
+        for src in ["if .a then .b", "if .a", "if .a then"] {
+            assert_eq!(parse_assertion(src), AssertionExpr::Raw(src.to_string()));
+        }
+        assert!(
+            !assertion_to_string(&parse_assertion("if .a then .b")).contains("missing"),
+            "a diagnostic string must never stand in for the author's expression"
+        );
     }
 
     #[test]

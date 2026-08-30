@@ -2756,10 +2756,20 @@ test.Service/Method
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
         let diagnostics = collect_optimizer_diagnostics(&doc, content);
         assert_eq!(diagnostics.len(), 1);
-        let expected = rule_ids::B017.as_str();
         assert_eq!(
             diagnostics[0].code,
-            Some(NumberOrString::String(expected.to_string()))
+            Some(NumberOrString::String(rule_ids::C001.as_str().to_string())),
+            "the first step is the canonical spelling"
+        );
+
+        let canonical = content.replace("!!@has_header(\"x\")", "not not @has_header(\"x\")");
+        let doc = parser::parse_gctf_from_str(&canonical, "test.gctf").unwrap();
+        let diagnostics = collect_optimizer_diagnostics(&doc, &canonical);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].code,
+            Some(NumberOrString::String(rule_ids::B017.as_str().to_string())),
+            "applying it leaves the elimination to offer"
         );
     }
 
@@ -2941,7 +2951,10 @@ test.Service/Method
 
         let checked = of(Voice::Check);
         assert_eq!(checked.severity, Some(DiagnosticSeverity::WARNING));
-        assert_eq!(checked.message, "!!@has_header(\"x\") → @has_header(\"x\")");
+        assert_eq!(
+            checked.message,
+            "!!@has_header(\"x\") → not not @has_header(\"x\")"
+        );
         assert!(checked.data.is_some());
     }
 
@@ -3145,7 +3158,7 @@ test.Service/Method
 --- ASSERTS ---
 !!@has_header("x")
 "#;
-        let expected_code = rule_ids::B017.as_str().to_string();
+        let expected_code = rule_ids::C001.as_str().to_string();
         let actual = collect_all_diagnostics(content, "test.gctf");
         assert!(
             actual
@@ -3172,7 +3185,16 @@ test.Service/Method
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
         let diagnostics = collect_optimizer_diagnostics(&doc, content);
-        assert!(diagnostics.is_empty());
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].code,
+            Some(NumberOrString::String(rule_ids::C001.as_str().to_string()))
+        );
+        assert!(
+            diagnostics[0].message.contains(".name startsWith \"abc\""),
+            "{}",
+            diagnostics[0].message
+        );
     }
 
     #[test]

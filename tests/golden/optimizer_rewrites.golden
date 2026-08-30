@@ -39,8 +39,8 @@
      .a or .b and false
    .a and (.b or false)
      .a and (.b or false)
-   if true then .a else .b end
-     if true then .a else .b end
+-> if true then .a else .b end
+     .a
    if .c then .x else .x end
      if .c then .x else .x end
    if .c then true else false end
@@ -51,44 +51,44 @@
      "yes"
 -> if false then "yes" else "no" end
      "no"
-   if true then .a else .b end
-     if true then .a else .b end
-   if false then .a else .b end
-     if false then .a else .b end
+-> if true then .a else .b end
+     .a
+-> if false then .a else .b end
+     .b
    if .c then "x" else "x" end
      if .c then "x" else "x" end
-   if .c then (if .c then .a else .b end) else .z end
-     if .c then (if .c then .a else .b end) else .z end
+-> if .c then (if .c then .a else .b end) else .z end
+     if .c then if .c then .a else .b end else .z end
    if .c then true else false end
      if .c then true else false end
    .c ? .a : .b
      .c ? .a : .b
    .c ? true : false
      .c ? true : false
-   if (.x == 1) then .a else .b end
-     if (.x == 1) then .a else .b end
-   .name startswith("a")
-     .name startswith("a")
+-> if (.x == 1) then .a else .b end
+     if .x == 1 then .a else .b end
+-> .name startswith("a")
+     .name startsWith "a"
 -> !(.x == 1)
      .x != 1
    !(.x == 1 and .y == 2)
      !(.x == 1 and .y == 2)
-   not (.x == 1 or .y == 2)
-     not (.x == 1 or .y == 2)
+-> not (.x == 1 or .y == 2)
+     !(.x == 1 or .y == 2)
    @len(.x) == 0
      @len(.x) == 0
    @len(.x) != 0
      @len(.x) != 0
-   (.a)
-     (.a)
+-> (.a)
+     .a
 -> !@is_empty(.a)
      @has_value(.a)
 -> @is_empty(.a) == false
      @has_value(.a)
 -> false == @is_empty(.a)
      @has_value(.a)
-   @is_empty(.a) and @is_empty(.b) == false
-     @is_empty(.a) and @is_empty(.b) == false
+-> @is_empty(.a) and @is_empty(.b) == false
+     @is_empty(.a) and @has_value(.b)
 -> !@is_empty(f(.a, g(.b)))
      @has_value(f(.a, g(.b)))
    @len(.x) >= 0
@@ -140,60 +140,60 @@
      .a
 -> .a and false
      false
-   .a or .b and false
-     .a or .b and false
-   .a and (.b or false)
-     .a and (.b or false)
-   if true then .a else .b end
-     if true then .a else .b end
-   if .c then .x else .x end
-     if .c then .x else .x end
-   if .c then true else false end
-     if .c then true else false end
-   if .c then false else true end
-     if .c then false else true end
+-> .a or .b and false
+     .a
+-> .a and (.b or false)
+     .a and .b
+-> if true then .a else .b end
+     .a
+-> if .c then .x else .x end
+     .x
+-> if .c then true else false end
+     .c
+-> if .c then false else true end
+     !.c
 -> if true then "yes" else "no" end
      "yes"
 -> if false then "yes" else "no" end
      "no"
-   if true then .a else .b end
-     if true then .a else .b end
-   if false then .a else .b end
-     if false then .a else .b end
-   if .c then "x" else "x" end
-     if .c then "x" else "x" end
+-> if true then .a else .b end
+     .a
+-> if false then .a else .b end
+     .b
+-> if .c then "x" else "x" end
+     "x"
 -> if .c then (if .c then .a else .b end) else .z end
      if .c then .a else .z end
-   if .c then true else false end
-     if .c then true else false end
+-> if .c then true else false end
+     .c
    .c ? .a : .b
      .c ? .a : .b
    .c ? true : false
      .c ? true : false
-   if (.x == 1) then .a else .b end
-     if (.x == 1) then .a else .b end
-   .name startswith("a")
-     .name startswith("a")
+-> if (.x == 1) then .a else .b end
+     if .x == 1 then .a else .b end
+-> .name startswith("a")
+     .name startsWith "a"
 -> !(.x == 1)
      .x != 1
    !(.x == 1 and .y == 2)
      !(.x == 1 and .y == 2)
-   not (.x == 1 or .y == 2)
-     not (.x == 1 or .y == 2)
+-> not (.x == 1 or .y == 2)
+     !(.x == 1 or .y == 2)
 -> @len(.x) == 0
      @is_empty(.x)
 -> @len(.x) != 0
      @len(.x) > 0
-   (.a)
-     (.a)
+-> (.a)
+     .a
 -> !@is_empty(.a)
      @has_value(.a)
 -> @is_empty(.a) == false
      @has_value(.a)
 -> false == @is_empty(.a)
      @has_value(.a)
-   @is_empty(.a) and @is_empty(.b) == false
-     @is_empty(.a) and @is_empty(.b) == false
+-> @is_empty(.a) and @is_empty(.b) == false
+     @is_empty(.a) and @has_value(.b)
 -> !@is_empty(f(.a, g(.b)))
      @has_value(f(.a, g(.b)))
    @len(.x) >= 0
@@ -245,60 +245,60 @@
      .a
 -> .a and false
      false
-   .a or .b and false
-     .a or .b and false
-   .a and (.b or false)
-     .a and (.b or false)
-   if true then .a else .b end
-     if true then .a else .b end
-   if .c then .x else .x end
-     if .c then .x else .x end
-   if .c then true else false end
-     if .c then true else false end
-   if .c then false else true end
-     if .c then false else true end
+-> .a or .b and false
+     .a
+-> .a and (.b or false)
+     .a and .b
+-> if true then .a else .b end
+     .a
+-> if .c then .x else .x end
+     .x
+-> if .c then true else false end
+     .c
+-> if .c then false else true end
+     !.c
 -> if true then "yes" else "no" end
      "yes"
 -> if false then "yes" else "no" end
      "no"
-   if true then .a else .b end
-     if true then .a else .b end
-   if false then .a else .b end
-     if false then .a else .b end
-   if .c then "x" else "x" end
-     if .c then "x" else "x" end
+-> if true then .a else .b end
+     .a
+-> if false then .a else .b end
+     .b
+-> if .c then "x" else "x" end
+     "x"
 -> if .c then (if .c then .a else .b end) else .z end
      if .c then .a else .z end
-   if .c then true else false end
-     if .c then true else false end
+-> if .c then true else false end
+     .c
    .c ? .a : .b
      .c ? .a : .b
    .c ? true : false
      .c ? true : false
-   if (.x == 1) then .a else .b end
-     if (.x == 1) then .a else .b end
-   .name startswith("a")
-     .name startswith("a")
+-> if (.x == 1) then .a else .b end
+     if .x == 1 then .a else .b end
+-> .name startswith("a")
+     .name startsWith "a"
 -> !(.x == 1)
      .x != 1
    !(.x == 1 and .y == 2)
      !(.x == 1 and .y == 2)
-   not (.x == 1 or .y == 2)
-     not (.x == 1 or .y == 2)
+-> not (.x == 1 or .y == 2)
+     !(.x == 1 or .y == 2)
 -> @len(.x) == 0
      @is_empty(.x)
 -> @len(.x) != 0
      @len(.x) > 0
-   (.a)
-     (.a)
+-> (.a)
+     .a
 -> !@is_empty(.a)
      @has_value(.a)
 -> @is_empty(.a) == false
      @has_value(.a)
 -> false == @is_empty(.a)
      @has_value(.a)
-   @is_empty(.a) and @is_empty(.b) == false
-     @is_empty(.a) and @is_empty(.b) == false
+-> @is_empty(.a) and @is_empty(.b) == false
+     @is_empty(.a) and @has_value(.b)
 -> !@is_empty(f(.a, g(.b)))
      @has_value(f(.a, g(.b)))
 -> @len(.x) >= 0

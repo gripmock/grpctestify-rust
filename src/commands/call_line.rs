@@ -5,21 +5,37 @@ pub struct TlsPaths<'a> {
     pub key: Option<&'a str>,
 }
 
+#[derive(Default, Clone, Copy)]
+pub struct CallSpec<'a> {
+    pub endpoint: &'a str,
+    pub address: Option<&'a str>,
+    pub protocol: Option<&'a str>,
+    pub body: Option<&'a str>,
+    pub headers: &'a [(String, String)],
+    pub tls: TlsPaths<'a>,
+    pub protoset: Option<&'a str>,
+    pub insecure: bool,
+    pub plaintext: bool,
+    pub max_time: Option<u64>,
+}
+
 fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-pub fn grpctestify_call(
-    endpoint: &str,
-    address: Option<&str>,
-    protocol: Option<&str>,
-    body: Option<&str>,
-    insecure: bool,
-    plaintext: bool,
-    headers: &[(String, String)],
-    tls: TlsPaths<'_>,
-    max_time: Option<u64>,
-) -> String {
+pub fn grpctestify_call(spec: CallSpec<'_>) -> String {
+    let CallSpec {
+        endpoint,
+        address,
+        protocol,
+        body,
+        headers,
+        tls,
+        insecure,
+        plaintext,
+        max_time,
+        ..
+    } = spec;
     let mut line = String::from("grpctestify call -e ");
     line.push_str(&quote(endpoint));
     if let Some(address) = address.filter(|a| !a.trim().is_empty()) {
@@ -69,17 +85,20 @@ pub fn grpctestify_call_file(path: &str, doc_index: usize) -> String {
     line
 }
 
-pub fn grpcurl_line(
-    endpoint: &str,
-    address: &str,
-    body: Option<&str>,
-    plaintext: bool,
-    headers: &[(String, String)],
-    protoset: Option<&str>,
-    tls: TlsPaths<'_>,
-    insecure: bool,
-    max_time: Option<u64>,
-) -> String {
+pub fn grpcurl_line(spec: CallSpec<'_>) -> String {
+    let CallSpec {
+        endpoint,
+        address,
+        body,
+        headers,
+        tls,
+        protoset,
+        insecure,
+        plaintext,
+        max_time,
+        ..
+    } = spec;
+    let address = address.unwrap_or("localhost:4770");
     let mut line = String::from("grpcurl");
     if plaintext {
         line.push_str(" -plaintext");
@@ -151,17 +170,13 @@ mod tests {
 
     #[test]
     fn a_call_line_carries_what_call_can_take() {
-        let line = grpctestify_call(
-            "pkg.Svc/M",
-            Some("localhost:4770"),
-            Some("grpc"),
-            Some("{\"a\":1}"),
-            false,
-            false,
-            &[],
-            TlsPaths::default(),
-            None,
-        );
+        let line = grpctestify_call(CallSpec {
+            endpoint: "pkg.Svc/M",
+            address: Some("localhost:4770"),
+            protocol: Some("grpc"),
+            body: Some("{\"a\":1}"),
+            ..Default::default()
+        });
         assert_eq!(
             line,
             "grpctestify call -e 'pkg.Svc/M' --address 'localhost:4770' -d '{\"a\":1}'"
@@ -171,31 +186,19 @@ mod tests {
     #[test]
     fn the_transport_is_named_only_when_it_is_not_the_default() {
         assert!(
-            !grpctestify_call(
-                "a/B",
-                None,
-                Some("grpc"),
-                None,
-                false,
-                false,
-                &[],
-                TlsPaths::default(),
-                None
-            )
+            !grpctestify_call(CallSpec {
+                endpoint: "a/B",
+                protocol: Some("grpc"),
+                ..Default::default()
+            })
             .contains("--protocol")
         );
         assert!(
-            grpctestify_call(
-                "a/B",
-                None,
-                Some("grpc-web"),
-                None,
-                false,
-                false,
-                &[],
-                TlsPaths::default(),
-                None
-            )
+            grpctestify_call(CallSpec {
+                endpoint: "a/B",
+                protocol: Some("grpc-web"),
+                ..Default::default()
+            })
             .contains("--protocol grpc-web")
         );
     }
@@ -206,17 +209,11 @@ mod tests {
             ("authorization".to_string(), "Bearer x y".to_string()),
             ("x-tenant".to_string(), "acme".to_string()),
         ];
-        let line = grpctestify_call(
-            "a/B",
-            None,
-            None,
-            None,
-            false,
-            false,
-            &headers,
-            TlsPaths::default(),
-            None,
-        );
+        let line = grpctestify_call(CallSpec {
+            endpoint: "a/B",
+            headers: &headers,
+            ..Default::default()
+        });
         assert!(line.contains("-H 'authorization: Bearer x y'"), "{line}");
         assert!(line.contains("-H 'x-tenant: acme'"), "{line}");
         assert!(!line.contains("not flags"), "{line}");
@@ -238,17 +235,11 @@ mod tests {
     fn a_nameless_header_is_left_out() {
         let headers = [(" ".to_string(), "nothing".to_string())];
         assert!(
-            !grpctestify_call(
-                "a/B",
-                None,
-                None,
-                None,
-                false,
-                false,
-                &headers,
-                TlsPaths::default(),
-                None
-            )
+            !grpctestify_call(CallSpec {
+                endpoint: "a/B",
+                headers: &headers,
+                ..Default::default()
+            })
             .contains("-H")
         );
     }
@@ -256,62 +247,43 @@ mod tests {
     #[test]
     fn a_grpcurl_line_names_the_target_last_as_grpcurl_wants_it() {
         assert_eq!(
-            grpcurl_line(
-                "pkg.Svc/M",
-                "localhost:4770",
-                Some("{\"a\":1}"),
-                true,
-                &[],
-                None,
-                TlsPaths::default(),
-                false,
-                None
-            ),
+            grpcurl_line(CallSpec {
+                endpoint: "pkg.Svc/M",
+                address: Some("localhost:4770"),
+                body: Some("{\"a\":1}"),
+                plaintext: true,
+                ..Default::default()
+            }),
             "grpcurl -plaintext -d '{\"a\":1}' localhost:4770 pkg.Svc/M"
         );
         assert!(
-            !grpcurl_line(
-                "a/B",
-                "h:1",
-                None,
-                false,
-                &[],
-                None,
-                TlsPaths::default(),
-                false,
-                None
-            )
+            !grpcurl_line(CallSpec {
+                endpoint: "a/B",
+                address: Some("h:1"),
+                ..Default::default()
+            })
             .contains("-plaintext")
         );
 
-        let full = grpcurl_line(
-            "a/B",
-            "h:1",
-            None,
-            true,
-            &[("authorization".to_string(), "Bearer t".to_string())],
-            Some("/tmp/schema.bin"),
-            TlsPaths::default(),
-            false,
-            None,
-        );
+        let full = grpcurl_line(CallSpec {
+            endpoint: "a/B",
+            address: Some("h:1"),
+            headers: &[("authorization".to_string(), "Bearer t".to_string())],
+            protoset: Some("/tmp/schema.bin"),
+            plaintext: true,
+            ..Default::default()
+        });
         assert!(full.contains("-protoset '/tmp/schema.bin'"), "{full}");
         assert!(full.contains("-H 'authorization: Bearer t'"), "{full}");
     }
 
     #[test]
     fn a_quote_inside_a_body_cannot_break_out_of_the_shell() {
-        let line = grpctestify_call(
-            "a/B",
-            None,
-            None,
-            Some("{\"s\":\"it's\"}"),
-            false,
-            false,
-            &[],
-            TlsPaths::default(),
-            None,
-        );
+        let line = grpctestify_call(CallSpec {
+            endpoint: "a/B",
+            body: Some("{\"s\":\"it's\"}"),
+            ..Default::default()
+        });
         assert!(line.contains("'{\"s\":\"it'\\''s\"}'"), "{line}");
     }
     #[test]
