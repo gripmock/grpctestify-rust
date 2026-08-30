@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "clean": "rm -rf dist/assets",
+    "clean": "rm -rf dist/assets node_modules/.monaco",
     "build": "npm run clean && tsc -b && vite build",
     "lint": "oxlint --deny-warnings",
     "preview": "vite preview",

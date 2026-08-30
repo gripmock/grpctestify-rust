@@ -2177,6 +2177,19 @@ pub struct ReflectResponse {
     pub error: Option<String>,
 }
 
+fn no_schema_within(wait: u64) -> String {
+    format!(
+        "No schema within {wait}s — the target accepted the connection and did not answer. The wait is set beside the address."
+    )
+}
+
+fn ran_out_of_time(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("timeout expired")
+        || error.contains("deadline exceeded")
+        || error.contains("timed out")
+}
+
 pub async fn reflect_server(
     State(state): State<Arc<PlayState>>,
     Json(req): Json<ReflectRequest>,
@@ -2232,17 +2245,20 @@ pub async fn reflect_server(
     {
         Ok(Ok(c)) => c,
         Ok(Err(e)) => {
+            let reported = e.to_string();
             return Json(ReflectResponse {
                 services: vec![],
-                error: Some(format!("Reflection failed: {}", e)),
+                error: Some(if ran_out_of_time(&reported) {
+                    no_schema_within(wait)
+                } else {
+                    format!("Reflection failed: {}", reported)
+                }),
             });
         }
         Err(_) => {
             return Json(ReflectResponse {
                 services: vec![],
-                error: Some(format!(
-                    "No schema within {wait}s — the target accepted the connection and did not answer. The wait is set beside the address."
-                )),
+                error: Some(no_schema_within(wait)),
             });
         }
     };
@@ -2452,12 +2468,15 @@ async fn resolve_endpoint_descriptors(
         crate::grpc::GrpcClient::new(grpc_config),
     )
     .await
-    .map_err(|_| {
-        format!(
-            "No schema within {wait}s — the target accepted the connection and did not answer. The wait is set beside the address."
-        )
-    })?
-    .map_err(|e| format!("Failed to load descriptors: {}", e))?;
+    .map_err(|_| no_schema_within(wait))?
+    .map_err(|e| {
+        let reported = e.to_string();
+        if ran_out_of_time(&reported) {
+            no_schema_within(wait)
+        } else {
+            format!("Failed to load descriptors: {}", reported)
+        }
+    })?;
 
     let svc = client
         .descriptor_pool()
@@ -5286,9 +5305,7 @@ mod tests {
         assert_ne!(now.hash, held.hash, "the change is in the hash");
     }
 
-    #[cfg(not(miri))]
     use std::path::PathBuf;
-    #[cfg(not(miri))]
     use std::sync::atomic::AtomicU64;
 
     #[cfg_attr(miri, ignore)]
@@ -5715,6 +5732,19 @@ mod tests {
         assert!(answer.0.services.is_empty());
         let error = answer.0.error.unwrap_or_default();
         assert!(error.contains("No schema within 1s"), "{error}");
+    }
+
+    #[test]
+    fn a_timeout_says_the_same_thing_whichever_layer_noticed_it() {
+        for reported in [
+            "Reflection failed at 127.0.0.1:49209: Cancelled Timeout expired",
+            "status: DeadlineExceeded, message: \"deadline exceeded\"",
+            "operation timed out",
+        ] {
+            assert!(ran_out_of_time(reported), "{reported}");
+        }
+        assert!(!ran_out_of_time("Connection refused (os error 61)"));
+        assert!(no_schema_within(1).contains("No schema within 1s"));
     }
 
     #[cfg_attr(miri, ignore)]
@@ -6144,7 +6174,6 @@ mod tests {
         assert!(extracted_by_call(&state, &req, None).is_empty());
     }
 
-    #[cfg(not(miri))]
     fn share_state_in(dir: &std::path::Path) -> Arc<PlayState> {
         Arc::new(PlayState {
             collections_dir: dir.to_path_buf(),
