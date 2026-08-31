@@ -369,6 +369,10 @@ pub fn load_all_inline_option_keys() -> std::collections::HashSet<String> {
 }
 
 fn load_all_configured_plugins_typed() -> Vec<RhaiPlugin> {
+    if !apif_cfg_runtime::supports(apif_cfg_runtime::Capability::IsolatedFsIo) {
+        return Vec::new();
+    }
+
     let mut plugins: Vec<RhaiPlugin> = Vec::new();
     let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
 

@@ -240,6 +240,7 @@ version = "0.2.3"
 dependencies = [
  "anyhow",
  "apif-assert",
+ "apif-cfg-runtime",
  "chrono",
  "email_address",
  "jsonschema",
