@@ -5521,6 +5521,7 @@ mod tests {
         }
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn the_directory_a_run_writes_into_is_not_a_collection() {
         let dir = std::env::temp_dir().join(format!("gctf-generated-{}", std::process::id()));
@@ -5543,6 +5544,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn list_collections_includes_empty_dirs() {
         let dir = tempfile::tempdir().unwrap();
@@ -5611,6 +5613,7 @@ mod tests {
         );
         assert!(dir_item.unwrap().is_dir, "projects must have is_dir: true");
     }
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn stale_version_is_a_conflict_not_a_clobber() {
         let dir = std::env::temp_dir().join(format!("gctf-ver-{}", std::process::id()));
@@ -5798,6 +5801,7 @@ mod tests {
         assert!(error.contains("No answer within 1s"), "{error}");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_dataset_file_is_read_as_its_rows() {
         let dir = std::env::temp_dir().join(format!("play-rows-{}", std::process::id()));
@@ -5985,6 +5989,7 @@ mod tests {
         assert!(tls_for_call(None, None).is_none());
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_scaffold_carries_the_files_proto_section() {
         let dir = std::env::temp_dir().join(format!("gctf-scaffold-proto-{}", std::process::id()));
@@ -6727,6 +6732,7 @@ mod tests {
         })
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_curl_command_is_not_imported_as_grpcurl() {
         let refused = import_grpcurl(Json(ImportGrpcurlRequest {
@@ -6749,6 +6755,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_grpcurl_command_named_by_path_is_imported_the_same() {
         let by_path = import_grpcurl(Json(ImportGrpcurlRequest {
@@ -6766,6 +6773,7 @@ mod tests {
         assert_eq!(by_path.0.address, "localhost:4770");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_grpcurl_command_is_imported() {
         let imported = import_grpcurl(Json(ImportGrpcurlRequest {
@@ -6783,6 +6791,7 @@ mod tests {
         assert_eq!(imported.0.address, "localhost:4770");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn reports_go_beside_the_project_not_into_the_collections() {
         let dir = std::env::temp_dir().join(format!("reports-base-{}", std::process::id()));
@@ -6816,6 +6825,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_structured_save_over_an_unreadable_file_is_refused() {
         let dir = std::env::temp_dir().join(format!("unreadable-save-{}", std::process::id()));
@@ -6866,6 +6876,7 @@ mod tests {
         assert_eq!(source.matches("message HealthCheckRequest {").count(), 1);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn diagnostics_answer_in_the_voice_they_are_asked_for() {
         let content = "--- ENDPOINT ---\na.B/C\n\n--- REQUEST ---\n{}\n".to_string();
@@ -6917,6 +6928,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_check_reports_only_the_files_with_something_to_say() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -6960,6 +6972,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_streaming_request_is_written_back_as_one_section() {
         let doc = crate::parser::parse_gctf_from_str(
@@ -7013,6 +7026,7 @@ mod tests {
         }
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_bodyless_http_file_is_written_back_without_a_request_section() {
         let dir = std::env::temp_dir().join(format!("httf-body-{}", std::process::id()));
@@ -7026,6 +7040,7 @@ mod tests {
         assert!(render_structured(&state, &req).contains("--- REQUEST ---"));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn an_empty_body_is_still_written_for_a_grpc_file() {
         let dir = std::env::temp_dir().join(format!("gctf-body-{}", std::process::id()));
@@ -7035,6 +7050,7 @@ mod tests {
         assert!(render_structured(&state, &req).contains("--- REQUEST ---"));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_save_keeps_the_step_in_its_group() {
         let dir = std::env::temp_dir().join(format!("gctf-parallel-write-{}", std::process::id()));
@@ -7062,6 +7078,7 @@ mod tests {
         assert!(parse_collection(&back).parallel);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_save_writes_the_expectation_with_its_options() {
         let dir = std::env::temp_dir().join(format!("gctf-expect-write-{}", std::process::id()));
@@ -7102,6 +7119,7 @@ mod tests {
         assert_eq!(parsed.expect_responses[0].tolerance, Some(0.5));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn an_error_expectation_replaces_the_response_one() {
         let dir = std::env::temp_dir().join(format!("gctf-expect-error-{}", std::process::id()));
@@ -7131,6 +7149,7 @@ mod tests {
         assert!(!rendered.contains("--- RESPONSE"), "{rendered}");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn an_expectation_survives_a_save_that_does_not_carry_it() {
         let dir = std::env::temp_dir().join(format!("gctf-expect-keep-{}", std::process::id()));
@@ -7147,6 +7166,7 @@ mod tests {
         assert!(rendered.contains("--- RESPONSE partial ---"), "{rendered}");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn an_empty_expectation_removes_both_sections() {
         let dir = std::env::temp_dir().join(format!("gctf-expect-drop-{}", std::process::id()));
@@ -7237,6 +7257,7 @@ mod tests {
         assert!(!truncated);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn an_empty_section_removes_the_one_that_was_there() {
         let dir = std::env::temp_dir().join(format!("gctf-drop-section-{}", std::process::id()));
@@ -7491,6 +7512,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_save_without_headers_keeps_the_headers_that_were_there() {
         let dir = std::env::temp_dir().join(format!("gctf-keep-headers-{}", std::process::id()));
@@ -7544,6 +7566,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_step_save_without_headers_keeps_that_step_headers() {
         let dir = std::env::temp_dir().join(format!("gctf-step-headers-{}", std::process::id()));
@@ -7597,6 +7620,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn saving_a_middle_step_leaves_the_others_alone() {
         let dir = std::env::temp_dir().join(format!("gctf-step-save-{}", std::process::id()));
@@ -7732,6 +7756,7 @@ mod tests {
         assert!(check_bodies(&req).is_ok());
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn saving_over_a_chain_head_keeps_the_tail() {
         let dir = std::env::temp_dir().join(format!("gctf-chain-save-{}", std::process::id()));
@@ -7789,6 +7814,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn fmt_on_save_renders_what_the_formatter_would_write() {
         let dir = std::env::temp_dir().join(format!("gctf-fmtsave-{}", std::process::id()));
@@ -7837,6 +7863,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn every_section_survives_a_structured_save() {
         let dir = std::env::temp_dir().join(format!("gctf-allsections-{}", std::process::id()));

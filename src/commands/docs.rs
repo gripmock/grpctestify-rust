@@ -974,6 +974,7 @@ mod tests {
         assert_eq!(service_key("", "Calculator"), "Calculator");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_streaming_request_is_documented_as_the_stream_it_is() {
         let dir = std::env::temp_dir().join(format!("docs-stream-{}", std::process::id()));
@@ -1003,6 +1004,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_documented_call_carries_the_headers_the_file_sends() {
         let dir = std::env::temp_dir().join(format!("docs-headers-{}", std::process::id()));
@@ -1033,6 +1035,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_documented_grpcurl_line_carries_the_schema() {
         let dir = std::env::temp_dir().join(format!("docs-proto-{}", std::process::id()));
@@ -1057,6 +1060,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn the_index_names_what_the_set_holds() {
         let dir = std::env::temp_dir().join(format!("docs-index-{}", std::process::id()));
@@ -1089,6 +1093,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn an_http_file_is_filed_under_the_path_it_calls() {
         let dir = std::env::temp_dir().join(format!("httf-docs-{}", std::process::id()));
@@ -1129,6 +1134,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_page_offers_the_file_first_and_one_command_per_block() {
         let dir = std::env::temp_dir().join(format!("docs-blocks-{}", std::process::id()));
@@ -1168,6 +1174,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_chain_step_carries_the_address_and_the_binding_it_reads() {
         let dir = std::env::temp_dir().join(format!("docs-chain-{}", std::process::id()));
@@ -1290,6 +1297,7 @@ mod tests {
         assert!(diagram.contains("Server-->>Client: error"));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_step_is_written_out_on_its_own_page_and_linked_from_the_other() {
         let dir = std::env::temp_dir().join(format!("docs-cross-{}", std::process::id()));
@@ -1343,6 +1351,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn every_message_the_answer_holds_is_documented() {
         let dir = std::env::temp_dir().join(format!("docs-answers-{}", std::process::id()));
@@ -1366,6 +1375,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn what_a_run_skips_is_not_documented() {
         let dir = std::env::temp_dir().join(format!("docs-skip-{}", std::process::id()));
@@ -1396,6 +1406,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_file_on_another_wire_is_not_documented_with_grpcurl() {
         let dir = std::env::temp_dir().join(format!("docs-wire-{}", std::process::id()));
@@ -1419,6 +1430,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_documented_call_carries_the_certificates_the_file_dials_with() {
         let dir = std::env::temp_dir().join(format!("docs-tls-{}", std::process::id()));
@@ -1448,6 +1460,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_page_says_how_the_file_bounds_the_call() {
         let dir = std::env::temp_dir().join(format!("docs-runtime-{}", std::process::id()));
@@ -1480,6 +1493,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_file_that_bounds_nothing_says_nothing_about_it() {
         let dir = std::env::temp_dir().join(format!("docs-unbounded-{}", std::process::id()));
@@ -1503,6 +1517,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_dataset_is_documented_as_the_rows_it_runs() {
         let dir = std::env::temp_dir().join(format!("docs-rows-{}", std::process::id()));
@@ -1529,6 +1544,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_file_that_cannot_be_read_is_named() {
         let dir = std::env::temp_dir().join(format!("docs-unread-{}", std::process::id()));
@@ -1559,6 +1575,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_page_names_the_shape_and_what_a_shell_will_not_fill_in() {
         let dir = std::env::temp_dir().join(format!("docs-shape-{}", std::process::id()));
@@ -1622,6 +1639,7 @@ mod tests {
         assert_eq!(page_file("/v1/users"), "v1-users.md");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_page_carries_the_headers_and_the_links_the_file_names() {
         let dir = std::env::temp_dir().join(format!("docs-meta-{}", std::process::id()));
@@ -1665,6 +1683,7 @@ mod tests {
         assert_eq!(names.len(), 3);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_link_follows_the_file_the_page_was_written_as() {
         let dir = std::env::temp_dir().join(format!("docs-clash-{}", std::process::id()));
@@ -1712,6 +1731,7 @@ mod tests {
         assert_eq!(md_cell("line1\nline2"), "line1 line2");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_nasty_value_still_writes_one_row_and_one_header() {
         let dir = std::env::temp_dir().join(format!("docs-nasty-{}", std::process::id()));
@@ -1736,6 +1756,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_name_from_the_file_cannot_break_the_page_that_lists_it() {
         let dir = std::env::temp_dir().join(format!("docs-names-{}", std::process::id()));

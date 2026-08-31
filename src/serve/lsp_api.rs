@@ -545,6 +545,7 @@ mod tests {
         });
         assert!(h.is_some(), "a line inside ENDPOINT hovers");
     }
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn explain_returns_one_plan_per_document() {
         let content = "--- ADDRESS ---\nlocalhost:4770\n\n             --- ENDPOINT ---\nauth.v1.AuthService/Login\n\n             --- REQUEST ---\n{}\n\n             --- EXTRACT ---\ntoken = .auth.token\n\n             --- ENDPOINT ---\nfeed.v1.FeedService/List\n\n             --- REQUEST ---\n{}\n\n             --- ASSERTS ---\n.ok == true\n";
@@ -565,6 +566,7 @@ mod tests {
         assert_eq!(out.documents[1].summary.assertion_blocks, 1);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn explain_says_where_a_step_without_an_address_will_dial() {
         let content = "--- ADDRESS ---\nlocalhost:4770\n\n             --- ENDPOINT ---\npkg.Svc/A\n\n--- REQUEST ---\n{}\n\n             --- ENDPOINT ---\npkg.Svc/B\n\n--- REQUEST ---\n{}\n";
@@ -578,6 +580,7 @@ mod tests {
         assert!(out.documents[1].connection.source.contains("Environment"));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn explain_says_what_each_runtime_option_resolves_to_and_why() {
         let out = explain(Json(ExplainRequest {
@@ -604,6 +607,7 @@ mod tests {
         assert_eq!(retry.source, "CLI default", "nothing in the file set it");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn explain_resolves_the_runtime_of_every_step() {
         let out = explain(Json(ExplainRequest {
@@ -628,6 +632,7 @@ mod tests {
         assert_eq!(timeout_of(1), "11 s", "step two has its own OPTIONS");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn explain_lists_the_sections_the_parser_saw_and_draws_the_chain() {
         let out = explain(Json(ExplainRequest {
@@ -660,6 +665,7 @@ mod tests {
         assert_eq!(screaming_snake("Asserts"), "ASSERTS");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn unparsable_content_is_an_error_not_a_panic() {
         let out = explain(Json(ExplainRequest {

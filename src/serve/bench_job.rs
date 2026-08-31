@@ -88,6 +88,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_cancelled_bench_stops_and_says_it_was_cancelled() {
         let dir = std::env::temp_dir().join(format!("gctf-bench-cancel-{}", std::process::id()));

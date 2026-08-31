@@ -3389,6 +3389,7 @@ impl TestRunner {
 mod tests {
     use super::*;
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn an_http_document_that_does_not_name_a_method_says_so_before_dialling() {
         let doc = crate::parser::parse_gctf_from_str(
@@ -3528,6 +3529,7 @@ mod tests {
         assert_eq!(TestRunner::http_timeout_seconds(&zero, 60), 60);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_dry_run_of_an_http_file_sends_nothing() {
         let doc = crate::parser::parse_gctf_from_str(
@@ -3570,6 +3572,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn the_plan_names_the_transport_the_file_selects() {
         let plain = parse(
@@ -3589,6 +3592,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_request_checked_only_by_asserts_is_still_unary() {
         let doc = parse(
@@ -4564,6 +4568,7 @@ chat.ChatService/SendMessages
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_step_with_nowhere_to_go_stops_the_file_before_anything_is_dialled() {
         let content = "--- ADDRESS ---\n127.0.0.1:4770\n\n--- ENDPOINT ---\na.A/One\n\n--- REQUEST ---\n{}\n\n--- ASSERTS ---\n.ok == true\n\n--- ENDPOINT ---\nGET /v1/orders\n\n--- ASSERTS ---\n@status() == 200\n";
@@ -4609,6 +4614,7 @@ chat.ChatService/SendMessages
         assert!(matches!(result.status, TestExecutionStatus::Pass));
         assert!(vars.is_empty());
     }
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_whole_url_in_the_endpoint_is_its_own_address() {
         let runner = TestRunner::new(true, 30, false, false, false, None);

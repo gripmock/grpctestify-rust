@@ -555,6 +555,7 @@ mod redaction_tests {
 mod text_file_tests {
     use super::*;
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn what_is_written_ends_the_way_a_text_file_ends() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -574,6 +575,7 @@ mod text_file_tests {
         assert!(!held.ends_with("\n\n"), "one newline, not two: {held:?}");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_newline_is_not_added_twice() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -582,6 +584,7 @@ mod text_file_tests {
         assert_eq!(fs::read_to_string(&path).expect("read"), "A=1\n");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn an_empty_file_stays_empty() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -607,6 +610,7 @@ mod session_sweep_tests {
             .expect("stamp");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn the_oldest_sessions_go_and_the_newest_stay() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -626,6 +630,7 @@ mod session_sweep_tests {
         assert!(history.join(".gitkeep").exists());
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_project_under_the_limit_is_left_alone() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -638,6 +643,7 @@ mod session_sweep_tests {
         assert!(history.join("only.jsonl").exists());
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn nothing_to_sweep_is_not_a_failure() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -649,6 +655,7 @@ mod session_sweep_tests {
 mod ignore_tests {
     use super::*;
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn every_line_the_workbench_needs_is_added_to_an_existing_ignore() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -668,6 +675,7 @@ mod ignore_tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn what_the_project_already_ignores_is_kept() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -681,6 +689,7 @@ mod ignore_tests {
         assert!(held.contains("history/"), "{held}");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn ensuring_it_again_changes_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");

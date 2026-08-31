@@ -148,6 +148,7 @@ mod tests {
         results
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn the_reports_directory_says_it_is_not_source() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -157,6 +158,7 @@ mod tests {
         assert!(held.contains('*'), "ignores everything under it: {held}");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn only_the_last_runs_are_kept() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -219,6 +221,7 @@ mod tests {
         assert!(matches!(Format::parse("allure"), Some(Format::Allure)));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn every_requested_format_lands_in_the_jobs_own_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -244,6 +247,7 @@ mod tests {
         assert!(json.contains("auth/login.gctf"), "the results are in it");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_report_does_not_turn_a_folder_into_a_project() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -255,6 +259,7 @@ mod tests {
         assert!(dir.path().join("grpctestify-reports").join("j-3").is_dir());
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_project_keeps_its_reports_where_the_cli_writes_them() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -267,6 +272,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn asking_for_nothing_writes_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");

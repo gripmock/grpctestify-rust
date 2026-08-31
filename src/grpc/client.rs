@@ -241,6 +241,7 @@ impl GrpcClient {
 mod convert_result_tests {
     use super::*;
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn structured_error_passes_through_with_trailers_folded() {
         let mut trailers = HashMap::new();
@@ -261,6 +262,7 @@ mod convert_result_tests {
         assert_eq!(e.metadata.get("x-h").unwrap(), "hv");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn no_error_emits_messages_then_trailers() {
         let mut trailers = HashMap::new();

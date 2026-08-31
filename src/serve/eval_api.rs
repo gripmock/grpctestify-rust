@@ -463,6 +463,7 @@ mod tests {
         }
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_passing_assertion_names_its_layer() {
         let v = assert_one(req(json!({"ok": true}), ".ok == true")).await;
@@ -470,6 +471,7 @@ mod tests {
         assert_eq!(v.layer.as_deref(), Some("ast"));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_jq_fallback_is_labelled_jq() {
         let v = assert_one(req(
@@ -481,6 +483,7 @@ mod tests {
         assert_eq!(v.layer.as_deref(), Some("jq"));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_failure_carries_expected_and_actual() {
         let v = assert_one(req(json!({"n": 2}), ".n == 3")).await;
@@ -488,6 +491,7 @@ mod tests {
         assert!(v.expected.is_some() || v.message.is_some());
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn env_is_refused_not_evaluated() {
         let v = assert_one(req(json!({}), "@env(\"HOME\") != \"\"")).await;
@@ -495,12 +499,14 @@ mod tests {
         assert!(v.error.unwrap().contains("@env"));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn context_plugins_get_a_verdict_not_an_error() {
         let v = assert_one(req(json!({}), "@elapsed_ms() < 1000")).await;
         assert!(v.passed, "{v:?}");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_verdict_carries_what_fmt_would_rewrite_the_line_to() {
         let verdicts = eval_assert(Json(EvalAssertRequest {
@@ -526,6 +532,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_runaway_jq_program_times_out_instead_of_hanging() {
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
@@ -543,6 +550,7 @@ mod tests {
         }
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn the_endpoint_stops_a_runaway_in_the_engine_not_by_abandoning_it() {
         let started = std::time::Instant::now();
@@ -561,6 +569,7 @@ mod tests {
         assert!(out.error.is_some());
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_runaway_assertion_is_an_error_verdict_not_a_hang() {
         let v = assert_one(req(json!({}), "repeat(.)")).await;
@@ -569,6 +578,7 @@ mod tests {
         assert_eq!(v.layer.as_deref(), Some("jq"));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn regex_matches_mode_rewrites_flags_and_reports_spans() {
         let out = eval_regex(Json(EvalRegexRequest {
@@ -585,6 +595,7 @@ mod tests {
         assert_eq!(out.spans, vec![(6, 11)]);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn regex_jq_mode_returns_named_captures() {
         let out = eval_regex(Json(EvalRegexRequest {
@@ -606,6 +617,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn an_invalid_regex_is_an_error_not_a_500() {
         let out = eval_regex(Json(EvalRegexRequest {
@@ -621,6 +633,7 @@ mod tests {
         assert!(out.error.is_some());
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn query_returns_every_output() {
         let out = eval_query(Json(EvalQueryRequest {
@@ -632,6 +645,7 @@ mod tests {
         .0;
         assert_eq!(out.outputs, vec![json!(1), json!(2)]);
     }
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_timed_out_evaluation_gives_its_permit_back() {
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
@@ -654,6 +668,7 @@ mod tests {
         assert_eq!(next.unwrap(), 7);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_saturated_evaluator_refuses_instead_of_stacking_threads() {
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
@@ -669,6 +684,7 @@ mod tests {
         drop(held);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn regex_spans_are_utf16_units_in_both_modes() {
         let subject = "héllo world".to_string();
@@ -695,6 +711,7 @@ mod tests {
         assert_eq!(jq.spans, plain.spans, "both engines report the same unit");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn regex_spans_cover_astral_characters() {
         let out = eval_regex(Json(EvalRegexRequest {

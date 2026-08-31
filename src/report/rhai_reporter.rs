@@ -198,6 +198,7 @@ mod tests {
         path
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn assertion_only_script_is_not_a_reporter() {
         let dir = tempfile::tempdir().unwrap();
@@ -205,6 +206,7 @@ mod tests {
         assert!(RhaiReporter::load(&path).unwrap().is_none());
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn script_with_any_hook_is_detected_as_a_reporter() {
         let dir = tempfile::tempdir().unwrap();
@@ -216,6 +218,7 @@ mod tests {
         assert!(RhaiReporter::load(&path).unwrap().is_some());
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn on_test_end_receives_the_real_name_and_status() {
         let dir = tempfile::tempdir().unwrap();
@@ -233,6 +236,7 @@ mod tests {
         reporter.call_on_test_end("svc.Thing/Do", &result).unwrap();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn on_test_end_actually_fails_when_data_is_wrong() {
         let dir = tempfile::tempdir().unwrap();
@@ -247,6 +251,7 @@ mod tests {
         assert!(err.to_string().contains("deliberately wrong"), "{err}");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn on_suite_end_receives_aggregate_counts_and_full_results() {
         let dir = tempfile::tempdir().unwrap();
@@ -269,6 +274,7 @@ mod tests {
         reporter.on_suite_end(&results).unwrap();
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_hook_that_throws_surfaces_as_an_error_from_on_suite_end() {
         let dir = tempfile::tempdir().unwrap();
@@ -282,6 +288,7 @@ mod tests {
         assert!(err.to_string().contains("boom"), "{err}");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn meta_and_optional_fields_serialize_without_error() {
         let dir = tempfile::tempdir().unwrap();

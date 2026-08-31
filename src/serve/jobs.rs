@@ -1729,6 +1729,7 @@ mod tests {
         })
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_bench_stopped_by_hand_is_not_reported_as_passed() {
         let dir = std::env::temp_dir().join(format!("gctf-bench-status-{}", std::process::id()));
@@ -1796,6 +1797,7 @@ mod tests {
     const BENCH_A: &str = "--- BENCH ---\nmode: fixed\nconcurrency: 4\n\n--- ENDPOINT ---\npkg.Svc/M\n\n--- ASSERTS ---\n.ok\n";
     const BENCH_B: &str = "--- BENCH ---\nmode: fixed\nconcurrency: 9\n\n--- ENDPOINT ---\npkg.Svc/M\n\n--- ASSERTS ---\n.ok\n";
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_bench_with_no_files_is_a_bad_request() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1843,6 +1845,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_transport_failure_is_tried_again() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1865,6 +1868,7 @@ mod tests {
 
     const DATASET_FILE: &str = "--- ENDPOINT ---\ns.S/M\n\n--- REQUEST ---\n{\"id\": \"{{dataset.id}}\"}\n\n--- DATASET ---\n- id: \"1\"\n- id: \"2\"\n- id: \"3\"\n";
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_file_with_a_dataset_becomes_one_case_per_row() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1905,6 +1909,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_file_without_a_dataset_is_one_case() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1922,6 +1927,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_dataset_and_a_data_source_are_refused_together() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1943,6 +1949,7 @@ mod tests {
         assert!(err.1.contains("DATASET"), "{}", err.1);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_dataset_with_no_rows_is_refused() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1967,6 +1974,7 @@ mod tests {
         assert!(err.1.contains("zero rows"), "{}", err.1);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_bench_of_files_that_disagree_is_refused() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1989,6 +1997,7 @@ mod tests {
         assert!(err.1.contains("BENCH"), "says what disagreed: {}", err.1);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_bench_of_files_sharing_one_config_is_accepted() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2056,6 +2065,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_cancelled_job_skips_the_files_it_has_not_reached() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2089,6 +2099,7 @@ mod tests {
         assert_eq!(events.last().expect("last")["event"], "suite_end");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_file_that_verifies_nothing_is_refused_the_way_run_refuses_it() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2109,6 +2120,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_suite_runs_at_the_width_the_command_line_runs_at() {
         let dir = tempfile::tempdir().expect("tempdir");

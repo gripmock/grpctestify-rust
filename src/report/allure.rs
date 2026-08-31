@@ -1264,6 +1264,7 @@ pkg.Service/M
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_fixture_is_a_fixture_in_either_family() {
         assert!(matches!(

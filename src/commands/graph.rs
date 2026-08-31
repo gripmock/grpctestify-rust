@@ -303,6 +303,7 @@ mod tests {
         assert!(mermaid.contains("n0 --> n1"));
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn node_label_annotates_multi_step_chains() {
         let dir = tempfile::tempdir().unwrap();
@@ -316,6 +317,7 @@ mod tests {
         assert_eq!(label, "chain.gctf (AddItem → Checkout)");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn node_label_names_the_steps_of_an_http_chain() {
         let dir = tempfile::tempdir().unwrap();
@@ -332,6 +334,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn node_label_single_document_is_bare_name() {
         let dir = tempfile::tempdir().unwrap();
