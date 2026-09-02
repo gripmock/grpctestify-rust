@@ -3444,6 +3444,7 @@ impl TestRunner {
 mod retry_seam_tests {
     use super::{ChainAccumulator, SendAttempt, TestExecutionResult, send_with_retries};
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test(start_paused = true)]
     async fn a_send_that_never_fails_is_not_a_retry() {
         let mut attempts = Vec::new();
@@ -3467,6 +3468,7 @@ mod retry_seam_tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test(start_paused = true)]
     async fn a_send_that_settles_on_a_later_attempt_says_it_retried() {
         let mut seen = Vec::new();
@@ -3518,6 +3520,7 @@ mod retry_seam_tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test(start_paused = true)]
     async fn the_last_attempt_is_told_it_is_the_last_so_it_can_hand_the_payload_over() {
         let mut payloads: Vec<String> = Vec::new();
@@ -3546,6 +3549,7 @@ mod retry_seam_tests {
         assert!(request.is_none(), "the last attempt took the payload");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test(start_paused = true)]
     async fn a_budget_of_zero_sends_once_and_keeps_the_failure() {
         let mut attempts = 0usize;

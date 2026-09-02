@@ -1786,6 +1786,7 @@ mod tests {
         crate::parser::parse_gctf_from_str(content, "<test>").expect("parse")
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_missing_bench_source_reaches_the_editor() {
         let src = "--- ENDPOINT ---\npkg.Svc/M\n\n--- BENCH ---\nsources:\n  - name: users\n    file: nowhere/users.csv\n\n--- REQUEST ---\n{}\n";
@@ -1802,6 +1803,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_bench_source_that_is_there_says_nothing() {
         let src = "--- ENDPOINT ---\npkg.Svc/M\n\n--- BENCH ---\nsources:\n  - name: rows\n    file: Cargo.toml\n\n--- REQUEST ---\n{}\n";

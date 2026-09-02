@@ -15,7 +15,7 @@ describe('a grpcurl line the workbench could not read', () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 502, statusText: 'Bad Gateway', json: async () => { throw new Error('no body'); } })));
     const ui = mount(panel);
     ui.type('textarea', 'grpcurl -plaintext localhost:4770 a.A/One');
-    ui.click(ui.all('button').find(b => b.textContent?.includes('mport'))!);
+    ui.click(ui.all('button').find(b => b.textContent?.trim() === 'Import')!);
     await settle();
     expect(ui.get('.assert.is-fail').textContent).toContain('The workbench could not read that command (502 Bad Gateway)');
     ui.unmount();

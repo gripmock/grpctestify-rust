@@ -164,12 +164,13 @@ mod tests {
 
     #[test]
     fn base64_matches_the_standard_alphabet() {
-        assert_eq!(base64(b""), "");
-        assert_eq!(base64(b"f"), "Zg==");
-        assert_eq!(base64(b"fo"), "Zm8=");
-        assert_eq!(base64(b"foo"), "Zm9v");
-        assert_eq!(base64(b"foob"), "Zm9vYg==");
-        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        let vector = b"foobar";
+        assert_eq!(base64(&vector[..0]), "");
+        assert_eq!(base64(&vector[..1]), "Zg==");
+        assert_eq!(base64(&vector[..2]), "Zm8=");
+        assert_eq!(base64(&vector[..3]), "Zm9v");
+        assert_eq!(base64(&vector[..4]), "Zm9vYg==");
+        assert_eq!(base64(vector), "Zm9vYmFy");
     }
 
     #[test]
@@ -201,6 +202,7 @@ mod tests {
         assert!(policy.contains("worker-src 'self' blob:"), "{policy}");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn every_served_file_carries_the_security_headers() {
         for response in [

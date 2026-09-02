@@ -359,21 +359,21 @@ pub async fn create_job(
                 .map(super::project::project_variables)
                 .unwrap_or_default();
             let held = job.clone();
-            tokio::spawn(held_slot(
+            hold_slot(
                 held,
-                run_job(
+                tokio::spawn(run_job(
                     job,
                     expanded,
                     req.up_to_step,
                     reports_base(&state).to_path_buf(),
                     data,
                     env,
-                ),
-            ));
+                )),
+            );
         }
         JobKind::Bench => {
             let held = job.clone();
-            tokio::spawn(held_slot(held, bench_job(job, files)));
+            hold_slot(held, tokio::spawn(bench_job(job, files)));
         }
     }
     Ok(Json(summary))
@@ -641,21 +641,23 @@ impl Drop for RunningSlot {
     }
 }
 
-async fn held_slot(job: Arc<Job>, work: impl Future<Output = ()>) {
-    let slot = RunningSlot(job.clone());
-    if tokio::time::timeout(std::time::Duration::from_secs(MAX_JOB_SECS), work)
-        .await
-        .is_err()
-    {
-        job.emit(json!({
-            "type": "error",
-            "message": format!(
-                "the run passed {MAX_JOB_SECS}s and was given up on so the workbench can start another"
-            ),
-            "timestamp": apif_cfg_runtime::now_rfc3339(),
-        }));
-    }
-    drop(slot);
+fn hold_slot(job: Arc<Job>, mut work: tokio::task::JoinHandle<()>) {
+    tokio::spawn(async move {
+        let slot = RunningSlot(job.clone());
+        let waited =
+            tokio::time::timeout(std::time::Duration::from_secs(MAX_JOB_SECS), &mut work).await;
+        if waited.is_err() {
+            work.abort();
+            job.emit(json!({
+                "type": "error",
+                "message": format!(
+                    "the run passed {MAX_JOB_SECS}s and was given up on so the workbench can start another"
+                ),
+                "timestamp": apif_cfg_runtime::now_rfc3339(),
+            }));
+        }
+        drop(slot);
+    });
 }
 
 type DataRows = Vec<std::collections::HashMap<String, Value>>;
@@ -2226,6 +2228,7 @@ mod tests {
         assert_eq!(summary.passed + summary.skipped, 0);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_run_that_panics_gives_its_slot_back() {
         let job = job_with("panicking");
@@ -2234,10 +2237,14 @@ mod tests {
         assert_eq!(registry.running(), 1);
 
         let held = job.clone();
-        let task = tokio::spawn(held_slot(held, async {
-            panic!("the runner fell over");
-        }));
-        assert!(task.await.is_err(), "the panic is not swallowed");
+        hold_slot(
+            held,
+            tokio::spawn(async {
+                panic!("the runner fell over");
+            }),
+        );
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
 
         assert_eq!(
             lock(&job.state).status,
@@ -2248,15 +2255,21 @@ mod tests {
         assert_eq!(registry.running(), 0, "the slot is free again");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_run_that_finishes_keeps_the_verdict_it_reached() {
         let job = job_with("passing");
         lock(&job.state).status = JobStatus::Running;
         let held = job.clone();
-        held_slot(held, async {
-            lock(&job.state).status = JobStatus::Passed;
-        })
-        .await;
+        let inner = job.clone();
+        hold_slot(
+            held,
+            tokio::spawn(async move {
+                lock(&inner.state).status = JobStatus::Passed;
+            }),
+        );
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
         assert_eq!(lock(&job.state).status, JobStatus::Passed);
     }
 

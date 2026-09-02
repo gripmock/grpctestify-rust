@@ -730,6 +730,7 @@ mod tests {
         section(ty, kv)
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_missing_bench_source_is_reported_on_the_bench_header_line_one_based() {
         let src = "--- ENDPOINT ---\npkg.Svc/M\n\n--- BENCH ---\nsources:\n  - name: users\n    file: nowhere/users.csv\n\n--- REQUEST ---\n{}\n";

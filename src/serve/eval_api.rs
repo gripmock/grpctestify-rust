@@ -737,6 +737,7 @@ mod tests {
         assert_eq!(out.spans, vec![(3, 6)]);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_request_of_more_than_two_hundred_expressions_is_refused() {
         let mut many = req(json!({"ok": true}), ".ok");

@@ -768,6 +768,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn dump_header_writes_the_status_and_headers_of_an_http_answer() {
         let origin = hopping_origin().await;
@@ -794,6 +795,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn location_follows_the_redirect_and_dumps_where_it_landed() {
         let origin = hopping_origin().await;
@@ -846,6 +848,7 @@ mod tests {
         assert!(error_notice(&args, 500).is_some());
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn an_http_call_with_a_grpc_only_flag_is_refused_before_dialling() {
         let mut args = http_call_args();
@@ -859,6 +862,7 @@ mod tests {
         assert!(message.contains("gRPC calls only"), "{message}");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn fail_turns_a_4xx_into_a_non_zero_exit_and_show_error_does_not() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

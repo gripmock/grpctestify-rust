@@ -3034,6 +3034,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         });
     }
 
+    #[cfg_attr(miri, ignore)]
     #[tokio::test]
     async fn a_body_past_the_memory_cap_is_refused_before_it_is_held() {
         let piece = vec![0u8; 8 * 1024 * 1024];
