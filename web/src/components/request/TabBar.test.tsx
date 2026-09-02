@@ -1,4 +1,5 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import { act } from 'react';
 import { TabBar } from './TabBar';
 import { ToastProvider } from 'luvo/ui/ToastContext';
 import { ModalProvider } from 'luvo/ui/ModalContext';
@@ -162,5 +163,92 @@ describe('the control that says where the response sits', () => {
     expect(side.title).toContain('too narrow');
     ui.unmount();
     restore();
+  });
+});
+
+describe('making a link to a request that is not a file', () => {
+  beforeEach(() => {
+    useStore.setState({
+      tabs: [tab('a', null)],
+      activeTabId: 'a',
+      request: { endpoint: 'a.A/One', headers: {}, bodies: ['{}'] },
+      share: { headers: {}, ttl: 7 },
+      tls: false,
+      tlsInsecure: false,
+    });
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  const settle = () => new Promise(r => setTimeout(r, 20));
+
+  it('says what the workbench said when it refused', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false, status: 403, statusText: 'Forbidden', text: async () => 'links are off in this workbench',
+    })));
+    const ui = mount(strip);
+    ui.click('[aria-label="Share request"] .btn.is-primary');
+    await settle();
+    expect(document.body.textContent).toContain('links are off in this workbench');
+    expect(document.body.textContent).not.toContain('Failed');
+    ui.unmount();
+  });
+
+  it('says the workbench could not be reached when nothing answered', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch'); }));
+    const ui = mount(strip);
+    ui.click('[aria-label="Share request"] .btn.is-primary');
+    await settle();
+    expect(document.body.textContent).toContain('The workbench could not be reached — nothing was shared');
+    ui.unmount();
+  });
+
+  it('always says whether verification is skipped, even with tls off', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 500, statusText: 'x', text: async () => '' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const ui = mount(strip);
+    ui.click('[aria-label="Share request"] .btn.is-primary');
+    await settle();
+    const sent = JSON.parse((fetchMock.mock.calls[0] as unknown as [string, { body: string }])[1].body);
+    expect(sent.tls).toBe(false);
+    expect(sent.tls_insecure).toBe(false);
+    ui.unmount();
+  });
+});
+
+describe('the list of open tabs', () => {
+  beforeEach(() => {
+    useStore.setState({
+      tabs: [tab('a', 'alpha.gctf'), tab('b', 'beta.gctf'), tab('c', 'gamma.gctf')],
+      activeTabId: 'a',
+      tabListIntent: 0,
+    } as never);
+  });
+
+  afterEach(() => { useStore.setState({ tabs: [], activeTabId: null, tabListIntent: 0 } as never); });
+
+  it('comes back unfiltered when it is asked for again', () => {
+    const ui = mount(strip);
+    act(() => { useStore.getState().requestTabList(); });
+    ui.type('.tab-list .field', 'beta');
+    expect(ui.all('.tab-list-row')).toHaveLength(1);
+
+    ui.key('.tab-list .field', 'Escape');
+    act(() => { useStore.getState().requestTabList(); });
+    expect(ui.all('.tab-list-row')).toHaveLength(3);
+    expect((ui.get('.tab-list .field') as HTMLInputElement).value).toBe('');
+    ui.unmount();
+  });
+
+  it('opens the row the highlight is on, after the list has narrowed under it', () => {
+    const ui = mount(strip);
+    act(() => { useStore.getState().requestTabList(); });
+    ui.key('.tab-list .field', 'ArrowDown');
+    ui.key('.tab-list .field', 'ArrowDown');
+    ui.type('.tab-list .field', 'beta');
+    expect(ui.all('.tab-list-row')).toHaveLength(1);
+    expect(ui.get('.tab-list-row').className).toContain('is-cursor');
+    ui.key('.tab-list .field', 'Enter');
+    expect(useStore.getState().activeTabId).toBe('b');
+    ui.unmount();
   });
 });

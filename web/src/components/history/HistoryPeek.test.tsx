@@ -52,3 +52,17 @@ describe('what the card says about the request', () => {
     ui.unmount();
   });
 });
+
+describe('what the card says about the headers', () => {
+  it('names them, but keeps a credential to itself', () => {
+    const ui = mount(peek(entry({
+      headers: { authorization: 'Bearer abc123', 'x-request-id': 'r-1', 'x-api-key': '{{API_KEY}}' },
+    })));
+    const said = ui.get('.peek-headers').title;
+    expect(said).toContain('authorization: ••••••');
+    expect(said).toContain('x-request-id: r-1');
+    expect(said).toContain('x-api-key: {{API_KEY}}');
+    expect(said).not.toContain('abc123');
+    ui.unmount();
+  });
+});

@@ -11,7 +11,7 @@ import { defaultAddressFor } from '../../lib/types';
 import { useDismiss } from 'luvo/input/useDismiss';
 import { Popover } from 'luvo/ui/Popover';
 import { ChevronDown, KeyRound, Save, TriangleAlert } from 'lucide-react';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useToast } from 'luvo/ui/useToast';
 import { compressionFromFile, connectionFromFile, connectionUsed, fileConnectionNote, timeoutUsed } from '../../lib/connection-source';
 import { healthNote, probeTarget, type TargetHealth } from '../../lib/target-health';
 
@@ -118,21 +118,20 @@ export function ConnectionPopover() {
     ? scheme
     : PROTOCOLS.find(p => p.value === used.protocol)?.label ?? used.protocol;
 
-  const [health, setHealth] = useState<TargetHealth | null>(null);
-  const [probing, setProbing] = useState(false);
+  const [probe, setProbe] = useState<{ target: string; asked: number; health: TargetHealth | null } | null>(null);
   const target = decision.address.trim();
   const [asked, setAsked] = useState(0);
   useEffect(() => {
     if (!open || target === '') { return; }
     let live = true;
-    setProbing(true);
     void probeTarget(target).then(found => {
-      if (!live) return;
-      setHealth(found);
-      setProbing(false);
+      if (live) setProbe({ target, asked, health: found });
     });
     return () => { live = false; };
   }, [open, target, asked]);
+  const answered = probe !== null && probe.target === target && probe.asked === asked;
+  const health = answered ? probe.health : null;
+  const probing = open && target !== '' && !answered;
 
   const matchesProject = !!defaults
     && defaults.address === address.trim()
@@ -206,7 +205,7 @@ export function ConnectionPopover() {
               </div>
             )}
             <div className="stack conn-field">
-              <span className="label">where calls go</span>
+              <span className="field-label">where calls go</span>
               <div className="conn-order">
                 {ORDER.map(step => (
                   <div key={step.source} className={`conn-step${decision.source === step.source ? ' is-on' : ''}`}>
@@ -247,7 +246,7 @@ export function ConnectionPopover() {
             </div>
 
             <div className="stack conn-field">
-              <span className="label">what this calls</span>
+              <span className="field-label">what this calls</span>
               <Seg
                 label="Call kind"
                 value={isHttp ? 'http' : 'grpc'}
@@ -280,7 +279,7 @@ export function ConnectionPopover() {
 
             {!isHttp && (
             <div className="stack conn-field">
-              <span className="label">wire protocol</span>
+              <span className="field-label">wire protocol</span>
               <Seg
                 label="Protocol"
                 value={protocol}
@@ -292,7 +291,7 @@ export function ConnectionPopover() {
 
             {!isHttp && (
             <div className="stack conn-field">
-              <span className="label">transport security</span>
+              <span className="field-label">transport security</span>
               <Seg
                 label="Transport security"
                 value={tlsMode}
@@ -304,7 +303,7 @@ export function ConnectionPopover() {
 
             {!isHttp && (
             <div className="stack conn-field">
-              <span className="label">client certificate (mTLS)</span>
+              <span className="field-label">client certificate (mTLS)</span>
               {([
                 ['CA cert path', tlsCa, setTlsCa, '/path/to/ca.pem'],
                 ['Client cert path', tlsCert, setTlsCert, '/path/to/client.pem'],
@@ -330,7 +329,7 @@ export function ConnectionPopover() {
 
             {projectRoot && (
               <div className="stack conn-field">
-                <span className="label">project default</span>
+                <span className="field-label">project default</span>
                 <button
                   className="btn is-sm"
                   disabled={savingDefault || address.trim() === '' || matchesProject}
@@ -386,7 +385,7 @@ export function ConnectionPopover() {
             )}
 
             <div className="stack conn-field">
-              <span className="label">request timeout</span>
+              <span className="field-label">request timeout</span>
               <div className="field-frame timeout-field">
                 <input
                   className="field mono"
@@ -396,7 +395,7 @@ export function ConnectionPopover() {
                   onChange={e => setRequestTimeoutMs(Math.max(0, parseInt(e.target.value) || 0) * 1000)}
                   placeholder="0"
                 />
-                <span className="label">s</span>
+                <span className="field-label">s</span>
               </div>
               <span className="muted cert-note">
                 {waits.source === 'file'

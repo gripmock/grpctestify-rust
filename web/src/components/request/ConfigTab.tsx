@@ -13,10 +13,11 @@ import { DatasetEditor } from './DatasetEditor';
 import { BenchEditor } from './BenchEditor';
 import { csvJoin } from '../../lib/section-model';
 import { ChevronRight, Plus, Trash2 } from 'lucide-react';
-import { useModal } from 'luvo/ui/ModalContext';
+import { useModal } from 'luvo/ui/useModal';
 import { Popover } from 'luvo/ui/Popover';
 import { useDismiss } from 'luvo/input/useDismiss';
 import { count } from 'luvo/data/plural';
+import { sectionSeed } from '../../lib/section-seed';
 
 const EDITORS: Partial<Record<RequestTab, () => React.ReactElement>> = {
   options: OptionsEditor,
@@ -144,12 +145,6 @@ export function ConfigTab() {
       )}
     </div>
   );
-}
-
-export function sectionSeed(key: RequestTab): Record<string, string> | null {
-  if (key === 'bench') return { mode: 'fixed' };
-  if (key === 'dataset') return {};
-  return null;
 }
 
 function summarize(key: RequestTab, p: ReturnType<typeof useStore.getState>['collectionParsed']): string {

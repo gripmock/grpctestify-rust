@@ -8,7 +8,7 @@ import { previewRequest } from '../../lib/preview-request';
 import { applyRange, applyRewrites, rewriteOf } from '../../lib/text-edit';
 import { callFailed } from '../../lib/call-outcome';
 import { draftFileName, isHttpRequest } from '../../lib/http-endpoint';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useToast } from 'luvo/ui/useToast';
 import type { GctfDiagnostic } from '../../lib/types';
 import { CircleAlert, TriangleAlert, Info, Check, ChevronRight, ChevronDown } from 'lucide-react';
 import { useEffect } from 'react';
@@ -115,7 +115,7 @@ export function ProblemsRow() {
       <div className="bar problems-head">
       <button className="problems-toggle" onClick={() => setOpen(v => !v)} aria-expanded={open}>
         {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-        <span className="label">Problems</span>
+        <span className="field-label">Problems</span>
         {clean && <span className="badge is-ok" title="The same checks `grpctestify check` runs"><Check size={10} /> clean</span>}
         {nothing && <span className="muted">nothing to check yet</span>}
         {counts.errors > 0 && (
@@ -222,7 +222,7 @@ export function ProblemsRow() {
 
       {open && clean && (
         <div className="problems-list">
-          <div className="empty">No problems — this file passes the same checks `grpctestify check` runs.</div>
+          <div className="empty-state">No problems — this file passes the same checks `grpctestify check` runs.</div>
         </div>
       )}
     </div>

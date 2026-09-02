@@ -63,7 +63,7 @@ export function ExpectEditor({ parsed }: { parsed: CollectionParsed | null }) {
   return (
     <div className="stack expect">
       <div className="bar expect-modes">
-        <span className="label">must come back with</span>
+        <span className="field-label">must come back with</span>
         <Seg
           label="What this step expects"
           value={mode}
@@ -179,7 +179,7 @@ function ExpectMessageEditor({
         >
           {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
         </button>
-        <span className="label">{count > 1 ? `message #${index + 1}` : isHttp ? 'expected body' : 'expected response'}</span>
+        <span className="field-label">{count > 1 ? `message #${index + 1}` : isHttp ? 'expected body' : 'expected response'}</span>
         {!isHttp && stream.messages > 1 && (
           <span className="badge mono" title="This section expects a stream — the messages must come back in this order">
             {stream.messages} messages
@@ -246,7 +246,7 @@ function ExpectMessageEditor({
             no messages
           </button>
         )}
-        <button className="btn is-sm is-ghost is-icon" onClick={onRemove} title="Remove this expected message">
+        <button className="btn is-sm is-ghost is-icon" onClick={onRemove} title="Remove this expected message" aria-label="Remove this expected message">
           <X size={12} />
         </button>
       </div>
@@ -310,7 +310,7 @@ function ExpectErrorEditor({
   return (
     <div className="stack expect-message">
       <div className="bar">
-        <span className="label">status</span>
+        <span className="field-label">status</span>
         <select
           className="field is-narrow"
           value={shape?.code ?? ''}

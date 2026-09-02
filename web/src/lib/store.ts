@@ -9,7 +9,7 @@ import type { PlayStore, HistoryEntry, CallResult, CollectionItem, CollectionPar
 import { ENVS_KEY, ACTIVE_ENV_KEY, TABS_KEY, SETTINGS_KEY, RECENT_ADDRESS_KEY, defaultAddressFor, dialledAddress } from './types';
 import type { ClientSettings, WireProtocol } from './types';
 import { LRUCache } from 'luvo/data/cache';
-import { applyEvent, cancelJob, caseTitle, emptyRun, fileOfCase, followJob, jobReports, runRefusal, runningJobs, startJob, unsavedAmong } from './jobs';
+import { applyEvent, cancelJob, caseTitle, emptyRun, fileOfCase, followJob, jobReports, RunsBusy, runRefusal, runningJobs, startJob, unsavedAmong } from './jobs';
 import { buildMoved, loadedBuild } from './build-id';
 import { timeoutSeconds } from './format';
 import { schemaRequest } from './schema-request';
@@ -22,6 +22,7 @@ import { clampRow } from './dataset-row';
 import { lineDiff } from 'luvo/data/diff';
 import { nextCopyName } from './duplicate-name';
 import { isSecretHeader } from './secret-headers';
+import { projectEnvFile, projectEnvLocal } from './project-env';
 import { readJson, readText, writeJson, writeText } from 'luvo/data/storage';
 import { checkSummary, checkedAfterMove, mergeChecked, type CheckedFile } from './checked';
 import { rememberedChoice } from './run-data';
@@ -88,6 +89,7 @@ export async function initProjectEnvs(envNames: string[]) {
         source: 'project',
         address: data.address || undefined,
         variables: data.variables,
+        ...(Array.isArray(data.secret) && data.secret.length > 0 ? { secret: data.secret as string[] } : {}),
       });
     } catch {  }
   }
@@ -396,7 +398,7 @@ export function effectiveTls(st: PlayStore) {
   if (env && env.tls !== undefined) {
     return {
       tls: env.tls,
-      tlsInsecure: env.tlsInsecure ?? true,
+      tlsInsecure: env.tlsInsecure ?? false,
       tlsCa: env.tlsCa || '',
       tlsCert: env.tlsCert || '',
       tlsKey: env.tlsKey || '',
@@ -546,6 +548,12 @@ const fileVersions = new Map<string, FileVersion>();
 
 const unreadPaths = new Set<string>();
 
+const openRefusals = new Map<string, string>();
+
+export function openRefusal(path: string): string | null {
+  return openRefusals.get(path) ?? null;
+}
+
 function clearStale(set: (fn: (s: PlayStore) => Partial<PlayStore>) => void, path: string) {
   set(s => {
     const tabs = s.tabs.map(t => (t.collectionPath === path && t.staleOnDisk ? { ...t, staleOnDisk: false } : t));
@@ -643,11 +651,18 @@ function handleParsed(tab: Tab): CollectionParsed {
 async function fetchCollection(path: string): Promise<CollectionRead | null> {
   try {
     const res = await fetch(`/api/collections/${apiPath(path)}`);
-    if (!res.ok) { unreadPaths.add(path); return null; }
+    if (!res.ok) {
+      const said = await res.text().catch(() => '');
+      if (said.trim()) openRefusals.set(path, said.trim());
+      else openRefusals.delete(path);
+      unreadPaths.add(path);
+      return null;
+    }
     const data = await res.json();
     rememberVersion(path, data.version);
     if (!data.parsed) { unreadPaths.add(path); return null; }
     unreadPaths.delete(path);
+    openRefusals.delete(path);
     return {
       parsed: data.parsed,
       documents: data.documents ?? [],
@@ -655,6 +670,7 @@ async function fetchCollection(path: string): Promise<CollectionRead | null> {
       content: typeof data.content === 'string' ? data.content : null,
     };
   } catch {
+    openRefusals.delete(path);
     unreadPaths.add(path);
     return null;
   }
@@ -797,7 +813,7 @@ const DEFAULT_SETTINGS: ClientSettings = {
   address: '',
   protocol: 'grpc',
   tls: false,
-  tlsInsecure: true,
+  tlsInsecure: false,
   tlsCa: '',
   tlsCert: '',
   tlsKey: '',
@@ -1343,10 +1359,14 @@ export const useStore = create<PlayStore>((set, get) => ({
   setRunScope: (scope) => { writeText('play.run.scope', scope); set({ runScope: scope }); },
   run: emptyRun(),
   runJobId: null,
+  runRefused: null,
 
   startRun: async (paths, upToStep) => {
     if (paths.length === 0) return;
-    stopFollowing?.();
+    const before = {
+      run: get().run, runJobId: get().runJobId, runFilter: get().runFilter,
+      runReason: get().runReason, runError: get().runError,
+    };
     set({
       run: { ...emptyRun(), total: paths.length, upToStep },
       runJobId: null,
@@ -1358,6 +1378,10 @@ export const useStore = create<PlayStore>((set, get) => ({
     try {
       job = await startJob(paths, upToStep, 'run', get().reportFormats, get().runData);
     } catch (e: any) {
+      if (e instanceof RunsBusy) {
+        set({ ...before, runRefused: { text: e.message, nonce: now() } });
+        return;
+      }
       const st = get();
       const open = st.tabs.map(t => t.collectionPath).filter((p): p is string => !!p);
       const refusal = runRefusal(String(e?.message || e), open);
@@ -1380,6 +1404,7 @@ export const useStore = create<PlayStore>((set, get) => ({
       }
       return;
     }
+    stopFollowing?.();
     set({ runJobId: job.id, lastReports: { jobId: job.id, files: [] } });
     stopFollowing = follow(job.id, set, get);
   },
@@ -1387,7 +1412,13 @@ export const useStore = create<PlayStore>((set, get) => ({
   startBench: async (target) => {
     const paths = Array.isArray(target) ? target : [target];
     const path = paths[0];
-    stopFollowing?.();
+    const before = {
+      run: get().run, runJobId: get().runJobId, runFilter: get().runFilter,
+      runReason: get().runReason, runError: get().runError,
+      benchBaseline: get().benchBaseline, benchBaselinePath: get().benchBaselinePath,
+      benchPaths: get().benchPaths, benchBaselinePartial: get().benchBaselinePartial,
+      benchComparison: get().benchComparison, benchOverUnsaved: get().benchOverUnsaved,
+    };
     const sameFile = get().run.kind === 'bench' && get().benchBaselinePath === path;
     const previous = sameFile ? get().run.benchReport : get().benchBaseline;
     const previousPartial = sameFile
@@ -1410,10 +1441,15 @@ export const useStore = create<PlayStore>((set, get) => ({
     try {
       job = await startJob(paths, undefined, 'bench');
     } catch (e: any) {
+      if (e instanceof RunsBusy) {
+        set({ ...before, runRefused: { text: e.message, nonce: now() } });
+        return;
+      }
       const open = get().tabs.map(t => t.collectionPath).filter((p): p is string => !!p);
       set({ run: { ...emptyRun(), kind: 'bench', finished: true }, runError: runRefusal(String(e?.message || e), open).text });
       return;
     }
+    stopFollowing?.();
     set({ runJobId: job.id });
     stopFollowing = follow(job.id, set, get);
   },
@@ -1452,7 +1488,23 @@ export const useStore = create<PlayStore>((set, get) => ({
 
   cancelRun: async () => {
     const id = get().runJobId;
-    if (id) await cancelJob(id);
+    if (!id) return;
+    const said = await cancelJob(id);
+    if (!said || said.status === 'running' || get().runJobId !== id) return;
+    stopFollowing?.();
+    stopFollowing = null;
+    set(s => ({
+      run: {
+        ...s.run,
+        finished: true,
+        lost: 0,
+        outcome: said.status,
+        durationMs: said.duration_ms ?? s.run.durationMs,
+      },
+      runJobId: null,
+    }));
+    const files = await jobReports(id);
+    set({ lastReports: { jobId: id, files } });
   },
 
   setCollectionParsed: (v) => set(s => {
@@ -1495,7 +1547,7 @@ export const useStore = create<PlayStore>((set, get) => ({
         body: JSON.stringify({
           address,
           tls: tls || undefined,
-          tls_insecure: tls ? tlsInsecure : undefined,
+          tls_insecure: tls && tlsInsecure,
           tls_ca: tls ? (tlsCa || undefined) : undefined,
           tls_cert: tls ? (tlsCert || undefined) : undefined,
           tls_key: tls ? (tlsKey || undefined) : undefined,
@@ -2076,7 +2128,7 @@ export const useStore = create<PlayStore>((set, get) => ({
       headers: Object.keys(request.headers).length > 0 ? request.headers : undefined,
       address,
       tls: tls || undefined,
-      tls_insecure: tls ? tlsInsecure : undefined,
+      tls_insecure: tls && tlsInsecure,
       protocol: protocol || undefined,
       collection_path: st.workspacePath ?? undefined,
     };
@@ -2173,7 +2225,7 @@ export const useStore = create<PlayStore>((set, get) => ({
           endpoint: substituted.endpoint,
           bodies_raw,
           headers: namedHeaders(substituted.headers),
-          tls: tls || undefined, tls_insecure: tls ? tlsInsecure : undefined,
+          tls: tls || undefined, tls_insecure: tls && tlsInsecure,
           tls_ca: tls ? (tlsCa || undefined) : undefined,
           tls_cert: tls ? (tlsCert || undefined) : undefined,
           tls_key: tls ? (tlsKey || undefined) : undefined,
@@ -2846,7 +2898,7 @@ export const useStore = create<PlayStore>((set, get) => ({
           const activeTabId = tabs.some(t => t.id === get().activeTabId) ? get().activeTabId : tabs[0].id;
           saveTabsToStorage(tabs, activeTabId);
           set({ tabs, activeTabId, ...loadTab(tabs.find(t => t.id === activeTabId) ?? tabs[0]) });
-          foreign = `${count(dropped, 'tab')} left over from ${storedTabsRoot} — closed, because this workbench serves ${root}`;
+          foreign = `${count(dropped, 'tab')} left over from another workbench — closed, because this one serves a different directory`;
           set({ startupNote: foreign });
         }
       }
@@ -2877,7 +2929,7 @@ export const useStore = create<PlayStore>((set, get) => ({
               address: sdata.address ?? '',
               protocol: (sdata.protocol ?? 'grpc') as WireProtocol,
               tls: sdata.tls ?? false,
-              tlsInsecure: sdata.tls_insecure ?? true,
+              tlsInsecure: sdata.tls_insecure ?? false,
               activeEnv: sdata.active_env ?? null,
             },
           });
@@ -3012,9 +3064,8 @@ export const useStore = create<PlayStore>((set, get) => ({
   setHistory: (v) => set({ history: v }),
   forgetHistory: (id) => {
     historyCache.delete(id);
-    const history = get().history.filter(e => e.id !== id);
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(history)); } catch { /* private mode */ }
-    set({ history });
+    saveHistoryToStorage();
+    set({ history: historyCache.values() });
   },
 
   clearHistory: () => {
@@ -3036,7 +3087,7 @@ export const useStore = create<PlayStore>((set, get) => ({
             address: s.address ?? state.projectDefaults?.address ?? '',
             protocol: (s.protocol ?? state.projectDefaults?.protocol ?? 'grpc') as WireProtocol,
             tls: s.tls ?? state.projectDefaults?.tls ?? false,
-            tlsInsecure: s.tls_insecure ?? state.projectDefaults?.tlsInsecure ?? true,
+            tlsInsecure: s.tls_insecure ?? state.projectDefaults?.tlsInsecure ?? false,
             activeEnv: s.active_env ?? null,
           },
         }));
@@ -3069,7 +3120,7 @@ export const useStore = create<PlayStore>((set, get) => ({
       const said = await res.text().catch(() => '');
       throw new Error(said.trim() || `.env.${name} could not be read`);
     }
-    return res.json();
+    return projectEnvFile(await res.json().catch(() => null));
   },
 
   saveProjectEnv: async (name, content) => {
@@ -3082,8 +3133,8 @@ export const useStore = create<PlayStore>((set, get) => ({
 
   fetchProjectEnvLocal: async (name) => {
     const res = await fetch(`/api/project/env/${encodeURIComponent(name)}/local`);
-    if (!res.ok) return { exists: false, content: null };
-    return res.json();
+    if (!res.ok) return { exists: false, content: null, secret: [] };
+    return projectEnvLocal(await res.json().catch(() => null));
   },
 
   saveProjectEnvLocal: async (name, content) => {

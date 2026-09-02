@@ -45,6 +45,9 @@ protocol: grpc-web
   mistaken run this key exists to prevent.
 - When `ADDRESS` is absent, the default target follows the protocol
   (`localhost:4770` for gRPC, the protocol's own default otherwise).
+- `grpc-web` and `connectrpc` read the whole answer into memory, so a single response is capped at
+  32 MiB and a larger one fails with that message rather than growing the process. There is no knob:
+  a response that big belongs on plain `grpc`, which streams.
 
 ## Rules
 

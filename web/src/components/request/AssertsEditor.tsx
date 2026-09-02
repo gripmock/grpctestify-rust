@@ -150,7 +150,7 @@ export function AssertsEditor({ asserts }: { asserts: string[] }) {
       </div>
 
       {asserts.length === 0 && (
-        <div className="empty">No assertions — click a response field, or add one below</div>
+        <div className="empty-state">No assertions — click a response field, or add one below</div>
       )}
 
       {asserts.map((a, i) => {

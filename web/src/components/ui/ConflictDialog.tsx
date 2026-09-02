@@ -4,7 +4,7 @@ import { AlertTriangle, Copy } from 'lucide-react';
 import { lineDiff } from 'luvo/data/diff';
 import { Diff } from 'luvo/ui/Diff';
 import { copyToClipboard } from 'luvo/data/clipboard';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useToast } from 'luvo/ui/useToast';
 
 export function ConflictDialog() {
   const toast = useToast();
@@ -56,7 +56,7 @@ export function ConflictDialog() {
             </div>
 
             <div className="bar">
-              <span className="label grow">what this save would change on disk</span>
+              <span className="field-label grow">what this save would change on disk</span>
               {stat.added > 0 && <span className="badge is-ok">+{stat.added}</span>}
               {stat.removed > 0 && <span className="badge is-fail">−{stat.removed}</span>}
             </div>
@@ -66,11 +66,11 @@ export function ConflictDialog() {
               <summary>the two versions in full</summary>
               <div className="conflict-panes">
                 <div className="stack conflict-side">
-                  <div className="label">on disk</div>
+                  <div className="field-label">on disk</div>
                   <pre className="diff">{conflict.theirs || '(empty)'}</pre>
                 </div>
                 <div className="stack conflict-side">
-                  <div className="label">{conflict.raw ? 'your editor' : 'your request'}</div>
+                  <div className="field-label">{conflict.raw ? 'your editor' : 'your request'}</div>
                   <pre className="diff">{conflict.mine || '(empty)'}</pre>
                 </div>
               </div>

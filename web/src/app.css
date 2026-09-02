@@ -132,7 +132,7 @@
    it is about, and quiet unless it is an error. */
 .save-problems { display: flex; align-items: baseline; gap: var(--gap-3); flex-wrap: wrap; }
 .save-problems.is-bad { border-left-color: var(--fail); }
-.save-problems.is-bad > .label { color: var(--fail); }
+.save-problems.is-bad > .field-label { color: var(--fail); }
 .save-problem-first { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Depth is data, so it rides in a variable; the step it multiplies is a token,
    which a `paddingLeft` computed in the component was not. */
@@ -145,7 +145,7 @@
 
 /* The first-call path: three lines that are also the controls for them. */
 .start-steps { gap: var(--gap-4); align-items: stretch; max-width: 34rem; margin: auto; text-align: left; }
-.start-steps > .label { text-align: center; }
+.start-steps > .field-label { text-align: center; }
 /* One grid for the three steps rather than one per step: sized separately,
    their middle columns came out three different widths, and the only way to
    line the sentences up was to push them against the right edge — ragged-left
@@ -339,7 +339,7 @@
   gap: var(--gap-2) var(--gap-3);
   align-items: center;
 }
-.env-target > .label { display: inline-flex; align-items: center; gap: var(--gap-2); }
+.env-target > .field-label { display: inline-flex; align-items: center; gap: var(--gap-2); }
 .env-target-note { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* What the files ask for and this environment does not answer. A dashed frame:
    it is a list of holes, not a list of variables. */
@@ -433,6 +433,8 @@
 .history-payload.is-error { color: var(--fail); }
 .history-back { margin-right: var(--gap-2); opacity: 0.7; }
 /* The day a run of calls happened on. */
+.history-project-error { color: var(--fail); }
+
 .history-day {
   padding: var(--gap-3) var(--gap-3) var(--gap-1) var(--gap-4);
   font-size: var(--ui-2xs);
@@ -531,7 +533,7 @@ button.env:hover { background: color-mix(in oklab, var(--fail) 30%, transparent)
   background: var(--surface-sunken);
   font-size: var(--ui-2xs);
 }
-.env-strip .label { flex: 0 0 auto; }
+.env-strip .field-label { flex: 0 0 auto; }
 .env-strip .grow { min-width: 0; }
 .env-unresolved { flex: 0 0 auto; color: var(--fail); }
 .fail { color: var(--fail); }
@@ -573,6 +575,7 @@ button.env:hover { background: color-mix(in oklab, var(--fail) 30%, transparent)
 }
 .history-peek .peek-endpoint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .peek-conn { flex: 0 0 auto; gap: var(--gap-2); font-size: var(--ui-2xs); }
+.peek-headers { cursor: help; }
 .peek-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--gap-4); min-height: 0; overflow: hidden; }
 .peek-half { display: flex; flex-direction: column; gap: var(--gap-2); min-height: 0; min-width: 0; }
 .peek-json {
@@ -1737,7 +1740,7 @@ main { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 
 /* With room to spare the empty state sits in the middle of it, not pinned
    under the legend. */
-.response-pane .empty { flex: 1 1 auto; justify-content: center; }
+.response-pane .empty-state { flex: 1 1 auto; justify-content: center; }
 .start-hint { max-width: 28rem; text-align: center; }
 /* The editors keep a height of their own: the request editor is the one the
    splitter sizes, the response viewer stops at two thirds of the screen and
@@ -1807,7 +1810,7 @@ main { display: flex; flex-direction: column; flex: 1; min-width: 0; }
   height: clamp(5.5rem, calc(var(--body-lines, 1) * 1.35em + 2.5rem), 22rem);
 }
 .expect-modes { flex-wrap: wrap; }
-.expect-modes .label { margin-right: var(--gap-2); }
+.expect-modes .field-label { margin-right: var(--gap-2); }
 .expect-message { gap: var(--gap-3); }
 .expect-message .tolerance { gap: var(--gap-2); }
 select.field.is-narrow { width: 13rem; }
@@ -2405,7 +2408,7 @@ select.field.is-narrow { width: 13rem; }
 }
 /* A column nothing reads still multiplies the run — say so where the column
    is named. */
-.label.is-unused { color: var(--warn); text-decoration: underline dotted; }
+.field-label.is-unused { color: var(--warn); text-decoration: underline dotted; }
 .dataset-row { display: grid; align-items: center; gap: var(--gap-2); padding: var(--gap-2) var(--gap-2); }
 .dataset-row + .dataset-row { border-top: 1px solid var(--line); }
 .dataset-row.is-head { background: var(--surface-sunken); padding: var(--gap-3) var(--gap-4); }

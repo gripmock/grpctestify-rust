@@ -17,8 +17,8 @@ export function shouldKeepLocal(row: Row, origin: Origin, next: string): boolean
     && next.trim() !== '';
 }
 
-export function hiddenValue(row: Row): boolean {
-  return row.local || looksLikeSecret(row.key);
+export function hiddenValue(row: Row, named?: readonly string[]): boolean {
+  return row.local || looksLikeSecret(row.key, named);
 }
 
 export const blankRow = (): Row => ({ key: '', value: '', local: false });

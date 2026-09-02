@@ -15,10 +15,16 @@ describe('the descriptors question', () => {
     expect(schemaRequest(base)).toEqual({
       address: 'localhost:4770',
       endpoint: 'pkg.Svc/M',
-      tls: undefined, tls_insecure: undefined, tls_ca: undefined, tls_cert: undefined, tls_key: undefined,
+      tls: undefined, tls_insecure: false, tls_ca: undefined, tls_cert: undefined, tls_key: undefined,
       collection_path: 'a/b.gctf',
       protocol: 'grpc',
     });
+  });
+
+  it('says outright that certificates are verified, rather than leaving it to the server', () => {
+    expect(schemaRequest({ ...base, tls: false, tlsInsecure: true }).tls_insecure).toBe(false);
+    expect(schemaRequest({ ...base, tls: true, tlsInsecure: false }).tls_insecure).toBe(false);
+    expect(schemaRequest({ ...base, tls: true, tlsInsecure: true }).tls_insecure).toBe(true);
   });
 
   it('sends the TLS material only when TLS is on', () => {

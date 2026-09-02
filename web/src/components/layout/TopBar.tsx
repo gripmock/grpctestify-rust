@@ -7,6 +7,7 @@ import { ThemePicker } from './ThemePicker';
 import { addressDecision, addressPlaceholder, chainAddressAt, checkAddress, effectiveAddress } from '../../lib/address';
 import { maskValue } from '../../lib/secret-names';
 import { useDismiss } from 'luvo/input/useDismiss';
+import { useMenuKeys } from 'luvo/input/useMenuKeys';
 import { Popover } from 'luvo/ui/Popover';
 import { EnvironmentManager } from '../request/EnvironmentManager';
 import { durationLabel } from '../../lib/format';
@@ -62,6 +63,8 @@ export function TopBar() {
   );
   const [showDropdown, setShowDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const closeDropdown = useCallback(() => setShowDropdown(false), []);
+  const [envMenuRef, onEnvMenuKeys] = useMenuKeys<HTMLDivElement>(showDropdown, closeDropdown);
 
   const activeEnv = environments.find(e => e.name === activeEnvironment);
 
@@ -129,10 +132,11 @@ export function TopBar() {
         </button>
 
         <Popover open={showDropdown} anchor={dropdownRef} className="env-menu">
-          <div className="menu" role="menu">
+          <div ref={envMenuRef} className="menu" role="menu" aria-label="Environment" onKeyDown={onEnvMenuKeys}>
             <button
               className={`menu-item${!activeEnvironment ? ' is-on' : ''}`}
               role="menuitemradio"
+              tabIndex={-1}
               aria-checked={!activeEnvironment}
               onClick={() => { setActiveEnvironment(null); setShowDropdown(false); }}
             >
@@ -153,6 +157,7 @@ export function TopBar() {
                   key={env.name}
                   className={`menu-item${isActive ? ' is-on' : ''}`}
                   role="menuitemradio"
+                  tabIndex={-1}
                   aria-checked={isActive}
                   onClick={() => { setActiveEnvironment(env.name); setShowDropdown(false); }}
                   title={fromProject
@@ -174,6 +179,8 @@ export function TopBar() {
             <div className="menu-sep" />
             <button
               className="menu-item"
+              role="menuitem"
+              tabIndex={-1}
               onClick={() => { setShowDropdown(false); openEnvManager(); }}
             >
               <Settings size={12} /> Manage environments…
@@ -204,7 +211,7 @@ export function TopBar() {
               ? `Resolves to: ${resolvedAddress}\n\nVariables:\n${
                   Object.entries(activeEnv.variables)
                     .filter(([k]) => address.includes(`{{${k}}}`))
-                    .map(([k, v]) => `  ${k}=${v ? maskValue(k, v) : '(secret)'}`)
+                    .map(([k, v]) => `  ${k}=${v ? maskValue(k, v, activeEnv.secret) : '(secret)'}`)
                     .join('\n')
                 }`
                 : activeEnv?.name
@@ -253,6 +260,7 @@ export function TopBar() {
             aria-haspopup="menu"
             aria-expanded={showRecent}
             title="Addresses this browser has dialled"
+            aria-label="Addresses this browser has dialled"
           >
             <ChevronDown size={11} />
           </button>
@@ -285,7 +293,7 @@ export function TopBar() {
             onClick={() => showSidebarTab('collections')}
             title={`The last run: ${run.passed} passed, ${run.failed} failed${run.skipped > 0 ? `, ${run.skipped} skipped` : ''} — open the rail where the files are`}
           >
-            <span className="label">run</span>
+            <span className="field-label">run</span>
             {run.passed > 0 && <span className="run-pass">✓ {run.passed}</span>}
             {run.failed > 0 && <span className="run-fail">✗ {run.failed}</span>}
             {run.durationMs > 0 && <span className="muted mono">{durationLabel(run.durationMs)}</span>}

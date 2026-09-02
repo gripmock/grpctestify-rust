@@ -14,6 +14,8 @@ const ENGINE_BUDGET: Duration = Duration::from_millis(1500);
 
 const MAX_OUTPUTS: usize = 10_000;
 
+const MAX_EXPRESSIONS: usize = 200;
+
 const EVAL_THREADS: usize = 4;
 
 static EVAL_PERMITS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
@@ -127,6 +129,15 @@ pub struct EvalAssertVerdict {
 pub async fn eval_assert(
     Json(req): Json<EvalAssertRequest>,
 ) -> Result<Json<Vec<EvalAssertVerdict>>, (StatusCode, String)> {
+    if req.expressions.len() > MAX_EXPRESSIONS {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "{} expressions in one request — the playground evaluates at most {MAX_EXPRESSIONS} at a time",
+                req.expressions.len()
+            ),
+        ));
+    }
     let _ = tokio::task::spawn_blocking(|| PLUGIN_REGISTRY.clone()).await;
     let verdicts = bounded(move || {
         let engine = AssertionEngine::with_registry(PLUGIN_REGISTRY.clone());
@@ -724,5 +735,19 @@ mod tests {
         .unwrap()
         .0;
         assert_eq!(out.spans, vec![(3, 6)]);
+    }
+
+    #[tokio::test]
+    async fn a_request_of_more_than_two_hundred_expressions_is_refused() {
+        let mut many = req(json!({"ok": true}), ".ok");
+        many.expressions = vec![".ok".to_string(); MAX_EXPRESSIONS + 1];
+        let (status, said) = eval_assert(Json(many)).await.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(said.contains("201"), "{said}");
+
+        let mut exactly = req(json!({"ok": true}), ".ok");
+        exactly.expressions = vec![".ok == true".to_string(); MAX_EXPRESSIONS];
+        let verdicts = eval_assert(Json(exactly)).await.unwrap().0;
+        assert_eq!(verdicts.len(), MAX_EXPRESSIONS);
     }
 }

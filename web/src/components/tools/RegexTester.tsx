@@ -9,7 +9,8 @@ import { stepPhrase } from '../../lib/assert-line';
 import { useKept } from '../../lib/tool-scratch';
 import { History, Plus, CornerDownLeft } from 'lucide-react';
 import { firstStringPath, valueAtPath } from '../../lib/json-paths';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useToast } from 'luvo/ui/useToast';
+import { escapeFor, extractLines, withInlineFlags } from '../../lib/regex-lines';
 import { count } from 'luvo/data/plural';
 
 type RegexOut = {
@@ -47,29 +48,6 @@ const REFERENCE: [string, string][] = [
   ['^ $', 'start / end'],
   ['(?i)', 'inline flag'],
 ];
-
-const REGEX_FLAGS = new Set(['i', 'm', 's', 'x', 'u', 'U']);
-
-export function withInlineFlags(pattern: string, flags: string): string {
-  const kept = [...flags].filter(f => REGEX_FLAGS.has(f)).join('');
-  return kept === '' ? pattern : `(?${kept})${pattern}`;
-}
-
-function escapeFor(pattern: string): string {
-  return pattern.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-}
-
-export function extractLines(
-  pattern: string,
-  field: string,
-  captures: [string, string][],
-): [string, string][] {
-  const escaped = escapeFor(pattern);
-  return captures
-    .map(([name]) => name)
-    .filter(name => !/^\d+$/.test(name))
-    .map(name => [name, `${field} | capture("${escaped}").${name}`]);
-}
 
 export function RegexTester({ seed }: { seed: unknown | null }) {
   const steps = useStore(s => s.documents.length);
@@ -138,7 +116,7 @@ export function RegexTester({ seed }: { seed: unknown | null }) {
     <div className="stack">
       <div className="stack is-tight">
         <div className="bar">
-          <span className="label grow">pattern</span>
+          <span className="field-label grow">pattern</span>
           <Seg
             label="Which engine runs the pattern"
             value={mode}
@@ -213,7 +191,7 @@ export function RegexTester({ seed }: { seed: unknown | null }) {
       <div className="tool-grid">
         <div className="stack is-cell">
           <div className="bar">
-            <span className="label grow">subject</span>
+            <span className="field-label grow">subject</span>
             <button
               className="btn is-sm is-ghost"
               disabled={fromResponse === null}
@@ -237,7 +215,7 @@ export function RegexTester({ seed }: { seed: unknown | null }) {
 
         <div className="stack is-cell">
           <div className="bar">
-            <span className="label grow">matches</span>
+            <span className="field-label grow">matches</span>
             {data && !failure && (
               <span className={`badge ${data.matched ? 'is-ok' : 'is-fail'}`}>
                 {data.matched ? `${data.spans.length} match${data.spans.length !== 1 ? 'es' : ''}` : 'no match'}
@@ -266,7 +244,7 @@ export function RegexTester({ seed }: { seed: unknown | null }) {
 
           {data && !failure && data.captures.length > 0 && (
             <div>
-              <div className="label">groups</div>
+              <div className="field-label">groups</div>
               <dl className="kv">
                 {data.captures.map(([name, text]) => (
                   <div key={name} className="bar"><dt>{/^\d+$/.test(name) ? `group ${name}` : name}</dt><dd className="mono">{text}</dd></div>
@@ -284,7 +262,7 @@ export function RegexTester({ seed }: { seed: unknown | null }) {
           )}
 
           <div>
-            <div className="label">quick reference</div>
+            <div className="field-label">quick reference</div>
             <div className="bar wrap tool-flags">
               {REFERENCE.map(([token, meaning]) => (
                 <button key={token} className="chip mono" onClick={() => setPattern(p => p + token)} title={meaning}>

@@ -45,10 +45,19 @@ impl Plugin for StatusPlugin {
             .and_then(|headers| headers.get(STATUS_HEADER))
             .and_then(|value| value.parse::<u64>().ok());
 
-        Ok(match code {
-            Some(code) => PluginResult::Value(Value::from(code)),
-            None => PluginResult::Value(Value::Null),
-        })
+        match code {
+            Some(code) => Ok(PluginResult::Value(Value::from(code))),
+            None => Err(anyhow::anyhow!(not_an_http_answer(context.protocol))),
+        }
+    }
+}
+
+fn not_an_http_answer(protocol: Option<&str>) -> String {
+    match protocol {
+        Some(protocol) if protocol != "http" => format!(
+            "@status() is for HTTP tests — a {protocol} answer carries a gRPC code, not an HTTP status: check it with an ERROR section or @header(\"grpc-status\")"
+        ),
+        _ => "@status() is for HTTP tests — no HTTP answer arrived for this step".to_string(),
     }
 }
 
@@ -76,16 +85,28 @@ mod tests {
     }
 
     #[test]
-    fn is_null_where_there_is_no_http_response() {
+    fn says_it_is_for_http_where_there_is_no_http_response() {
         let headers = HashMap::new();
         let body = Value::Null;
-        match StatusPlugin
+        let message = StatusPlugin
             .execute(&[], &context(&body, &headers))
-            .expect("runs")
-        {
-            PluginResult::Value(v) => assert_eq!(v, Value::Null),
-            other => panic!("{other:?}"),
-        }
+            .expect_err("no answer to read")
+            .to_string();
+        assert!(message.contains("@status() is for HTTP tests"), "{message}");
+    }
+
+    #[test]
+    fn names_the_grpc_protocol_it_was_asked_on() {
+        let headers = HashMap::new();
+        let body = Value::Null;
+        let ctx = context(&body, &headers).with_protocol(Some("grpc"));
+        let message = StatusPlugin
+            .execute(&[], &ctx)
+            .expect_err("a gRPC answer has no HTTP status")
+            .to_string();
+        assert!(message.contains("@status() is for HTTP tests"), "{message}");
+        assert!(message.contains("a grpc answer"), "{message}");
+        assert!(message.contains("ERROR section"), "{message}");
     }
 
     #[test]

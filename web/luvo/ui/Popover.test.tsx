@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { act, useRef, useState } from 'react';
 import { useDismiss } from 'luvo/input/useDismiss';
 import { Popover } from './Popover';
@@ -102,6 +102,74 @@ describe('a popover and the click that dismisses', () => {
     const ui = mount(<Wide />);
     const pop = document.querySelector('.popover') as HTMLElement;
     expect(pop.className).toContain('method-menu');
+    ui.unmount();
+  });
+});
+
+describe('a popover and the renders around it', () => {
+  it('is placed once, not again for every render of what it holds', () => {
+    function Ticking() {
+      const anchor = useRef<HTMLDivElement>(null);
+      const [n, setN] = useState(0);
+      return (
+        <div ref={anchor}>
+          <button onClick={() => setN(v => v + 1)}>tick</button>
+          <Popover open anchor={anchor}><div className="menu">{n}</div></Popover>
+        </div>
+      );
+    }
+    const listen = vi.spyOn(window, 'addEventListener');
+    const ui = mount(<Ticking />);
+    const placedAtMount = listen.mock.calls.filter(([kind]) => kind === 'resize').length;
+    ui.click('button');
+    ui.click('button');
+    expect(document.querySelector('.popover')?.textContent).toBe('2');
+    expect(listen.mock.calls.filter(([kind]) => kind === 'resize').length).toBe(placedAtMount);
+    listen.mockRestore();
+    ui.unmount();
+  });
+});
+
+describe('a popover whose content changes size', () => {
+  it('is placed again when the box it sits in resizes', () => {
+    const watchers: (() => void)[] = [];
+    const observed: Element[] = [];
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(fn: () => void) { watchers.push(fn); }
+      observe(el: Element) { observed.push(el); }
+      unobserve() {}
+      disconnect() {}
+    } as never);
+
+    let tall = true;
+    const box = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      if (this.classList.contains('popover')) {
+        return { left: 0, top: 0, right: 100, bottom: 0, width: 100, height: tall ? 600 : 20, x: 0, y: 0, toJSON: () => {} } as DOMRect;
+      }
+      return { left: 10, top: 700, right: 110, bottom: 720, width: 100, height: 20, x: 10, y: 700, toJSON: () => {} } as DOMRect;
+    });
+
+    function Shrinking() {
+      const anchor = useRef<HTMLDivElement>(null);
+      return (
+        <div ref={anchor}>
+          <Popover open anchor={anchor}><div className="menu">rows</div></Popover>
+        </div>
+      );
+    }
+
+    const ui = mount(<Shrinking />);
+    const pop = document.querySelector('.popover') as HTMLElement;
+    expect(observed).toContain(pop);
+    const flipped = pop.style.top;
+
+    tall = false;
+    act(() => { for (const fire of watchers) fire(); });
+    expect(pop.style.top).not.toBe(flipped);
+    expect(pop.style.top).toBe('722px');
+
+    box.mockRestore();
+    vi.unstubAllGlobals();
     ui.unmount();
   });
 });

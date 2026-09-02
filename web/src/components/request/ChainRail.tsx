@@ -8,7 +8,7 @@ import { durationLabel } from '../../lib/format';
 import { readText, writeText } from 'luvo/data/storage';
 import { stepShape } from '../../lib/shape';
 import { ArrowRight, Play, ChevronRight, ChevronDown, Plus, Trash2 } from 'lucide-react';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useToast } from 'luvo/ui/useToast';
 import { count } from 'luvo/data/plural';
 
 const OPEN_KEY = 'play.chain.open';

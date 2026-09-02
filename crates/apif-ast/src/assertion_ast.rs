@@ -790,13 +790,41 @@ pub fn write_escaped_string_literal(out: &mut String, value: &str) {
     out.push('"');
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NegationStyle {
+    #[default]
+    Canonical,
+    Keyword,
+    Bang,
+}
+
+impl NegationStyle {
+    fn not_spelling(self) -> &'static str {
+        match self {
+            Self::Keyword => "not ",
+            Self::Canonical | Self::Bang => "!",
+        }
+    }
+
+    fn not_not_spelling(self) -> &'static str {
+        match self {
+            Self::Bang => "!!",
+            Self::Canonical | Self::Keyword => "not not ",
+        }
+    }
+}
+
 pub fn assertion_to_string(expr: &AssertionExpr) -> String {
+    assertion_to_string_with(expr, NegationStyle::Canonical)
+}
+
+pub fn assertion_to_string_with(expr: &AssertionExpr, style: NegationStyle) -> String {
     let mut out = String::with_capacity(64);
-    push_assertion(expr, &mut out, 0);
+    push_assertion(expr, &mut out, 0, style);
     out
 }
 
-fn push_expr(expr: &Expr, out: &mut String) {
+fn push_expr(expr: &Expr, out: &mut String, style: NegationStyle) {
     match expr {
         Expr::JqPath(p) => out.push_str(p),
         Expr::PluginCall { name, args } => {
@@ -807,7 +835,7 @@ fn push_expr(expr: &Expr, out: &mut String) {
                 if i > 0 {
                     out.push_str(", ");
                 }
-                push_assertion(a, out, 0);
+                push_assertion(a, out, 0, style);
             }
             out.push(')');
         }
@@ -827,22 +855,22 @@ fn push_expr(expr: &Expr, out: &mut String) {
         }
         Expr::Json(s) | Expr::Yaml(s) => out.push_str(s),
         Expr::As(inner, type_name) => {
-            push_expr(inner, out);
+            push_expr(inner, out, style);
             out.push(':');
             out.push_str(type_name);
         }
     }
 }
 
-fn push_assertion(expr: &AssertionExpr, out: &mut String, prec: u8) {
+fn push_assertion(expr: &AssertionExpr, out: &mut String, prec: u8, style: NegationStyle) {
     match expr {
         AssertionExpr::Or { left, right } => {
             if prec > 1 {
                 out.push('(');
             }
-            push_assertion(left, out, 1);
+            push_assertion(left, out, 1, style);
             out.push_str(" or ");
-            push_assertion(right, out, 1);
+            push_assertion(right, out, 1, style);
             if prec > 1 {
                 out.push(')');
             }
@@ -851,9 +879,9 @@ fn push_assertion(expr: &AssertionExpr, out: &mut String, prec: u8) {
             if prec > 1 {
                 out.push('(');
             }
-            push_assertion(left, out, 1);
+            push_assertion(left, out, 1, style);
             out.push_str(" xor ");
-            push_assertion(right, out, 1);
+            push_assertion(right, out, 1, style);
             if prec > 1 {
                 out.push(')');
             }
@@ -862,9 +890,9 @@ fn push_assertion(expr: &AssertionExpr, out: &mut String, prec: u8) {
             if prec > 2 {
                 out.push('(');
             }
-            push_assertion(left, out, 2);
+            push_assertion(left, out, 2, style);
             out.push_str(" and ");
-            push_assertion(right, out, 2);
+            push_assertion(right, out, 2, style);
             if prec > 2 {
                 out.push(')');
             }
@@ -873,22 +901,22 @@ fn push_assertion(expr: &AssertionExpr, out: &mut String, prec: u8) {
             if prec > 3 {
                 out.push('(');
             }
-            push_assertion(left, out, 3);
+            push_assertion(left, out, 3, style);
             out.push(' ');
             out.push_str(op.as_str());
             out.push(' ');
-            push_assertion(right, out, 3);
+            push_assertion(right, out, 3, style);
             if prec > 3 {
                 out.push(')');
             }
         }
         AssertionExpr::Not(inner) => {
-            out.push('!');
-            push_assertion(inner, out, 4);
+            out.push_str(style.not_spelling());
+            push_assertion(inner, out, 4, style);
         }
         AssertionExpr::NotNot(inner) => {
-            out.push_str("not not ");
-            push_assertion(inner, out, 4);
+            out.push_str(style.not_not_spelling());
+            push_assertion(inner, out, 4, style);
         }
         AssertionExpr::IfThenElse {
             condition,
@@ -896,19 +924,19 @@ fn push_assertion(expr: &AssertionExpr, out: &mut String, prec: u8) {
             else_branch,
         } => {
             out.push_str("if ");
-            push_assertion(condition, out, 0);
+            push_assertion(condition, out, 0, style);
             out.push_str(" then ");
-            push_assertion(then_branch, out, 0);
+            push_assertion(then_branch, out, 0, style);
             out.push_str(" else ");
-            push_assertion(else_branch, out, 0);
+            push_assertion(else_branch, out, 0, style);
             out.push_str(" end");
         }
         AssertionExpr::Paren(inner) => {
             out.push('(');
-            push_assertion(inner, out, 0);
+            push_assertion(inner, out, 0, style);
             out.push(')');
         }
-        AssertionExpr::Atom(e) => push_expr(e, out),
+        AssertionExpr::Atom(e) => push_expr(e, out, style),
         AssertionExpr::Raw(s) => out.push_str(s),
     }
 }

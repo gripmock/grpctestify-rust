@@ -91,7 +91,11 @@ async fn serve() -> (String, Arc<Mutex<Seen>>) {
             "/plain",
             get(|| async { ([("content-type", "text/plain")], "not json at all") }),
         )
-        .route("/boom", delete(|| async { StatusCode::IM_A_TEAPOT }));
+        .route("/boom", delete(|| async { StatusCode::IM_A_TEAPOT }))
+        .route(
+            "/hop",
+            get(|| async { axum::response::Redirect::temporary("/v1/users/8") }),
+        );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -173,7 +177,11 @@ async fn a_status_that_is_not_expected_fails_and_says_which_one_came_back() {
     .await;
     let message = reason(&result);
     assert!(message.contains("418"), "{message}");
-    assert_eq!(result.grpc_status, Some(418));
+    assert_eq!(result.http_status, Some(418));
+    assert_eq!(
+        result.grpc_status, None,
+        "an HTTP status is not a gRPC code"
+    );
 }
 
 #[tokio::test]
@@ -354,4 +362,150 @@ async fn the_status_is_checked_the_way_gctf_checks_one() {
     ))
     .await;
     assert!(reason(&bad).contains("204"), "{}", reason(&bad));
+}
+
+#[tokio::test]
+async fn a_redirect_is_the_answer_unless_options_ask_to_follow_it() {
+    let (address, _) = serve().await;
+    let stays = run(&format!(
+        "--- ADDRESS ---\n{address}\n\n--- ENDPOINT ---\nGET /hop\n\n--- ASSERTS ---\n@status() == 307\n@header(\"location\") == \"/v1/users/8\"\n"
+    ))
+    .await;
+    assert!(
+        matches!(stays.status, TestExecutionStatus::Pass),
+        "{}",
+        reason(&stays)
+    );
+    assert_eq!(stays.http_status, Some(307));
+
+    let follows = run(&format!(
+        "--- ADDRESS ---\n{address}\n\n--- ENDPOINT ---\nGET /hop\n\n--- OPTIONS ---\nfollow_redirects: true\n\n--- ASSERTS ---\n@status() == 200\n.id == \"8\"\n"
+    ))
+    .await;
+    assert!(
+        matches!(follows.status, TestExecutionStatus::Pass),
+        "{}",
+        reason(&follows)
+    );
+    assert_eq!(follows.http_status, Some(200));
+}
+
+#[tokio::test]
+async fn request_headers_reach_the_server_in_file_order() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let address = format!("http://{}", listener.local_addr().expect("addr"));
+    let seen = Arc::new(Mutex::new(String::new()));
+    let recorder = seen.clone();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept");
+        let mut buf = vec![0u8; 4096];
+        let n = tokio::io::AsyncReadExt::read(&mut socket, &mut buf)
+            .await
+            .unwrap_or(0);
+        *recorder.lock().unwrap_or_else(|e| e.into_inner()) =
+            String::from_utf8_lossy(&buf[..n]).to_string();
+        let _ = tokio::io::AsyncWriteExt::write_all(
+            &mut socket,
+            b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}",
+        )
+        .await;
+    });
+
+    let result = run(&format!(
+        "--- ADDRESS ---\n{address}\n\n--- ENDPOINT ---\nGET /order\n\n--- REQUEST_HEADERS ---\nx-zulu: 1\nx-alpha: 2\nx-mike: 3\nx-bravo: 4\n\n--- ASSERTS ---\n@status() == 200\n"
+    ))
+    .await;
+    assert!(
+        matches!(result.status, TestExecutionStatus::Pass),
+        "{}",
+        reason(&result)
+    );
+    let request = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let positions: Vec<usize> = ["x-zulu", "x-alpha", "x-mike", "x-bravo"]
+        .iter()
+        .map(|name| {
+            request
+                .find(name)
+                .unwrap_or_else(|| panic!("{name}: {request}"))
+        })
+        .collect();
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "headers arrive as the file wrote them: {request}"
+    );
+}
+
+async fn origin_that_never_answers() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let address = format!("http://{}", listener.local_addr().expect("addr"));
+    let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = connections.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok(socket) = listener.accept().await else {
+                break;
+            };
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            drop(socket);
+        }
+    });
+    (address, connections)
+}
+
+/// A step dials once: the retry budget (`--retry`, `OPTIONS.retry`, `#[retry(N)]`,
+/// and `no_retry` over all of them) is resolved and spent by the run loop, so a
+/// second loop inside the step would multiply it. `httf_retry_tests.rs` counts
+/// the dials the budget actually buys.
+#[tokio::test]
+async fn a_step_dials_once_because_the_retry_budget_belongs_to_the_run_loop() {
+    let (address, connections) = origin_that_never_answers().await;
+    let result = run(&format!(
+        "--- ADDRESS ---\n{address}\n\n--- ENDPOINT ---\nGET /health\n\n#[retry(2)]\n--- REQUEST ---\n{{}}\n\n--- ASSERTS ---\n@status() == 200\n"
+    ))
+    .await;
+
+    assert!(
+        matches!(result.status, TestExecutionStatus::Fail(_)),
+        "nothing answered"
+    );
+    assert_eq!(
+        result.failure_kind,
+        Some(grpctestify::execution::runner::FailureKind::Transport)
+    );
+    assert!(!result.retried);
+    assert_eq!(
+        connections.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the step itself dials once"
+    );
+}
+
+#[test]
+fn status_on_a_grpc_step_says_it_is_for_http() {
+    let engine = grpctestify::assert::AssertionEngine::with_registry(Arc::new(
+        grpctestify::execution::plugin_dir::build_plugin_manager(),
+    ));
+    let headers: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let outcome = engine
+        .evaluate_with_timing(
+            "@status() == 200",
+            &json!({"status": "SERVING"}),
+            Some(&headers),
+            None,
+            None,
+            &std::collections::HashMap::new(),
+            Some("grpc"),
+        )
+        .expect("evaluates");
+    let message = format!("{outcome:?}");
+    assert!(
+        message.contains("Error("),
+        "an error, not a false: {message}"
+    );
+    assert!(message.contains("@status() is for HTTP tests"), "{message}");
+    assert!(message.contains("grpc answer"), "{message}");
 }

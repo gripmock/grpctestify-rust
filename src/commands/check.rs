@@ -207,12 +207,14 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
                     }
                 }
 
-                for (line, msg, hint) in crate::lsp::handlers::preamble_section_order(&doc) {
+                for (line, msg, hint) in semantics::preamble_section_order(&doc) {
                     diagnostics.push(
                         Diagnostic::warning(&file_str, "SECTION_ORDER", &msg, line)
                             .with_hint(&hint),
                     );
                 }
+
+                diagnostics.extend(bench_source_diagnostics(&file_str, &doc));
 
                 let validation_diagnostics = parser::validate_document_chain_diagnostics(&doc);
                 for d in validation_diagnostics {
@@ -314,12 +316,12 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
                     );
                 }
 
-                for unused in crate::lsp::handlers::collect_unused_variables(&doc) {
+                for unused in semantics::collect_unused_variables(&doc) {
                     diagnostics.push(
                         Diagnostic::warning(
                             &file_str,
                             "UNUSED_VARIABLE",
-                            &crate::lsp::handlers::unused_variable_message(&unused),
+                            &semantics::unused_variable_message(&unused),
                             unused.line + 1,
                         )
                         .with_hint(
@@ -632,6 +634,20 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+fn bench_source_diagnostics(file_str: &str, doc: &parser::GctfDocument) -> Vec<Diagnostic> {
+    parser::validator::missing_bench_source_files(doc)
+        .into_iter()
+        .map(|d| {
+            Diagnostic::warning(
+                file_str,
+                "VALIDATION_WARNING",
+                &d.message,
+                d.line.map_or(1, |l| l + 1),
+            )
+        })
+        .collect()
+}
+
 fn print_check_summary(diagnostics: &[Diagnostic], total_files: usize, files_with_errors: usize) {
     use crate::report::style::{
         dim_style, fail_icon, fail_style, pass_icon, pass_style, warn_style,
@@ -680,7 +696,9 @@ fn print_check_summary(diagnostics: &[Diagnostic], total_files: usize, files_wit
 
 #[cfg(test)]
 mod tests {
+    use super::bench_source_diagnostics;
     use crate::parser::ast::{GctfDocument, Section, SectionContent, SectionSpan, SectionType};
+    use crate::semantics;
 
     fn doc_with_sections(sections: Vec<Section>) -> GctfDocument {
         GctfDocument {
@@ -713,6 +731,23 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_bench_source_is_reported_on_the_bench_header_line_one_based() {
+        let src = "--- ENDPOINT ---\npkg.Svc/M\n\n--- BENCH ---\nsources:\n  - name: users\n    file: nowhere/users.csv\n\n--- REQUEST ---\n{}\n";
+        let doc = crate::parser::parse_gctf_from_str(src, "b.gctf").expect("parse");
+        let found = bench_source_diagnostics("b.gctf", &doc);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(
+            found[0].range.start.line, 4,
+            "1-based line of `--- BENCH ---`"
+        );
+        assert!(
+            found[0].message.contains("nowhere/users.csv"),
+            "{}",
+            found[0].message
+        );
+    }
+
+    #[test]
     fn check_preamble_order_clean() {
         let doc = doc_with_sections(vec![
             kv_section(SectionType::Meta, &[]),
@@ -721,7 +756,7 @@ mod tests {
             kv_section(SectionType::Endpoint, &[("ep", "svc/method")]),
             kv_section(SectionType::Options, &[("timeout", "10")]),
         ]);
-        let issues = crate::lsp::handlers::preamble_section_order(&doc);
+        let issues = semantics::preamble_section_order(&doc);
         assert!(
             issues.is_empty(),
             "Expected no ordering issues, got {:?}",
@@ -735,7 +770,7 @@ mod tests {
             kv_section(SectionType::Options, &[]),
             kv_section(SectionType::Bench, &[("mode", "fixed")]),
         ]);
-        let issues = crate::lsp::handlers::preamble_section_order(&doc);
+        let issues = semantics::preamble_section_order(&doc);
         assert_eq!(issues.len(), 1);
         assert!(issues[0].1.contains("BENCH should come before OPTIONS"));
     }
@@ -746,7 +781,7 @@ mod tests {
             kv_section(SectionType::Address, &[]),
             kv_section(SectionType::Bench, &[]),
         ]);
-        let issues = crate::lsp::handlers::preamble_section_order(&doc);
+        let issues = semantics::preamble_section_order(&doc);
         assert_eq!(issues.len(), 1);
         assert!(issues[0].1.contains("BENCH should come before ADDRESS"));
     }
@@ -758,7 +793,7 @@ mod tests {
             kv_section(SectionType::Address, &[]),
             kv_section(SectionType::Bench, &[]),
         ]);
-        let issues = crate::lsp::handlers::preamble_section_order(&doc);
+        let issues = semantics::preamble_section_order(&doc);
         assert_eq!(issues.len(), 2);
     }
 
@@ -778,7 +813,7 @@ mod tests {
                 ..Default::default()
             },
         ]);
-        let issues = crate::lsp::handlers::preamble_section_order(&doc);
+        let issues = semantics::preamble_section_order(&doc);
         assert!(issues.is_empty());
     }
 
@@ -788,7 +823,7 @@ mod tests {
             kv_section(SectionType::Address, &[]),
             kv_section(SectionType::Bench, &[]),
         ]);
-        let issues = crate::lsp::handlers::preamble_section_order(&doc);
+        let issues = semantics::preamble_section_order(&doc);
         let hint = &issues[0].2;
         assert!(
             hint.contains("fmt --write"),

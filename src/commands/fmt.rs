@@ -16,28 +16,84 @@ fn normalize_assertion_lines(raw: &str) -> Vec<String> {
         .collect()
 }
 
+fn collapse_layout_whitespace(expr: &str) -> String {
+    let mut out = String::with_capacity(expr.len());
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut pending_space = false;
+    for c in expr.chars() {
+        if let Some(open) = quote {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == open {
+                quote = None;
+            }
+            continue;
+        }
+        if c.is_whitespace() {
+            pending_space = !out.is_empty() && !out.ends_with('(');
+            continue;
+        }
+        if c == ')' {
+            pending_space = false;
+        }
+        if pending_space {
+            out.push(' ');
+            pending_space = false;
+        }
+        if c == '"' || c == '\'' {
+            quote = Some(c);
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn canonical_assertion_spelling(trimmed: &str) -> Option<String> {
+    use crate::parser::assertion_ast::{
+        AssertionExpr, NegationStyle, assertion_to_string_with, parse_assertion,
+    };
+
+    let expr = parse_assertion(trimmed);
+    if matches!(&expr, AssertionExpr::Raw(_)) {
+        return None;
+    }
+    for style in [
+        NegationStyle::Canonical,
+        NegationStyle::Keyword,
+        NegationStyle::Bang,
+    ] {
+        let serialized = assertion_to_string_with(&expr, style);
+        let reparsed = parse_assertion(&serialized);
+        let stable = !matches!(&reparsed, AssertionExpr::Raw(_))
+            && assertion_to_string_with(&reparsed, style) == serialized;
+        if stable && apif_optimizer::only_layout_differs(trimmed, &serialized) {
+            return Some(serialized);
+        }
+    }
+    None
+}
+
 fn normalize_assertion_line(line: &str) -> String {
     let line = normalize_hash_comment_line(line).unwrap_or_else(|| line.to_string());
     let trimmed = line.trim_start();
     if trimmed.starts_with("//") || trimmed.is_empty() {
         return line;
     }
-    let expr = crate::parser::assertion_ast::parse_assertion(trimmed);
-    if matches!(&expr, crate::parser::assertion_ast::AssertionExpr::Raw(_)) {
-        return line;
-    }
-    let serialized = crate::parser::assertion_ast::assertion_to_string(&expr);
-    let reparsed = crate::parser::assertion_ast::parse_assertion(&serialized);
-    let stable = !matches!(
-        &reparsed,
+    if matches!(
+        crate::parser::assertion_ast::parse_assertion(trimmed),
         crate::parser::assertion_ast::AssertionExpr::Raw(_)
-    ) && crate::parser::assertion_ast::assertion_to_string(&reparsed) == serialized;
-    if !stable {
+    ) {
         return line;
     }
+    let settled = canonical_assertion_spelling(trimmed)
+        .unwrap_or_else(|| collapse_layout_whitespace(trimmed));
     let indent_len = line.len() - trimmed.len();
     let indent = &line[..indent_len];
-    format!("{}{}", indent, serialized)
+    format!("{}{}", indent, settled)
 }
 
 fn normalize_hash_comment_line(line: &str) -> Option<String> {
@@ -752,7 +808,7 @@ fn format_gctf_chain(head: &crate::parser::GctfDocument, source: &str) -> String
 }
 
 pub fn format_gctf_content(source: &str, file_name: &str) -> Result<String> {
-    format_gctf_content_with_level(source, file_name, optimizer::OptimizeLevel::Safe)
+    format_gctf_content_with_level(source, file_name, optimizer::OptimizeLevel::Layout)
 }
 
 pub fn format_gctf_content_with_level(
@@ -803,7 +859,7 @@ fn apply_optimizer_rewrites(
 }
 
 pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
-    let level = cli.optimize_level(optimizer::OptimizeLevel::Safe);
+    let level = cli.optimize_level(optimizer::OptimizeLevel::Layout);
     let mut files = Vec::new();
     let mut has_error = false;
     let mut files_needing_format = 0usize;
@@ -1018,7 +1074,7 @@ fn print_fmt_summary(write: bool, total: usize, written: usize, needing: usize) 
 
 #[cfg(test)]
 mod tests {
-    use super::format_gctf_content;
+    use super::{OptimizeLevel, format_gctf_content, format_gctf_content_with_level};
     use crate::utils::file::write_atomic;
 
     fn to_crlf(input: &str) -> String {
@@ -1039,14 +1095,85 @@ mod tests {
     }
 
     #[test]
-    fn formatting_settles_an_assertion_in_one_pass() {
+    fn the_safe_level_settles_an_assertion_in_one_pass() {
         let src = format!("{HDR}--- ASSERTS ---\n!!@has_header(\"x\")\n@is_empty(.a) == false\n");
-        let out = assert_idempotent(&src);
+        let once = format_gctf_content_with_level(&src, "t.gctf", OptimizeLevel::Safe).unwrap();
+        let twice = format_gctf_content_with_level(&once, "t.gctf", OptimizeLevel::Safe).unwrap();
+        assert_eq!(once, twice, "not idempotent at Safe");
         assert!(
-            out.contains("@has_header(\"x\")") && !out.contains("not not"),
-            "a single pass must reach the settled form: {out}"
+            once.contains("@has_header(\"x\")") && !once.contains("not not"),
+            "a single pass must reach the settled form: {once}"
         );
-        assert!(out.contains("@has_value(.a)"), "{out}");
+        assert!(once.contains("@has_value(.a)"), "{once}");
+    }
+
+    #[test]
+    fn fmt_leaves_what_an_assertion_means_alone() {
+        let src = format!(
+            "{HDR}--- ASSERTS ---\nif true then .a else .b end\nnot (.x == 1 or .y == 2)\n!(.plain == \"abc\")\n@is_uuid(.id) == true\n!!@has_header(\"x\")\n@is_empty(.a) == false\n.a | endswith(\"x\")\n.s == \"a  b\"\n"
+        );
+        let out = assert_idempotent(&src);
+        for kept in [
+            "if true then .a else .b end",
+            "not (.x == 1 or .y == 2)",
+            "!(.plain == \"abc\")",
+            "@is_uuid(.id) == true",
+            "!!@has_header(\"x\")",
+            "@is_empty(.a) == false",
+            ".a | endswith(\"x\")",
+            ".s == \"a  b\"",
+        ] {
+            assert!(
+                out.contains(kept),
+                "fmt rewrote the meaning of {kept}:\n{out}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_line_fmt_will_not_respell_is_still_laid_out_canonically() {
+        let src = format!(
+            "{HDR}--- ASSERTS ---\nnot (.x==1 or .y==2)   \nnot(.b==2)\n.b==2\n!!@has_header(  \"x\" )\n"
+        );
+        let out = assert_idempotent(&src);
+        for canonical in [
+            "\nnot (.x == 1 or .y == 2)\n",
+            "\nnot (.b == 2)\n",
+            "\n.b == 2\n",
+            "\n!!@has_header(\"x\")\n",
+        ] {
+            assert!(
+                out.contains(canonical),
+                "a line fmt may not respell still gets its layout: missing {canonical:?}\n{out}"
+            );
+        }
+        assert!(
+            !out.contains("   \n") && !out.contains("not(."),
+            "no trailing whitespace, no un-spaced operators left:\n{out}"
+        );
+    }
+
+    #[test]
+    fn a_line_with_mixed_negation_spellings_keeps_both_and_only_loses_whitespace() {
+        let src = format!("{HDR}--- ASSERTS ---\n!(.a)   and   not (.b)\n");
+        let out = assert_idempotent(&src);
+        assert!(out.contains("\n!(.a) and not (.b)\n"), "{out}");
+    }
+
+    #[test]
+    fn fmt_normalises_layout_and_canonical_spelling() {
+        let src = format!(
+            "{HDR}--- ASSERTS ---\n.a==1\n(.x == 5)\n.name startswith \"a\"\n.b   ==   2\n"
+        );
+        let out = assert_idempotent(&src);
+        for canonical in [
+            "\n.a == 1\n",
+            "\n.x == 5\n",
+            "\n.name startsWith \"a\"\n",
+            "\n.b == 2\n",
+        ] {
+            assert!(out.contains(canonical), "missing {canonical:?}:\n{out}");
+        }
     }
 
     #[test]

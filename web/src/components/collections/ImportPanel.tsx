@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { useIntentText } from '../../lib/use-intent';
 import { useStore } from '../../lib/store';
 import { parseShell } from '../../lib/shell';
 import { importSummary, planImport } from '../../lib/grpcurl-import';
@@ -6,15 +7,13 @@ import { curlSummary, isCurl, parseCurl } from '../../lib/curl-import';
 import { callSummary, grpctestifySubcommand, isGrpctestify, parseGrpctestifyCall } from '../../lib/gctf-call-import';
 import { joinEndpoint } from '../../lib/http-endpoint';
 import { Upload, Terminal, AlertCircle, Check } from 'lucide-react';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useToast } from 'luvo/ui/useToast';
 
 export function ImportPanel({ onDone }: { onDone?: () => void } = {}) {
   const toast = useToast();
-  const [command, setCommand] = useState('');
   const intent = useStore(s => s.importIntent);
-  useEffect(() => {
-    if (intent > 0) setCommand(useStore.getState().importPrefill ?? '');
-  }, [intent]);
+  const prefill = useStore(s => s.importPrefill);
+  const [command, setCommand] = useIntentText(intent, intent > 0 ? prefill ?? '' : '');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -143,7 +142,7 @@ export function ImportPanel({ onDone }: { onDone?: () => void } = {}) {
       try { data = await res.json(); } catch {  }
 
       if (!res.ok) {
-        setError(data?.error || `Import failed (${res.status})`);
+        setError(data?.error || `The workbench could not read that command (${res.status} ${res.statusText})`);
         return;
       }
       if (data?.error) {
@@ -199,7 +198,7 @@ export function ImportPanel({ onDone }: { onDone?: () => void } = {}) {
     <div className="stack">
       <div className="bar">
         <Upload size={14} className="muted" />
-        <span className="label">Import a command</span>
+        <span className="field-label">Import a command</span>
       </div>
 
       <div className="muted">
@@ -269,7 +268,7 @@ export function ImportPanel({ onDone }: { onDone?: () => void } = {}) {
       </button>
 
       <div>
-        <div className="label">Examples</div>
+        <div className="field-label">Examples</div>
         {examples.map((ex, i) => (
           <button
             key={i}

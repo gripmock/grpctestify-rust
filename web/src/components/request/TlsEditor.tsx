@@ -30,7 +30,7 @@ export function TlsEditor() {
   return (
     <div className="stack">
       <div className="bar">
-        <span className="label">transport security</span>
+        <span className="field-label">transport security</span>
         <Seg
           label="Transport security"
           value={mode}
@@ -60,7 +60,7 @@ export function TlsEditor() {
           return (
           <label key={key} className={`stack cert-field${dead ? ' is-overruled' : ''}`}
             title={dead ? 'insecure: true skips verification, so no CA is read' : undefined}>
-            <span className="label">
+            <span className="field-label">
               {label}
               {dead && <span className="muted"> · not used</span>}
               {wanted && <span className="muted"> · needed</span>}
@@ -96,7 +96,7 @@ export function TlsEditor() {
 
       {unknownKeys(tls, KNOWN).length > 0 && (
         <div>
-          <div className="label">also in this section</div>
+          <div className="field-label">also in this section</div>
           <div className="bar wrap">
             {unknownKeys(tls, KNOWN).map(([k, v]) => (
               <span key={k} className="chip mono">{k}: {v}</span>

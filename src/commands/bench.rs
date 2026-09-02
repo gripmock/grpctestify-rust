@@ -2186,6 +2186,13 @@ fn grpc_status_label(grpc_status: Option<u32>, passed: bool) -> Cow<'static, str
     }
 }
 
+fn status_label(result: &crate::execution::TestExecutionResult, passed: bool) -> Cow<'static, str> {
+    match result.http_status {
+        Some(code) => Cow::Owned(format!("HTTP {code}")),
+        None => grpc_status_label(result.grpc_status, passed),
+    }
+}
+
 fn worker_connection_id(worker_index: u32, connections: u32) -> u64 {
     (worker_index % connections.max(1)) as u64
 }
@@ -2427,7 +2434,7 @@ async fn run_request_with_runner(
             let passed = matches!(result.status, TestExecutionStatus::Pass);
             RequestOutcome {
                 call_duration_ns: result.call_duration_ns,
-                status: grpc_status_label(result.grpc_status, passed),
+                status: status_label(&result, passed),
                 error: match result.status {
                     TestExecutionStatus::Pass => None,
                     TestExecutionStatus::Fail(msg) => Some(msg),
@@ -4893,6 +4900,18 @@ mod tests {
         let picks: Vec<usize> = (0..7).map(|k| round_robin_index(k, 3)).collect();
         assert_eq!(picks, vec![0, 1, 2, 0, 1, 2, 0]);
         assert_eq!(round_robin_index(5, 0), 0);
+    }
+
+    #[test]
+    fn an_http_answer_is_labelled_by_its_own_status_not_a_grpc_code() {
+        let ok = crate::execution::TestExecutionResult::pass(Some(1)).with_http_status(200);
+        assert_eq!(status_label(&ok, true), "HTTP 200");
+        let missing = crate::execution::TestExecutionResult::fail("gone".to_string(), Some(1))
+            .with_http_status(404);
+        assert_eq!(status_label(&missing, false), "HTTP 404");
+        let grpc = crate::execution::TestExecutionResult::fail("nope".to_string(), Some(1))
+            .with_grpc_status(5);
+        assert_eq!(status_label(&grpc, false), "NotFound");
     }
 
     #[test]

@@ -1,5 +1,5 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
-import { bindingsOf, copyNote, rawAuthorityReason, rawAuthorityRefusal, useStore, callAddress, formsAheadOfFile, keepFromAnotherRoot, tabFileMissing, projectCallEnv, resolveProjectAddress, contentUnread, isRequestDirty, isTabDirty, isActiveTabDirty, rawIsAuthoritative, structuredSave, serializeTab, deserializeTab, MAX_STORED_RAW, fileMissing } from './store';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { effectiveTls, openRefusal, bindingsOf, copyNote, rawAuthorityReason, rawAuthorityRefusal, useStore, callAddress, formsAheadOfFile, keepFromAnotherRoot, tabFileMissing, projectCallEnv, resolveProjectAddress, contentUnread, isRequestDirty, isTabDirty, isActiveTabDirty, rawIsAuthoritative, structuredSave, serializeTab, deserializeTab, MAX_STORED_RAW, fileMissing } from './store';
 import type { CollectionParsed, Tab } from './types';
 
 function makeParsed(overrides: Partial<CollectionParsed> = {}): CollectionParsed {
@@ -3068,5 +3068,297 @@ describe('the command copied for an open file', () => {
     }
     expect(sent).toHaveLength(1);
     expect(JSON.parse(sent[0]).collection_path).toBe('auth/login.gctf');
+  });
+});
+
+describe('forgetting a call', () => {
+  const answer = () => new Response(JSON.stringify({ success: true, messages: [{}] }), { status: 200 });
+  const kept = new Map<string, string>();
+  const storage = (setItem: (key: string, value: string) => void) => ({
+    getItem: (key: string) => kept.get(key) ?? null,
+    setItem,
+    removeItem: (key: string) => { kept.delete(key); },
+  });
+
+  beforeEach(() => { kept.clear(); useStore.getState().clearHistory(); });
+  afterEach(() => { vi.unstubAllGlobals(); useStore.getState().clearHistory(); });
+
+  it('writes what the cache still holds, through the same writer that remembers', async () => {
+    vi.stubGlobal('localStorage', storage((key, value) => { kept.set(key, value); }));
+    vi.stubGlobal('fetch', vi.fn(async () => answer()));
+    useStore.setState({ request: { endpoint: 'a.B/One', headers: {}, bodies: ['{}'] }, tls: false } as never);
+    await useStore.getState().execute();
+    useStore.setState({ request: { endpoint: 'a.B/Two', headers: {}, bodies: ['{}'] } } as never);
+    await useStore.getState().execute();
+    const [newest, older] = useStore.getState().history;
+    useStore.getState().forgetHistory(newest.id);
+    const left = useStore.getState().history.map(e => e.id);
+    expect(left).toEqual([older.id]);
+    expect(JSON.parse(kept.get('grpctestify-history') ?? '[]').map((e: { id: string }) => e.id)).toEqual(left);
+  });
+
+  it('still forgets when the browser refuses the write', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => answer()));
+    useStore.setState({ request: { endpoint: 'a.B/One', headers: {}, bodies: ['{}'] }, tls: false } as never);
+    await useStore.getState().execute();
+    const [only] = useStore.getState().history;
+    vi.stubGlobal('localStorage', storage(() => { throw new Error('quota'); }));
+    expect(() => useStore.getState().forgetHistory(only.id)).not.toThrow();
+    expect(useStore.getState().history).toEqual([]);
+  });
+});
+
+describe('how a call says whether certificates are checked', () => {
+  const sent: unknown[] = [];
+  const capture = () => vi.fn(async (_url: unknown, init?: RequestInit) => {
+    sent.push(JSON.parse(String(init?.body ?? '{}')));
+    return new Response(JSON.stringify({ success: true, messages: [{}] }), { status: 200 });
+  });
+
+  afterEach(() => { vi.unstubAllGlobals(); sent.length = 0; useStore.getState().clearHistory(); });
+
+  it('says so outright instead of leaving the server to assume', async () => {
+    vi.stubGlobal('fetch', capture());
+    useStore.setState({ request: { endpoint: 'a.B/One', headers: {}, bodies: ['{}'] }, tls: false, tlsInsecure: true, activeEnvironment: null } as never);
+    await useStore.getState().execute();
+    expect(sent[0]).toMatchObject({ tls_insecure: false });
+    useStore.setState({ tls: true, tlsInsecure: true } as never);
+    await useStore.getState().execute();
+    expect(sent[1]).toMatchObject({ tls: true, tls_insecure: true });
+    useStore.setState({ tls: true, tlsInsecure: false } as never);
+    await useStore.getState().execute();
+    expect(sent[2]).toMatchObject({ tls: true, tls_insecure: false });
+  });
+
+  it('verifies certificates for an environment that never said otherwise', () => {
+    const st = { ...useStore.getState(), activeEnvironment: 'dev', environments: [{ name: 'dev', source: 'browser', variables: {}, tls: true }], tlsInsecure: true };
+    expect(effectiveTls(st as never)).toMatchObject({ tls: true, tlsInsecure: false });
+  });
+});
+
+describe('replaying a call the browser remembers', () => {
+  const sent: unknown[] = [];
+  const capture = () => vi.fn(async (_url: unknown, init?: RequestInit) => {
+    sent.push(JSON.parse(String(init?.body ?? '{}')));
+    return new Response(JSON.stringify({ success: true, messages: [{}] }), { status: 200 });
+  });
+  const remembered = (headers: Record<string, string>) => ({
+    id: `r-${Object.values(headers).join('')}`, timestamp: 1, endpoint: 'a.B/One', bodies: ['{}'], headers,
+    response: { status: 'ok' as const, statusCode: 0, messages: [{}], headers: {}, trailers: {}, error: null, durationMs: 1 },
+  });
+
+  afterEach(() => { vi.unstubAllGlobals(); sent.length = 0; useStore.getState().clearHistory(); useStore.setState({ tabs: [], activeTabId: null, activeEnvironment: null } as never); });
+
+  it('sends a header typed as a literal exactly as it was typed, which is why the record keeps it', async () => {
+    vi.stubGlobal('fetch', capture());
+    useStore.setState({ tabs: [], activeTabId: null, activeEnvironment: null } as never);
+    useStore.getState().restoreHistory(remembered({ authorization: 'Bearer abc' }), { pin: true });
+    await useStore.getState().execute();
+    expect(sent[0]).toMatchObject({ headers: { authorization: 'Bearer abc' } });
+  });
+
+  it('fills a header that names a variable from the environment that is active now', async () => {
+    vi.stubGlobal('fetch', capture());
+    useStore.setState({
+      tabs: [], activeTabId: null,
+      environments: [{ name: 'dev', source: 'browser', variables: { TOKEN: 'live-now' } }], activeEnvironment: 'dev',
+    } as never);
+    useStore.getState().restoreHistory(remembered({ authorization: 'Bearer {{TOKEN}}' }), { pin: true });
+    await useStore.getState().execute();
+    expect(sent[0]).toMatchObject({ headers: { authorization: 'Bearer live-now' } });
+  });
+});
+
+describe('a run the workbench had no room for', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('leaves the run as it was, and says what the workbench said', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('four runs are already going — this one was not started', { status: 429 })));
+    const before = useStore.getState().run;
+    useStore.setState({ runError: null, runRefused: null } as never);
+    await useStore.getState().startRun(['a.gctf']);
+    const after = useStore.getState();
+    expect(after.run).toBe(before);
+    expect(after.runError).toBeNull();
+    expect(after.runJobId).toBeNull();
+    expect(after.runRefused?.text).toContain('four runs are already going');
+  });
+
+  it('paints an ordinary refusal as the failure it is', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('File not found: a.gctf', { status: 400 })));
+    useStore.setState({ runError: null, runRefused: null } as never);
+    await useStore.getState().startRun(['a.gctf']);
+    expect(useStore.getState().runError).toContain('a.gctf is not on disk any more');
+    expect(useStore.getState().runRefused).toBeNull();
+  });
+
+  it('leaves a bench as it was too', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('no room', { status: 429 })));
+    const before = useStore.getState().run;
+    useStore.setState({ runRefused: null } as never);
+    await useStore.getState().startBench('a.gctf');
+    expect(useStore.getState().run).toBe(before);
+    expect(useStore.getState().runRefused?.text).toBe('no room');
+  });
+});
+
+describe('a file the workbench will not open', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('keeps what the workbench said about it, for whoever asked to open it', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: unknown) => (String(url).includes('/api/collections/')
+      ? new Response('notes.md is not a test file — play opens .gctf, .httf and .apif', { status: 400 })
+      : new Response('[]', { status: 200 }))));
+    expect(await useStore.getState().loadCollection('notes.md')).toBe(false);
+    expect(openRefusal('notes.md')).toContain('is not a test file');
+  });
+
+  it('says nothing of its own when the workbench could not be reached', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline'); }));
+    expect(await useStore.getState().loadCollection('gone.gctf')).toBe(false);
+    expect(openRefusal('gone.gctf')).toBeNull();
+  });
+});
+
+describe('reading an environment file the project keeps', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('hands the editor the text and the names, not the answer itself', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ content: 'SEED=abc\nHOST=api.test\n', secret: ['SEED'] }),
+      { status: 200 },
+    )));
+    const said = await useStore.getState().fetchProjectEnv('dev');
+    expect(said.content).toBe('SEED=abc\nHOST=api.test\n');
+    expect(said.secret).toEqual(['SEED']);
+  });
+
+  it('says what the workbench said when the file could not be read', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('.env.dev is outside the project', { status: 400 })));
+    await expect(useStore.getState().fetchProjectEnv('dev')).rejects.toThrow('.env.dev is outside the project');
+  });
+
+  it('reads the local half, and names nothing when there is none', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ exists: true, content: 'SEED=local\n', secret: ['SEED'] }),
+      { status: 200 },
+    )));
+    expect(await useStore.getState().fetchProjectEnvLocal('dev'))
+      .toEqual({ exists: true, content: 'SEED=local\n', secret: ['SEED'] });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 404 })));
+    expect(await useStore.getState().fetchProjectEnvLocal('dev'))
+      .toEqual({ exists: false, content: null, secret: [] });
+  });
+});
+
+describe('a bench the workbench had no room for', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('leaves the comparison and the baseline the user was reading', async () => {
+    const baseline = { cases: [] } as never;
+    const comparison = { rows: [] } as never;
+    useStore.setState({
+      benchBaseline: baseline,
+      benchBaselinePath: 'kept.gctf',
+      benchPaths: ['kept.gctf'],
+      benchBaselinePartial: true,
+      benchComparison: comparison,
+      benchOverUnsaved: ['kept.gctf'],
+      runRefused: null,
+    } as never);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('no room', { status: 429 })));
+
+    await useStore.getState().startBench('other.gctf');
+
+    const after = useStore.getState();
+    expect(after.benchBaseline).toBe(baseline);
+    expect(after.benchBaselinePath).toBe('kept.gctf');
+    expect(after.benchPaths).toEqual(['kept.gctf']);
+    expect(after.benchBaselinePartial).toBe(true);
+    expect(after.benchComparison).toBe(comparison);
+    expect(after.benchOverUnsaved).toEqual(['kept.gctf']);
+    expect(after.runRefused?.text).toBe('no room');
+  });
+});
+
+describe('a call the workbench answered with a refusal of its own', () => {
+  afterEach(() => { vi.unstubAllGlobals(); useStore.getState().clearHistory(); });
+
+  it('reads as a failed call in the panel, not as a request that never went', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ success: false, error: 'ca.pem is outside the project — the file was not read', messages: [] }),
+      { status: 200 },
+    )));
+    useStore.setState({
+      request: { endpoint: 'a.B/One', headers: {}, bodies: ['{}'] },
+      tls: true, tlsInsecure: false, tlsCa: '../ca.pem', activeEnvironment: null,
+    } as never);
+
+    await useStore.getState().execute();
+
+    const answer = useStore.getState().response;
+    expect(answer?.status).toBe('error');
+    expect(answer?.error).toContain('ca.pem is outside the project');
+    expect(answer?.sent).toBeUndefined();
+    expect(answer?.durationMs).not.toBeNull();
+  });
+
+  it('is kept, and counted, like any other call that failed', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ success: false, error: 'the client key could not be read', messages: [] }),
+      { status: 200 },
+    )));
+    useStore.setState({
+      request: { endpoint: 'a.B/Two', headers: {}, bodies: ['{}'] }, tls: true, activeEnvironment: null,
+    } as never);
+    const before = useStore.getState().totalError;
+
+    await useStore.getState().execute();
+
+    expect(useStore.getState().totalError).toBe(before + 1);
+    expect(useStore.getState().history[0]?.response.error).toContain('the client key could not be read');
+  });
+});
+
+describe('cancelling a run', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('takes the workbench at its word, without waiting for the stream to end', async () => {
+    const summary = {
+      id: 'j1', reports: [], kind: 'run', status: 'cancelled', paths: ['a.gctf'],
+      started_ms: 1, finished_ms: 900, total: 4, passed: 1, failed: 0, skipped: 3, duration_ms: 899,
+    };
+    vi.stubGlobal('fetch', vi.fn(async (url: unknown) => (String(url).includes('/cancel')
+      ? new Response(JSON.stringify(summary), { status: 200 })
+      : new Response(JSON.stringify({ ...summary, reports: [] }), { status: 200 }))));
+    useStore.setState({ runJobId: 'j1', run: { ...useStore.getState().run, finished: false, done: 1, total: 4 } } as never);
+
+    await useStore.getState().cancelRun();
+
+    const after = useStore.getState();
+    expect(after.run.finished).toBe(true);
+    expect(after.run.outcome).toBe('cancelled');
+    expect(after.run.durationMs).toBe(899);
+    expect(after.runJobId).toBeNull();
+  });
+
+  it('leaves the run alone when the workbench says it is still going', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ id: 'j1', status: 'running', duration_ms: 0 }), { status: 200 },
+    )));
+    useStore.setState({ runJobId: 'j1', run: { ...useStore.getState().run, finished: false, outcome: null } } as never);
+
+    await useStore.getState().cancelRun();
+
+    expect(useStore.getState().run.finished).toBe(false);
+    expect(useStore.getState().runJobId).toBe('j1');
+  });
+
+  it('does nothing when there is no run to cancel', async () => {
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    useStore.setState({ runJobId: null } as never);
+    await useStore.getState().cancelRun();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

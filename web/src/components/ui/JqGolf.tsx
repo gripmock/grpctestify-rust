@@ -29,22 +29,26 @@ export function JqGolf({ onClose }: { onClose: () => void }) {
   useEffect(() => { ref.current?.showModal(); }, []);
   useEffect(() => { writeText(BEST_KEY, String(round.best)); }, [round.best]);
 
-  const { data, busy } = useDebouncedPost<QueryOut>(
+  const { data, busy, stale } = useDebouncedPost<QueryOut>(
     '/api/eval/query',
     expr.trim() && left > 0 ? { input: hole.input, expr: expr.trim(), runs: 1 } : null,
     200,
   );
 
-  const outputs = useMemo(() => data?.outputs ?? [], [data]);
-  const error = data?.error ?? null;
+  const answered = stale ? null : data;
+  const outputs = useMemo(() => answered?.outputs ?? [], [answered]);
+  const error = answered?.error ?? null;
   const looksSolved = left > 0 && solved(hole, outputs);
 
-  const { data: onDecoy } = useDebouncedPost<QueryOut>(
+  const { data: onDecoy, stale: decoyStale } = useDebouncedPost<QueryOut>(
     '/api/eval/query',
     looksSolved ? { input: hole.decoy, expr: expr.trim(), runs: 1 } : null,
     0,
   );
-  const decoyOutputs = useMemo(() => (onDecoy ? onDecoy.outputs : null), [onDecoy]);
+  const decoyOutputs = useMemo(
+    () => (onDecoy && !decoyStale ? onDecoy.outputs : null),
+    [onDecoy, decoyStale],
+  );
   const honest = decoyOutputs !== null && reads(hole, decoyOutputs);
   const done = looksSolved && honest;
 
@@ -65,21 +69,12 @@ export function JqGolf({ onClose }: { onClose: () => void }) {
     return () => clearTimeout(handle);
   }, [left, done]);
 
-  const counted = useRef(false);
-  useEffect(() => { counted.current = false; }, [hole]);
-
-  useEffect(() => {
-    if (counted.current) return;
-    if (done) {
-      counted.current = true;
-      setCarried(left);
-      setRound(current => scored(current, hole, strokes, left));
-    } else if (left === 0) {
-      counted.current = true;
-      setCarried(0);
-      setRound(missed);
-    }
-  }, [done, left, hole, strokes]);
+  const [counted, setCounted] = useState<Hole | null>(null);
+  if (counted !== hole && (done || left === 0)) {
+    setCounted(hole);
+    setCarried(done ? left : 0);
+    setRound(current => (done ? scored(current, hole, strokes, left) : missed(current)));
+  }
 
   return (
     <dialog
@@ -101,7 +96,7 @@ export function JqGolf({ onClose }: { onClose: () => void }) {
 
       <div className="modal-body stack">
         <div className="golf-ask">
-          <span className="label">{hole.kind}</span>
+          <span className="field-label">{hole.kind}</span>
           <span>{hole.ask}</span>
           <span className="grow" />
           <span className="muted mono">par {hole.par}</span>
@@ -119,7 +114,7 @@ export function JqGolf({ onClose }: { onClose: () => void }) {
         <pre className="golf-input mono">{JSON.stringify(hole.input, null, 2)}</pre>
 
         <div className={`field-frame golf-field${done ? ' is-ok' : out || verdict === 'error' ? ' is-bad' : ''}`}>
-          <span className="label">jq</span>
+          <span className="field-label">jq</span>
           <input
             className="field mono"
             value={expr}

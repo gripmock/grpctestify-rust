@@ -5,8 +5,8 @@ import { PROTO_SOURCES, applyProtoSource, csvJoin, csvList, protoSourceOf, setKe
 import type { ProtoSource } from '../../lib/section-model';
 import { bytesToBase64, protoKindOf, type ProtoFile, type ProtoKind } from '../../lib/proto-files';
 import { missingPaths } from '../../lib/assert-problems';
-import { useToast } from 'luvo/ui/ToastContext';
-import { useModal } from 'luvo/ui/ModalContext';
+import { useToast } from 'luvo/ui/useToast';
+import { useModal } from 'luvo/ui/useModal';
 import { fromFileRelative, relativeToFile } from '../../lib/relative-path';
 import { pathPlaceholderNote } from '../../lib/path-placeholder';
 import { offerNote } from '../../lib/proto-offer';
@@ -37,9 +37,12 @@ export function ProtoEditor() {
   const modal = useModal();
 
   const proto = parsed?.proto ?? {};
-  const [chosen, setChosen] = useState<ProtoSource | null>(null);
+  const [choice, setChoice] = useState<{ tab: string | null; path: string | null; source: ProtoSource } | null>(null);
   const workspacePath = useStore(s => s.workspacePath);
-  useEffect(() => { setChosen(null); }, [workspacePath]);
+  const activeTabId = useStore(s => s.activeTabId);
+  const chosen = choice !== null && choice.path === workspacePath && choice.tab === activeTabId
+    ? choice.source
+    : null;
   const written = protoSourceOf(proto);
   const source = written !== 'reflection' ? written : (chosen ?? 'reflection');
 
@@ -98,7 +101,12 @@ export function ProtoEditor() {
     );
     if (!ok) return;
     const res = await fetch(`/api/collections/${apiPath(path)}`, { method: 'DELETE' }).catch(() => null);
-    if (!res || !res.ok) { toast.error(`${path} could not be deleted`); return; }
+    if (!res) { toast.error('The workbench could not be reached — nothing was deleted'); return; }
+    if (!res.ok) {
+      const said = await res.text().catch(() => '');
+      toast.error(said.trim() || `${path} could not be deleted (${res.status})`);
+      return;
+    }
     load();
     refreshCollections();
     toast.success(`${path} deleted`);
@@ -127,11 +135,11 @@ export function ProtoEditor() {
   return (
     <div className="stack">
       <div className="bar">
-        <span className="label">schema from</span>
+        <span className="field-label">schema from</span>
         <Seg
           label="Where the schema comes from"
           value={source}
-          onChange={s => { setChosen(s); setSectionKv('proto', applyProtoSource(proto, s)); }}
+          onChange={s => { setChoice({ tab: activeTabId, path: workspacePath, source: s }); setSectionKv('proto', applyProtoSource(proto, s)); }}
           options={PROTO_SOURCES.map(s => ({ value: s, label: LABEL[s] }))}
         />
         <span className="grow" />
@@ -176,7 +184,7 @@ export function ProtoEditor() {
       {source === 'descriptor' && (
         <div className="stack">
           <label className="stack">
-            <span className="label">descriptor set</span>
+            <span className="field-label">descriptor set</span>
             <input className="field field-frame mono" placeholder="path to the descriptor"
               value={proto.descriptor ?? ''}
               onChange={e => setSectionKv('proto', setKey(proto, 'descriptor', e.target.value))} />
@@ -197,7 +205,7 @@ export function ProtoEditor() {
 
       {source === 'files' && (['files', 'import_paths'] as const).map(key => (
         <div key={key} className="stack">
-          <span className="label">{key === 'files' ? '.proto files' : 'import paths'}</span>
+          <span className="field-label">{key === 'files' ? '.proto files' : 'import paths'}</span>
           <div className="bar wrap">
             {csvList(proto[key]).map(item => (
               <span key={item} className="chip is-on mono">
@@ -278,7 +286,7 @@ function ProtoOffer({ files, active, onPick, onRemove, empty }: {
   if (files.length === 0) return <div className="muted">{empty}</div>;
   return (
     <div className="bar wrap">
-      <span className="label">in this project</span>
+      <span className="field-label">in this project</span>
       {files.map(f => (
         <span key={f.path} className={`chip mono${active(f.path) ? ' is-on' : ''}`}>
           <button className="chip-name" onClick={() => onPick(f.path)} title={`${f.path} · ${humanBytes(f.size)}`}>

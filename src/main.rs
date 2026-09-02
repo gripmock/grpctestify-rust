@@ -47,7 +47,7 @@ fn worker_threads_for(args: &[String], env: Option<&str>, parallelism: usize) ->
 
 const BENCH_MAX_WORKER_THREADS: usize = 4;
 
-fn main() -> Result<()> {
+fn main() -> Result<std::process::ExitCode> {
     grpctestify::report::set_tool_identity("grpctestify", env!("CARGO_PKG_VERSION"));
     let argv: Vec<String> = std::env::args().collect();
     let worker_threads = resolve_worker_threads(&argv);
@@ -58,7 +58,7 @@ fn main() -> Result<()> {
     runtime.block_on(run())
 }
 
-async fn run() -> Result<()> {
+async fn run() -> Result<std::process::ExitCode> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let disable_color = std::env::var_os("NO_COLOR").is_some();
@@ -70,7 +70,7 @@ async fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("v{}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
+        return Ok(std::process::ExitCode::SUCCESS);
     }
 
     let command = Cli::command().before_long_help(help_logo());
@@ -113,10 +113,14 @@ async fn run() -> Result<()> {
 
     if let Some(shell_type) = cli.completion {
         commands::handle_completion(&shell_type)?;
-        return Ok(());
+        return Ok(std::process::ExitCode::SUCCESS);
     }
 
-    match &cli.command {
+    if let Some(Commands::Call(args)) = &cli.command {
+        return commands::handle_call(args).await;
+    }
+
+    let finished: Result<()> = match &cli.command {
         Some(Commands::Reflect(args)) => commands::handle_reflect(args).await,
         Some(Commands::Fmt(args)) => commands::handle_fmt(args, &cli).await,
         Some(Commands::Check(args)) => commands::handle_check(args, &cli).await,
@@ -128,7 +132,7 @@ async fn run() -> Result<()> {
         Some(Commands::Docs(args)) => commands::handle_docs(args),
         Some(Commands::Graph(args)) => commands::handle_graph(args),
         Some(Commands::Run(args)) => commands::run_tests(&cli, args).await,
-        Some(Commands::Call(args)) => commands::handle_call(args).await,
+        Some(Commands::Call(_)) => Ok(()),
         Some(Commands::Gen(args)) => commands::handle_gen(args).await,
         Some(Commands::Lsp(args)) => commands::handle_lsp(args).await,
         Some(Commands::Bench(args)) => commands::handle_bench(args).await,
@@ -153,11 +157,12 @@ async fn run() -> Result<()> {
             let args = cli.run_args.clone();
             if args.test_paths.is_empty() {
                 print_welcome();
-                return Ok(());
+                return Ok(std::process::ExitCode::SUCCESS);
             }
             commands::run_tests(&cli, &args).await
         }
-    }
+    };
+    finished.map(|()| std::process::ExitCode::SUCCESS)
 }
 
 fn print_welcome() {

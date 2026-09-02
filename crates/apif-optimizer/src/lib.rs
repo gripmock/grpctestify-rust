@@ -5,9 +5,10 @@ use std::sync::LazyLock;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptimizeLevel {
     None = 0,
-    Safe = 1,
-    Advisory = 2,
-    Aggressive = 3,
+    Layout = 1,
+    Safe = 2,
+    Advisory = 3,
+    Aggressive = 4,
 }
 
 impl OptimizeLevel {
@@ -30,6 +31,8 @@ fn likely_needs_assertion_rewrite(expr: &str) -> bool {
         || expr.contains('@')
         || expr.contains(" startswith ")
         || expr.contains(" endswith ")
+        || expr.contains(" startswith(")
+        || expr.contains(" endswith(")
         || expr.contains("!!")
         || expr.contains("not not ")
         || expr.contains("if ")
@@ -565,7 +568,7 @@ fn suggest_inequality_rewrite(
 }
 
 fn suggest_redundant_parens(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
-    if !level.is_enabled(OptimizeLevel::Safe) {
+    if !level.is_enabled(OptimizeLevel::Layout) {
         return None;
     }
     let trimmed = expr.trim();
@@ -668,14 +671,31 @@ fn replace_outside_string_literals(expr: &str, needle: &str, replacement: &str) 
 }
 
 fn suggest_operator_canonicalization(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
-    if !level.is_enabled(OptimizeLevel::Safe) {
+    if !level.is_enabled(OptimizeLevel::Layout) {
         return None;
     }
-    if let Some(rewritten) = replace_outside_string_literals(expr, " startswith ", " startsWith ") {
-        return Some((rule_ids::N001, rewritten));
+    for (alias, canonical) in [
+        (" startswith ", " startsWith "),
+        (" endswith ", " endsWith "),
+    ] {
+        if let Some(rewritten) = replace_outside_string_literals(expr, alias, canonical) {
+            return Some((rule_ids::N001, rewritten));
+        }
     }
-    if let Some(rewritten) = replace_outside_string_literals(expr, " endswith ", " endsWith ") {
-        return Some((rule_ids::N001, rewritten));
+    let is_operator_grammar = !matches!(
+        parser::assertion_ast::parse_assertion(expr.trim()),
+        parser::assertion_ast::AssertionExpr::Raw(_)
+    );
+    if !is_operator_grammar {
+        return None;
+    }
+    for (alias, canonical) in [
+        (" startswith(", " startsWith("),
+        (" endswith(", " endsWith("),
+    ] {
+        if let Some(rewritten) = replace_outside_string_literals(expr, alias, canonical) {
+            return Some((rule_ids::N001, rewritten));
+        }
     }
     None
 }
@@ -1401,7 +1421,7 @@ fn rewrite_assertion_expression_with_context(
     normalization_mode: NormalizationMode,
     level: OptimizeLevel,
 ) -> Option<(RuleId, String)> {
-    if !level.is_enabled(OptimizeLevel::Safe) {
+    if !level.is_enabled(OptimizeLevel::Layout) {
         return None;
     }
 
@@ -1415,7 +1435,9 @@ fn rewrite_assertion_expression_with_context(
 
     if matches!(normalization_mode, NormalizationMode::AstCanonical) {
         let canonical = render_expr(&ast);
-        if canonical != trimmed {
+        if canonical != trimmed
+            && (level.is_enabled(OptimizeLevel::Safe) || only_layout_differs(trimmed, &canonical))
+        {
             return Some((rule_ids::C001, canonical));
         }
     }
@@ -1426,7 +1448,43 @@ fn rewrite_assertion_expression_with_context(
         return Some((rule_id, rewrite));
     }
 
+    if !level.is_enabled(OptimizeLevel::Safe) {
+        return None;
+    }
+
     rewrite_a_subexpression(trimmed, &ast, signatures, bool_plugins, level)
+}
+
+pub fn only_layout_differs(before: &str, after: &str) -> bool {
+    fn tokens(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut quote: Option<char> = None;
+        let mut escaped = false;
+        for c in text.chars() {
+            match quote {
+                Some(open) => {
+                    out.push(c);
+                    if escaped {
+                        escaped = false;
+                    } else if c == '\\' {
+                        escaped = true;
+                    } else if c == open {
+                        quote = None;
+                    }
+                }
+                None => {
+                    if c == '"' || c == '\'' {
+                        quote = Some(c);
+                        out.push(c);
+                    } else if !c.is_whitespace() && c != '(' && c != ')' {
+                        out.push(c);
+                    }
+                }
+            }
+        }
+        out
+    }
+    tokens(before) == tokens(after)
 }
 
 fn rewrite_a_subexpression(
@@ -3331,6 +3389,76 @@ test.Service/Method
             suggest_operator_canonicalization(r#".msg startswith "abc""#, OptimizeLevel::Safe),
             Some((rule_ids::N001, r#".msg startsWith "abc""#.to_string()))
         );
+    }
+
+    #[test]
+    fn the_call_spelling_of_startswith_is_canonicalized_at_layout_level() {
+        assert_eq!(
+            suggest_operator_canonicalization(r#".msg startswith("abc")"#, OptimizeLevel::Layout),
+            Some((rule_ids::N001, r#".msg startsWith("abc")"#.to_string()))
+        );
+        assert_eq!(
+            suggest_operator_canonicalization(r#".msg endswith("abc")"#, OptimizeLevel::Layout),
+            Some((rule_ids::N001, r#".msg endsWith("abc")"#.to_string()))
+        );
+        assert_eq!(
+            suggest_operator_canonicalization(
+                r#".msg == "a startswith(b)""#,
+                OptimizeLevel::Layout
+            ),
+            None
+        );
+        assert_eq!(
+            suggest_operator_canonicalization(r#".msg startswith "abc""#, OptimizeLevel::None),
+            None
+        );
+        for jq in [r#".a | endswith("x")"#, r#".b | startswith("q")"#] {
+            assert_eq!(
+                suggest_operator_canonicalization(jq, OptimizeLevel::Aggressive),
+                None,
+                "{jq} is a jq pipeline and endswith/startswith are jq builtins there"
+            );
+            assert_eq!(
+                rewrite_assertion_expression_fixed_point_with_level(jq, OptimizeLevel::Aggressive),
+                jq
+            );
+        }
+    }
+
+    #[test]
+    fn layout_level_keeps_meaning_and_only_moves_whitespace_and_parens() {
+        for kept in [
+            "if true then .a else .b end",
+            "not (.x == 1 or .y == 2)",
+            "!(.x == 1)",
+            "@is_uuid(.id) == true",
+            "!!@is_uuid(.id)",
+            "@len(.x) == 0",
+        ] {
+            assert_eq!(
+                rewrite_assertion_expression_fixed_point_with_level(kept, OptimizeLevel::Layout),
+                kept,
+                "layout level rewrote the meaning of {kept}"
+            );
+        }
+        assert_eq!(
+            rewrite_assertion_expression_fixed_point_with_level("(.a)", OptimizeLevel::Layout),
+            ".a"
+        );
+        assert_eq!(
+            rewrite_assertion_expression_fixed_point_with_level(".a==1", OptimizeLevel::Layout),
+            ".a == 1"
+        );
+        assert!(only_layout_differs("(.a  ==1)", ".a == 1"));
+        assert!(!only_layout_differs("not (.a == 1)", "!(.a == 1)"));
+        assert!(!only_layout_differs("\"a b\"", "\"ab\""));
+        assert!(!only_layout_differs(".a == \"( x )\"", ".a == \"(x)\""));
+        assert!(only_layout_differs(".a==\"a b\"", ".a == \"a b\""));
+        assert!(!only_layout_differs(
+            r#".a == "say \" hi""#,
+            r#".a == "say \"hi""#
+        ));
+        assert!(only_layout_differs(".a  == 'a  b'", ".a == 'a  b'"));
     }
 
     #[test]

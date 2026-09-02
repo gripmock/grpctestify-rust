@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { bindingsOf, callAddress, contentUnread, fileMissing, formsAheadOfFile, projectEnvNames, useStore, workspaceDirty } from '../../lib/store';
 import { runWithGate, type RunGateChoice } from '../../lib/run-gate';
-import type { ReflectionMethod } from '../../lib/types';
-import { useToast } from 'luvo/ui/ToastContext';
+import { groupMethods, matchesQuery } from '../../lib/method-search';
+import { useIntentFlag } from '../../lib/use-intent';
+import { useToast } from 'luvo/ui/useToast';
 import { copyToClipboard } from 'luvo/data/clipboard';
-import { useModal } from 'luvo/ui/ModalContext';
+import { useModal } from 'luvo/ui/useModal';
 import { Popover } from 'luvo/ui/Popover';
 import { useDismiss } from 'luvo/input/useDismiss';
 import { SectionTabs, SectionBody } from './SectionTabs';
@@ -25,22 +26,6 @@ import { columnsOf } from '../../lib/dataset-model';
 import { clampRow, rowLabel, rowValues, rowsOf } from '../../lib/dataset-row';
 import { Play, Save, Square, ChevronDown, Loader2, ListChecks, RefreshCw, FilePlus2, Upload, Undo2 } from 'lucide-react';
 import { count, plural } from 'luvo/data/plural';
-
-function groupMethods(methods: ReflectionMethod[]) {
-  const map = new Map<string, ReflectionMethod[]>();
-  for (const m of methods) {
-    const service = m.fullName.split('/')[0] || m.service;
-    const group = map.get(service);
-    if (group) group.push(m);
-    else map.set(service, [m]);
-  }
-  return [...map.entries()];
-}
-
-export function matchesQuery(fullName: string, query: string) {
-  const haystack = fullName.toLowerCase();
-  return query.toLowerCase().split(/\s+/).filter(Boolean).every(token => haystack.includes(token));
-}
 
 export function RequestPanel() {
   const request = useStore(s => s.request);
@@ -67,13 +52,14 @@ export function RequestPanel() {
   const reflectStatus = useStore(s => s.reflectStatus);
   const reflect = useStore(s => s.reflect);
   const [saving, setSaving] = useState(false);
-  const [showSaveDialog, setShowSaveDialog] = useState(false);
-  const [showDropdown, setShowDropdown] = useState(false);
+  const [showSaveDialog, setShowSaveDialog] = useIntentFlag(saveAsIntent);
+  const pickIntent = useStore(s => s.pickIntent);
+  const [showDropdown, setShowDropdown] = useIntentFlag(pickIntent);
   const [cursor, setCursor] = useState(0);
   const [dropdownSearch, setDropdownSearch] = useState('');
   const [scaffolding, setScaffolding] = useState(false);
   const scaffoldTest = useStore(s => s.scaffoldTest);
-  const [focusDropdownSearch, setFocusDropdownSearch] = useState(false);
+  const [focusDropdownSearch, setFocusDropdownSearch] = useIntentFlag(pickIntent);
   const [showModeMenu, setShowModeMenu] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const modeMenuRef = useRef<HTMLDivElement>(null);
@@ -121,7 +107,7 @@ export function RequestPanel() {
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, []);
+  }, [setShowDropdown]);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -253,17 +239,11 @@ export function RequestPanel() {
     if (saveIntent > 0) saveRef.current();
   }, [saveIntent]);
 
+  const focusOnPick = useRef(handleEndpointFocus);
+  useEffect(() => { focusOnPick.current = handleEndpointFocus; });
   useEffect(() => {
-    if (saveAsIntent > 0) setShowSaveDialog(true);
-  }, [saveAsIntent]);
-
-  const pickIntent = useStore(s => s.pickIntent);
-  useEffect(() => {
-    if (pickIntent === 0) return;
-    setShowDropdown(true);
-    setFocusDropdownSearch(true);
-    handleEndpointFocus();
-  }, [pickIntent, handleEndpointFocus]);
+    if (pickIntent > 0) focusOnPick.current();
+  }, [pickIntent]);
 
   const isHttp = isHttpRequest(workspacePath, request.endpoint);
   const noTarget = isHttp && dialled.trim() === '';
@@ -443,8 +423,9 @@ export function RequestPanel() {
               />
               <button
                 className="btn is-ghost is-icon"
-                onClick={() => { setFocusDropdownSearch(true); setShowDropdown(v => !v); handleEndpointFocus(); }}
+                onClick={() => { setFocusDropdownSearch(true); setShowDropdown(!showDropdown); handleEndpointFocus(); }}
                 title="Select method"
+                aria-label="Select method"
                 aria-haspopup="menu"
                 aria-expanded={showDropdown}
               >
@@ -478,7 +459,7 @@ export function RequestPanel() {
                 <SchemaSource onConfigure={() => { setShowDropdown(false); useStore.getState().setRequestTab('config'); }} />
 
                 {filteredDropdown.length === 0 && reflectionMethods.length > 0 && (
-                  <div className="empty">No methods match</div>
+                  <div className="empty-state">No methods match</div>
                 )}
 
                 {filteredDropdown.map(([svc, methods]) => (
@@ -666,6 +647,7 @@ export function RequestPanel() {
               className="btn is-ghost is-icon"
               onClick={() => void handleDiscard()}
               title={`Discard the edits and read ${workspacePath} again`}
+              aria-label="Discard the edits"
             >
               <Undo2 size={14} />
             </button>
@@ -688,9 +670,7 @@ export function RequestPanel() {
 
         <SectionTabs />
 
-        <div className={`section-body${fillsPane ? ' is-fill' : ''}`}>
-          <SectionBody />
-        </div>
+        <SectionBody fill={fillsPane} />
 
         <ProblemsRow />
       </div>

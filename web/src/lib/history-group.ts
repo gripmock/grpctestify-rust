@@ -137,3 +137,9 @@ export function callSummary(entry: {
   }
   return { text: sent || '{}', from: 'request' };
 }
+
+export function msUntilMidnight(now: number): number {
+  const next = new Date(now);
+  next.setHours(24, 0, 0, 0);
+  return Math.max(1, next.getTime() - now);
+}

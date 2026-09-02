@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act } from 'react';
 import { HistoryPanel } from './HistoryPanel';
 import { useStore } from '../../lib/store';
 import { ToastProvider } from 'luvo/ui/ToastContext';
@@ -127,6 +128,118 @@ describe('the shape a line says a call had', () => {
     });
     const ui = mount(panel());
     expect(ui.all('.history-payload .badge.is-kind')).toEqual([]);
+    ui.unmount();
+  });
+});
+
+describe('a browser that has called nothing, against a project that has', () => {
+  const recorded = {
+    s1: [{
+      id: 'p1', timestamp: 5, endpoint: 'pkg.Svc/Recorded', bodies: ['{}'], headers: {},
+      response: { status: 'ok', status_code: 0, messages: [{}], duration_ms: 2 },
+    }],
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    useStore.setState({ history: [], projectRoot: null } as never);
+  });
+
+  it('still offers the project’s record, and the filter once there is something to filter', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(recorded), { status: 200 })));
+    useStore.setState({ history: [], projectRoot: '/p' } as never);
+    const ui = mount(panel());
+    expect(ui.all('.history-search-mark')).toEqual([]);
+    const chips = ui.all('.history-filters .chip');
+    expect(chips.map(c => c.textContent?.trim().split(' ')[0])).toEqual(['browser', 'project']);
+    ui.click(chips[1]);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(ui.all('.history-row').map(r => r.title.split('\n')[0])).toEqual(['pkg.Svc/Recorded']);
+    expect(ui.all('.history-search-mark')).toHaveLength(1);
+    ui.unmount();
+  });
+
+  it('says the record could not be read, rather than that it is empty', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('the record is unreadable', { status: 500 })));
+    useStore.setState({ history: [], projectRoot: '/p' } as never);
+    const ui = mount(panel());
+    ui.click(ui.all('.history-filters .chip')[1]);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const empty = ui.get('.empty-state');
+    expect(empty.textContent).toContain('the record is unreadable');
+    expect(empty.textContent).not.toContain('recorded no calls');
+    expect(ui.container.querySelectorAll('.empty-state .btn')).toHaveLength(1);
+    ui.unmount();
+  });
+
+  it('reads the record once, not every time the toggle flips', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(recorded), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    useStore.setState({ history: [], projectRoot: '/p' } as never);
+    const ui = mount(panel());
+    await act(async () => { await Promise.resolve(); });
+    const chips = () => ui.all('.history-filters .chip');
+    ui.click(chips()[1]);
+    ui.click(chips()[0]);
+    ui.click(chips()[1]);
+    await act(async () => { await Promise.resolve(); });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    ui.unmount();
+  });
+});
+
+describe('which day a call belongs to', () => {
+  afterEach(() => { vi.useRealTimers(); useStore.setState({ history: [] } as never); });
+
+  it('moves today’s calls to yesterday when midnight passes', () => {
+    vi.useFakeTimers({ now: new Date(2026, 0, 1, 23, 59, 59).getTime() });
+    useStore.setState({ history: [{ ...runEntry, kind: undefined, id: 'late', timestamp: Date.now() }] } as never);
+    const ui = mount(panel());
+    expect(ui.get('.history-day').textContent).toBe('today');
+    act(() => { vi.advanceTimersByTime(2000); });
+    expect(ui.get('.history-day').textContent).toBe('yesterday');
+    ui.unmount();
+  });
+});
+
+describe('the project’s record while the workbench keeps recording', () => {
+  const recorded = (endpoint: string) => ({
+    s1: [{
+      id: `p-${endpoint}`, timestamp: 5, endpoint, bodies: ['{}'], headers: {},
+      response: { status: 'ok', status_code: 0, messages: [{}], duration_ms: 2 },
+    }],
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    useStore.setState({ history: [], projectRoot: null } as never);
+  });
+
+  it('can be read again from the bar, not only from an empty list', async () => {
+    let said = recorded('pkg.Svc/First');
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(said), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    useStore.setState({ history: [], projectRoot: '/p' } as never);
+    const ui = mount(panel());
+    ui.click(ui.all('.history-filters .chip')[1]);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(ui.all('.history-row').map(r => r.title.split('\n')[0])).toEqual(['pkg.Svc/First']);
+
+    said = recorded('pkg.Svc/Second');
+    expect(ui.all('.history-reread')).toHaveLength(1);
+    ui.click('.history-reread');
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(ui.all('.history-row').map(r => r.title.split('\n')[0])).toEqual(['pkg.Svc/Second']);
+    ui.unmount();
+  });
+
+  it('offers nothing to re-read while the browser’s own list is showing', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+    useStore.setState({ history: [], projectRoot: '/p' } as never);
+    const ui = mount(panel());
+    await act(async () => { await Promise.resolve(); });
+    expect(ui.all('.history-reread')).toEqual([]);
     ui.unmount();
   });
 });

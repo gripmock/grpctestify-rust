@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { applyEvent, benchFailure, benchLine, caseNote, caseTitle, runRefusal, coverageNote, emptyRun, failureHeadline, failureLine, moreRowsNote, rollUp, runProgressLine, scopeFiles, slowNote, stepMarks, unsavedAmong, verdictLabel, verdictResponse, verdictResult } from './jobs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { RunsBusy, startJob, applyEvent, benchFailure, benchLine, caseNote, caseTitle, runRefusal, coverageNote, emptyRun, failureHeadline, failureLine, moreRowsNote, rollUp, runProgressLine, scopeFiles, slowNote, stepMarks, unsavedAmong, verdictLabel, verdictResponse, verdictResult } from './jobs';
 import type { RunState } from './jobs';
 
 describe('applyEvent', () => {
@@ -745,5 +745,25 @@ describe('what a bench in flight says', () => {
     }));
     expect(said?.label).toBe('10 s · 100 req · 10 rps · 3.00% err');
     expect(said?.title).toBe('3 of 100 came back an error');
+  });
+});
+
+describe('a run the workbench has no room for', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('comes back as a refusal carrying what the workbench said', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('four runs are already going — this one was not started', { status: 429 })));
+    await expect(startJob(['a.gctf'])).rejects.toBeInstanceOf(RunsBusy);
+    await expect(startJob(['a.gctf'])).rejects.toThrow('four runs are already going');
+  });
+
+  it('says so itself when the workbench says nothing', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 429 })));
+    await expect(startJob(['a.gctf'])).rejects.toThrow('already running as much as it runs at once');
+  });
+
+  it('is not what an ordinary failure comes back as', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('File not found: a.gctf', { status: 400 })));
+    await expect(startJob(['a.gctf'])).rejects.not.toBeInstanceOf(RunsBusy);
   });
 });

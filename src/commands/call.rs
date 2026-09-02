@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
+use std::process::ExitCode;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -94,20 +95,78 @@ fn http_endpoint(endpoint: &str) -> Option<(String, String)> {
     Some((method.to_ascii_uppercase(), path.to_string()))
 }
 
-async fn call_http(method: &str, path: &str, args: &CallArgs) -> Result<()> {
-    let headers: std::collections::HashMap<String, String> =
-        header_pairs(&args.header).into_iter().collect();
+fn error_notice(args: &CallArgs, status: u16) -> Option<String> {
+    if status < 400 {
+        return None;
+    }
+    if args.show_error || !args.silent || args.fail {
+        return Some(format!("* HTTP {status}: the answer is an error"));
+    }
+    None
+}
+
+fn dumped_headers(answer: &apif_http_transport::HttpAnswer) -> String {
+    let mut out = format!("HTTP {}\n", answer.status);
+    let mut names: Vec<&String> = answer
+        .headers
+        .keys()
+        .filter(|k| !k.starts_with(':'))
+        .collect();
+    names.sort();
+    for name in names {
+        out.push_str(&format!("{name}: {}\n", answer.headers[name]));
+    }
+    out
+}
+
+fn flags_an_http_call_cannot_honour(args: &CallArgs) -> Vec<&'static str> {
+    let mut named = Vec::new();
+    if args.insecure {
+        named.push("--insecure");
+    }
+    if args.plaintext {
+        named.push("--plaintext");
+    }
+    if args.tls_ca.is_some() {
+        named.push("--tls-ca");
+    }
+    if args.tls_cert.is_some() {
+        named.push("--tls-cert");
+    }
+    if args.tls_key.is_some() {
+        named.push("--tls-key");
+    }
+    if args.protocol != "grpc" {
+        named.push("--protocol");
+    }
+    named
+}
+
+async fn call_http(method: &str, path: &str, args: &CallArgs) -> Result<ExitCode> {
+    let refused = flags_an_http_call_cannot_honour(args);
+    if !refused.is_empty() {
+        anyhow::bail!(
+            "{} {} for gRPC calls only: an HTTP call is secured by https:// in its address",
+            refused.join(", "),
+            if refused.len() == 1 { "is" } else { "are" }
+        );
+    }
+    let dump_header = match &args.dump_header {
+        Some(path) => Some(File::create(path)?),
+        None => None,
+    };
 
     let url = apif_http_transport::url_for(args.address.as_deref(), path);
     let answer = apif_http_transport::send(apif_http_transport::HttpCall {
         method: method.to_string(),
         url,
-        headers,
+        headers: header_pairs(&args.header),
         body: args.data.clone().filter(|b| !b.trim().is_empty()),
         timeout: std::time::Duration::from_secs(resolve_call_timeout_seconds(
             args.connect_timeout,
             args.max_time,
         )),
+        follow_redirects: args.location,
     })
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -125,6 +184,10 @@ async fn call_http(method: &str, path: &str, args: &CallArgs) -> Result<()> {
         }
     }
 
+    if let Some(mut file) = dump_header {
+        write!(file, "{}", dumped_headers(&answer))?;
+    }
+
     let body = match &answer.body {
         Value::String(text) => text.clone(),
         other => serde_json::to_string_pretty(other)?,
@@ -134,13 +197,16 @@ async fn call_http(method: &str, path: &str, args: &CallArgs) -> Result<()> {
         None => println!("{body}"),
     }
 
-    if answer.status >= 400 && !args.show_error {
-        std::process::exit(1);
+    if let Some(notice) = error_notice(args, answer.status) {
+        eprintln!("{notice}");
     }
-    Ok(())
+    if args.fail && answer.status >= 400 {
+        return Ok(ExitCode::from(22));
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
-pub async fn handle_call(args: &CallArgs) -> Result<()> {
+pub async fn handle_call(args: &CallArgs) -> Result<ExitCode> {
     if args.bench {
         let bench_args = crate::cli::args::BenchArgs {
             address: args.address.clone(),
@@ -199,7 +265,9 @@ pub async fn handle_call(args: &CallArgs) -> Result<()> {
             list_profiles: false,
             profile_file: None,
         };
-        return crate::commands::bench::handle_bench(&bench_args).await;
+        return crate::commands::bench::handle_bench(&bench_args)
+            .await
+            .map(|()| ExitCode::SUCCESS);
     }
 
     if let Some(ref endpoint) = args.endpoint {
@@ -222,7 +290,9 @@ pub async fn handle_call(args: &CallArgs) -> Result<()> {
             builder = builder.request_headers(kv);
         }
         let doc = builder.build();
-        return handle_call_document_inline(&doc, args).await;
+        return handle_call_document_inline(&doc, args)
+            .await
+            .map(|()| ExitCode::SUCCESS);
     }
 
     if args.doc_index == Some(0) {
@@ -308,7 +378,7 @@ pub async fn handle_call(args: &CallArgs) -> Result<()> {
         anyhow::bail!("No documents found in file");
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 fn vinfo(silent: bool, line: &str) {
@@ -613,6 +683,7 @@ async fn handle_call_document(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn an_endpoint_with_a_method_is_an_http_call() {
@@ -626,6 +697,202 @@ mod tests {
         );
         assert_eq!(http_endpoint("users.UserService/GetUser"), None);
         assert_eq!(http_endpoint("GET"), None);
+    }
+
+    fn http_call_args() -> CallArgs {
+        let cli = <crate::cli::Cli as clap::Parser>::parse_from([
+            "grpctestify",
+            "call",
+            "-e",
+            "GET /v1/users",
+        ]);
+        match cli.command {
+            Some(crate::cli::Commands::Call(args)) => args,
+            _ => panic!("expected call"),
+        }
+    }
+
+    async fn hopping_origin() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let origin = format!("http://{}", listener.local_addr().expect("addr"));
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = vec![0u8; 4096];
+                let n = tokio::io::AsyncReadExt::read(&mut socket, &mut buf)
+                    .await
+                    .unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let response: &[u8] = if request.starts_with("GET /hop") {
+                    b"HTTP/1.1 302 Found\r\nlocation: /landed\r\nx-hop: yes\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                } else {
+                    b"HTTP/1.1 200 OK\r\nx-landed: yes\r\ncontent-length: 14\r\nconnection: close\r\n\r\n{\"here\": true}"
+                };
+                let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, response).await;
+            }
+        });
+        origin
+    }
+
+    #[test]
+    fn grpc_only_flags_are_named_when_the_target_is_http() {
+        let mut args = http_call_args();
+        assert!(flags_an_http_call_cannot_honour(&args).is_empty());
+
+        args.dump_header = Some(PathBuf::from("h.txt"));
+        assert!(
+            flags_an_http_call_cannot_honour(&args).is_empty(),
+            "-D dumps HTTP response headers too"
+        );
+
+        args.insecure = true;
+        args.plaintext = true;
+        args.tls_ca = Some("ca.pem".to_string());
+        args.tls_cert = Some("c.pem".to_string());
+        args.tls_key = Some("k.pem".to_string());
+        args.protocol = "grpc-web".to_string();
+        assert_eq!(
+            flags_an_http_call_cannot_honour(&args),
+            vec![
+                "--insecure",
+                "--plaintext",
+                "--tls-ca",
+                "--tls-cert",
+                "--tls-key",
+                "--protocol",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn dump_header_writes_the_status_and_headers_of_an_http_answer() {
+        let origin = hopping_origin().await;
+        let dir = std::env::temp_dir().join(format!("grpctestify-dump-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let dumped = dir.join("headers.txt");
+
+        let mut args = http_call_args();
+        args.address = Some(origin.clone());
+        args.silent = true;
+        args.output = Some(dir.join("body.json"));
+        args.dump_header = Some(dumped.clone());
+
+        let code = call_http("GET", "/hop", &args).await.expect("answered");
+        assert_eq!(code, ExitCode::SUCCESS);
+        let written = std::fs::read_to_string(&dumped).expect("dump written");
+        assert!(written.starts_with("HTTP 302\n"), "{written}");
+        assert!(written.contains("location: /landed"), "{written}");
+        assert!(written.contains("x-hop: yes"), "{written}");
+        assert!(
+            !written.contains(":status"),
+            "the pseudo-headers stay out of the dump: {written}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn location_follows_the_redirect_and_dumps_where_it_landed() {
+        let origin = hopping_origin().await;
+        let dir = std::env::temp_dir().join(format!("grpctestify-location-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let dumped = dir.join("headers.txt");
+
+        let mut args = http_call_args();
+        args.address = Some(origin.clone());
+        args.silent = true;
+        args.output = Some(dir.join("body.json"));
+        args.dump_header = Some(dumped.clone());
+        args.location = true;
+
+        let code = call_http("GET", "/hop", &args).await.expect("answered");
+        assert_eq!(code, ExitCode::SUCCESS);
+        let written = std::fs::read_to_string(&dumped).expect("dump written");
+        assert!(written.starts_with("HTTP 200\n"), "{written}");
+        assert!(written.contains("x-landed: yes"), "{written}");
+        let body = std::fs::read_to_string(dir.join("body.json")).expect("body written");
+        assert!(body.contains("\"here\""), "{body}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn show_error_says_which_status_came_back_without_needing_fail() {
+        let mut args = http_call_args();
+        args.silent = true;
+
+        assert_eq!(error_notice(&args, 404), None, "silence stays silent");
+
+        args.show_error = true;
+        assert_eq!(
+            error_notice(&args, 404).as_deref(),
+            Some("* HTTP 404: the answer is an error"),
+            "-S shows the error on its own"
+        );
+        assert_eq!(
+            error_notice(&args, 204),
+            None,
+            "a good answer is not an error"
+        );
+
+        args.show_error = false;
+        args.fail = true;
+        assert!(error_notice(&args, 500).is_some(), "-f says why it failed");
+
+        args.fail = false;
+        args.silent = false;
+        assert!(error_notice(&args, 500).is_some());
+    }
+
+    #[tokio::test]
+    async fn an_http_call_with_a_grpc_only_flag_is_refused_before_dialling() {
+        let mut args = http_call_args();
+        args.address = Some("http://127.0.0.1:1".to_string());
+        args.insecure = true;
+        let err = call_http("GET", "/v1/users", &args)
+            .await
+            .expect_err("refused");
+        let message = err.to_string();
+        assert!(message.contains("--insecure"), "{message}");
+        assert!(message.contains("gRPC calls only"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn fail_turns_a_4xx_into_a_non_zero_exit_and_show_error_does_not() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let origin = format!("http://{}", listener.local_addr().expect("addr"));
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = vec![0u8; 2048];
+                let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+                let _ = tokio::io::AsyncWriteExt::write_all(
+                    &mut socket,
+                    b"HTTP/1.1 404 Not Found\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}",
+                )
+                .await;
+            }
+        });
+
+        let mut args = http_call_args();
+        args.address = Some(origin.clone());
+        args.silent = true;
+        let code = call_http("GET", "/missing", &args).await.expect("answered");
+        assert_eq!(code, ExitCode::SUCCESS);
+
+        args.show_error = true;
+        let code = call_http("GET", "/missing", &args).await.expect("answered");
+        assert_eq!(code, ExitCode::SUCCESS);
+
+        args.fail = true;
+        let code = call_http("GET", "/missing", &args).await.expect("answered");
+        assert_eq!(code, ExitCode::from(22));
     }
 
     #[test]

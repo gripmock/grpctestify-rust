@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isTabDirty, useStore } from '../../lib/store';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useToast } from 'luvo/ui/useToast';
 import { benchLine, caseNote, coverageNote, dataFiles, scopeFiles, type DataFile, unsavedAmong, untestedNames } from '../../lib/jobs';
 import { downloadableReports } from '../../lib/reports';
 import { failureGroups, reasonsSaidOnce } from '../../lib/tree';
 import { reconcileChoice } from '../../lib/run-data';
 import { durationLabel } from '../../lib/format';
 import { useDismiss } from 'luvo/input/useDismiss';
+import { useMenuKeys } from 'luvo/input/useMenuKeys';
 import { Popover } from 'luvo/ui/Popover';
 import type { RunScope } from '../../lib/types';
 import { BookText, Play, Square, ChevronDown, Check, Download, FilePlus2, FolderOpen, Gauge, Loader2, RotateCcw, Table2 } from 'lucide-react';
 import { DocsDialog } from './DocsDialog';
-import { REPORT_FORMATS, isDirectoryReport, reportRefusal, reportsDirOf, writeNote } from '../../lib/reports';
+import { REPORT_FORMATS, allureNote, isDirectoryReport, reportRefusal, reportsDirOf, writeNote } from '../../lib/reports';
 import { benchRefusal, benchTakes } from '../../lib/tree';
 import { count } from 'luvo/data/plural';
 import { copyToClipboard } from 'luvo/data/clipboard';
@@ -81,7 +82,7 @@ export function RunControl() {
   return (
     <div ref={menuRef} className="picker">
       {running ? (
-        <button className="btn is-sm is-ghost is-icon is-danger" onClick={cancelRun} title="Cancel the run">
+        <button className="btn is-sm is-ghost is-icon is-danger" onClick={cancelRun} title="Cancel the run" aria-label="Cancel the run">
           <Square size={12} />
         </button>
       ) : (
@@ -107,6 +108,7 @@ export function RunControl() {
             className="btn is-sm is-ghost is-icon"
             onClick={openMenu}
             title={`Scope: ${scopeLabel}`}
+            aria-label={`Scope: ${scopeLabel}`}
             aria-haspopup="menu"
             aria-expanded={menu}
           >
@@ -281,9 +283,7 @@ async function saveReport(jobId: string, file: string): Promise<{ error?: string
     const said = await res.json().catch(() => null);
     if (!said?.path) return { error: `${file} was written, but the workbench could not read where` };
     const copied = await copyToClipboard(said.open).then(() => true).catch(() => false);
-    return {
-      note: `${count(said.files ?? 0, 'result')} in ${said.path}${copied ? ` — \`${said.open}\` copied` : ''}`,
-    };
+    return { note: allureNote(said, copied) };
   }
   const url = URL.createObjectURL(await res.blob());
   const link = document.createElement('a');
@@ -401,7 +401,7 @@ export function RunSummary() {
           className={`btn is-sm is-ghost run-report${ready ? '' : ' is-quiet'}`}
           onClick={() => void save(reports.jobId, file)}
           title={dir
-            ? `${ready ? 'Written' : 'Write'} a directory of Allure results beside this run's reports — \`allure serve\` opens it, and the path is copied`
+            ? `${ready ? 'Written' : 'Write'} a directory of Allure results beside this run's reports — \`allure serve\` opens it from the project directory, and the command is copied`
             : ready
             ? `Download ${file} — this run wrote it`
             : `Download ${file} — written from this run when you ask for it`}
@@ -433,7 +433,7 @@ function FailureReasons() {
 
   return (
     <div className="summary run-why">
-      <span className="label">why</span>
+      <span className="field-label">why</span>
       {shown.map(group => (
         <button
           key={group.reason}
@@ -457,7 +457,9 @@ function CoverageChip() {
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  const ref = useDismiss<HTMLDivElement>(open, useCallback(() => setOpen(false), []));
+  const close = useCallback(() => setOpen(false), []);
+  const ref = useDismiss<HTMLDivElement>(open, close);
+  const [menuRef, onMenuKeys] = useMenuKeys<HTMLDivElement>(open, close);
   const note = coverageNote(coverage);
   const untested = untestedNames(coverage);
   if (!note) return null;
@@ -475,12 +477,14 @@ function CoverageChip() {
         {note.label}
       </button>
       {open && untested.length > 0 && (
-        <div className="menu coverage-menu" role="menu">
+        <div ref={menuRef} className="menu coverage-menu" role="menu" aria-label="Never called by this run" onKeyDown={onMenuKeys}>
           <div className="menu-group">never called by this run — scaffold writes the file</div>
           {untested.map(name => (
             <button
               key={name}
               className="menu-item"
+              role="menuitem"
+              tabIndex={-1}
               disabled={busy !== null}
               onClick={async () => {
                 setBusy(name);

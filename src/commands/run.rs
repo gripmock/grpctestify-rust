@@ -346,12 +346,29 @@ fn should_retry_message(message: &str) -> bool {
     extract_transport_grpc_code(message).is_some_and(is_retryable_grpc_code)
 }
 
+fn is_retryable_http_status(status: u16) -> bool {
+    matches!(status, 429 | 502 | 503 | 504)
+}
+
+fn the_status_is_what_failed(result: &execution::TestExecutionResult) -> bool {
+    result
+        .assertions
+        .iter()
+        .any(|a| !a.passed && a.expression.contains("@status("))
+}
+
+fn http_answer_is_worth_dialling_again(result: &execution::TestExecutionResult) -> bool {
+    result.http_status.is_some_and(is_retryable_http_status) && the_status_is_what_failed(result)
+}
+
 pub(crate) fn should_retry_result(result: &execution::TestExecutionResult) -> bool {
     match &result.status {
         execution::TestExecutionStatus::Pass => false,
         execution::TestExecutionStatus::Fail(msg) => {
-            result.failure_kind == Some(execution::FailureKind::Transport)
-                && (should_retry_message(msg) || extract_transport_grpc_code(msg).is_none())
+            if result.failure_kind == Some(execution::FailureKind::Transport) {
+                return should_retry_message(msg) || extract_transport_grpc_code(msg).is_none();
+            }
+            http_answer_is_worth_dialling_again(result)
         }
     }
 }
@@ -1252,6 +1269,120 @@ mod tests {
         assert!(!should_retry_result(&execution::TestExecutionResult::pass(
             None
         )));
+    }
+
+    #[test]
+    fn an_http_answer_that_did_not_arrive_is_retried_like_unavailable() {
+        let unreachable = execution::TestExecutionResult::fail(
+            "Could not reach http://127.0.0.1:1/health: connection refused".to_string(),
+            None,
+        )
+        .with_failure_kind(execution::FailureKind::Transport);
+        assert!(should_retry_result(&unreachable));
+    }
+
+    fn with_assertion(
+        result: execution::TestExecutionResult,
+        expression: &str,
+        passed: bool,
+    ) -> execution::TestExecutionResult {
+        let mut result = result;
+        result.assertions.push(apif_state::AssertionRecord {
+            line: 1,
+            expression: expression.to_string(),
+            passed,
+            elapsed_ms: 0,
+            message: None,
+            endpoint: None,
+            expected: None,
+            actual: None,
+            hint: None,
+        });
+        result
+    }
+
+    #[test]
+    fn a_grpc_failure_is_not_retried_because_some_step_answered_503() {
+        let chain = execution::TestExecutionResult::fail(
+            "Validation failed:\n  - .status == \"SERVING\": got \"NOT_SERVING\"".to_string(),
+            Some(3),
+        )
+        .with_http_status(503);
+        assert!(
+            !should_retry_result(&chain),
+            "an assertion failure is settled, whatever status some other step carried"
+        );
+    }
+
+    #[test]
+    fn only_a_failed_status_assertion_makes_a_transient_answer_worth_dialling_again() {
+        let expected = with_assertion(
+            execution::TestExecutionResult::fail(
+                "Validation failed:\n  - .error == \"slow down\"".to_string(),
+                Some(3),
+            )
+            .with_http_status(429),
+            "@status() == 429",
+            true,
+        );
+        assert!(
+            !should_retry_result(&expected),
+            "the test asked for the 429 and failed on the body — retrying changes nothing"
+        );
+
+        let unexpected = with_assertion(
+            execution::TestExecutionResult::fail(
+                "Validation failed:\n  - @status() == 200: got 429".to_string(),
+                Some(3),
+            )
+            .with_http_status(429),
+            "@status() == 200",
+            false,
+        );
+        assert!(should_retry_result(&unexpected));
+    }
+
+    #[test]
+    fn an_http_5xx_or_429_that_failed_the_test_is_retried_but_a_4xx_is_not() {
+        for status in [429u16, 502, 503, 504] {
+            let overloaded = with_assertion(
+                execution::TestExecutionResult::fail(
+                    format!("Validation failed:\n  - @status() == 200: got {status}"),
+                    Some(3),
+                )
+                .with_http_status(status),
+                "@status() == 200",
+                false,
+            );
+            assert!(should_retry_result(&overloaded), "{status}");
+        }
+        for status in [400u16, 404, 500, 200] {
+            let settled = with_assertion(
+                execution::TestExecutionResult::fail(
+                    format!("Validation failed:\n  - @status() == 201: got {status}"),
+                    Some(3),
+                )
+                .with_http_status(status),
+                "@status() == 201",
+                false,
+            );
+            assert!(!should_retry_result(&settled), "{status}");
+        }
+        let expected = execution::TestExecutionResult::pass(Some(3)).with_http_status(503);
+        assert!(!should_retry_result(&expected));
+    }
+
+    #[test]
+    fn a_body_check_that_failed_on_a_503_is_settled_not_retried() {
+        let body_only = execution::TestExecutionResult::fail(
+            "Validation failed:\n  - Response mismatch at line 7".to_string(),
+            Some(3),
+        )
+        .with_http_status(503);
+        assert!(
+            !should_retry_result(&body_only),
+            "only a status the test asked for and did not get is worth dialling again"
+        );
     }
 
     #[test]

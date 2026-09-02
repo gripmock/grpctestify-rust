@@ -1615,7 +1615,7 @@ fn validate_structure(document: &GctfDocument, errors: &mut Vec<ValidationError>
 
     validate_section_order(document, errors);
 
-    validate_bench_sources_exist(document, errors);
+    validate_bench_source_joins(document, errors);
 
     for section in &document.sections {
         let has_any_inline_options = section.inline_options.with_asserts
@@ -1750,21 +1750,25 @@ struct SourceConfig {
     indexed_by: Option<Vec<String>>,
 }
 
-fn validate_bench_sources_exist(document: &GctfDocument, errors: &mut Vec<ValidationError>) {
-    for section in &document.sections {
-        if section.section_type != SectionType::Bench {
-            continue;
-        }
-        let bench_content = match &section.content {
-            SectionContent::KeyValues(kv) => kv,
-            _ => continue,
-        };
-        let Some(sources_yaml) = bench_content.get("sources") else {
-            continue;
-        };
-        if let Ok(ref defs) = serde_yaml_ng::from_str::<Vec<SourceConfig>>(sources_yaml) {
+fn bench_source_definitions(section: &Section) -> Option<Vec<SourceConfig>> {
+    if section.section_type != SectionType::Bench {
+        return None;
+    }
+    let SectionContent::KeyValues(kv) = &section.content else {
+        return None;
+    };
+    serde_yaml_ng::from_str::<Vec<SourceConfig>>(kv.get("sources")?).ok()
+}
+
+pub fn missing_bench_source_files(document: &GctfDocument) -> Vec<ValidationError> {
+    let mut errors = Vec::new();
+    for doc in document.iter_chain() {
+        for section in &doc.sections {
+            let Some(defs) = bench_source_definitions(section) else {
+                continue;
+            };
             for def in defs {
-                let resolved = std::path::Path::new(&document.file_path)
+                let resolved = std::path::Path::new(&doc.file_path)
                     .parent()
                     .unwrap_or(std::path::Path::new("."))
                     .join(&def.file);
@@ -1780,38 +1784,97 @@ fn validate_bench_sources_exist(document: &GctfDocument, errors: &mut Vec<Valida
                     });
                 }
             }
+        }
+    }
+    errors
+}
 
-            if defs.len() > 1 {
-                let mut adj: std::collections::BTreeMap<&str, Vec<&str>> =
-                    std::collections::BTreeMap::new();
-                for def in defs {
-                    let name = def.name.as_deref().unwrap_or("primary");
-                    if let Some(idx) = &def.indexed_by {
-                        let cols: Vec<&str> = idx.iter().map(|s| s.as_str()).collect();
-                        for col in cols {
-                            if let Some(target) = col.strip_prefix('@') {
-                                adj.entry(name).or_default().push(target);
-                            }
-                        }
-                    }
-                }
-                let mut visited: std::collections::BTreeSet<&str> =
-                    std::collections::BTreeSet::new();
-                let mut stack: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-                for node in adj.keys().copied().collect::<Vec<_>>() {
-                    if has_cycle(&adj, node, &mut visited, &mut stack) {
-                        errors.push(ValidationError {
-                            message: format!(
-                                "Circular dimension join detected involving source '{}'",
-                                node
-                            ),
-                            line: Some(section.start_line),
-                            severity: ErrorSeverity::Error,
-                        });
+fn validate_bench_source_joins(document: &GctfDocument, errors: &mut Vec<ValidationError>) {
+    for section in &document.sections {
+        let Some(defs) = bench_source_definitions(section) else {
+            continue;
+        };
+        if defs.len() < 2 {
+            continue;
+        }
+        let mut adj: std::collections::BTreeMap<&str, Vec<&str>> =
+            std::collections::BTreeMap::new();
+        for def in &defs {
+            let name = def.name.as_deref().unwrap_or("primary");
+            if let Some(idx) = &def.indexed_by {
+                for col in idx {
+                    if let Some(target) = col.strip_prefix('@') {
+                        adj.entry(name).or_default().push(target);
                     }
                 }
             }
         }
+        let mut visited: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        let mut stack: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for node in adj.keys().copied().collect::<Vec<_>>() {
+            if has_cycle(&adj, node, &mut visited, &mut stack) {
+                errors.push(ValidationError {
+                    message: format!(
+                        "Circular dimension join detected involving source '{}'",
+                        node
+                    ),
+                    line: Some(section.start_line),
+                    severity: ErrorSeverity::Error,
+                });
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod bench_source_tests {
+    use super::*;
+
+    const SRC: &str = "--- ENDPOINT ---\npkg.Svc/M\n\n--- BENCH ---\nsources:\n  - name: users\n    file: nowhere/users.csv\n\n--- REQUEST ---\n{}\n";
+
+    #[test]
+    fn the_validator_does_not_look_for_source_files_on_disk() {
+        let doc = crate::parse_gctf_from_str(SRC, "b.gctf").expect("parse");
+        let errors = validate_document_diagnostics(&doc);
+        assert!(
+            errors
+                .iter()
+                .all(|e| !e.message.contains("data source file not found")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_missing_source_file_is_found_by_the_explicit_check_at_the_bench_header() {
+        let doc = crate::parse_gctf_from_str(SRC, "b.gctf").expect("parse");
+        let found = missing_bench_source_files(&doc);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let bench_header = doc
+            .sections
+            .iter()
+            .find(|s| s.section_type == SectionType::Bench)
+            .map(|s| s.start_line)
+            .expect("bench section");
+        assert_eq!(found[0].line, Some(bench_header));
+        assert_eq!(found[0].severity, ErrorSeverity::Warning);
+        assert!(
+            found[0].message.contains("nowhere/users.csv"),
+            "{}",
+            found[0].message
+        );
+    }
+
+    #[test]
+    fn a_circular_join_is_still_the_validators_business() {
+        let src = "--- ENDPOINT ---\npkg.Svc/M\n\n--- BENCH ---\nsources:\n  - name: a\n    file: a.csv\n    indexed_by: [\"@b\"]\n  - name: b\n    file: b.csv\n    indexed_by: [\"@a\"]\n\n--- REQUEST ---\n{}\n";
+        let doc = crate::parse_gctf_from_str(src, "b.gctf").expect("parse");
+        let errors = validate_document_diagnostics(&doc);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("Circular dimension join")),
+            "{errors:?}"
+        );
     }
 }
 

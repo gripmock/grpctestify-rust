@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type React from 'react';
 import { useStore } from '../../lib/store';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useToast } from 'luvo/ui/useToast';
 import { addColumn, addRow, cellOut, columnsOf, datasetUsage, removeColumn, setCell } from '../../lib/dataset-model';
 import { Plus, X } from 'lucide-react';
 import { count } from 'luvo/data/plural';
@@ -59,7 +59,7 @@ export function DatasetEditor() {
   return (
     <div className="stack">
       <div className="bar">
-        <span className="label grow">
+        <span className="field-label grow">
           {count(rows.length, 'row')} → {count(rows.length, 'case')}
         </span>
         <button className="btn is-ghost is-sm" onClick={() => setDataset(addRow(rows))}>

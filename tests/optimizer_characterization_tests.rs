@@ -59,6 +59,7 @@ const CORPUS: &[&str] = &[
     ".c ? true : false",
     "if (.x == 1) then .a else .b end",
     ".name startswith(\"a\")",
+    ".a | endswith(\"x\")",
     "!(.x == 1)",
     "!(.x == 1 and .y == 2)",
     "not (.x == 1 or .y == 2)",
@@ -81,6 +82,7 @@ const CORPUS: &[&str] = &[
 fn render() -> String {
     let mut out = String::new();
     for level in [
+        OptimizeLevel::Layout,
         OptimizeLevel::Safe,
         OptimizeLevel::Advisory,
         OptimizeLevel::Aggressive,

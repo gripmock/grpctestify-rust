@@ -8,6 +8,11 @@ use apif_plugins::{PluginSignature, TypeInfo};
 use apif_utils::section_content_line;
 use serde_json::Value as JsonValue;
 
+pub mod structure;
+pub use structure::{
+    UnusedVariable, collect_unused_variables, preamble_section_order, unused_variable_message,
+};
+
 static EXTRA_PLUGIN_NAMES: OnceLock<HashSet<String>> = OnceLock::new();
 
 pub fn register_extra_plugin_names(names: HashSet<String>) {

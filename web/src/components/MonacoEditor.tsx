@@ -12,7 +12,7 @@ const Editor = lazy(async () => {
 
 function EditorFallback({ height }: { height?: EditorProps['height'] }) {
   return (
-    <div className="empty" style={{ height }}>
+    <div className="empty-state" style={{ height }}>
       Loading editor…
     </div>
   );

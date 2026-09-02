@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { useStore } from './store';
 import type { ShareState, WireProtocol } from './types';
 import { nextUrl, parseDeepLink, urlWhenLinkFails } from './deeplink';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useToast } from 'luvo/ui/useToast';
 
 export { parseDeepLink, encodeCollectionLink } from './deeplink';
 export type { DeepLink } from './deeplink';

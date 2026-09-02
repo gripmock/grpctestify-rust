@@ -70,7 +70,7 @@ export function BenchEditor() {
       )}
 
       <BenchLauncher>
-        <span className="label">
+        <span className="field-label">
           {configured === 0 ? 'no BENCH section — a starting point above makes one' : count(configured, 'key')}
         </span>
         {configured > 0 && (
@@ -102,7 +102,7 @@ export function BenchEditor() {
                     className={`stack opt-field${overruled ? ' is-overruled' : ''}`}
                     title={overruled ? `duration is set, so this file stops at ${bench.duration} — requests is not read` : field.hint}
                   >
-                    <span className="label">
+                    <span className="field-label">
                       {field.label}
                       {overruled && <span className="muted"> · not used</span>}
                     </span>
@@ -166,7 +166,7 @@ export function BenchEditor() {
 
       {unknownKeys(bench, [...benchKnownKeys(), ...thresholds.map(([k]) => k)]).length > 0 && (
         <div>
-          <div className="label">also in this section</div>
+          <div className="field-label">also in this section</div>
           <div className="bar wrap">
             {unknownKeys(bench, [...benchKnownKeys(), ...thresholds.map(([k]) => k)]).map(([k, v]) => (
               <span key={k} className="chip mono">{k}: {v}</span>

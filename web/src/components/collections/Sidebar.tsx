@@ -7,11 +7,11 @@ import { deleteQuestion, deleteScope, referencedNote, renameBreaksNote, unsavedN
 import { durationLabel } from '../../lib/format';
 import type { Verdict } from '../../lib/jobs';
 import { moveRowFocus, rowIsTabStop, treeStep } from '../../lib/tree-keys';
-import { isTabDirty, useStore } from '../../lib/store';
+import { isTabDirty, openRefusal, useStore } from '../../lib/store';
 import { copiedNote } from '../../lib/duplicate-name';
 import { unresolvedNames } from '../../lib/failure';
-import { useModal } from 'luvo/ui/ModalContext';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useModal } from 'luvo/ui/useModal';
+import { useToast } from 'luvo/ui/useToast';
 import type { TreeNode } from '../../lib/types';
 import { copyToClipboard } from 'luvo/data/clipboard';
 import { useDismiss } from 'luvo/input/useDismiss';
@@ -19,11 +19,12 @@ import { Popover } from 'luvo/ui/Popover';
 import { ContextMenu } from 'luvo/ui/ContextMenu';
 import { FileJson, Folder, FolderOpen, ChevronRight, RefreshCw, Search, X, Pencil, Trash2, FolderPlus, FilePlus, Copy, CopyPlus, MoreHorizontal, Tags, Globe, Network, Play, ShieldAlert, ShieldCheck } from 'lucide-react';
 
-import { activeFilters, ancestorsOf, buildTree, collectTags, fileCount, filterByVerdict, filterTree, fixtureRole, railSaysWhy, reasonsSaidOnce, renameNote, runTargets, sortTree, familyOf, withFamilyExt } from '../../lib/tree';
+import { activeFilters, buildTree, collectTags, fileCount, filterByVerdict, filterTree, fixtureRole, railSaysWhy, reasonsSaidOnce, renameNote, runTargets, sortTree, familyOf, withFamilyExt } from '../../lib/tree';
 import { newFileContent } from '../../lib/new-file';
 import type { TagFilter } from '../../lib/tree';
 import { count } from 'luvo/data/plural';
 import { createRefusal, moveRefusal } from '../../lib/move-target';
+import { NO_TOGGLES, expandedDirs, toggleDir, type DirToggles } from '../../lib/rail-expansion';
 
 interface CtxMenu {
   x: number;
@@ -41,7 +42,7 @@ export function Sidebar() {
   const refreshCollections = useStore(s => s.refreshCollections);
   const read = useStore(s => s.collectionsRead);
   const workspaceName = useStore(s => s.workspaceName);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [toggles, setToggles] = useState<DirToggles>(NO_TOGGLES);
   const [search, setSearch] = useState('');
   const [tagFilter, setTagFilter] = useState<TagFilter>(() => ({ include: new Set(), exclude: new Set() }));
   const changedPaths = useStore(s => s.changedPaths);
@@ -69,29 +70,10 @@ export function Sidebar() {
   }, [collections, search, tagFilter, verdicts, runFilter, runReason, onlyChanged, changedPaths, onlyProblems, checked]);
 
   const rootDirs = useMemo(
-    () => tree.filter(n => n.isDir && fileCount(n) > 0).map(n => n.path).join('\u0000'),
+    () => tree.filter(n => n.isDir && fileCount(n) > 0).map(n => n.path),
     [tree],
   );
-  useEffect(() => {
-    if (rootDirs === '') return;
-    setExpanded(prev => {
-      const next = new Set(prev);
-      for (const path of rootDirs.split('\u0000')) next.add(path);
-      return next.size === prev.size ? prev : next;
-    });
-  }, [rootDirs]);
-
-  useEffect(() => {
-    if (!selected) return;
-    const holders = ancestorsOf(selected);
-    if (holders.length > 0) {
-      setExpanded(prev => {
-        const next = new Set(prev);
-        for (const dir of holders) next.add(dir);
-        return next.size === prev.size ? prev : next;
-      });
-    }
-  }, [selected]);
+  const expanded = useMemo(() => expandedDirs(rootDirs, selected, toggles), [rootDirs, selected, toggles]);
 
   useEffect(() => {
     if (!selected) return;
@@ -122,7 +104,7 @@ export function Sidebar() {
   );
 
   const toggle = (path: string) => {
-    setExpanded(prev => { const next = new Set(prev); if (next.has(path)) next.delete(path); else next.add(path); return next; });
+    setToggles(prev => toggleDir(prev, selected, path, expandedDirs(rootDirs, selected, prev).has(path)));
   };
 
   const cycleTag = (tag: string) => {
@@ -152,6 +134,7 @@ export function Sidebar() {
     question: string,
     kind: 'file' | 'folder',
     within: (typed: string) => string,
+    attempt?: (path: string) => Promise<string | null>,
   ): Promise<string | null> => {
     let typed = '';
     let refusal: string | null = null;
@@ -161,23 +144,31 @@ export function Sidebar() {
       typed = asked;
       const path = within(asked.trim());
       refusal = createRefusal(path, collections.map(c => c.path), kind);
+      if (refusal !== null) continue;
+      if (!attempt) return path;
+      refusal = await attempt(path);
       if (refusal === null) return path;
     }
   };
 
   const handleNewFolder = async (parentPath: string) => {
-    const fullPath = await askForName(
+    const made = await askForName(
       'New Folder',
       'What it is called.',
       'folder',
       typed => (parentPath ? `${parentPath}/${typed}` : typed),
+      async path => {
+        try {
+          const res = await fetch(`/api/dir/${apiPath(path)}`, { method: 'POST' });
+          if (res.ok) return null;
+          const said = await res.text().catch(() => '');
+          return said.trim() || `${path} could not be created`;
+        } catch {
+          return 'The workbench could not be reached — nothing was created';
+        }
+      },
     );
-    if (!fullPath) return;
-    try {
-      const res = await fetch(`/api/dir/${apiPath(fullPath)}`, { method: 'POST' });
-      if (!res.ok) { toast.error(`${fullPath} could not be created`); return; }
-      refreshCollections();
-    } catch { toast.error(`${fullPath} could not be created`); }
+    if (made) refreshCollections();
   };
 
   const handleNewFile = async (parentPath: string) => {
@@ -189,29 +180,35 @@ export function Sidebar() {
         const named = withFamilyExt(typed);
         return parentPath ? `${parentPath}/${named}` : named;
       },
+      async path => {
+        const fileName = path.split('/').pop()!;
+        try {
+          const res = await fetch('/api/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              path,
+              content: newFileContent(familyOf(fileName) === 'httf' ? 'httf' : 'gctf'),
+              create_only: true,
+            }),
+          });
+          if (res.ok) return null;
+          if (res.status === 409) return `${fileName} is already here.`;
+          const said = await res.text().catch(() => '');
+          return said.trim() || `The workbench could not write ${fileName}.`;
+        } catch {
+          return 'The workbench could not be reached — nothing was written.';
+        }
+      },
     );
     if (!fullPath) return;
-    const fileName = fullPath.split('/').pop()!;
-    try {
-      const res = await fetch('/api/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          path: fullPath,
-          content: newFileContent(familyOf(fileName) === 'httf' ? 'httf' : 'gctf'),
-          create_only: true,
-        }),
-      });
-      if (res.status === 409) { toast.error(`${fileName} is already here`); return; }
-      if (!res.ok) { toast.error('Failed to create file'); return; }
-      refreshCollections();
-      void loadCollection(fullPath);
-    } catch { toast.error('Failed to create file'); }
+    refreshCollections();
+    void loadCollection(fullPath);
   };
 
   const openFile = useCallback((path: string, options?: { pin?: boolean }) => {
     void loadCollection(path, options).then(opened => {
-      if (!opened) toast.error(`${path} could not be opened — it may have been renamed or removed`);
+      if (!opened) toast.error(openRefusal(path) ?? `${path} could not be opened — it may have been renamed or removed`);
     });
   }, [loadCollection, toast]);
 
@@ -251,7 +248,11 @@ export function Sidebar() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ from: fromPath, to: to.trim() }),
       });
-      if (!res.ok) { const err = await res.text().catch(() => ''); toast.error(err || 'Failed to move'); return; }
+      if (!res.ok) {
+        const said = await res.text().catch(() => '');
+        toast.error(said.trim() || `The workbench could not move ${fromPath}`);
+        return;
+      }
       const moved = await res.json().catch(() => null) as { rewritten?: string[] } | null;
       const rewritten = moved?.rewritten ?? [];
       if (rewritten.length > 0) {
@@ -261,7 +262,7 @@ export function Sidebar() {
       }
       useStore.getState().retargetPath(fromPath, to.trim());
       refreshCollections();
-    } catch { toast.error('Failed to move'); }
+    } catch { toast.error('The workbench could not be reached — nothing was moved'); }
   }, [collections, modal, refreshCollections, toast]);
 
   const [dragOverPath, setDragOverPath] = useState<string | null>(null);
@@ -307,7 +308,7 @@ export function Sidebar() {
             </button>
           )
           : (
-            <button className="btn is-ghost is-icon" onClick={refreshCollections} title="Refresh">
+            <button className="btn is-ghost is-icon" onClick={refreshCollections} title="Refresh" aria-label="Refresh">
               <RefreshCw size={12} />
             </button>
           )}
@@ -317,6 +318,7 @@ export function Sidebar() {
               className={`btn is-ghost is-icon${chips.length > 0 ? ' is-on' : ''}`}
               onClick={() => setShowTags(v => !v)}
               title="Filter by tag"
+              aria-label="Filter by tag"
               aria-haspopup="menu"
               aria-expanded={showTags}
             >
@@ -442,7 +444,7 @@ export function Sidebar() {
       )}
 
       {tree.length === 0 && read === 'failed' && (
-        <div className="empty stack is-centred">
+        <div className="empty-state stack is-centred">
           <span>The workbench did not answer — this is not an empty project</span>
           <button className="btn is-sm" onClick={() => void refreshCollections()}>
             <RefreshCw size={12} /> try again
@@ -451,7 +453,7 @@ export function Sidebar() {
       )}
 
       {tree.length === 0 && read === 'ok' && (
-        <div className="empty stack is-centred">
+        <div className="empty-state stack is-centred">
           <span>{filtering ? 'No matches' : 'No test files here yet'}</span>
           {!filtering && (
             <button className="btn is-sm" onClick={() => handleNewFile('')}>

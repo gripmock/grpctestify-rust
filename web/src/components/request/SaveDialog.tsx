@@ -10,7 +10,7 @@ import type { GctfDiagnostic, GctfMeta, TreeNode } from '../../lib/types';
 import { useDebouncedPost } from 'luvo/data/useDebouncedPost';
 import { blocksSave, countBySeverity, problemCensus, sortProblems } from '../../lib/problems';
 import { ChevronRight, Folder, FolderPlus, Tag, X } from 'lucide-react';
-import { useModal } from 'luvo/ui/ModalContext';
+import { useModal } from 'luvo/ui/useModal';
 import { addressForSave, metaFromParsed } from '../../lib/save-meta';
 import { readText, writeText } from 'luvo/data/storage';
 import { count } from 'luvo/data/plural';
@@ -85,18 +85,29 @@ export function SaveDialog({
   const modal = useModal();
 
   const makeFolder = async () => {
-    const name = await modal.prompt('New folder', `Inside ${folder || 'the project root'}`);
-    if (!name?.trim()) return;
-    const full = folder ? `${folder}/${name.trim()}` : name.trim();
-    setCreating(true);
-    try {
-      const res = await fetch(`/api/dir/${apiPath(full)}`, { method: 'POST' });
-      if (res.ok) {
-        await refreshCollections();
-        setFolder(full);
+    const inside = `Inside ${folder || 'the project root'}`;
+    let typed = '';
+    let refusal: string | null = null;
+    for (;;) {
+      const name = await modal.prompt('New folder', [refusal, inside].filter(Boolean).join(' '), typed);
+      if (!name?.trim()) return;
+      typed = name;
+      const full = folder ? `${folder}/${name.trim()}` : name.trim();
+      setCreating(true);
+      try {
+        const res = await fetch(`/api/dir/${apiPath(full)}`, { method: 'POST' });
+        if (res.ok) {
+          await refreshCollections();
+          setFolder(full);
+          return;
+        }
+        const said = await res.text().catch(() => '');
+        refusal = said.trim() || `${full} could not be created.`;
+      } catch {
+        refusal = 'The workbench could not be reached — nothing was created.';
+      } finally {
+        setCreating(false);
       }
-    } finally {
-      setCreating(false);
     }
   };
 
@@ -200,7 +211,7 @@ export function SaveDialog({
       <div className="modal-body save-grid">
         <div className="stack save-col">
           <div>
-            <div className="label">Folder</div>
+            <div className="field-label">Folder</div>
             <input
               className="field save-folder-search"
               value={folderQuery}
@@ -226,7 +237,7 @@ export function SaveDialog({
             <div className="folder-list">
               {searching
                 ? (matches.length === 0
-                    ? <div className="empty">No folder matches</div>
+                    ? <div className="empty-state">No folder matches</div>
                     : matches.map(f => (
                       <button
                         key={f.path}
@@ -239,7 +250,7 @@ export function SaveDialog({
                       </button>
                     )))
                 : (inside.length === 0
-                    ? <div className="empty">{hereFiles > 0 ? `${count(hereFiles, 'file')} here, no folders` : 'Nothing inside yet'}</div>
+                    ? <div className="empty-state">{hereFiles > 0 ? `${count(hereFiles, 'file')} here, no folders` : 'Nothing inside yet'}</div>
                     : inside.map(f => (
                       <button
                         key={f.path}
@@ -260,7 +271,7 @@ export function SaveDialog({
           </div>
 
           <div>
-            <div className="label">File name</div>
+            <div className="field-label">File name</div>
             <div className="field-frame">
               <input
                 className="field mono"
@@ -367,7 +378,7 @@ export function SaveDialog({
 
         <div className="stack save-col">
           <div className="bar">
-            <span className="label grow">{overwrite ? 'Changes to the file on disk' : 'What will be written'}</span>
+            <span className="field-label grow">{overwrite ? 'Changes to the file on disk' : 'What will be written'}</span>
             {stat && stat.added > 0 && <span className="badge is-ok">+{stat.added}</span>}
             {stat && stat.removed > 0 && <span className="badge is-fail">−{stat.removed}</span>}
             {overwrite && !identical && <span className="badge is-fail">overwrite</span>}
@@ -375,7 +386,7 @@ export function SaveDialog({
           </div>
           {problems.length > 0 && (
             <div className={`note save-problems${broken ? ' is-bad' : ''}`}>
-              <span className="label">{problemCensus(counts)}</span>
+              <span className="field-label">{problemCensus(counts)}</span>
               <span className="save-problem-first">{problems[0].message}</span>
               {problems.length > 1 && <span className="muted">+{problems.length - 1} more</span>}
             </div>

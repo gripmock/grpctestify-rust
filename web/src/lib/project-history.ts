@@ -28,6 +28,24 @@ const emptyResult = (): CallResult => ({
   status: 'ok', statusCode: null, messages: [], headers: {}, trailers: {}, error: null, durationMs: null,
 });
 
+export interface ProjectHistoryRead {
+  entries: ProjectEntry[];
+  error: string | null;
+}
+
+export async function readProjectHistory(): Promise<ProjectHistoryRead> {
+  try {
+    const res = await fetch('/api/project/history');
+    if (!res.ok) {
+      const said = await res.text().catch(() => '');
+      return { entries: [], error: said.trim() || `The workbench could not read the project’s record (${res.status} ${res.statusText})` };
+    }
+    return { entries: flattenProjectHistory(await res.json()), error: null };
+  } catch {
+    return { entries: [], error: 'The workbench could not be reached — the project’s record was not read' };
+  }
+}
+
 export function flattenProjectHistory(payload: unknown): ProjectEntry[] {
   if (!payload || typeof payload !== 'object') return [];
   const out: ProjectEntry[] = [];

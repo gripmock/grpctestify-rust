@@ -29,7 +29,7 @@ describe('the dataset grid', () => {
   it('counts the cases its rows make', () => {
     put(parsed({ dataset: [{ id: '1' }, { id: '2' }, { id: '3' }] }));
     const ui = mount(<ToastProvider><DatasetEditor /></ToastProvider>);
-    expect(ui.get('.bar .label').textContent).toBe('3 rows → 3 cases');
+    expect(ui.get('.bar .field-label').textContent).toBe('3 rows → 3 cases');
     ui.unmount();
   });
 

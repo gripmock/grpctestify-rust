@@ -39,11 +39,14 @@ function Placed({ anchor, align = 'start', matchWidth = false, className, childr
     place();
     window.addEventListener('resize', place);
     window.addEventListener('scroll', place, true);
+    const watch = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => place());
+    if (box.current) watch?.observe(box.current);
     return () => {
+      watch?.disconnect();
       window.removeEventListener('resize', place);
       window.removeEventListener('scroll', place, true);
     };
-  }, [anchor, align, matchWidth, children]);
+  }, [anchor, align, matchWidth]);
 
   return createPortal(
     <div

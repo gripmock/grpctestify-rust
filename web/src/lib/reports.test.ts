@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { KEEP_RUNS, downloadableReports, isDirectoryReport, writeNote, reportFileName, reportRefusal, reportsDirOf, reportsPathOf } from './reports';
+import { allureNote, KEEP_RUNS, downloadableReports, isDirectoryReport, writeNote, reportFileName, reportRefusal, reportsDirOf, reportsPathOf } from './reports';
 
 describe('report names and places', () => {
   it('names the file each writer writes', () => {
@@ -92,5 +92,26 @@ describe('what ticking a format promises', () => {
 
   it('names how many runs are kept', () => {
     expect(writeNote('yaml', false, 'reports')).toContain(`the last ${KEEP_RUNS} kept`);
+  });
+});
+
+describe('where the Allure results are', () => {
+  const written = { files: 4, path: '.grpctestify/reports/j1/allure', open: 'allure serve .grpctestify/reports/j1/allure' };
+
+  it('says the command reads a path relative to the project', () => {
+    const said = allureNote(written, true);
+    expect(said).toContain('4 results in .grpctestify/reports/j1/allure');
+    expect(said).toContain('copied');
+    expect(said).toContain('from the project directory');
+  });
+
+  it('says the command itself when the clipboard was refused', () => {
+    const said = allureNote(written, false);
+    expect(said).toContain('allure serve .grpctestify/reports/j1/allure');
+    expect(said).toContain('refused the clipboard');
+  });
+
+  it('counts one result as one', () => {
+    expect(allureNote({ ...written, files: 1 }, true)).toContain('1 result in');
   });
 });

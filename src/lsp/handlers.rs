@@ -11,6 +11,9 @@ use crate::config;
 use crate::optimizer;
 use crate::parser::{self, ast::SectionType};
 use crate::plugins::PluginPurity;
+pub use apif_semantics::{
+    UnusedVariable, collect_unused_variables, preamble_section_order, unused_variable_message,
+};
 
 pub fn get_section_hover(section_type: &SectionType) -> Option<String> {
     section_hover_for(crate::parser::ast::Family::Gctf, section_type)
@@ -955,184 +958,6 @@ fn collect_optimizer_rewrites_with_ranges(
     rewrites
 }
 
-#[derive(Debug, Clone)]
-pub struct UnusedVariable {
-    pub name: String,
-    pub has_later_steps: bool,
-    pub line: usize,
-    pub character: usize,
-    pub doc_index: usize,
-}
-
-pub fn collect_unused_variables(doc: &crate::parser::GctfDocument) -> Vec<UnusedVariable> {
-    let defined_vars = extract_all_vars(doc);
-
-    defined_vars
-        .into_iter()
-        .filter(|(def_doc_idx, var_name, _, _)| !is_var_read(doc, *def_doc_idx, var_name))
-        .map(|(doc_idx, name, line, character)| UnusedVariable {
-            name,
-            has_later_steps: doc_idx + 1 < doc.document_count(),
-            line,
-            character,
-            doc_index: doc_idx,
-        })
-        .collect()
-}
-
-fn bound_name(written: &str) -> String {
-    let trimmed = written.trim();
-    match trimmed.rsplit_once(':') {
-        Some((name, kind))
-            if !kind.is_empty() && kind.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') =>
-        {
-            name.trim().to_string()
-        }
-        _ => trimmed.to_string(),
-    }
-}
-
-fn extract_all_vars(doc: &crate::parser::GctfDocument) -> Vec<(usize, String, usize, usize)> {
-    let mut vars = Vec::new();
-
-    for (doc_idx, curr_doc) in doc.iter_chain().enumerate() {
-        for section in &curr_doc.sections {
-            if section.section_type != SectionType::Extract {
-                continue;
-            }
-            if let parser::ast::SectionContent::Extract(extractions) = &section.content {
-                for (local_line, raw_line) in section.raw_content.lines().enumerate() {
-                    let trimmed = raw_line.trim();
-                    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
-                        continue;
-                    }
-                    if let Some(extract_var) = parser::ExtractVar::parse(trimmed) {
-                        let name = bound_name(&extract_var.name);
-                        let global_line = section.start_line + local_line + 1;
-                        let char_pos = raw_line.find(&name).unwrap_or(0);
-                        vars.push((doc_idx, name, global_line, char_pos));
-                    }
-                }
-
-                for var_name in extractions.keys() {
-                    let already_present = vars.iter().any(|(_, n, _, _)| n == var_name);
-                    if !already_present {
-                        for (local_line, raw_line) in section.raw_content.lines().enumerate() {
-                            if raw_line.trim().starts_with(var_name) {
-                                let global_line = section.start_line + local_line + 1;
-                                let char_pos = raw_line.find(var_name).unwrap_or(0);
-                                vars.push((doc_idx, var_name.clone(), global_line, char_pos));
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    vars
-}
-
-fn is_var_read(doc: &crate::parser::GctfDocument, def_doc_idx: usize, var_name: &str) -> bool {
-    for (doc_idx, curr_doc) in doc.iter_chain().enumerate() {
-        if doc_idx == def_doc_idx {
-            if doc_contains_var_reference_excluding_extract(curr_doc, var_name) {
-                return true;
-            }
-            continue;
-        }
-        if doc_idx > def_doc_idx && doc_contains_var_reference(curr_doc, var_name) {
-            return true;
-        }
-    }
-    false
-}
-
-fn doc_contains_var_reference(doc: &crate::parser::GctfDocument, var_name: &str) -> bool {
-    for section in &doc.sections {
-        if section_contains_var_reference(section, var_name) {
-            return true;
-        }
-    }
-    false
-}
-
-fn section_contains_var_reference(section: &crate::parser::ast::Section, var_name: &str) -> bool {
-    match &section.content {
-        parser::ast::SectionContent::Json(value) => json_contains_var(value, var_name),
-        parser::ast::SectionContent::JsonLines(values) => {
-            values.iter().any(|v| json_contains_var(v, var_name))
-        }
-        parser::ast::SectionContent::KeyValues(kv) => {
-            kv.values().any(|v| contains_var_pattern(v, var_name))
-        }
-        parser::ast::SectionContent::Extract(_) => false,
-        parser::ast::SectionContent::Assertions(asserts) => {
-            asserts.iter().any(|a| contains_assert_var_ref(a, var_name))
-        }
-        parser::ast::SectionContent::Single(s) => contains_var_pattern(s, var_name),
-        parser::ast::SectionContent::Rows(rows) => {
-            rows.iter().any(|v| json_contains_var(v, var_name))
-        }
-        parser::ast::SectionContent::Empty => false,
-        parser::ast::SectionContent::Meta(_) => false,
-    }
-}
-
-fn json_contains_var(value: &serde_json::Value, var_name: &str) -> bool {
-    match value {
-        serde_json::Value::String(s) => contains_var_pattern(s, var_name),
-        serde_json::Value::Object(map) => map.values().any(|v| json_contains_var(v, var_name)),
-        serde_json::Value::Array(arr) => arr.iter().any(|v| json_contains_var(v, var_name)),
-        _ => false,
-    }
-}
-
-fn contains_var_pattern(s: &str, var_name: &str) -> bool {
-    let patterns = [
-        format!("{{{{ {} }}}}", var_name),
-        format!("{{{{{} }}}}", var_name),
-        format!("{{{{ {}}}}}", var_name),
-        format!("{{{{{}}}}}", var_name),
-    ];
-    patterns.iter().any(|p| s.contains(p))
-}
-
-fn contains_assert_var_ref(assertion: &str, var_name: &str) -> bool {
-    let pattern = format!("${}", var_name);
-    assertion.contains(&pattern)
-}
-
-fn doc_contains_var_reference_excluding_extract(
-    doc: &crate::parser::GctfDocument,
-    var_name: &str,
-) -> bool {
-    for section in &doc.sections {
-        if section.section_type == SectionType::Extract {
-            continue;
-        }
-        if section_contains_var_reference(section, var_name) {
-            return true;
-        }
-    }
-    false
-}
-
-pub fn unused_variable_message(var: &UnusedVariable) -> String {
-    if var.has_later_steps {
-        format!(
-            "Variable '{}' is extracted but no later step reads it",
-            var.name
-        )
-    } else {
-        format!(
-            "Variable '{}' is extracted but nothing reads it — this step's ASSERTS can, or a step after it",
-            var.name
-        )
-    }
-}
-
 pub fn unused_variable_to_diagnostic(var: &UnusedVariable) -> Diagnostic {
     let lsp_line = var.line as u32;
     let char_start = var.character as u32;
@@ -1296,7 +1121,6 @@ pub fn collect_insecure_tls_diagnostics(
 ) -> Vec<Diagnostic> {
     use crate::parser::ast::{SectionContent, SectionType};
 
-    let lines: Vec<&str> = content.lines().collect();
     let mut out = Vec::new();
     for doc in document.iter_chain() {
         for section in doc.sections_by_type(SectionType::Tls) {
@@ -1309,13 +1133,15 @@ pub fn collect_insecure_tls_diagnostics(
             if !skips {
                 continue;
             }
-            let at = lines
-                .iter()
+            let at = section
+                .raw_content
+                .lines()
                 .position(|line| {
                     let trimmed = line.trim_start().to_ascii_lowercase();
                     trimmed.starts_with("insecure") && trimmed.contains(':')
                 })
-                .unwrap_or(0) as u32;
+                .map_or(section.start_line, |offset| section.start_line + 1 + offset)
+                as u32;
             out.push(Diagnostic::new(
                 whole_line_range(at, content),
                 Some(DiagnosticSeverity::WARNING),
@@ -1642,43 +1468,6 @@ pub enum Voice {
     Check,
 }
 
-pub fn preamble_section_order(doc: &crate::parser::GctfDocument) -> Vec<(usize, String, String)> {
-    let first_body_idx = doc
-        .sections
-        .iter()
-        .position(|s| s.section_type.preamble_rank().is_none())
-        .unwrap_or(doc.sections.len());
-
-    let preamble: Vec<(usize, &'static str, usize)> = doc.sections[..first_body_idx]
-        .iter()
-        .filter_map(|s| {
-            Some((
-                s.start_line,
-                s.section_type.as_str(),
-                s.section_type.preamble_rank()?,
-            ))
-        })
-        .collect();
-
-    let mut out = Vec::new();
-    for window in preamble.windows(2) {
-        let [(_, prev_name, prev_rank), (curr_line, curr_name, curr_rank)] = window else {
-            continue;
-        };
-        if curr_rank >= prev_rank {
-            continue;
-        }
-        out.push((
-            curr_line + 1,
-            format!(
-                "Section order: {curr_name} should come before {prev_name} (canonical: META→BENCH→DATASET→ADDRESS→ENDPOINT→TLS→PROTO→OPTIONS)",
-            ),
-            "run `fmt --write` to reorder preamble sections into canonical order".to_string(),
-        ));
-    }
-    out
-}
-
 pub fn collect_all_diagnostics(content: &str, file_name: &str) -> Vec<Diagnostic> {
     collect_all_diagnostics_in(content, file_name, Voice::Editor)
 }
@@ -1789,6 +1578,10 @@ pub fn collect_all_diagnostics_in(content: &str, file_name: &str, voice: Voice) 
 
     for unused_var in collect_unused_variables(&document) {
         diags.push(unused_variable_to_diagnostic(&unused_var));
+    }
+
+    for missing in crate::parser::validator::missing_bench_source_files(&document) {
+        diags.push(validation_error_to_diagnostic(&missing, content));
     }
 
     diags.extend(collect_placeholder_diagnostics(content));
@@ -1991,6 +1784,49 @@ mod tests {
 
     fn parse(content: &str) -> crate::parser::GctfDocument {
         crate::parser::parse_gctf_from_str(content, "<test>").expect("parse")
+    }
+
+    #[test]
+    fn a_missing_bench_source_reaches_the_editor() {
+        let src = "--- ENDPOINT ---\npkg.Svc/M\n\n--- BENCH ---\nsources:\n  - name: users\n    file: nowhere/users.csv\n\n--- REQUEST ---\n{}\n";
+        let diags = collect_all_diagnostics(src, "/no/such/directory/b.gctf");
+        let found = diags
+            .iter()
+            .find(|d| d.message.contains("data source file not found"))
+            .unwrap_or_else(|| panic!("the editor is told the file is missing: {diags:?}"));
+        assert!(found.message.contains("nowhere/users.csv"), "{found:?}");
+        assert_eq!(found.severity, Some(DiagnosticSeverity::WARNING));
+        assert_eq!(
+            found.range.start.line, 3,
+            "the warning sits on the BENCH header"
+        );
+    }
+
+    #[test]
+    fn a_bench_source_that_is_there_says_nothing() {
+        let src = "--- ENDPOINT ---\npkg.Svc/M\n\n--- BENCH ---\nsources:\n  - name: rows\n    file: Cargo.toml\n\n--- REQUEST ---\n{}\n";
+        let here = concat!(env!("CARGO_MANIFEST_DIR"), "/b.gctf");
+        let diags = collect_all_diagnostics(src, here);
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.message.contains("data source file not found")),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn a_later_document_that_skips_verification_is_pointed_at_its_own_line() {
+        let src = "--- ADDRESS ---\na:443\n\n--- ENDPOINT ---\npkg.Svc/A\n\n--- TLS ---\ninsecure: false\n\n--- REQUEST ---\n{}\n\n--- ENDPOINT ---\npkg.Svc/B\n\n--- TLS ---\nca_cert: /ca.pem\ninsecure: true\n\n--- REQUEST ---\n{}\n";
+        let doc = crate::parser::parse_gctf_from_str(src, "t.gctf").expect("parse");
+        let found = collect_insecure_tls_diagnostics(&doc, src);
+        assert_eq!(found.len(), 1, "only the second document skips: {found:?}");
+        let line = found[0].range.start.line as usize;
+        assert_eq!(
+            src.lines().nth(line),
+            Some("insecure: true"),
+            "the warning sits on the word that skips, not the first `insecure:` in the file"
+        );
     }
 
     #[test]

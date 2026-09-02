@@ -176,7 +176,7 @@ export function BenchResults() {
 
           {(report.latency_distribution ?? []).length > 0 && (
             <div className="stack is-hair">
-              <span className="label">
+              <span className="field-label">
                 latency, as measured
                 {latencyNote(report.summary) && (
                   <span className="warn"> · {latencyNote(report.summary)}</span>
@@ -203,7 +203,7 @@ export function BenchResults() {
 
           {report.client_cost && (
             <div className="stack is-hair">
-              <span className="label">client cost</span>
+              <span className="field-label">client cost</span>
               <dl className="kv">
                 {report.client_cost.cpu_us_per_request !== undefined && (
                   <div className="bar"><dt>cpu / request</dt><dd className="mono">{report.client_cost.cpu_us_per_request.toFixed(1)} µs</dd></div>
@@ -226,7 +226,7 @@ export function BenchResults() {
 
           {(report.threshold_evaluation ?? []).length > 0 && (
             <div className="stack is-hair">
-              <span className="label">thresholds</span>
+              <span className="field-label">thresholds</span>
               {report.threshold_evaluation!.map(t => (
                 <div key={t.metric} className={`assert ${t.passed ? 'is-ok' : 'is-fail'}`}>
                   <span className="assert-mark">{t.passed ? '✓' : '✗'}</span>
@@ -245,7 +245,7 @@ export function BenchResults() {
 
           {(report.levels ?? []).length > 0 && (
             <div className="stack is-hair">
-              <span className="label">concurrency sweep</span>
+              <span className="field-label">concurrency sweep</span>
               <div className="matches">
                 {report.levels!.map(l => {
                   const p95 = l.latency_distribution?.find(p => Math.abs(p.percentile - 95) < 0.001);
@@ -291,7 +291,7 @@ function BenchCompare() {
   return (
     <div className="stack is-hair">
       <div className="bar">
-        <span className="label grow">compare with the previous run</span>
+        <span className="field-label grow">compare with the previous run</span>
         {partial
           ? <span className="badge is-pending" title="One of these runs was stopped by hand, so the two measured different lengths of time">not like for like</span>
           : comparison.overall === 'fail' && <span className="badge is-fail">regressed</span>}

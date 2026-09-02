@@ -219,7 +219,7 @@ pub fn render_scaffold(
         ));
     }
 
-    let request = crate::serve::api::generate_json_template(&method.input());
+    let request = crate::grpc::template::generate_json_template(&method.input());
     let request_json = serde_json::to_string_pretty(&request).unwrap_or_else(|_| "{}".to_string());
     out.push_str("--- REQUEST ---\n");
     out.push_str(&request_json);
@@ -436,7 +436,7 @@ mod tests {
     fn request_template_has_all_fields_with_correct_shapes() {
         let pool = sample_pool();
         let req = pool.get_message_by_name("demo.Req").unwrap();
-        let tpl = crate::serve::api::generate_json_template(&req);
+        let tpl = crate::grpc::template::generate_json_template(&req);
         let obj = tpl.as_object().expect("object");
 
         assert!(obj["name"].is_string());

@@ -121,7 +121,33 @@ into the header — `--- RESPONSE 404 ---` — is not read, and `check` says whe
 - The four RPC shapes: a request and a response, not a stream.
 
 `OPTIONS` keeps `timeout`, `retry`, `retry_delay` and `no_retry`; `protocol` and `compression` belong
-to the gRPC family.
+to the gRPC family. Retries work the way they do for gRPC, and out of one budget: `--retry`,
+`OPTIONS.retry` and `#[retry(N)]` say how many further attempts a test gets, `retry_delay` how long
+to wait between them, and `no_retry` outranks all three. A call whose answer never arrived is sent
+again, and so is one whose `@status()` assertion failed against a `429`, `502`, `503` or `504`.
+Nothing else is: a test that asked for `503` and failed a body check, or one that failed on the body
+alone, has its answer already — dialling again would change nothing.
+
+## Redirects
+
+A `3xx` is the answer the server gave, so the test sees it: `@status() == 302` holds and
+`@header("location")` reads where it points. A file that wants the page behind the redirect says so
+in `OPTIONS`:
+
+```httf
+--- ENDPOINT ---
+GET /old-path
+
+--- OPTIONS ---
+follow_redirects: true
+
+--- ASSERTS ---
+@status() == 200
+@header(":url") | endswith("/new-path")
+```
+
+`follow_redirects` defaults to `false`; with it on, `@header(":url")` carries the address the call
+landed on.
 
 ## Running one
 
@@ -142,8 +168,17 @@ grpctestify call -e 'POST /v1/users' --address https://api.example.com \
   -H 'authorization: Bearer t0ken' -d '{"name": "Ada"}'
 ```
 
-The exit code follows the status: a `4xx` or `5xx` exits non-zero unless `-S` asks for the body of a
-failure.
+The body is printed whatever the status. `-f/--fail` makes a `4xx` or `5xx` exit non-zero (22, as
+curl does); `-S/--show-error` says which status came back even when `-s` would otherwise keep quiet.
+`-L/--location` follows redirects, `-i` prints the response headers before the body and
+`-D/--dump-header` writes the status line and those headers to a file:
+
+```bash
+grpctestify call -e 'GET /old-path' --address https://api.example.com -L -D headers.txt
+```
+
+The flags that configure a gRPC dial — `--insecure`, `--plaintext`, `--tls-ca`, `--tls-cert`,
+`--tls-key`, `--protocol` — are refused on an HTTP call rather than silently ignored.
 
 In the workbench an HTTP file gets a method-and-path control where a `.gctf` gets the method picker,
 its status badge reads `200 OK`, and `Copy as curl` writes the same call as a command line. A `curl`

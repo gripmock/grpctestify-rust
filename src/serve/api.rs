@@ -39,6 +39,95 @@ pub(super) fn require_gctf(path: &str) -> Result<(), (StatusCode, String)> {
     Ok(())
 }
 
+const SCHEMA_EXTS: &[&str] = &[".proto", ".pb", ".bin", ".desc", ".protoset"];
+const DATA_EXTS: &[&str] = &[".csv", ".json"];
+const DOC_EXTS: &[&str] = &[".md", ".txt"];
+
+fn is_collection_file(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    require_gctf(path).is_ok()
+        || SCHEMA_EXTS
+            .iter()
+            .chain(DATA_EXTS)
+            .chain(DOC_EXTS)
+            .any(|ext| lower.ends_with(ext))
+}
+
+fn is_dot_named(name: &str) -> bool {
+    name.starts_with('.')
+}
+
+fn has_hidden_component(path: &str) -> bool {
+    path.split(['/', '\\'])
+        .any(|component| component.starts_with('.'))
+}
+
+fn stranger_in(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else {
+                return Some(path);
+            };
+            let name = entry.file_name().to_string_lossy().to_string();
+            if kind.is_symlink() {
+                return Some(path);
+            }
+            if kind.is_dir() {
+                if is_dot_named(&name) {
+                    return Some(path);
+                }
+                stack.push(path);
+            } else if !is_dot_named(&name) && !is_collection_file(&name) {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn require_collection_item(
+    rel: &str,
+    target: &std::path::Path,
+) -> Result<(), (StatusCode, String)> {
+    let refused = |why: String| (StatusCode::BAD_REQUEST, why);
+    if has_hidden_component(rel) || is_generated(std::path::Path::new(rel)) {
+        return Err(refused(format!(
+            "`{rel}` is not managed by the workbench — hidden and generated paths stay as they are"
+        )));
+    }
+    let meta = std::fs::symlink_metadata(target)
+        .map_err(|_| (StatusCode::NOT_FOUND, "File not found".to_string()))?;
+    if meta.file_type().is_symlink() {
+        return Err(refused(format!(
+            "`{rel}` is a link, which the workbench leaves alone"
+        )));
+    }
+    if meta.is_dir() {
+        if let Some(stranger) = stranger_in(target) {
+            let inside = stranger
+                .strip_prefix(target)
+                .unwrap_or(&stranger)
+                .to_string_lossy()
+                .replace('\\', "/");
+            return Err(refused(format!(
+                "`{rel}` holds `{inside}`, which the workbench does not manage — a folder it removes holds test, schema, data and note files"
+            )));
+        }
+        return Ok(());
+    }
+    if !is_collection_file(rel) {
+        return Err(refused(format!(
+            "`{rel}` is not a test, schema, data or note file — the workbench only manages those"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_env_name(name: &str) -> Result<(), (StatusCode, String)> {
     if name.is_empty() || name.contains(['/', '\\', ':']) || name.contains("..") {
         return Err((
@@ -55,21 +144,74 @@ fn parse_protocol(s: Option<&str>) -> crate::grpc::WireProtocol {
     s.and_then(|s| s.parse().ok()).unwrap_or_default()
 }
 
+pub(super) fn lexically_normal(path: &std::path::Path) -> std::path::PathBuf {
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !out.pop() {
+                    out.push(component.as_os_str());
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn tls_file(
+    root: &std::path::Path,
+    beside: &std::path::Path,
+    given: &Option<String>,
+) -> Result<Option<String>, String> {
+    let Some(given) = given.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    if std::path::Path::new(given).is_absolute() {
+        return Ok(Some(given.to_string()));
+    }
+    let landed = lexically_normal(&beside.join(given));
+    if !landed.starts_with(lexically_normal(root)) {
+        return Err(format!(
+            "`{given}` lands outside the project — a TLS file is read from beside the test file, so it stays in the project, or is given as an absolute path"
+        ));
+    }
+    Ok(Some(landed.to_string_lossy().to_string()))
+}
+
 fn tls_config_from_request(
+    root: &std::path::Path,
+    beside: &std::path::Path,
     tls: Option<bool>,
     tls_ca: &Option<String>,
     tls_cert: &Option<String>,
     tls_key: &Option<String>,
     tls_insecure: Option<bool>,
-) -> Option<crate::grpc::TlsConfig> {
-    tls.unwrap_or(false).then(|| {
-        crate::commands::tls_config_from_flags(
-            tls_ca.clone(),
-            tls_cert.clone(),
-            tls_key.clone(),
-            tls_insecure.unwrap_or(true),
-        )
-    })
+) -> Result<Option<crate::grpc::TlsConfig>, String> {
+    if !tls.unwrap_or(false) {
+        return Ok(None);
+    }
+    Ok(Some(crate::commands::tls_config_from_flags(
+        tls_file(root, beside, tls_ca)?,
+        tls_file(root, beside, tls_cert)?,
+        tls_file(root, beside, tls_key)?,
+        tls_insecure.unwrap_or(false),
+    )))
+}
+
+fn beside_collection(state: &PlayState, collection_path: Option<&str>) -> std::path::PathBuf {
+    let root = reports_base(state);
+    collection_path
+        .filter(|p| reject_traversal(p).is_ok())
+        .map(|p| {
+            resolve_file(state, p)
+                .unwrap_or_else(|| primary_dir(state).join(p))
+                .parent()
+                .map(|d| d.to_path_buf())
+                .unwrap_or_else(|| root.to_path_buf())
+        })
+        .unwrap_or_else(|| root.to_path_buf())
 }
 
 pub(super) fn resolve_file(state: &PlayState, rel: &str) -> Option<std::path::PathBuf> {
@@ -103,6 +245,14 @@ fn resolve_write_path(
 ) -> Result<std::path::PathBuf, (StatusCode, String)> {
     let invalid = || (StatusCode::BAD_REQUEST, "Invalid path".to_string());
     reject_traversal(rel).map_err(|_| invalid())?;
+    if has_hidden_component(rel) || is_generated(std::path::Path::new(rel)) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "`{rel}` is not a place the workbench writes — it would make something it could never remove or rename"
+            ),
+        ));
+    }
     let target = dir.join(rel);
     if std::fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink()) {
         return Err(invalid());
@@ -1026,6 +1176,7 @@ pub async fn get_collection(
     path: Path<String>,
 ) -> Result<Json<CollectionResponse>, (StatusCode, String)> {
     reject_traversal(&path.0)?;
+    require_gctf(&path.0)?;
     let state = state.clone();
     let path_str = path.0.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -1047,7 +1198,7 @@ pub async fn get_collection(
         };
         let version = file_version(&file_path, &content);
         Ok(CollectionResponse {
-            path: file_path.to_string_lossy().to_string(),
+            path: path_str,
             parsed: parse_collection(&doc),
             documents: summarize_chain(&doc),
             content,
@@ -2196,13 +2347,23 @@ pub async fn reflect_server(
 ) -> Json<ReflectResponse> {
     super::jobs::forget_target_schema().await;
 
-    let tls_config = tls_config_from_request(
+    let tls_config = match tls_config_from_request(
+        reports_base(&state),
+        &beside_collection(&state, req.collection_path.as_deref()),
         req.tls,
         &req.tls_ca,
         &req.tls_cert,
         &req.tls_key,
         req.tls_insecure,
-    );
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            return Json(ReflectResponse {
+                services: vec![],
+                error: Some(e),
+            });
+        }
+    };
 
     let proto_config = if let Some(ref coll_path) = req.collection_path {
         if reject_traversal(coll_path).is_err() {
@@ -2223,7 +2384,7 @@ pub async fn reflect_server(
         None
     };
 
-    let wait = req.timeout_seconds.filter(|s| *s > 0).unwrap_or(10);
+    let wait = dial_timeout(req.timeout_seconds);
     let config = crate::grpc::GrpcClientConfig {
         address: req.address.clone(),
         timeout_seconds: wait,
@@ -2426,12 +2587,14 @@ async fn resolve_endpoint_descriptors(
         .ok_or_else(|| "Invalid endpoint format".to_string())?;
 
     let tls_config = tls_config_from_request(
+        reports_base(state),
+        &beside_collection(state, req.collection_path.as_deref()),
         req.tls,
         &req.tls_ca,
         &req.tls_cert,
         &req.tls_key,
         req.tls_insecure,
-    );
+    )?;
 
     let proto_config = if let Some(ref coll_path) = req.collection_path {
         if reject_traversal(coll_path).is_err() {
@@ -2449,7 +2612,7 @@ async fn resolve_endpoint_descriptors(
         None
     };
 
-    let wait = req.timeout_seconds.filter(|s| *s > 0).unwrap_or(10);
+    let wait = dial_timeout(req.timeout_seconds);
     let grpc_config = crate::grpc::GrpcClientConfig {
         address: req.address.clone(),
         timeout_seconds: wait,
@@ -2728,183 +2891,9 @@ fn render_enum(desc: &prost_reflect::EnumDescriptor) -> String {
     out
 }
 
-fn fake_value(field_name: &str, kind: &prost_reflect::Kind) -> serde_json::Value {
-    use fake::Fake;
-    use prost_reflect::Kind;
-
-    let n = rand::random::<u32>() % 100000;
-
-    match kind {
-        Kind::Double | Kind::Float => serde_json::json!((n as f64) / 10.0),
-        Kind::Int32 | Kind::Sint32 | Kind::Sfixed32 => serde_json::json!(n as i32),
-        Kind::Int64 | Kind::Sint64 | Kind::Sfixed64 => serde_json::json!((n * 100) as i64),
-        Kind::Uint32 | Kind::Fixed32 => serde_json::json!(n),
-        Kind::Uint64 | Kind::Fixed64 => serde_json::json!((n * 100) as u64),
-        Kind::Bool => serde_json::json!(n.is_multiple_of(2)),
-
-        Kind::String => {
-            let lower = field_name.to_lowercase();
-            let val: String = if lower.contains("email") || lower.contains("mail") {
-                fake::faker::internet::en::FreeEmail().fake()
-            } else if lower.contains("name")
-                && (lower.contains("first") || lower.starts_with("first"))
-            {
-                fake::faker::name::en::FirstName().fake()
-            } else if lower.contains("name")
-                && (lower.contains("last") || lower.contains("surname"))
-            {
-                fake::faker::name::en::LastName().fake()
-            } else if lower.contains("name") {
-                fake::faker::name::en::Name().fake()
-            } else if lower.contains("phone") || lower.contains("tel") {
-                fake::faker::phone_number::en::PhoneNumber().fake()
-            } else if lower.contains("url") || lower.contains("uri") || lower.contains("link") {
-                format!(
-                    "https://example.com/{}",
-                    fake::faker::lorem::en::Word().fake::<String>()
-                )
-            } else if lower.contains("uuid") || lower.contains("guid") {
-                let u = uuid::Uuid::new_v4();
-                u.to_string()
-            } else if lower.contains("address") || lower.contains("street") {
-                format!(
-                    "{} {}",
-                    fake::faker::address::en::StreetName().fake::<String>(),
-                    rand::random::<u16>() % 10000 + 1
-                )
-            } else if lower.contains("city") {
-                fake::faker::address::en::CityName().fake()
-            } else if lower.contains("country") {
-                fake::faker::address::en::CountryName().fake()
-            } else if lower.contains("zip")
-                || lower.contains("postal")
-                || lower.contains("postcode")
-            {
-                fake::faker::address::en::PostCode().fake()
-            } else if lower.contains("password") || lower.contains("secret") {
-                "••••••••".to_string()
-            } else if lower.contains("token") {
-                format!("tok_{:x}", uuid::Uuid::new_v4().as_u128() >> 64)
-            } else if lower.contains("description")
-                || lower.contains("comment")
-                || lower.contains("note")
-                || lower.contains("bio")
-            {
-                fake::faker::lorem::en::Paragraph(3..6).fake()
-            } else if lower.contains("sentence")
-                || lower.contains("text")
-                || lower.contains("content")
-            {
-                fake::faker::lorem::en::Sentence(3..8).fake()
-            } else if lower.contains("status") {
-                ["active", "inactive", "pending"][n as usize % 3].to_string()
-            } else if lower.contains("type") || lower.contains("kind") || lower.contains("category")
-            {
-                ["standard", "premium", "basic"][n as usize % 3].to_string()
-            } else if lower.contains("date")
-                || lower.contains("time")
-                || lower.contains("timestamp")
-                || lower.ends_with("_at")
-                || lower == "at"
-            {
-                "2024-06-15T10:30:00Z".to_string()
-            } else if lower.contains("color") {
-                ["#3b82f6", "#ef4444", "#22c55e", "#f59e0b"][n as usize % 4].to_string()
-            } else if lower.contains("lang") || lower.contains("locale") {
-                "en-US".to_string()
-            } else if lower.contains("avatar")
-                || lower.contains("image")
-                || lower.contains("photo")
-                || lower.contains("picture")
-                || lower.contains("icon")
-            {
-                format!("https://i.pravatar.cc/150?u={}", n)
-            } else if lower.contains("title")
-                || lower.contains("subject")
-                || lower.contains("heading")
-            {
-                fake::faker::lorem::en::Sentence(3..8).fake()
-            } else if lower.contains("company")
-                || lower.contains("organization")
-                || lower.contains("org")
-            {
-                fake::faker::company::en::CompanyName().fake()
-            } else if lower.contains("job") || lower.contains("position") {
-                fake::faker::job::en::Title().fake()
-            } else if lower == "first" || lower == "first_name" {
-                fake::faker::name::en::FirstName().fake()
-            } else if lower == "last"
-                || lower == "last_name"
-                || lower == "surname"
-                || lower.contains("last")
-            {
-                fake::faker::name::en::LastName().fake()
-            } else if lower.contains("username")
-                || lower.contains("nick")
-                || lower.contains("handle")
-            {
-                fake::faker::internet::en::Username().fake()
-            } else {
-                fake::faker::lorem::en::Word().fake()
-            };
-            serde_json::Value::String(val)
-        }
-
-        Kind::Bytes => serde_json::Value::String("c2FtcGxl".to_string()),
-
-        Kind::Enum(enum_desc) => {
-            let first = enum_desc.values().next();
-            match first {
-                Some(v) => serde_json::Value::String(v.name().to_string()),
-                None => serde_json::Value::String("UNSPECIFIED".to_string()),
-            }
-        }
-
-        Kind::Message(msg_desc) => match well_known_sample(msg_desc.full_name()) {
-            Some(value) => value,
-            None => generate_json_template(msg_desc),
-        },
-    }
-}
-
-fn well_known_sample(full_name: &str) -> Option<serde_json::Value> {
-    Some(match full_name {
-        "google.protobuf.Timestamp" => serde_json::json!("2024-06-15T10:30:00Z"),
-        "google.protobuf.Duration" => serde_json::json!("30s"),
-        "google.protobuf.FieldMask" => serde_json::json!("name"),
-        "google.protobuf.Struct" => serde_json::json!({"key": "value"}),
-        "google.protobuf.Value" => serde_json::json!("value"),
-        "google.protobuf.StringValue" => serde_json::json!("value"),
-        "google.protobuf.BoolValue" => serde_json::json!(true),
-        "google.protobuf.Int32Value" | "google.protobuf.Int64Value" => serde_json::json!(1),
-        "google.protobuf.DoubleValue" | "google.protobuf.FloatValue" => serde_json::json!(1.0),
-        "google.protobuf.BytesValue" => serde_json::json!("c2FtcGxl"),
-        "google.protobuf.Empty" => serde_json::json!({}),
-        "google.protobuf.Any" => {
-            serde_json::json!({"@type": "type.googleapis.com/replace.With.Your.Message"})
-        }
-        _ => return None,
-    })
-}
-
-pub fn generate_json_template(desc: &prost_reflect::MessageDescriptor) -> serde_json::Value {
-    let mut obj = serde_json::Map::new();
-
-    for field in desc.fields() {
-        let name = field.json_name().to_string();
-        let fv = fake_value(&name, &field.kind());
-
-        if field.is_list() {
-            obj.insert(name, serde_json::Value::Array(vec![fv]));
-        } else if field.is_map() {
-            obj.insert(name, serde_json::Value::Object(serde_json::Map::new()));
-        } else {
-            obj.insert(name, fv);
-        }
-    }
-
-    serde_json::Value::Object(obj)
-}
+pub use crate::grpc::template::generate_json_template;
+#[cfg(test)]
+use crate::grpc::template::{fake_value, well_known_sample};
 
 #[derive(Serialize)]
 pub struct CallCommandResponse {
@@ -3126,6 +3115,23 @@ fn tls_for_call(
     from_file.or(from_client)
 }
 
+fn call_refused(why: String) -> CallResponse {
+    CallResponse {
+        success: false,
+        messages: vec![],
+        message_offsets_ms: vec![],
+        grpc_status: None,
+        headers: HashMap::new(),
+        trailers: HashMap::new(),
+        error: Some(why),
+        shape: None,
+        messages_total: 0,
+        messages_truncated: false,
+        messages_raw: vec![],
+        extracted: Vec::new(),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct DocsRequest {
     #[serde(default)]
@@ -3203,10 +3209,21 @@ pub fn compression_for_call(
     crate::execution::runner_helpers::resolve_compression(doc, &options, env_default)
 }
 
+pub const MAX_DIAL_TIMEOUT_SECS: u64 = 300;
+const DEFAULT_CALL_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_DIAL_TIMEOUT_SECS: u64 = 10;
+
 pub fn timeout_for_call(file: Option<u64>, requested: Option<u64>) -> u64 {
     file.filter(|v| *v > 0)
         .or(requested.filter(|v| *v > 0))
-        .unwrap_or(30)
+        .unwrap_or(DEFAULT_CALL_TIMEOUT_SECS)
+}
+
+pub fn dial_timeout(requested: Option<u64>) -> u64 {
+    requested
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_DIAL_TIMEOUT_SECS)
+        .min(MAX_DIAL_TIMEOUT_SECS)
 }
 
 fn step_of_file(
@@ -3222,11 +3239,19 @@ fn step_of_file(
     (doc, address)
 }
 
+fn follow_redirects_for_file(doc: &crate::parser::ast::GctfDocument) -> bool {
+    doc.get_options()
+        .as_ref()
+        .and_then(|o| o.get(apif_http_transport::FOLLOW_REDIRECTS_OPTION))
+        .and_then(|v| apif_http_transport::parse_follow_redirects(v))
+        .unwrap_or(false)
+}
+
 async fn http_file_connection(
     state: &Arc<PlayState>,
     path: &str,
     step_index: usize,
-) -> Result<(Option<String>, Option<u64>), (StatusCode, String)> {
+) -> Result<(Option<String>, Option<u64>, bool), (StatusCode, String)> {
     if reject_traversal(path).is_err() {
         return Err((StatusCode::NOT_FOUND, "Invalid collection_path".to_string()));
     }
@@ -3236,13 +3261,14 @@ async fn http_file_connection(
         let file_path =
             resolve_file(&state, &path).unwrap_or_else(|| primary_dir(&state).join(&path));
         if !file_path.exists() {
-            return (None, None);
+            return (None, None, false);
         }
         let parse_result = crate::parser::parse_with_recovery(&file_path);
         let (doc, address) = step_of_file(&parse_result.document, step_index);
         (
             address.filter(|a| !a.trim().is_empty()),
             timeout_for_file(doc),
+            follow_redirects_for_file(doc),
         )
     })
     .await
@@ -3260,9 +3286,9 @@ async fn execute_http_call(
         ));
     };
 
-    let (file_address, file_timeout) = match req.collection_path.as_deref() {
+    let (file_address, file_timeout, follow_redirects) = match req.collection_path.as_deref() {
         Some(path) => http_file_connection(&state, path, req.document_index).await?,
-        None => (None, None),
+        None => (None, None, false),
     };
 
     let address = file_address
@@ -3303,9 +3329,13 @@ async fn execute_http_call(
     let answer = apif_http_transport::send(apif_http_transport::HttpCall {
         method: method.clone(),
         url: url.clone(),
-        headers: headers.clone(),
+        headers: headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
         body: body.clone(),
         timeout,
+        follow_redirects,
     })
     .await;
 
@@ -3498,14 +3528,6 @@ pub async fn execute_call(
         ));
     }
 
-    let tls_config = tls_config_from_request(
-        req.tls,
-        &req.tls_ca,
-        &req.tls_cert,
-        &req.tls_key,
-        req.tls_insecure,
-    );
-
     type FileConnection = (
         Option<crate::grpc::ProtoConfig>,
         Option<String>,
@@ -3569,7 +3591,23 @@ pub async fn execute_call(
         };
 
     let protocol = protocol_for_call(file_protocol, req.protocol.as_deref());
-    let tls_config = tls_for_call(file_tls, tls_config);
+    let from_client = if file_tls.is_some() {
+        None
+    } else {
+        match tls_config_from_request(
+            reports_base(&state),
+            &beside_collection(&state, req.collection_path.as_deref()),
+            req.tls,
+            &req.tls_ca,
+            &req.tls_cert,
+            &req.tls_key,
+            req.tls_insecure,
+        ) {
+            Ok(built) => built,
+            Err(why) => return Ok(Json(call_refused(why))),
+        }
+    };
+    let tls_config = tls_for_call(file_tls, from_client);
     let over_tls = tls_config.is_some();
 
     let address = file_address
@@ -4205,14 +4243,25 @@ pub struct ProjectInfo {
     pub project_dir_abs: Option<String>,
 }
 
+pub(super) fn shown_path(base: &std::path::Path, path: &std::path::Path) -> String {
+    match path.strip_prefix(base) {
+        Ok(rel) if !rel.as_os_str().is_empty() => rel.to_string_lossy().replace('\\', "/"),
+        _ => path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| ".".to_string()),
+    }
+}
+
 pub fn project_info_inner(state: &PlayState) -> ProjectInfo {
+    let base = reports_base(state);
     let root = match state.project_root.as_ref() {
         Some(r) => r.clone(),
         None => {
             return ProjectInfo {
                 active: false,
                 envs: vec![],
-                collections_dir: state.collections_dir.display().to_string(),
+                collections_dir: shown_path(base, &state.collections_dir),
                 project_dir: None,
                 project_dir_abs: None,
             };
@@ -4224,14 +4273,12 @@ pub fn project_info_inner(state: &PlayState) -> ProjectInfo {
         .flatten()
         .unwrap_or_default();
     ProjectInfo {
-        active: state.project_root.is_some(),
+        active: true,
         envs,
-        collections_dir: state.collections_dir.display().to_string(),
-        project_dir: state.project_root.as_ref().map(|p| p.display().to_string()),
-        project_dir_abs: state
-            .project_root
-            .as_ref()
-            .and_then(|p| std::fs::canonicalize(p).ok())
+        collections_dir: shown_path(base, &state.collections_dir),
+        project_dir: Some(shown_path(base, &root)),
+        project_dir_abs: std::fs::canonicalize(&root)
+            .ok()
             .map(|p| p.display().to_string()),
     }
 }
@@ -4307,10 +4354,16 @@ pub async fn project_env_list(
     Ok(Json(names))
 }
 
+#[derive(Serialize)]
+pub struct EnvFile {
+    pub content: String,
+    pub secret: Vec<String>,
+}
+
 pub async fn project_env_get(
     State(state): State<Arc<PlayState>>,
     Path(name): Path<String>,
-) -> Result<Json<String>, (StatusCode, String)> {
+) -> Result<Json<EnvFile>, (StatusCode, String)> {
     let root = require_project(&state)?;
     validate_env_name(&name)?;
     let content = super::project::read_dotenv(&root, &name)
@@ -4321,7 +4374,8 @@ pub async fn project_env_get(
                 format!("Environment '{}' not found", name),
             )
         })?;
-    Ok(Json(content))
+    let secret = secret_names(&super::project::parse_dotenv(&content));
+    Ok(Json(EnvFile { content, secret }))
 }
 
 #[derive(Deserialize)]
@@ -4345,6 +4399,7 @@ pub async fn project_env_put(
 pub struct EnvLocalStatus {
     pub exists: bool,
     pub content: Option<String>,
+    pub secret: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -4352,6 +4407,24 @@ pub struct EnvMergedResponse {
     pub variables: std::collections::HashMap<String, String>,
     pub has_local: bool,
     pub address: Option<String>,
+    pub secret: Vec<String>,
+}
+
+const SECRET_VAR_MARKS: &[&str] = &["TOKEN", "SECRET", "KEY", "PASSWORD", "PASSWD"];
+
+pub(super) fn is_secret_var(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    SECRET_VAR_MARKS.iter().any(|mark| upper.contains(mark))
+}
+
+fn secret_names(variables: &std::collections::HashMap<String, String>) -> Vec<String> {
+    let mut named: Vec<String> = variables
+        .keys()
+        .filter(|k| is_secret_var(k))
+        .cloned()
+        .collect();
+    named.sort();
+    named
 }
 
 pub async fn project_env_merged(
@@ -4375,10 +4448,12 @@ pub async fn project_env_merged(
     }
 
     let address = variables.remove("GRPC_ADDRESS");
+    let secret = secret_names(&variables);
     Ok(Json(EnvMergedResponse {
         variables,
         has_local: !local_raw.is_empty(),
         address,
+        secret,
     }))
 }
 
@@ -4390,9 +4465,13 @@ pub async fn project_env_local_get(
     validate_env_name(&name)?;
     let content = super::project::read_dotenv_local(&root, &name)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let secret = secret_names(&super::project::parse_dotenv(
+        content.as_deref().unwrap_or_default(),
+    ));
     Ok(Json(EnvLocalStatus {
         exists: content.is_some(),
         content,
+        secret,
     }))
 }
 
@@ -4530,6 +4609,7 @@ pub async fn delete_collection(
     reject_traversal(&path)?;
     let file_path = resolve_file(&state, &path)
         .ok_or_else(|| (StatusCode::NOT_FOUND, "File not found".to_string()))?;
+    require_collection_item(&path, &file_path)?;
     if file_path.is_dir() {
         std::fs::remove_dir_all(&file_path).map_err(|e| {
             (
@@ -4555,8 +4635,7 @@ pub async fn create_directory(
     State(state): State<Arc<PlayState>>,
     Path(path): Path<String>,
 ) -> Result<Json<()>, (StatusCode, String)> {
-    reject_traversal(&path)?;
-    let dir_path = primary_dir(&state).join(&path);
+    let dir_path = resolve_write_path(primary_dir(&state), &path)?;
     std::fs::create_dir_all(&dir_path).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -4698,7 +4777,13 @@ fn files_under(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
                 stack.push(path);
             } else {
                 out.push(path);
@@ -5046,14 +5131,12 @@ pub async fn move_item(
     reject_traversal(&req.to)?;
     let src =
         resolve_file(&state, &req.from).unwrap_or_else(|| primary_dir(&state).join(&req.from));
+    require_collection_item(&req.from, &src).map_err(|(status, why)| match status {
+        StatusCode::NOT_FOUND => (status, format!("Source not found: {}", req.from)),
+        _ => (status, why),
+    })?;
     let dst = resolve_write_path(primary_dir(&state), &req.to)?;
 
-    if !src.exists() {
-        return Err((
-            StatusCode::NOT_FOUND,
-            format!("Source not found: {}", req.from),
-        ));
-    }
     if dst.exists() {
         return Err((
             StatusCode::CONFLICT,
@@ -5068,8 +5151,28 @@ pub async fn move_item(
         )
     })?;
 
+    let moved = match std::fs::symlink_metadata(&dst) {
+        Ok(moved) => moved,
+        Err(e) => {
+            return Err(undo_move(
+                &dst,
+                &src,
+                &req.from,
+                format!("`{}` cannot be read back after the move: {e}", req.to),
+            ));
+        }
+    };
+    if moved.file_type().is_symlink() {
+        return Err(undo_move(
+            &dst,
+            &src,
+            &req.from,
+            format!("`{}` became a link while it was being moved", req.to),
+        ));
+    }
+
     let mut rewritten: Vec<String> = Vec::new();
-    if dst.is_file() {
+    if moved.is_file() {
         if require_gctf(&req.to).is_ok()
             && let Ok(text) = std::fs::read_to_string(&dst)
         {
@@ -5106,6 +5209,23 @@ pub async fn move_item(
     Ok(Json(MoveResponse { rewritten }))
 }
 
+fn undo_move(
+    dst: &std::path::Path,
+    src: &std::path::Path,
+    from: &str,
+    why: String,
+) -> (StatusCode, String) {
+    let restored = std::fs::rename(dst, src).is_ok();
+    (
+        StatusCode::CONFLICT,
+        if restored {
+            format!("{why} — `{from}` was put back where it was")
+        } else {
+            format!("{why} — and `{from}` could not be put back")
+        },
+    )
+}
+
 fn parent_of(path: &str) -> String {
     match path.rfind('/') {
         Some(at) => path[..at].to_string(),
@@ -5113,7 +5233,7 @@ fn parent_of(path: &str) -> String {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct MoveResponse {
     pub rewritten: Vec<String>,
 }
@@ -5446,7 +5566,7 @@ mod tests {
     #[test]
     fn get_collection_returns_404_for_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let sub = dir.path().join("emptydir");
+        let sub = dir.path().join("emptydir.gctf");
         std::fs::create_dir(&sub).unwrap();
 
         let state = Arc::new(PlayState {
@@ -5462,7 +5582,10 @@ mod tests {
         });
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(get_collection(State(state), Path("emptydir".to_string())));
+        let result = rt.block_on(get_collection(
+            State(state),
+            Path("emptydir.gctf".to_string()),
+        ));
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().0, StatusCode::NOT_FOUND);
     }
@@ -7988,5 +8111,589 @@ mod tests {
                 },
             ]
         );
+    }
+
+    fn state_at(root: &std::path::Path) -> Arc<PlayState> {
+        Arc::new(PlayState {
+            collections_dir: root.to_path_buf(),
+            collections_dirs: vec![root.to_path_buf()],
+            shares_dir: root.join("shares"),
+            project_root: None,
+            project_settings: None,
+            history_lock: tokio::sync::Mutex::new(()),
+            write_lock: tokio::sync::Mutex::new(()),
+            collections_mtime: Arc::new(AtomicU64::new(0)),
+            jobs: Default::default(),
+        })
+    }
+
+    #[test]
+    fn what_counts_as_a_file_the_workbench_manages() {
+        for named in [
+            "a.gctf",
+            "a.httf",
+            "a.apif",
+            "A.GCTF",
+            "schema.proto",
+            "s.pb",
+            "s.bin",
+            "s.desc",
+            "s.protoset",
+            "rows.csv",
+            "rows.json",
+            "README.md",
+            "notes.txt",
+        ] {
+            assert!(is_collection_file(named), "{named}");
+        }
+        for named in [".env", "main.rs", "Makefile", "a.gctf.bak", "", "lib.so"] {
+            assert!(!is_collection_file(named), "{named}");
+        }
+    }
+
+    #[test]
+    fn a_dot_anywhere_in_a_path_makes_it_hidden() {
+        assert!(has_hidden_component(".env"));
+        assert!(has_hidden_component(".git/config"));
+        assert!(has_hidden_component("suite/.hidden/a.gctf"));
+        assert!(has_hidden_component("suite\\.hidden\\a.gctf"));
+        assert!(has_hidden_component("a/.b"));
+        assert!(!has_hidden_component("suite/a.gctf"));
+        assert!(!has_hidden_component("a.gctf"));
+        assert!(!has_hidden_component("v1.2/a.gctf"));
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn a_folder_the_finder_touched_is_still_a_folder_of_tests() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let gctf = "--- ENDPOINT ---\na.B/C\n\n--- REQUEST ---\n{}\n";
+        std::fs::create_dir_all(root.join("suite/nested")).unwrap();
+        std::fs::write(root.join("suite/a.gctf"), gctf).unwrap();
+        std::fs::write(root.join("suite/nested/b.gctf"), gctf).unwrap();
+        std::fs::write(root.join("suite/.DS_Store"), b"\0").unwrap();
+        std::fs::write(root.join("suite/nested/.gitkeep"), b"").unwrap();
+        std::fs::write(root.join("suite/README.md"), "# how these run\n").unwrap();
+        assert_eq!(
+            stranger_in(&root.join("suite")),
+            None,
+            "an inert dot-file and a readme do not make a folder unmanageable"
+        );
+
+        std::fs::write(root.join("suite/main.rs"), "fn main() {}\n").unwrap();
+        assert_eq!(
+            stranger_in(&root.join("suite")),
+            Some(root.join("suite/main.rs"))
+        );
+        std::fs::remove_file(root.join("suite/main.rs")).unwrap();
+
+        std::fs::create_dir_all(root.join("suite/.git")).unwrap();
+        assert_eq!(
+            stranger_in(&root.join("suite")),
+            Some(root.join("suite/.git")),
+            "a hidden folder is still refused"
+        );
+    }
+
+    #[cfg(unix)]
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn a_link_inside_a_folder_is_a_stranger() {
+        let outside = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("suite")).unwrap();
+        std::fs::write(
+            root.join("suite/a.gctf"),
+            "--- ENDPOINT ---\na.B/C\n\n--- REQUEST ---\n{}\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("suite/away")).unwrap();
+        assert_eq!(
+            stranger_in(&root.join("suite")),
+            Some(root.join("suite/away"))
+        );
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn the_workbench_never_writes_a_path_it_could_not_remove() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let state = state_at(root);
+
+        for refused in [".staging", "grpctestify-reports/x"] {
+            let err = create_directory(State(state.clone()), Path(refused.to_string()))
+                .await
+                .unwrap_err();
+            assert_eq!(err.0, StatusCode::BAD_REQUEST, "{refused}");
+            assert!(!root.join(refused).exists(), "{refused}");
+        }
+
+        let err = save_collection(
+            State(state.clone()),
+            Json(SaveRequest {
+                path: ".hidden/a.gctf".to_string(),
+                content: "--- ENDPOINT ---\na.B/C\n\n--- REQUEST ---\n{}\n".to_string(),
+                version: None,
+                create_only: false,
+                original_path: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(!root.join(".hidden").exists());
+
+        let _ = create_directory(State(state), Path("plain".to_string()))
+            .await
+            .expect("an ordinary folder is still made");
+        assert!(root.join("plain").is_dir());
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn a_refused_move_leaves_the_file_where_it_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let body = "--- ENDPOINT ---\na.B/C\n\n--- REQUEST ---\n{}\n";
+        let src = root.join("a.gctf");
+        let dst = root.join("b.gctf");
+        std::fs::write(&dst, body).unwrap();
+
+        let (status, said) = undo_move(&dst, &src, "a.gctf", "it became a link".to_string());
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(said.contains("was put back"), "{said}");
+        assert!(src.is_file(), "the source is back where the user left it");
+        assert!(!dst.exists(), "and nothing is left at the destination");
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), body);
+
+        let (status, said) = undo_move(
+            &root.join("gone.gctf"),
+            &root.join("nowhere/x.gctf"),
+            "gone.gctf",
+            "it became a link".to_string(),
+        );
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(said.contains("could not be put back"), "{said}");
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn the_reader_serves_test_files_and_not_the_dotenv_beside_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join(".env"), "SECRET=hidden\n").unwrap();
+        std::fs::write(
+            root.join("ok.gctf"),
+            "--- ENDPOINT ---\na.B/C\n\n--- REQUEST ---\n{}\n",
+        )
+        .unwrap();
+        let state = state_at(root);
+
+        let denied = get_collection(State(state.clone()), Path(".env".to_string()))
+            .await
+            .unwrap_err();
+        assert_eq!(denied.0, StatusCode::BAD_REQUEST);
+
+        let served = get_collection(State(state), Path("ok.gctf".to_string()))
+            .await
+            .expect("a test file is served");
+        assert_eq!(served.path, "ok.gctf");
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn a_delete_leaves_hidden_source_and_mixed_folders_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let gctf = "--- ENDPOINT ---\na.B/C\n\n--- REQUEST ---\n{}\n";
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::create_dir_all(root.join("mixed")).unwrap();
+        std::fs::write(root.join("mixed/a.gctf"), gctf).unwrap();
+        std::fs::write(root.join("mixed/build.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::create_dir_all(root.join("suite/nested")).unwrap();
+        std::fs::write(root.join("suite/a.gctf"), gctf).unwrap();
+        std::fs::write(
+            root.join("suite/nested/b.httf"),
+            "--- ENDPOINT ---\nGET /\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("suite/.DS_Store"), b"\0").unwrap();
+        std::fs::write(root.join("suite/README.md"), "# these run together\n").unwrap();
+        std::fs::write(root.join(".env"), "SECRET=hidden\n").unwrap();
+        std::fs::write(root.join("schema.proto"), "syntax = \"proto3\";\n").unwrap();
+        std::fs::create_dir_all(root.join("grpctestify-reports")).unwrap();
+        std::fs::write(root.join("grpctestify-reports/r.gctf"), gctf).unwrap();
+        let state = state_at(root);
+
+        for kept in [".git", "src", "mixed", ".env", "grpctestify-reports"] {
+            let refused = delete_collection(State(state.clone()), Path(kept.to_string()))
+                .await
+                .unwrap_err();
+            assert_eq!(refused.0, StatusCode::BAD_REQUEST, "{kept}: {}", refused.1);
+            assert!(root.join(kept).exists(), "{kept} is still there");
+        }
+
+        let _ = delete_collection(State(state.clone()), Path("suite".to_string()))
+            .await
+            .expect("a folder of test files goes");
+        assert!(!root.join("suite").exists());
+        let _ = delete_collection(State(state), Path("schema.proto".to_string()))
+            .await
+            .expect("a schema the workbench uploaded goes");
+        assert!(!root.join("schema.proto").exists());
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn a_move_takes_only_collection_items_to_visible_places() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join(".env"), "SECRET=hidden\n").unwrap();
+        std::fs::write(
+            root.join("a.gctf"),
+            "--- ENDPOINT ---\na.B/C\n\n--- REQUEST ---\n{}\n",
+        )
+        .unwrap();
+        let state = state_at(root);
+
+        let refused = move_item(
+            State(state.clone()),
+            Json(MoveRequest {
+                from: ".env".to_string(),
+                to: "x.gctf".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(refused.0, StatusCode::BAD_REQUEST);
+        assert!(root.join(".env").exists());
+        assert!(!root.join("x.gctf").exists());
+
+        let hidden = move_item(
+            State(state.clone()),
+            Json(MoveRequest {
+                from: "a.gctf".to_string(),
+                to: ".hidden/a.gctf".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(hidden.0, StatusCode::BAD_REQUEST);
+        assert!(root.join("a.gctf").exists());
+
+        let _ = move_item(
+            State(state),
+            Json(MoveRequest {
+                from: "a.gctf".to_string(),
+                to: "moved/a.gctf".to_string(),
+            }),
+        )
+        .await
+        .expect("a test file moves");
+        assert!(root.join("moved/a.gctf").exists());
+    }
+
+    #[cfg(unix)]
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn a_move_leaves_links_where_they_are() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(
+            outside.path().join("secret.gctf"),
+            "--- ENDPOINT ---\na.B/C\n",
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::os::unix::fs::symlink(outside.path().join("secret.gctf"), root.join("link.gctf"))
+            .unwrap();
+        std::fs::create_dir_all(root.join("folder")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("folder/away")).unwrap();
+        let state = state_at(root);
+
+        let linked = move_item(
+            State(state.clone()),
+            Json(MoveRequest {
+                from: "link.gctf".to_string(),
+                to: "moved.gctf".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(linked.0, StatusCode::BAD_REQUEST, "{}", linked.1);
+        assert!(std::fs::symlink_metadata(root.join("link.gctf")).is_ok());
+
+        let holding = move_item(
+            State(state),
+            Json(MoveRequest {
+                from: "folder".to_string(),
+                to: "elsewhere".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(holding.0, StatusCode::BAD_REQUEST, "{}", holding.1);
+        assert!(root.join("folder").exists());
+        assert!(outside.path().join("secret.gctf").exists());
+    }
+
+    #[cfg(unix)]
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn a_folder_is_not_made_through_a_link() {
+        let outside = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::os::unix::fs::symlink(outside.path(), root.join("link")).unwrap();
+        let state = state_at(root);
+
+        let refused = create_directory(State(state.clone()), Path("link/sub".to_string()))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.0, StatusCode::BAD_REQUEST);
+        assert!(!outside.path().join("sub").exists());
+
+        let _ = create_directory(State(state), Path("plain/sub".to_string()))
+            .await
+            .expect("a folder inside the collections is made");
+        assert!(root.join("plain/sub").is_dir());
+    }
+
+    #[test]
+    fn a_relative_tls_file_is_read_from_beside_the_test_file_like_the_runner_reads_it() {
+        let root = std::path::Path::new("/proj");
+        let beside = std::path::Path::new("/proj/collections/auth");
+        let built = |given: &str| {
+            tls_config_from_request(
+                root,
+                beside,
+                Some(true),
+                &Some(given.to_string()),
+                &None,
+                &None,
+                None,
+            )
+        };
+
+        assert_eq!(
+            built("ca.pem").unwrap().unwrap().ca_cert_path.as_deref(),
+            Some("/proj/collections/auth/ca.pem"),
+            "the runner resolves a relative TLS path against the test file's own directory"
+        );
+        assert_eq!(
+            built("../certs/ca.pem")
+                .unwrap()
+                .unwrap()
+                .ca_cert_path
+                .as_deref(),
+            Some("/proj/collections/certs/ca.pem"),
+            "`..` is a normal layout when certificates sit beside the collections"
+        );
+
+        let outside = built("../../../etc/ca.pem").unwrap_err();
+        assert!(outside.contains("lands outside the project"), "{outside}");
+
+        let elsewhere = if cfg!(windows) {
+            "C:\\keys\\client.pem"
+        } else {
+            "/home/me/keys/client.pem"
+        };
+        let kept = tls_config_from_request(
+            root,
+            beside,
+            Some(true),
+            &None,
+            &Some(elsewhere.to_string()),
+            &None,
+            None,
+        )
+        .expect("a certificate outside the project is the usual case")
+        .expect("tls is on");
+        assert_eq!(
+            kept.client_cert_path.as_deref(),
+            Some(elsewhere),
+            "an absolute path is dialled as written"
+        );
+        assert!(
+            !kept.insecure_skip_verify,
+            "certificates are verified by default"
+        );
+
+        let asked =
+            tls_config_from_request(root, beside, Some(true), &None, &None, &None, Some(true))
+                .unwrap()
+                .unwrap();
+        assert!(asked.insecure_skip_verify);
+
+        let plaintext = tls_config_from_request(
+            root,
+            beside,
+            None,
+            &Some("../../../etc/ca.pem".to_string()),
+            &None,
+            &None,
+            None,
+        )
+        .unwrap();
+        assert!(plaintext.is_none(), "nothing is resolved when TLS is off");
+    }
+
+    #[test]
+    fn a_path_is_folded_before_it_is_judged() {
+        let fold = |p: &str| lexically_normal(std::path::Path::new(p));
+        assert_eq!(fold("/a/b/../c"), std::path::PathBuf::from("/a/c"));
+        assert_eq!(fold("/a/./b"), std::path::PathBuf::from("/a/b"));
+        assert_eq!(fold("/a/b/../.."), std::path::PathBuf::from("/"));
+        assert_eq!(fold("a/../b"), std::path::PathBuf::from("b"));
+    }
+
+    #[test]
+    fn a_send_waits_exactly_as_long_as_a_run_would() {
+        assert_eq!(
+            timeout_for_call(Some(100_000), None),
+            100_000,
+            "the file's own OPTIONS timeout is honoured, the way the runner honours it"
+        );
+        assert_eq!(timeout_for_call(None, Some(301)), 301);
+        assert_eq!(timeout_for_call(None, None), 30);
+    }
+
+    #[test]
+    fn a_dial_the_panel_makes_on_its_own_is_bounded() {
+        assert_eq!(dial_timeout(None), 10);
+        assert_eq!(dial_timeout(Some(0)), 10);
+        assert_eq!(dial_timeout(Some(7)), 7);
+        assert_eq!(dial_timeout(Some(u64::MAX)), MAX_DIAL_TIMEOUT_SECS);
+    }
+
+    #[test]
+    fn paths_are_told_relative_to_the_project() {
+        let base = std::path::Path::new("/home/me/app");
+        assert_eq!(
+            shown_path(
+                base,
+                std::path::Path::new("/home/me/app/.grpctestify/collections")
+            ),
+            ".grpctestify/collections"
+        );
+        assert_eq!(
+            shown_path(base, std::path::Path::new("/home/me/app")),
+            "app"
+        );
+        assert_eq!(
+            shown_path(base, std::path::Path::new("/elsewhere/tests")),
+            "tests"
+        );
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn project_info_names_no_absolute_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let dot = dir.path().join(".grpctestify");
+        std::fs::create_dir_all(dot.join("collections")).unwrap();
+        let state = PlayState {
+            collections_dir: dot.join("collections"),
+            collections_dirs: vec![dot.join("collections")],
+            shares_dir: dot.join("shares"),
+            project_root: Some(dot.clone()),
+            project_settings: None,
+            history_lock: tokio::sync::Mutex::new(()),
+            write_lock: tokio::sync::Mutex::new(()),
+            collections_mtime: Arc::new(AtomicU64::new(0)),
+            jobs: Default::default(),
+        };
+        let info = project_info_inner(&state);
+        assert_eq!(info.project_dir.as_deref(), Some(".grpctestify"));
+        assert_eq!(info.collections_dir, ".grpctestify/collections");
+        let told = info
+            .project_dir_abs
+            .expect("the status bar is told where it is");
+        assert!(told.ends_with(".grpctestify"), "{told}");
+        assert!(std::path::Path::new(&told).is_absolute(), "{told}");
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn both_raw_env_files_name_their_secrets_without_touching_the_text() {
+        let dir = tempfile::tempdir().unwrap();
+        super::super::project::init_project_dir(dir.path()).unwrap();
+        let root = dir.path().join(".grpctestify");
+        let shared = "TENANT=acme\nAPI_TOKEN=t0k\n";
+        let local = "DB_PASSWORD=pw\nREGION=eu\n";
+        super::super::project::write_dotenv(&root, "staging", shared).unwrap();
+        super::super::project::write_dotenv_local(&root, "staging", local).unwrap();
+
+        let state = Arc::new(PlayState {
+            collections_dir: root.join("collections"),
+            collections_dirs: vec![root.join("collections")],
+            shares_dir: root.join("shares"),
+            project_root: Some(root.clone()),
+            project_settings: None,
+            history_lock: tokio::sync::Mutex::new(()),
+            write_lock: tokio::sync::Mutex::new(()),
+            collections_mtime: Arc::new(AtomicU64::new(0)),
+            jobs: Default::default(),
+        });
+
+        let file = project_env_get(State(state.clone()), Path("staging".to_string()))
+            .await
+            .expect("the editor reads the shared file")
+            .0;
+        assert_eq!(
+            file.content, shared,
+            "the editor still gets the text as written"
+        );
+        assert_eq!(file.secret, vec!["API_TOKEN".to_string()]);
+
+        let beside = project_env_local_get(State(state.clone()), Path("staging".to_string()))
+            .await
+            .expect("the editor reads the local file")
+            .0;
+        assert!(beside.exists);
+        assert_eq!(beside.content.as_deref(), Some(local));
+        assert_eq!(beside.secret, vec!["DB_PASSWORD".to_string()]);
+
+        let missing = project_env_local_get(State(state), Path("example".to_string()))
+            .await
+            .expect("a missing local file is not an error")
+            .0;
+        assert!(!missing.exists);
+        assert!(missing.secret.is_empty());
+    }
+
+    #[test]
+    fn secret_looking_variables_are_named_but_still_substitute() {
+        assert!(is_secret_var("API_TOKEN"));
+        assert!(is_secret_var("db_password"));
+        assert!(is_secret_var("AwsSecretKey"));
+        assert!(is_secret_var("PASSWD"));
+        assert!(!is_secret_var("GRPC_ADDRESS"));
+        assert!(!is_secret_var("TENANT"));
+
+        let vars: std::collections::HashMap<String, String> = [
+            ("API_TOKEN", "t0k"),
+            ("db_password", "pw"),
+            ("TENANT", "acme"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+
+        assert_eq!(
+            secret_names(&vars),
+            vec!["API_TOKEN".to_string(), "db_password".to_string()]
+        );
+        assert_eq!(
+            vars["API_TOKEN"], "t0k",
+            "a call still expands the real value"
+        );
+        assert!(secret_names(&std::collections::HashMap::new()).is_empty());
     }
 }

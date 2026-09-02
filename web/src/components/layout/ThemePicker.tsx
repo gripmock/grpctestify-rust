@@ -3,6 +3,7 @@ import { Seg } from 'luvo/ui/Seg';
 import { Check, ChevronDown, Monitor, Moon, Sun } from 'lucide-react';
 import { useStore } from '../../lib/store';
 import { useDismiss } from 'luvo/input/useDismiss';
+import { useMenuKeys } from 'luvo/input/useMenuKeys';
 import { Popover } from 'luvo/ui/Popover';
 import { MODES, PALETTES, type ModePref, type PaletteId } from 'luvo/theme/themes';
 
@@ -17,6 +18,7 @@ export function ThemePicker() {
   const [open, setOpen] = useState(false);
   const close = useCallback(() => setOpen(false), []);
   const ref = useDismiss<HTMLDivElement>(open, close);
+  const [menuRef, onMenuKeys] = useMenuKeys<HTMLDivElement>(open, close);
 
   const chosen = PALETTES.find(p => p.id === palette);
   const goingTo = themeMode === 'dark' ? 'light' : 'dark';
@@ -44,13 +46,14 @@ export function ThemePicker() {
       </button>
 
       <Popover open={open} anchor={ref} align="end" className="theme-menu">
-        <div className="menu" role="menu">
+        <div ref={menuRef} className="menu" role="menu" aria-label="Palette" onKeyDown={onMenuKeys}>
           <div className="menu-group">palette</div>
           {PALETTES.map((p: { id: PaletteId; label: string; note: string }) => (
             <button
               key={p.id}
               className={`menu-item${palette === p.id ? ' is-on' : ''}`}
               role="menuitemradio"
+              tabIndex={-1}
               aria-checked={palette === p.id}
               onClick={() => { setPalette(p.id); setOpen(false); }}
             >

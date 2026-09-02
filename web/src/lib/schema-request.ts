@@ -22,7 +22,7 @@ export function schemaRequest(st: PlayStore, endpoint = st.request.endpoint): Sc
     address: dialledAddress(st.address, st.protocol, st.serverEnv.address, activeEnvAddress(st)),
     endpoint,
     tls: tls || undefined,
-    tls_insecure: tls ? tlsInsecure : undefined,
+    tls_insecure: tls && tlsInsecure,
     tls_ca: tls ? (tlsCa || undefined) : undefined,
     tls_cert: tls ? (tlsCert || undefined) : undefined,
     tls_key: tls ? (tlsKey || undefined) : undefined,

@@ -5,6 +5,27 @@ use std::path::{Path, PathBuf};
 const TRUST_ALL_ENV: &str = "GRPCTESTIFY_TRUST_PLUGINS";
 const NO_PLUGINS_ENV: &str = "GRPCTESTIFY_NO_PLUGINS";
 
+static NON_INTERACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_non_interactive() {
+    NON_INTERACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn is_non_interactive() -> bool {
+    NON_INTERACTIVE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn may_prompt(non_interactive: bool, stdin_tty: bool, stderr_tty: bool) -> bool {
+    !non_interactive && stdin_tty && stderr_tty
+}
+
+pub fn untrusted_message(name: &str, path: &Path) -> String {
+    format!(
+        "@{name}: refusing to execute untrusted plugin script {} — run a test that uses it with `grpctestify run` once in a terminal to approve it, or set {TRUST_ALL_ENV}=1",
+        path.display()
+    )
+}
+
 fn store_path() -> Option<PathBuf> {
     Some(store_path_in(&crate::rhai_plugin::user_state_dir()?))
 }
@@ -51,7 +72,11 @@ fn key(path: &Path) -> String {
 }
 
 fn confirm(path: &Path, digest: &str) -> bool {
-    if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
+    if !may_prompt(
+        is_non_interactive(),
+        std::io::stdin().is_terminal(),
+        std::io::stderr().is_terminal(),
+    ) {
         tracing::warn!(
             "refusing to execute untrusted plugin script {} (sha256 {}); \
              run it once interactively to trust it, or set {TRUST_ALL_ENV}=1",
@@ -161,5 +186,35 @@ mod tests {
         let path = store_path_in(dir.path());
         std::fs::write(&path, "{not json").unwrap();
         assert_eq!(read_store_at(&path), BTreeMap::new());
+    }
+
+    #[test]
+    fn a_server_never_prompts_even_on_a_terminal() {
+        assert!(may_prompt(false, true, true));
+        assert!(!may_prompt(false, false, true));
+        assert!(!may_prompt(false, true, false));
+        assert!(!may_prompt(true, true, true));
+    }
+
+    #[test]
+    fn the_refusal_says_how_to_approve_the_script() {
+        let said = untrusted_message("len", Path::new("/plugins/len.rhai"));
+        assert!(
+            said.starts_with("@len: refusing to execute untrusted plugin script /plugins/len.rhai"),
+            "{said}"
+        );
+        assert!(
+            said.contains("`grpctestify run`"),
+            "the approval path has to be a command that actually executes the plugin: {said}"
+        );
+        assert!(!said.contains("grpctestify check"), "{said}");
+        assert!(said.contains(TRUST_ALL_ENV), "{said}");
+    }
+
+    #[test]
+    fn the_flag_is_process_wide_and_sticks() {
+        set_non_interactive();
+        assert!(is_non_interactive());
+        assert!(!may_prompt(is_non_interactive(), true, true));
     }
 }

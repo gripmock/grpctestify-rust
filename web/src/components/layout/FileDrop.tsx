@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../../lib/store';
 import { familyOf } from '../../lib/tree';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useToast } from 'luvo/ui/useToast';
 import { bytesToBase64, protoKindOf, refusalFor } from '../../lib/proto-files';
 import { summariseDrop, type DropOutcome } from '../../lib/drop-summary';
 

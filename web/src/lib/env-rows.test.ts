@@ -232,3 +232,11 @@ describe('a value that names another variable', () => {
     expect(valueNamesVariable('{{a-b}}')).toEqual([]);
   });
 });
+
+describe('a value the project says is a credential', () => {
+  it('is hidden by name, not only by the words in it', () => {
+    const row = { key: 'SEED', value: 'abc', local: false };
+    expect(hiddenValue(row)).toBe(false);
+    expect(hiddenValue(row, ['SEED'])).toBe(true);
+  });
+});

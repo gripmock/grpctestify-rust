@@ -29,7 +29,7 @@ body {
 /* Tailwind's preflight sets line-height 1.5 on the root; a control that
    inherits it grows by a quarter of its font size, and every control grows by a
    different amount. Controls own their line-height. */
-.btn, .badge, .chip, .seg > button, .field, .tab, .brand, .label, .kbd,
+.btn, .badge, .chip, .seg > button, .field, .tab, .brand, .field-label, .kbd,
 .row, .menu-item, .step, .problem, .event, .assert, .toast, .statusbar,
 .topbar, .legend, .panel > legend, .problems-head, .row-name,
 .row-note, .took, .method, .msg-index, .picker-value, .mode-label, .mode-desc {

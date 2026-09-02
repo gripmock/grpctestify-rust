@@ -26,3 +26,20 @@ describe('a value on its way into a tooltip', () => {
     expect(maskValue('TOKEN', undefined)).toBe('');
   });
 });
+
+describe('a name the workbench was told is a credential', () => {
+  it('is hidden even when nothing about the word says so', () => {
+    expect(looksLikeSecret('SEED', ['SEED'])).toBe(true);
+    expect(maskValue('SEED', 'abc', ['SEED'])).toBe('••••••');
+  });
+
+  it('is matched however either side spells the case', () => {
+    expect(maskValue('seed', 'abc', ['SEED'])).toBe('••••••');
+    expect(maskValue('SEED', 'abc', [' seed '])).toBe('••••••');
+  });
+
+  it('leaves the names it was not told about to the words in them', () => {
+    expect(maskValue('HOST', 'api.test', ['SEED'])).toBe('api.test');
+    expect(maskValue('API_TOKEN', 'abc', ['SEED'])).toBe('••••••');
+  });
+});

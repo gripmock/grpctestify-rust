@@ -5,7 +5,7 @@ import { filterProto } from '../../lib/proto-filter';
 import { schemaMiss, servicesOf } from '../../lib/schema-miss';
 import { callAddress } from '../../lib/store';
 import { copyToClipboard } from 'luvo/data/clipboard';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useToast } from 'luvo/ui/useToast';
 import { Copy, Loader2, RefreshCw } from 'lucide-react';
 
 const IDLE = { kind: 'idle' } as const;
@@ -86,7 +86,7 @@ export function SchemaView() {
           title="Read the schema again"
           aria-label="Read the schema again"
         >
-          {view.kind === 'loading' ? <Loader2 size={12} className="spin" /> : <RefreshCw size={12} />}
+          {view.kind === 'loading' ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
         </button>
         <button
           className="btn is-sm is-ghost"
@@ -105,8 +105,8 @@ export function SchemaView() {
         </button>
       </div>
 
-      {view.kind === 'idle' && <div className="empty">Choose a method — its definition is read from the target or from the file’s PROTO section</div>}
-      {view.kind === 'loading' && <div className="empty">Reading the schema…</div>}
+      {view.kind === 'idle' && <div className="empty-state">Choose a method — its definition is read from the target or from the file’s PROTO section</div>}
+      {view.kind === 'loading' && <div className="empty-state">Reading the schema…</div>}
       {view.kind === 'error' && (() => {
         const miss = schemaMiss({ reason: view.reason, address: target, services: servicesOf(reflected) });
         if (!miss) {

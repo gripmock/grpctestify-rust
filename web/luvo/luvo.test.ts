@@ -62,7 +62,7 @@ describe('the control vocabulary lives in luvo', () => {
   const OWNED = [
     '.btn', '.field', '.badge', '.chip', '.seg', '.menu', '.menu-item', '.row', '.kv', '.kvrow',
     '.modal', '.modal-head', '.modal-body', '.modal-foot', '.toast', '.tabs', '.tab',
-    '.split', '.hsplit', '.panel', '.card', '.empty', '.kbd', '.note', '.dot', '.stack', '.bar',
+    '.split', '.hsplit', '.panel', '.card', '.empty-state', '.kbd', '.note', '.dot', '.stack', '.bar',
     '.diff', '.tile', '.tiles', '.editor', '.grow', '.picker',
   ];
 

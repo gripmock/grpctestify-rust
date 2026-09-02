@@ -9,17 +9,14 @@ import { X } from 'lucide-react';
 import { seedLabel, seedMessage } from '../../lib/response-seed';
 import { Splitter } from 'luvo/ui/Splitter';
 import { Tabs } from 'luvo/ui/Tabs';
+import { tabPanelProps } from 'luvo/ui/tab-ids';
+import { DRAWER_MAX_H, DRAWER_MIN_H, drawerHeight } from '../../lib/drawer-height';
 import { readNumber, writeText } from 'luvo/data/storage';
 
 type Tool = 'jq' | 'regex' | 'schema';
 
-const MIN_H = 260;
-const MAX_H = 620;
-
-export function drawerHeight(kept: number, viewport: number): number {
-  const room = Math.max(MIN_H, Math.round(viewport * 0.5));
-  return Math.min(Math.max(MIN_H, kept), MAX_H, room);
-}
+const MIN_H = DRAWER_MIN_H;
+const MAX_H = DRAWER_MAX_H;
 
 export function Drawer() {
   const open = useStore(s => s.drawerOpen);
@@ -94,6 +91,7 @@ export function Drawer() {
       />
       <div className="drawer-head">
         <Tabs
+          id="tool"
           label="Which tool"
           items={tools.map(t => ({ key: t, label: t }))}
           value={tool}
@@ -110,7 +108,7 @@ export function Drawer() {
           <X size={12} />
         </button>
       </div>
-      <div className="drawer-body">
+      <div className="drawer-body" {...tabPanelProps('tool', tool)}>
         {tool === 'jq' ? <JqTester seed={input} messages={response?.messages ?? []} handed={seed} />
           : tool === 'regex' ? <RegexTester seed={input} />
           : <SchemaView />}

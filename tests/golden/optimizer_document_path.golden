@@ -1,3 +1,74 @@
+=== Layout ===
+   @is_uuid(.id) == true
+     @is_uuid(.id) == true
+   @is_uuid(.id) == false
+     @is_uuid(.id) == false
+   !!@is_uuid(.id)
+     !!@is_uuid(.id)
+   1 == 1
+     1 == 1
+   .a == .a
+     .a == .a
+   .a != .a
+     .a != .a
+   .a or true
+     .a or true
+   .a or false
+     .a or false
+   .a and true
+     .a and true
+   .a and false
+     .a and false
+   .a or .b and false
+     .a or .b and false
+   .a and (.b or false)
+     .a and (.b or false)
+   if true then .a else .b end
+     if true then .a else .b end
+   if false then .a else .b end
+     if false then .a else .b end
+   if true then "yes" else "no" end
+     if true then "yes" else "no" end
+   if .c then .x else .x end
+     if .c then .x else .x end
+-> if .c then (if .c then .a else .b end) else .z end
+     if .c then if .c then .a else .b end else .z end
+   if .c then true else false end
+     if .c then true else false end
+   if .c then false else true end
+     if .c then false else true end
+   .c ? .a : .b
+     .c ? .a : .b
+-> .name startswith("a")
+     .name startsWith "a"
+   .a | endswith("x")
+     .a | endswith("x")
+   !(.x == 1)
+     !(.x == 1)
+   !(.x == 1 and .y == 2)
+     !(.x == 1 and .y == 2)
+   not (.x == 1 or .y == 2)
+     not (.x == 1 or .y == 2)
+   @len(.x) == 0
+     @len(.x) == 0
+   @len(.x) != 0
+     @len(.x) != 0
+   !@is_empty(.a)
+     !@is_empty(.a)
+   @is_empty(.a) == false
+     @is_empty(.a) == false
+   @is_empty(.a) and @is_empty(.b) == false
+     @is_empty(.a) and @is_empty(.b) == false
+   @len(.x) >= 0
+     @len(.x) >= 0
+   .x:number == 1
+     .x:number == 1
+   .msg == " and "
+     .msg == " and "
+   .a // .b
+     .a // .b
+   @is_empty(.a) and .b
+     @is_empty(.a) and .b
 === Safe ===
    @is_uuid(.id) == true
      @is_uuid(.id) == true
@@ -40,7 +111,9 @@
    .c ? .a : .b
      .c ? .a : .b
 -> .name startswith("a")
-     .name startsWith ("a")
+     .name startsWith "a"
+   .a | endswith("x")
+     .a | endswith("x")
 -> !(.x == 1)
      .x != 1
    !(.x == 1 and .y == 2)
@@ -109,7 +182,9 @@
    .c ? .a : .b
      .c ? .a : .b
 -> .name startswith("a")
-     .name startsWith ("a")
+     .name startsWith "a"
+   .a | endswith("x")
+     .a | endswith("x")
 -> !(.x == 1)
      .x != 1
    !(.x == 1 and .y == 2)
@@ -178,7 +253,9 @@
    .c ? .a : .b
      .c ? .a : .b
 -> .name startswith("a")
-     .name startsWith ("a")
+     .name startsWith "a"
+   .a | endswith("x")
+     .a | endswith("x")
 -> !(.x == 1)
      .x != 1
    !(.x == 1 and .y == 2)

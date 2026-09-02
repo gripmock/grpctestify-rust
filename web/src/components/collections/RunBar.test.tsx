@@ -68,3 +68,39 @@ describe('a source that is gone', () => {
     ui.unmount();
   });
 });
+
+describe('what a reader is told about the icon buttons', () => {
+  it('names the cancel and the scope buttons', () => {
+    useStore.setState({
+      visibleFiles: ['a.gctf'], workspacePath: 'a.gctf', runScope: 'file', runJobId: null,
+      run: emptyRun(), tabs: [], runData: null, runError: null,
+    });
+    const idle = mount(bar);
+    expect(idle.get('[aria-label="Scope: this file"]')).toBeTruthy();
+    idle.unmount();
+
+    useStore.setState({ runJobId: 'job-1' });
+    const running = mount(bar);
+    expect(running.get('[aria-label="Cancel the run"]')).toBeTruthy();
+    running.unmount();
+  });
+});
+
+describe('the methods a run never called', () => {
+  it('are a menu the keyboard lands in', () => {
+    useStore.setState({
+      visibleFiles: ['a.gctf'], workspacePath: 'a.gctf', runJobId: null, tabs: [], runData: null, runError: null,
+      run: { ...emptyRun(), finished: true, done: 1, total: 1, coverage: { covered: 1, methods: 3, untested: ['grpc://pkg.Svc/A', 'grpc://pkg.Svc/B'] } },
+    });
+    const ui = mount(
+      <ModalProvider><ToastProvider><RunSummary /></ToastProvider></ModalProvider>,
+    );
+    ui.click('.run-coverage');
+    const menu = ui.get('[role="menu"]');
+    expect(menu.getAttribute('aria-label')).toBe('Never called by this run');
+    expect(document.activeElement?.textContent).toContain('pkg.Svc/A');
+    ui.key(document.activeElement!, 'ArrowDown');
+    expect(document.activeElement?.textContent).toContain('pkg.Svc/B');
+    ui.unmount();
+  });
+});

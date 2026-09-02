@@ -10,7 +10,7 @@ import { loadRecent, pushRecent, saveRecent } from '../../lib/history-list';
 import { byteSize, humanBytes } from '../../lib/format';
 import { collectPaths } from '../../lib/json-paths';
 import { copyToClipboard } from 'luvo/data/clipboard';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useToast } from 'luvo/ui/useToast';
 import { acrossStream, streamNote } from '../../lib/pick-actions';
 import { Copy, Wand2, ChevronDown, History, Braces } from 'lucide-react';
 import { count } from 'luvo/data/plural';
@@ -136,7 +136,7 @@ export function JqTester({ seed, messages = [], handed = null }: {
     <div className="stack">
       <div className="stack is-tight">
         <div className="bar" ref={menuRef}>
-          <span className="label grow">filter</span>
+          <span className="field-label grow">filter</span>
           <div className="picker">
             <button
               className="btn is-sm is-ghost"
@@ -204,7 +204,7 @@ export function JqTester({ seed, messages = [], handed = null }: {
       <div className="tool-grid">
         <div className="stack is-cell">
           <div className="bar">
-            <span className="label grow">input</span>
+            <span className="field-label grow">input</span>
             <span className="badge">{humanBytes(byteSize(sourceText))}</span>
             <button
               className="btn is-sm is-ghost"
@@ -239,7 +239,7 @@ export function JqTester({ seed, messages = [], handed = null }: {
           {parseError && <div className="assert is-fail"><span className="assert-mark">!</span><span>{parseError}</span></div>}
           {paths.length > 0 && (
             <div className="bar wrap tool-paths">
-              <span className="label">paths</span>
+              <span className="field-label">paths</span>
               {paths.map(p => (
                 <button key={p} className="chip mono" onClick={() => setExpr(p)}>{p}</button>
               ))}
@@ -249,7 +249,7 @@ export function JqTester({ seed, messages = [], handed = null }: {
 
         <div className="stack is-cell">
           <div className="bar">
-            <span className="label grow">output</span>
+            <span className="field-label grow">output</span>
             {busy && <span className="muted">…</span>}
             {!failure && data && (
               <>

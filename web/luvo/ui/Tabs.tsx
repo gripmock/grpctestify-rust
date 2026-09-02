@@ -1,5 +1,6 @@
-import { useRef, type ReactNode } from 'react';
+import { useId, useRef, type ReactNode } from 'react';
 import { nextTabIndex } from 'luvo/input/tab-keys';
+import { tabIds } from 'luvo/ui/tab-ids';
 
 export interface TabItem<K extends string> {
   key: K;
@@ -14,7 +15,7 @@ export interface TabItem<K extends string> {
  *  time and a screen reader was told nothing about what they were. One strip
  *  now, with the roving tabindex the pattern asks for; `children` is whatever a
  *  caller keeps on the same line, a spacer or a second group. */
-export function Tabs<K extends string>({ items, value, onChange, children, className, tabClassName, label }: {
+export function Tabs<K extends string>({ items, value, onChange, children, className, tabClassName, label, id }: {
   items: TabItem<K>[];
   value: K;
   onChange: (key: K) => void;
@@ -26,8 +27,11 @@ export function Tabs<K extends string>({ items, value, onChange, children, class
   /** Added to every tab in this strip — the environment manager's two share the
       row equally, which is a property of that strip and not of tabs. */
   tabClassName?: string;
+  id?: string;
 }) {
   const strip = useRef<HTMLElement>(null);
+  const generated = useId();
+  const base = id ?? generated;
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     const at = items.findIndex(i => i.key === value);
@@ -49,8 +53,10 @@ export function Tabs<K extends string>({ items, value, onChange, children, class
       {items.map(item => (
         <button
           key={item.key}
+          id={tabIds(base, item.key).tab}
           role="tab"
           aria-selected={value === item.key}
+          aria-controls={tabIds(base, item.key).panel}
           tabIndex={value === item.key ? 0 : -1}
           title={item.title}
           className={`tab${tabClassName ? ` ${tabClassName}` : ''}${value === item.key ? ' is-on' : ''}`}

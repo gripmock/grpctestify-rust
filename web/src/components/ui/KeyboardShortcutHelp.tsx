@@ -92,7 +92,7 @@ export function KeyboardShortcutHelp({ open, onClose }: Props) {
         )}
 
         {rows.length === 0 && locals.length === 0 && (
-          <div className="empty">Nothing matches “{search}”.</div>
+          <div className="empty-state">Nothing matches “{search}”.</div>
         )}
       </div>
 

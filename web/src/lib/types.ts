@@ -1,3 +1,5 @@
+import type { ProjectEnvFile } from './project-env';
+
 import type { Mode, ModePref, PaletteId } from 'luvo/theme/themes';
 import type { RunState } from './jobs';
 export type WireProtocol = 'grpc' | 'grpc-web' | 'connectrpc';
@@ -223,6 +225,7 @@ export interface Environment {
   address?: string;
   variables: Record<string, string>;
   source?: 'project' | 'browser';
+  secret?: string[];
 
   mutedVariables?: string[];
   tls?: boolean;
@@ -281,6 +284,7 @@ export interface ProjectDefaults {
 export interface EnvLocalStatus {
   exists: boolean;
   content: string | null;
+  secret: string[];
 }
 
 export interface DocumentSummary {
@@ -549,6 +553,7 @@ export interface PlayStore {
   changedPaths: string[] | null;
   checked: Record<string, import('./checked').CheckedFile>;
   checkedSaid: string | null;
+  runRefused: { text: string; nonce: number } | null;
   checkAll: (paths: string[]) => Promise<void>;
   recheck: (path: string) => Promise<void>;
   changedSince: string | null;
@@ -637,7 +642,7 @@ export interface PlayStore {
   saveProjectSettings: (s: { address?: string; protocol?: string; tls?: boolean; tls_insecure?: boolean; active_env?: string | null }) => Promise<boolean>;
   refreshProjectEnvs: () => Promise<void>;
   fetchVariableUses: () => Promise<VariableUse[]>;
-  fetchProjectEnv: (name: string) => Promise<string>;
+  fetchProjectEnv: (name: string) => Promise<ProjectEnvFile>;
   saveProjectEnv: (name: string, content: string) => Promise<void>;
   fetchProjectEnvLocal: (name: string) => Promise<EnvLocalStatus>;
   saveProjectEnvLocal: (name: string, content: string) => Promise<void>;

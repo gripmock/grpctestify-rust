@@ -3,7 +3,7 @@ import { Seg } from 'luvo/ui/Seg';
 import { fetchDocs, matchingPages, pageForHref, pageTitle, type DocPage } from '../../lib/docs';
 import { useStore } from '../../lib/store';
 import { copyToClipboard } from 'luvo/data/clipboard';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useToast } from 'luvo/ui/useToast';
 import { Copy, Loader2, X } from 'lucide-react';
 import { parseMarkdown, type Block, type Inline } from '../../lib/markdown';
 import { parseSequence, type Sequence } from '../../lib/mermaid-sequence';
@@ -15,7 +15,8 @@ export function DocsDialog({ paths, onClose }: { paths: string[]; onClose: () =>
   const ref = useRef<HTMLDialogElement>(null);
   const toast = useToast();
   const [pages, setPages] = useState<DocPage[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [failed, setFailed] = useState<{ paths: string[]; jobId: string | null | undefined; message: string } | null>(null);
+  const error = failed && failed.paths === paths && failed.jobId === jobId ? failed.message : null;
   const [at, setAt] = useState(0);
   const [view, setView] = useState<'preview' | 'markdown'>('preview');
   const [filter, setFilter] = useState('');
@@ -26,7 +27,7 @@ export function DocsDialog({ paths, onClose }: { paths: string[]; onClose: () =>
     let live = true;
     fetchDocs(paths, jobId)
       .then(p => { if (live) { setPages(p); setAt(0); } })
-      .catch(e => { if (live) setError(e?.message || String(e)); });
+      .catch(e => { if (live) setFailed({ paths, jobId, message: e?.message || String(e) }); });
     return () => { live = false; };
   }, [paths, jobId]);
 
@@ -52,10 +53,10 @@ export function DocsDialog({ paths, onClose }: { paths: string[]; onClose: () =>
       </div>
 
       <div className="modal-body docs-body">
-        {!pages && !error && <div className="empty"><Loader2 size={12} className="spin" /> Reading the files…</div>}
+        {!pages && !error && <div className="empty-state"><Loader2 size={12} className="animate-spin" /> Reading the files…</div>}
         {error && <div className="assert is-fail"><span className="assert-mark">!</span><span>{error}</span></div>}
         {pages && pages.length === 0 && (
-          <div className="empty">No ENDPOINT-bearing tests here — there is nothing to document.</div>
+          <div className="empty-state">No ENDPOINT-bearing tests here — there is nothing to document.</div>
         )}
         {pages && pages.length > 0 && (
           <>
@@ -84,7 +85,7 @@ export function DocsDialog({ paths, onClose }: { paths: string[]; onClose: () =>
             </nav>
             <div className="stack docs-page">
               <div className="bar">
-                <span className="label grow mono" title={page?.name}>
+                <span className="field-label grow mono" title={page?.name}>
                   {page ? pageTitle(page.name, page.markdown) : ''}
                 </span>
                 <Seg

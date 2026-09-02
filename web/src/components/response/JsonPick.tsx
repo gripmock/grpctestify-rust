@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { extractAudience } from '../../lib/extract-contract';
 import { useStore } from '../../lib/store';
-import { useDismiss } from 'luvo/input/useDismiss';
-import { useToast } from 'luvo/ui/ToastContext';
-import { useModal } from 'luvo/ui/ModalContext';
+import { ContextMenu } from 'luvo/ui/ContextMenu';
+import { childPath } from '../../lib/json-path';
+import { useToast } from 'luvo/ui/useToast';
+import { useModal } from 'luvo/ui/useModal';
 import { acrossStream, containerActions, isContainer, numberAssert, roundedNote, streamNote } from '../../lib/pick-actions';
 import { copyToClipboard } from 'luvo/data/clipboard';
 
@@ -25,29 +26,10 @@ export function JsonPick({ value, messages }: { value: unknown; messages?: unkno
     setMenu({ path, value: v, x: rect.left, y: rect.bottom + 8 });
   };
 
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [placed, setPlaced] = useState<{ left: number; top: number } | null>(null);
-  useLayoutEffect(() => {
-    if (!menu) { setPlaced(null); return; }
-    const el = menuRef.current;
-    if (!el) return;
-    const { width, height } = el.getBoundingClientRect();
-    const margin = 8;
-    const left = Math.max(margin, Math.min(menu.x, window.innerWidth - width - margin));
-    const below = menu.y + height + margin <= window.innerHeight;
-    const top = below ? menu.y : Math.max(margin, menu.y - height - 16);
-    setPlaced({ left, top });
-  }, [menu]);
-
-  useEffect(() => {
-    if (placed) menuRef.current?.querySelector<HTMLButtonElement>('.menu-item')?.focus();
-  }, [placed]);
-
   const close = useCallback(() => {
     setMenu(null);
     triggerRef.current?.focus();
   }, []);
-  const pickRef = useDismiss<HTMLDivElement>(menu !== null, close);
 
   const answerElsewhere = () => {
     const from = useStore.getState().response?.fromStep;
@@ -103,23 +85,18 @@ export function JsonPick({ value, messages }: { value: unknown; messages?: unkno
   };
 
   return (
-    <div ref={pickRef} className="pick-tree" onClick={close}>
+    <div className="pick-tree">
       <pre className="diff is-flush">
         <Node value={value} path="" depth={0} onPick={openMenu} />
       </pre>
 
       {menu && (
-        <div
-          ref={menuRef}
-          className="menu pick-menu"
-          style={{ left: placed?.left ?? menu.x, top: placed?.top ?? menu.y, visibility: placed ? 'visible' : 'hidden' }}
-          onClick={e => e.stopPropagation()}
-        >
+        <ContextMenu at={{ x: menu.x, y: menu.y }} onClose={close} className="pick-menu" label={`${menu.path || '.'} — assert or extract this`}>
           <div className="menu-group mono">{menu.path}</div>
           {isContainer(menu.value) ? (
             <>
               {containerActions(menu.path, menu.value).map(action => (
-                <button key={action.line} className="menu-item" onClick={() => assertLine(action.line)}>
+                <button key={action.line} className="menu-item" role="menuitem" tabIndex={-1} onClick={() => assertLine(action.line)}>
                   {action.label}
                 </button>
               ))}
@@ -132,7 +109,7 @@ export function JsonPick({ value, messages }: { value: unknown; messages?: unkno
                 const note = streamNote(state, stream.length) ?? roundedNote(menu.value);
                 return (
                   <>
-                    <button className="menu-item" onClick={assertEq} disabled={note !== null}>
+                    <button className="menu-item" role="menuitem" tabIndex={-1} onClick={assertEq} disabled={note !== null}>
                       Assert equals {short(literal(menu.value))}
                     </button>
                     {note && <div className="menu-foot pick-note">{note}</div>}
@@ -140,7 +117,7 @@ export function JsonPick({ value, messages }: { value: unknown; messages?: unkno
                       const cast = numberAssert(menu.path, menu.value);
                       return cast && (
                         <button
-                          className="menu-item"
+                          className="menu-item" role="menuitem" tabIndex={-1}
                           onClick={() => assertLine(cast.line)}
                           disabled={note !== null}
                           title="protobuf sends 64-bit integers as strings — this compares the number"
@@ -149,16 +126,16 @@ export function JsonPick({ value, messages }: { value: unknown; messages?: unkno
                         </button>
                       );
                     })()}
-                    <button className="menu-item" onClick={assertShape}>{shapeLabel(menu.value)}</button>
+                    <button className="menu-item" role="menuitem" tabIndex={-1} onClick={assertShape}>{shapeLabel(menu.value)}</button>
                   </>
                 );
               })()}
             </>
           )}
-          <button className="menu-item" onClick={extract}>Extract as variable…</button>
+          <button className="menu-item" role="menuitem" tabIndex={-1} onClick={extract}>Extract as variable…</button>
           <div className="menu-sep" />
-          <button className="menu-item" onClick={copyPath}>Copy path</button>
-        </div>
+          <button className="menu-item" role="menuitem" tabIndex={-1} onClick={copyPath}>Copy path</button>
+        </ContextMenu>
       )}
     </div>
   );
@@ -224,12 +201,6 @@ function Node({ value, path, depth, onPick }: {
       {literal(value)}
     </button>
   );
-}
-
-export function childPath(parent: string, key: string): string {
-  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return `${parent}.${key}`;
-  const quoted = `["${key.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]`;
-  return parent ? `${parent}${quoted}` : `.${quoted}`;
 }
 
 function literal(v: unknown): string {

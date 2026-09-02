@@ -46,7 +46,7 @@ describe('the shortcuts panel', () => {
     const ui = mount(<KeyboardShortcutHelp open onClose={() => {}} />);
     ui.type('.keys-search input', 'zzzzz');
     expect(ui.all('.keys-row')).toHaveLength(0);
-    expect(ui.get('.empty').textContent).toContain('zzzzz');
+    expect(ui.get('.empty-state').textContent).toContain('zzzzz');
     ui.unmount();
   });
 

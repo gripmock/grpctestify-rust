@@ -17,10 +17,16 @@ function serve(pages: unknown) {
   vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => pages })));
 }
 
+const dialog = (paths: string[]) => <ToastProvider><DocsDialog paths={paths} onClose={() => {}} /></ToastProvider>;
+
 async function open() {
-  const ui = mount(<ToastProvider><DocsDialog paths={['a.gctf']} onClose={() => {}} /></ToastProvider>);
+  const ui = mount(dialog(['a.gctf']));
   await act(async () => { await Promise.resolve(); });
   return ui;
+}
+
+async function settle() {
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 }
 
 afterEach(() => { vi.unstubAllGlobals(); });
@@ -64,14 +70,32 @@ describe('the pages a suite would be documented as', () => {
     serve(PAGES);
     const ui = await open();
     ui.click('.docs-link.is-page');
-    expect(ui.get('.docs-page .label').textContent).toBe('/v1');
+    expect(ui.get('.docs-page .field-label').textContent).toBe('/v1');
     ui.unmount();
   });
 
   it('says a set with nothing to document has nothing, rather than failing', async () => {
     serve([]);
     const ui = await open();
-    expect(ui.get('.empty').textContent).toContain('nothing to document');
+    expect(ui.get('.empty-state').textContent).toContain('nothing to document');
+    ui.unmount();
+  });
+});
+
+describe('a fetch that fails and then one that does not', () => {
+  it('shows only the pages once they arrive', async () => {
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(async () => { throw new Error('the workbench went away'); })
+      .mockImplementation(async () => ({ ok: true, json: async () => PAGES }));
+    vi.stubGlobal('fetch', fetchMock);
+    const ui = await open();
+    await settle();
+    expect(ui.get('.assert.is-fail').textContent).toContain('the workbench went away');
+
+    ui.update(dialog(['b.gctf']));
+    await settle();
+    expect(ui.all('.assert.is-fail')).toEqual([]);
+    expect(ui.all('.docs-pages .row').map(r => r.textContent)).toEqual(['overview', '/v1', 'pkg.Svc']);
     ui.unmount();
   });
 });

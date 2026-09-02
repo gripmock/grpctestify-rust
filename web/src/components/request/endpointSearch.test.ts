@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { matchesQuery } from './RequestPanel';
+import { matchesQuery } from '../../lib/method-search';
 
 const SAY_HELLO = 'helloworld.Greeter/SayHello';
 

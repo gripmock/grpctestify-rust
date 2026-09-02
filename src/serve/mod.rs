@@ -152,17 +152,36 @@ pub async fn info_handler(State(state): State<Arc<PlayState>>) -> Json<InfoRespo
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| dir.to_string_lossy().to_string()),
-        root: dir
-            .canonicalize()
-            .unwrap_or_else(|_| dir.to_path_buf())
-            .to_string_lossy()
-            .to_string(),
+        root: workspace_identity(dir),
         shares_path: if state.project_root.is_some() {
             ".grpctestify/shares".to_string()
         } else {
             "shares".to_string()
         },
     })
+}
+
+fn workspace_identity(dir: &std::path::Path) -> String {
+    use sha2::Digest;
+    let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let digest = sha2::Sha256::digest(canonical.to_string_lossy().as_bytes());
+    let short: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+    let name = canonical
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| dir.to_string_lossy().to_string());
+    format!("{name}#{short}")
+}
+
+pub(super) fn redact_query(query: &str) -> String {
+    query
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            Some((key, _)) if key == "token" => format!("{key}=<redacted>"),
+            _ => pair.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 fn use_color() -> bool {
@@ -222,7 +241,7 @@ async fn access_log_middleware(
     let query = req
         .uri()
         .query()
-        .map(|q| format!("?{}", q))
+        .map(|q| format!("?{}", redact_query(q)))
         .unwrap_or_default();
     let start = Instant::now();
     let response = next.run(req).await;
@@ -378,6 +397,17 @@ pub fn needs_token(path: &str) -> bool {
     path.starts_with("/api/")
 }
 
+pub(super) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    let mut diff = a.len() ^ b.len();
+    let longest = a.len().max(b.len());
+    for i in 0..longest {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        diff |= usize::from(x ^ y);
+    }
+    diff == 0
+}
+
 pub fn request_has_token(
     headers: &axum::http::HeaderMap,
     query: Option<&str>,
@@ -388,14 +418,14 @@ pub fn request_has_token(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::trim);
-    if bearer == Some(expected) {
+    if bearer.is_some_and(|given| ct_eq(given.as_bytes(), expected.as_bytes())) {
         return true;
     }
     query
         .into_iter()
         .flat_map(|q| q.split('&'))
         .filter_map(|pair| pair.split_once('='))
-        .any(|(key, value)| key == "token" && value == expected)
+        .any(|(key, value)| key == "token" && ct_eq(value.as_bytes(), expected.as_bytes()))
 }
 
 pub fn build_app(state: Arc<PlayState>) -> Router {
@@ -495,6 +525,7 @@ pub fn build_app(state: Arc<PlayState>) -> Router {
 }
 
 pub async fn start_play_server(host: &str, port: u16, dir: PathBuf) -> Result<()> {
+    apif_plugins::trust::set_non_interactive();
     let project_root = project::detect_project(&dir);
     if let Some(root) = project_root.as_ref() {
         project::ensure_workbench_ignored(root);
@@ -657,6 +688,12 @@ pub async fn start_play_server(host: &str, port: u16, dir: PathBuf) -> Result<()
         }
     }
     println!("   dirs     {dir}", dir = collections_dir_display);
+    println!(
+        "   {dim}this release names the workspace differently, so tabs saved by an older \
+         session are let go once{reset}",
+        dim = ansi!(ANSI_BOLD),
+        reset = ansi!(ANSI_RESET),
+    );
     println!();
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -740,5 +777,47 @@ mod tests {
         assert!(!host_is_loopback("192.168.1.10:4755"));
         assert!(!host_is_loopback("127.0.0.1.evil.example"));
         assert!(!host_is_loopback(""));
+    }
+
+    #[test]
+    fn the_access_log_never_prints_a_token() {
+        assert_eq!(redact_query("token=abc123"), "token=<redacted>");
+        assert_eq!(
+            redact_query("since=1&token=abc123&x=y"),
+            "since=1&token=<redacted>&x=y"
+        );
+        assert_eq!(redact_query("since=1"), "since=1");
+        assert_eq!(redact_query("tokens=abc"), "tokens=abc");
+    }
+
+    #[test]
+    fn tokens_compare_without_leaking_where_they_differ() {
+        assert!(ct_eq(b"secret", b"secret"));
+        assert!(!ct_eq(b"secret", b"secreT"));
+        assert!(!ct_eq(b"secret", b"secre"));
+        assert!(!ct_eq(b"", b"a"));
+        assert!(!ct_eq(b"", &[0u8; 256]));
+        assert!(ct_eq(b"", b""));
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn the_workspace_identity_names_the_folder_and_not_where_it_lives() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let inner = dir.path().join("app");
+        std::fs::create_dir_all(&inner).expect("mkdir");
+        let identity = workspace_identity(&inner);
+        assert!(identity.starts_with("app#"), "{identity}");
+        assert_eq!(identity.len(), "app#".len() + 8, "{identity}");
+        assert!(
+            !identity.contains(&*dir.path().to_string_lossy()),
+            "{identity}"
+        );
+        assert_eq!(identity, workspace_identity(&inner));
+
+        let other = tempfile::tempdir().expect("tempdir");
+        let same_name = other.path().join("app");
+        std::fs::create_dir_all(&same_name).expect("mkdir");
+        assert_ne!(identity, workspace_identity(&same_name));
     }
 }

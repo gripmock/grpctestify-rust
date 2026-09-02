@@ -421,6 +421,13 @@ export function runRefusal(said: string, openPaths: string[]): RunRefusal {
   };
 }
 
+export class RunsBusy extends Error {
+  constructor(said: string) {
+    super(said.trim() || 'The workbench is already running as much as it runs at once — this one was not started');
+    this.name = 'RunsBusy';
+  }
+}
+
 export async function startJob(
   paths: string[],
   upToStep?: number,
@@ -433,12 +440,20 @@ export async function startJob(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ kind, paths, up_to_step: upToStep, reports, data: data || undefined }),
   });
+  if (res.status === 429) throw new RunsBusy(await res.text().catch(() => ''));
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
-export async function cancelJob(id: string): Promise<void> {
-  await fetch(`/api/jobs/${id}/cancel`, { method: 'POST' });
+export async function cancelJob(id: string): Promise<JobSummary | null> {
+  try {
+    const res = await fetch(`/api/jobs/${id}/cancel`, { method: 'POST' });
+    if (!res.ok) return null;
+    const said = await res.json().catch(() => null);
+    return said && typeof said === 'object' && typeof said.status === 'string' ? said as JobSummary : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function jobSummary(id: string): Promise<JobSummary | null> {

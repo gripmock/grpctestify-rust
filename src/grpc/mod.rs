@@ -2,6 +2,7 @@ pub mod adapter;
 pub mod client;
 pub mod grpcurl_invocation;
 pub mod proxy;
+pub mod template;
 pub mod web;
 pub(crate) mod web_reflection;
 

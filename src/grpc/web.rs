@@ -1151,13 +1151,22 @@ async fn send_http(
     Ok((status, headers, stream))
 }
 
+const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+
 async fn collect_stream<S>(mut chunks: S) -> Result<Vec<u8>>
 where
     S: Stream<Item = Result<Vec<u8>>> + Unpin,
 {
     let mut buf = Vec::new();
     while let Some(chunk) = chunks.next().await {
-        buf.extend_from_slice(&chunk?);
+        let chunk = chunk?;
+        if buf.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            return Err(anyhow!(
+                "the response is larger than {} MiB, which is more than the client keeps in memory",
+                MAX_RESPONSE_BYTES / (1024 * 1024)
+            ));
+        }
+        buf.extend_from_slice(&chunk);
     }
     Ok(buf)
 }
@@ -3023,5 +3032,23 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
             assert_eq!(offsets.len(), messages.len(), "one offset per message");
             assert!(offsets[0] <= offsets[1], "offsets are monotonic");
         });
+    }
+
+    #[tokio::test]
+    async fn a_body_past_the_memory_cap_is_refused_before_it_is_held() {
+        let piece = vec![0u8; 8 * 1024 * 1024];
+        let chunks: Vec<Result<Vec<u8>>> = (0..5).map(|_| Ok(piece.clone())).collect();
+        let err = collect_stream(Box::pin(futures::stream::iter(chunks)))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("32 MiB"), "{err}");
+
+        let small = collect_stream(Box::pin(futures::stream::iter(vec![
+            Ok::<Vec<u8>, anyhow::Error>(vec![1, 2]),
+            Ok(vec![3]),
+        ])))
+        .await
+        .unwrap();
+        assert_eq!(small, vec![1, 2, 3]);
     }
 }

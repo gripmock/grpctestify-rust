@@ -1,13 +1,14 @@
 import { useEffect, useRef } from 'react';
 import type { HistoryEntry } from '../../lib/types';
 import { copyToClipboard } from 'luvo/data/clipboard';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useToast } from 'luvo/ui/useToast';
 import { entryFailed } from '../../lib/call-outcome';
 import { looksHttp } from '../../lib/http-endpoint';
 import { httpStatusLabel, httpStatusTone, durationLabel } from '../../lib/format';
 import { Copy, ExternalLink, Play, X } from 'lucide-react';
 import { explainFailure } from '../../lib/failure';
 import { count } from 'luvo/data/plural';
+import { maskHeader } from '../../lib/secret-headers';
 
 const CAP = 20_000;
 
@@ -95,7 +96,7 @@ export function HistoryPeek({ entry, top, panelRef, onClose, onOpen, onReplay }:
               .filter(Boolean).join(' · ')
           : 'recorded before the connection was kept'}
         {Object.keys(entry.headers ?? {}).length > 0 && (
-          <span title={Object.entries(entry.headers).map(([k, v]) => `${k}: ${v}`).join('\n')}>
+          <span className="peek-headers" title={Object.entries(entry.headers).map(([k, v]) => `${k}: ${maskHeader(k, v)}`).join('\n')}>
             · {count(Object.keys(entry.headers).length, 'header')}
           </span>
         )}
@@ -104,7 +105,7 @@ export function HistoryPeek({ entry, top, panelRef, onClose, onOpen, onReplay }:
       <div className="peek-body">
         <div className="peek-half">
           <div className="bar">
-            <span className="label grow">sent</span>
+            <span className="field-label grow">sent</span>
             {entry.resolved && entry.resolved.length > 0 && (
               <span
                 className="muted peek-filled"
@@ -129,7 +130,7 @@ export function HistoryPeek({ entry, top, panelRef, onClose, onOpen, onReplay }:
 
         <div className="peek-half">
           <div className="bar">
-            <span className="label grow">
+            <span className="field-label grow">
               came back{messages.length > 1 ? ` · ${messages.length} messages` : ''}
             </span>
             {messages.length > 0 && (

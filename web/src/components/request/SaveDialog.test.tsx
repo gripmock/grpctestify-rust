@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { SaveDialog } from './SaveDialog';
 import { useStore } from '../../lib/store';
 import { ToastProvider } from 'luvo/ui/ToastContext';
@@ -118,6 +118,39 @@ describe('a file that names no address', () => {
     });
     const ui = mount(dialog());
     expect(ui.container.textContent).not.toContain('takes it from the environment');
+    ui.unmount();
+  });
+});
+
+describe('a folder the workbench will not keep', () => {
+  const settle = () => new Promise(r => setTimeout(r, 20));
+
+  beforeEach(() => {
+    useStore.setState({
+      workspacePath: null, collections: [], collectionParsed: null,
+      request: { endpoint: 'a.B/C', headers: {}, bodies: ['{}'] },
+    } as never);
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('says what the workbench said, and asks again with the name still typed', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false, status: 400, statusText: 'Bad Request',
+      text: async () => '.staging is a hidden path — nothing would list it again',
+    })) as never);
+    const ui = mount(dialog());
+    const folder = ui.all('.btn').find(b => b.textContent?.includes('new folder'));
+    ui.click(folder!);
+    await settle();
+    const asking = () => [...document.querySelectorAll('dialog')].pop()!;
+    ui.type(asking().querySelector('input')!, '.staging');
+    ui.click(asking().querySelector('.btn.is-primary')!);
+    await settle();
+
+    expect(asking().textContent).toContain('hidden path');
+    expect((asking().querySelector('input') as HTMLInputElement).value).toBe('.staging');
+    ui.click(asking().querySelector('.btn.is-quiet')!);
+    await settle();
     ui.unmount();
   });
 });

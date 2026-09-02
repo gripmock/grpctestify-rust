@@ -30,6 +30,17 @@ export function reportRefusal(file: string, status: number): string {
 
 export const REPORT_FORMATS: ReportFormat[] = ['json', 'junit', 'yaml', 'html', 'allure'];
 
+export function allureNote(
+  written: { files?: number; path: string; open: string },
+  copied: boolean,
+): string {
+  const many = written.files === 1 ? '1 result' : `${written.files ?? 0} results`;
+  const where = `${many} in ${written.path}`;
+  return copied
+    ? `${where} — \`${written.open}\` copied, and it reads that path from the project directory`
+    : `${where} — the browser refused the clipboard, so run \`${written.open}\` from the project directory`;
+}
+
 export function downloadableReports(written: string[]): { file: string; ready: boolean }[] {
   const already = new Set(written);
   const rows = REPORT_FORMATS.map(format => {

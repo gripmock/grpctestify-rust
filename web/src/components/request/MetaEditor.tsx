@@ -37,13 +37,13 @@ export function MetaEditor() {
   return (
     <div className="stack">
       <label className="stack">
-        <span className="label">name</span>
+        <span className="field-label">name</span>
         <input className="field field-frame" placeholder="how a report calls this test"
           value={parsed?.meta_name ?? ''} onChange={e => setMetaField('meta_name', e.target.value)} />
       </label>
 
       <label className="stack">
-        <span className="label">
+        <span className="field-label">
           summary
           {attrSummary && <span className="muted"> · {(parsed?.meta_summary ?? '') === '' ? 'from #[summary]' : '#[summary] not used'}</span>}
         </span>
@@ -53,7 +53,7 @@ export function MetaEditor() {
       </label>
 
       <label className="stack">
-        <span className="label">
+        <span className="field-label">
           owner
           {attrOwner && <span className="muted"> · {(parsed?.meta_owner ?? '') === '' ? 'from #[owner]' : '#[owner] not used'}</span>}
         </span>
@@ -71,7 +71,7 @@ export function MetaEditor() {
       )}
 
       <div className="stack">
-        <span className="label">
+        <span className="field-label">
           tags
           {tags.length > 0 && fromAttributes.length > 0 && (
             <span className="muted"> · #[tag] not used</span>
@@ -125,7 +125,7 @@ export function MetaEditor() {
       </div>
 
       <div className="stack">
-        <span className="label">links</span>
+        <span className="field-label">links</span>
         {links.map((link, i) => (
           <div key={i} className="bar">
             <input

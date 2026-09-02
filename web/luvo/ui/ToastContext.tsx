@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, useCallback, useMemo, useRef, type ReactNode } from 'react';
+import { useState, useCallback, useMemo, useRef, type ReactNode } from 'react';
+import { ToastContext, type ToastApi } from 'luvo/ui/useToast';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { REFUSAL_TYPE, keepLast, repeatsNewest, toastLife } from 'luvo/ui/toast-life';
@@ -9,26 +10,7 @@ interface Toast {
   id: number;
   type: ToastType;
   message: string;
-}
-
-interface ToastApi {
-  success: (message: string) => void;
-  error: (message: string) => void;
-  /** Not a failure, and not over in four seconds: something the next click
-   *  depends on having been read. */
-  warn: (message: string) => void;
-  info: (message: string) => void;
-  /** Nothing was attempted and nothing went wrong: the state does not allow
-   *  this, and the same click will say so again. */
-  refuse: (message: string) => void;
-}
-
-const ToastContext = createContext<ToastApi | null>(null);
-
-export function useToast(): ToastApi {
-  const ctx = useContext(ToastContext);
-  if (!ctx) throw new Error('useToast must be used within ToastProvider');
-  return ctx;
+  alert: boolean;
 }
 
 const TOAST_CLASS: Record<ToastType, string> = {
@@ -46,7 +28,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const nextId = useRef(0);
 
-  const addToast = useCallback((type: ToastType, message: string) => {
+  const addToast = useCallback((type: ToastType, message: string, alert = type === 'error') => {
     const id = nextId.current++;
     let added = true;
     setToasts(prev => {
@@ -54,7 +36,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
          a workbench checked every fifteen seconds — used to stack its refusal
          until the cap. */
       if (repeatsNewest(prev, { type, message })) { added = false; return prev; }
-      return keepLast([...prev, { id, type, message }]);
+      return keepLast([...prev, { id, type, message, alert }]);
     });
     if (!added) return;
     const life = toastLife(type);
@@ -79,7 +61,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     error: (message) => addToast('error', message),
     warn: (message) => addToast('warn', message),
     info: (message) => addToast('info', message),
-    refuse: (message) => addToast(REFUSAL_TYPE, message),
+    refuse: (message) => addToast(REFUSAL_TYPE, message, true),
   }), [addToast]);
 
   return (
@@ -91,7 +73,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             <div
               key={t.id}
               className={`toast ${TOAST_CLASS[t.type]}`}
-              role="status"
+              role={t.alert ? 'alert' : 'status'}
             >
               {/* A mark, not only a colour: the kind survives a screenshot in
                   greyscale and a reader who cannot separate the hues. */}

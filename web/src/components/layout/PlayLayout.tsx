@@ -16,10 +16,11 @@ import { revealDelta } from '../../lib/reveal';
 import { readNumber, writeText, readText } from 'luvo/data/storage';
 import { useDeepLink, useUrlSync } from '../../lib/routing';
 import { KeyboardShortcutHelp } from '../ui/KeyboardShortcutHelp';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useToast } from 'luvo/ui/useToast';
 import { ConflictDialog } from '../ui/ConflictDialog';
 import { Splitter } from 'luvo/ui/Splitter';
 import { Tabs } from 'luvo/ui/Tabs';
+import { tabPanelProps } from 'luvo/ui/tab-ids';
 import { Drawer } from '../tools/Drawer';
 import { FileDrop } from './FileDrop';
 import { isChord, matchesHotkey, matchesDigitShortcut, isInputFocused, modalOpen, noteKeyDown, noteKeyUp } from 'luvo/input/hotkeys';
@@ -30,6 +31,7 @@ import type { CommandUi } from '../../lib/commands';
 import { CommandPalette } from '../ui/CommandPalette';
 import { FolderOpen, Clock, PanelLeftOpen, X } from 'lucide-react';
 import { retheme } from '../../lib/monaco-theme';
+import { mtimeMoved, pollsWhile, syncsAnyway } from '../../lib/poll-tick';
 
 type SidebarTab = 'collections' | 'history';
 
@@ -89,6 +91,12 @@ export function PlayLayout() {
     };
   }, [checkHealth, syncFiles]);
 
+  const runRefused = useStore(s => s.runRefused);
+  useEffect(() => {
+    if (!runRefused) return;
+    toast.refuse(runRefused.text);
+  }, [runRefused, toast]);
+
   const serverHealthy = useStore(s => s.serverHealthy);
   const wasHealthy = useRef(serverHealthy);
   useEffect(() => {
@@ -101,19 +109,22 @@ export function PlayLayout() {
     wasHealthy.current = serverHealthy;
   }, [serverHealthy, toast]);
 
+  const ticks = useRef(0);
   useEffect(() => {
     let active = true;
     const poll = async () => {
+      if (!pollsWhile(document.visibilityState)) return;
+      const tick = ++ticks.current;
       try {
         const res = await fetch('/api/info');
         if (!res.ok || !active) return;
         const data = await res.json();
-        if (data.collections_mtime !== undefined && data.collections_mtime !== collectionsMtime) {
+        if (mtimeMoved(collectionsMtime, data.collections_mtime)) {
           useStore.setState({ collectionsMtime: data.collections_mtime });
           await syncFiles();
           return;
         }
-        if (!active) return;
+        if (!syncsAnyway(tick) || !active) return;
         const reloaded = await useStore.getState().syncOpenFiles();
         if (reloaded.length > 0) {
           toast.info(reloaded.length === 1
@@ -363,6 +374,7 @@ export function PlayLayout() {
         {sidebarVisible && <>
         <aside className="sidebar" style={{ width: sidebarW }}>
           <Tabs
+            id="rail"
             label="The rail — files or history"
             items={SIDEBAR_TABS.map(t => ({ key: t.key, label: <>{t.icon} {t.label}</> }))}
             value={sidebarTab}
@@ -372,7 +384,7 @@ export function PlayLayout() {
             {sidebarTab === 'collections' && <RunControl />}
           </Tabs>
 
-          <div className="sidebar-body">
+          <div className="sidebar-body" {...tabPanelProps('rail', sidebarTab)}>
             {sidebarTab === 'collections' && <Sidebar />}
             {sidebarTab === 'history' && <HistoryPanel />}
           </div>

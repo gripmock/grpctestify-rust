@@ -1,3 +1,5 @@
+import { MASK, looksLikeSecret } from './secret-names';
+
 const SECRET_KEYS = [
   'authorization',
   'proxy-authorization',
@@ -14,6 +16,11 @@ export function isSecretHeader(key: string): boolean {
 
 export function hidesTyped(key: string, value: string): boolean {
   return isSecretHeader(key) && !value.includes('{{');
+}
+
+export function maskHeader(key: string, value: string): string {
+  if (value === '' || value.includes('{{')) return value;
+  return isSecretHeader(key) || looksLikeSecret(key) ? MASK : value;
 }
 
 export function splitScheme(value: string): { prefix: string; secret: string } {

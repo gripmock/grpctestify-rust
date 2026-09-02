@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { burstKey, burstRepeats, callSummary, dayMark, groupByDay, methodOf, payloadPreview, serviceOf, tookRange } from './history-group';
+import { burstKey, burstRepeats, callSummary, dayMark, groupByDay, methodOf, payloadPreview, serviceOf, tookRange, msUntilMidnight } from './history-group';
 
 const at = (y: number, m: number, d: number, h = 12) => new Date(y, m, d, h).getTime();
 const now = at(2026, 7, 21, 15);
@@ -255,5 +255,18 @@ describe('two rows of one file', () => {
 
   it('and the same row twice is still one thing that happened twice', () => {
     expect(burstKey(call(1))).toBe(burstKey(call(1)));
+  });
+});
+
+describe('msUntilMidnight', () => {
+  it('counts down to the next local midnight', () => {
+    const at = new Date(2026, 0, 1, 23, 59, 58).getTime();
+    expect(msUntilMidnight(at)).toBe(2000);
+  });
+
+  it('never asks for a timer of zero', () => {
+    const midnight = new Date(2026, 0, 2, 0, 0, 0).getTime();
+    expect(msUntilMidnight(midnight)).toBe(86_400_000);
+    expect(msUntilMidnight(midnight - 1)).toBe(1);
   });
 });

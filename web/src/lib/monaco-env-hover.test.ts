@@ -101,3 +101,17 @@ describe('the variable under the pointer', () => {
     expect(variableAt('{{ not a name }}', 4)).toBeNull();
   });
 });
+
+describe('a name the project says is a credential', () => {
+  it('is not printed, however ordinary the word looks', () => {
+    const told = { ...env, variables: { SEED: 'abc123' }, secret: ['SEED'] };
+    const said = hoverOver('{{SEED}}', told);
+    expect(said).not.toContain('abc123');
+    expect(said).toContain('••••••');
+  });
+
+  it('still prints the values it was not told about', () => {
+    const told = { ...env, variables: { HOST: 'api.test' }, secret: ['SEED'] };
+    expect(hoverOver('{{HOST}}', told)).toContain('api.test');
+  });
+});

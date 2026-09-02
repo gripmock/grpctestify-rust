@@ -37,7 +37,7 @@ export function OptionsEditor() {
       <div className="kvrow opt-row">
         <label className={`stack opt-field${overruled('timeout') ? ' is-overruled' : ''}`}
           title={overruled('timeout') ? beaten('timeout') : undefined}>
-          <span className="label">timeout{overruled('timeout') && <span className="muted"> · not used</span>}</span>
+          <span className="field-label">timeout{overruled('timeout') && <span className="muted"> · not used</span>}</span>
           <div className="field-frame">
             <input className="field mono" inputMode="numeric" placeholder="seconds"
               value={options.timeout ?? ''} onChange={e => num('timeout', { integer: true, min: 1 })(e.target.value)} />
@@ -46,7 +46,7 @@ export function OptionsEditor() {
         </label>
         <label className={`stack opt-field${overruled('retry') ? ' is-overruled' : ''}`}
           title={overruled('retry') ? beaten('retry') : undefined}>
-          <span className="label">retry{overruled('retry') && <span className="muted"> · not used</span>}</span>
+          <span className="field-label">retry{overruled('retry') && <span className="muted"> · not used</span>}</span>
           <div className="field-frame">
             <input className="field mono" inputMode="numeric" placeholder="attempts"
               value={options.retry ?? ''} onChange={e => num('retry', { integer: true, min: 0 })(e.target.value)} />
@@ -54,7 +54,7 @@ export function OptionsEditor() {
         </label>
         <label className={`stack opt-field${overruled('retry_delay') ? ' is-overruled' : ''}`}
           title={overruled('retry_delay') ? beaten('retry_delay') : undefined}>
-          <span className="label">retry delay{overruled('retry_delay') && <span className="muted"> · not used</span>}</span>
+          <span className="field-label">retry delay{overruled('retry_delay') && <span className="muted"> · not used</span>}</span>
           <div className="field-frame">
             <input className="field mono" inputMode="decimal" placeholder="seconds"
               value={options.retry_delay ?? ''} onChange={e => num('retry_delay', { min: 0 })(e.target.value)} />
@@ -66,7 +66,7 @@ export function OptionsEditor() {
       <div className="bar wrap">
         {!isHttp && (
           <>
-        <span className="label">compression</span>
+        <span className="field-label">compression</span>
         <Seg
           label="Compression"
           value={options.compression ?? 'none'}
@@ -74,7 +74,7 @@ export function OptionsEditor() {
           options={COMPRESSION.map(v => ({ value: v, label: v }))}
         />
 
-        <span className="label">protocol</span>
+        <span className="field-label">protocol</span>
         <Seg
           label="Protocol"
           value={options.protocol ?? 'grpc'}
@@ -135,7 +135,7 @@ export function OptionsEditor() {
 
       {unknownKeys(options, KNOWN).length > 0 && (
         <div>
-          <div className="label">also in this section</div>
+          <div className="field-label">also in this section</div>
           <div className="bar wrap">
             {unknownKeys(options, KNOWN).map(([k, v]) => (
               <span key={k} className="chip mono is-warn" title={keyProblem(k, diagnostics) ?? undefined}>
@@ -155,7 +155,7 @@ export function OptionsEditor() {
 
       {attributes.length > 0 && (
         <div>
-          <div className="label">section attributes</div>
+          <div className="field-label">section attributes</div>
           <div className="bar wrap">
             {attributes.map(a => (
               <span key={`${a.section}${a.index}${a.name}=${a.value}`} className="chip mono">

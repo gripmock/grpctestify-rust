@@ -13,7 +13,7 @@ import { runtimeRow, transportDrift } from '../../lib/plan-runtime';
 import { aimsHttp } from '../../lib/env-address';
 import { copyToClipboard } from 'luvo/data/clipboard';
 import { Copy, TriangleAlert } from 'lucide-react';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useToast } from 'luvo/ui/useToast';
 import { count } from 'luvo/data/plural';
 import { addressOrigin, originClass } from '../../lib/plan-source';
 
@@ -105,7 +105,7 @@ export function PlanView() {
   );
 
   if (!source) {
-    return <div className="empty">Pick a method and this says how the call would run.</div>;
+    return <div className="empty-state">Pick a method and this says how the call would run.</div>;
   }
 
   const failure = error ?? data?.error ?? null;
@@ -115,7 +115,7 @@ export function PlanView() {
 
   const plans = data?.documents ?? [];
   if (plans.length === 0) {
-    return <div className="empty">{busy || draft.busy ? 'Reading the file…' : 'Nothing to plan yet.'}</div>;
+    return <div className="empty-state">{busy || draft.busy ? 'Reading the file…' : 'Nothing to plan yet.'}</div>;
   }
 
   const fileName = workspacePath?.split('/').pop() ?? (isHttp ? 'file.httf' : 'file.gctf');
@@ -175,7 +175,7 @@ export function PlanView() {
         const drift = transportDrift(rows, protocol, fileOptions?.protocol);
         return (
         <div className="stack" key={i}>
-          <span className="label">
+          <span className="field-label">
             effective runtime — and where each value came from
             {plans.length > 1 && ` · step ${i + 1}`}
           </span>
@@ -223,7 +223,7 @@ export function PlanView() {
 
       {lens === 'sections' && (
         <div className="stack">
-          <span className="label">sections — what the parser saw</span>
+          <span className="field-label">sections — what the parser saw</span>
           {groupSectionsByStep(data?.sections ?? []).map(group => (
             <div key={group.step}>
               {plans.length > 1 && <div className="rail-group">step {group.step}</div>}
@@ -339,7 +339,7 @@ export function PlanView() {
 
               {doc && doc.produces.length > 0 && (
                 <div className="bar wrap">
-                  <span className="label">passes on</span>
+                  <span className="field-label">passes on</span>
                   {doc.produces.map(v => <span key={v} className="chip is-on mono">{v}</span>)}
                 </div>
               )}

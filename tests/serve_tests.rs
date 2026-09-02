@@ -518,14 +518,24 @@ async fn a_mixed_suite_runs_as_one_job() {
 
     /* And each says what its answer came back with, so a run started from the
     rail tells the panel what a run started from the panel tells it. */
-    let status_of = |id: &str| {
+    let status_of = |id: &str, field: &str| {
         events
             .iter()
             .find(|e| e["testId"] == id && e["event"] == "test_pass")
-            .and_then(|e| e["grpcStatus"].as_u64())
+            .and_then(|e| e[field].as_u64())
     };
-    assert_eq!(status_of("http.httf"), Some(200), "{events:?}");
-    assert_eq!(status_of("grpc.gctf"), Some(0), "{events:?}");
+    assert_eq!(
+        status_of("http.httf", "httpStatus"),
+        Some(200),
+        "{events:?}"
+    );
+    assert_eq!(
+        status_of("http.httf", "grpcStatus"),
+        None,
+        "an HTTP status is not a gRPC code: {events:?}"
+    );
+    assert_eq!(status_of("grpc.gctf", "grpcStatus"), Some(0), "{events:?}");
+    assert_eq!(status_of("grpc.gctf", "httpStatus"), None, "{events:?}");
 
     /* And one report holds both, each saying which family it belongs to — a
     dashboard reading it can tell them apart without parsing file names. */
@@ -873,7 +883,7 @@ async fn project_settings_get() {
     assert_eq!(body["address"], "localhost:4770");
     assert_eq!(body["protocol"], "grpc");
     assert_eq!(body["tls"], false);
-    assert_eq!(body["tls_insecure"], true);
+    assert_eq!(body["tls_insecure"], false);
     assert_eq!(body["active_env"], "example");
 }
 
@@ -936,10 +946,15 @@ async fn project_env_crud() {
 
     // Read back
     let (_, body) = get_json(&url, "/api/project/env/staging").await;
-    let raw: String = serde_json::from_value(body).unwrap_or_default();
+    let raw: String = serde_json::from_value(body["content"].clone()).unwrap_or_default();
     assert!(
         raw.contains("API_KEY=test123"),
         "env content should contain API_KEY"
+    );
+    assert_eq!(
+        body["secret"],
+        serde_json::json!(["API_KEY"]),
+        "the editor is told which names are secret, and the text is untouched"
     );
 
     // Create local overrides
@@ -952,6 +967,7 @@ async fn project_env_crud() {
     assert_eq!(body["exists"], true);
     let local_content: String = serde_json::from_value(body["content"].clone()).unwrap_or_default();
     assert!(local_content.contains("local-secret"));
+    assert_eq!(body["secret"], serde_json::json!(["API_KEY"]));
 
     // Delete local overrides
     let status = delete_req(&url, "/api/project/env/staging/local").await;

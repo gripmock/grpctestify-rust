@@ -28,7 +28,8 @@ In order:
 
 1. The document's own `ADDRESS`
 2. The address the chain started with — see below
-3. The address of the active environment (`GRPC_ADDRESS` in `.env.<name>`)
+3. In the playground only: the address of the active environment (`GRPC_ADDRESS` in
+   `.grpctestify/.env.<name>`). The CLI (`run`, `call`, `bench`) never reads `.env.<name>` files
 4. `GRPCTESTIFY_ADDRESS`
 5. The transport's default (`localhost:4770` for gRPC; an HTTP call has no default and needs an address)
 

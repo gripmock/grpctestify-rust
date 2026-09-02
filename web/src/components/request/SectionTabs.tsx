@@ -3,6 +3,7 @@ import type { CollectionParsed, RequestTab } from '../../lib/types';
 import { sectionsByGroup } from '../../lib/sections';
 import { requestFamily } from '../../lib/http-endpoint';
 import { Tabs, type TabItem } from 'luvo/ui/Tabs';
+import { tabPanelProps } from 'luvo/ui/tab-ids';
 import { BodyEditor } from './BodyEditor';
 import { HeadersEditor } from './HeadersEditor';
 import { ExpectEditor } from './ExpectEditor';
@@ -50,6 +51,7 @@ export function SectionTabs() {
 
   return (
     <Tabs
+      id="section"
       label="Sections of this request"
       items={items}
       value={configOpen ? ('config' as RequestTab) : tab}
@@ -59,14 +61,21 @@ export function SectionTabs() {
   );
 }
 
-export function SectionBody() {
+export function SectionBody({ fill }: { fill: boolean }) {
   const tab = useStore(s => s.requestTab);
   const parsed = useStore(s => s.collectionParsed);
   const reason = useStore(s => rawAuthorityReason(s));
   const setRequestTab = useStore(s => s.setRequestTab);
+  const bodies = useStore(s => s.request.bodies);
+  const headers = useStore(s => s.request.headers);
+  const family = useStore(s => requestFamily(s.workspacePath, s.request.endpoint));
+  const config = sectionsByGroup(parsed, bodies, headers, family).config;
+  const shown = tab === 'config' || config.some(s => s.key === tab) ? 'config' : tab;
+  const panel = { ...tabPanelProps('section', shown), className: `section-body${fill ? ' is-fill' : ''}` };
 
   if (reason !== null && tab !== 'source' && tab !== 'plan') {
     return (
+      <div {...panel}>
       <div className="stack">
         <div className="note is-warn">
           {reason === 'unreadable'
@@ -78,10 +87,11 @@ export function SectionBody() {
         </div>
         <SectionFor tab={tab} parsed={parsed} />
       </div>
+      </div>
     );
   }
 
-  return <SectionFor tab={tab} parsed={parsed} />;
+  return <div {...panel}><SectionFor tab={tab} parsed={parsed} /></div>;
 }
 
 function SectionFor({ tab, parsed }: { tab: RequestTab; parsed: CollectionParsed | null }) {

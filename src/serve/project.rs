@@ -46,7 +46,7 @@ fn default_tls() -> bool {
     false
 }
 fn default_tls_insecure() -> bool {
-    true
+    false
 }
 
 fn env_path(root: &Path, name: &str) -> PathBuf {
@@ -431,7 +431,7 @@ pub fn init_project_dir(root: &Path) -> Result<()> {
         address: "localhost:4770".into(),
         protocol: "grpc".into(),
         tls: false,
-        tls_insecure: true,
+        tls_insecure: false,
         active_env: Some("example".into()),
         collections: None,
     };
@@ -879,5 +879,17 @@ mod tests {
     fn a_directory_that_is_not_a_project_supplies_nothing() {
         let dir = tempfile::tempdir().unwrap();
         assert!(project_variables(dir.path()).is_empty());
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn a_fresh_project_verifies_tls_certificates() {
+        assert!(!default_tls_insecure());
+        let dir = tempfile::tempdir().unwrap();
+        init_project_dir(dir.path()).unwrap();
+        let settings = load_project_settings(&dir.path().join(".grpctestify")).unwrap();
+        assert!(!settings.tls_insecure);
+        let bare: ProjectSettings = serde_json::from_str("{}").unwrap();
+        assert!(!bare.tls_insecure);
     }
 }

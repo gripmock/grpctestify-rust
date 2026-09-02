@@ -105,7 +105,7 @@ GRPCTESTIFY_PLAY_TOKEN=$(openssl rand -hex 16) grpctestify play --host 0.0.0.0
 Without `GRPCTESTIFY_PLAY_TOKEN` it generates one at startup and prints it as part of the link:
 
 ```text
-🎨 grpctestify play v1.10.3
+🎨 grpctestify play v1.11.0
    ➜  http://0.0.0.0:4755/?token=16e551d9-19a2-46a7-a612-5e19f55457ce
    bound to 0.0.0.0 — every request needs this token
    set GRPCTESTIFY_PLAY_TOKEN to keep one across restarts

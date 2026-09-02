@@ -16,6 +16,8 @@ use super::PlayState;
 use super::api::{reject_traversal, reports_base, require_gctf, resolve_file};
 
 const MAX_JOBS: usize = 40;
+const MAX_RUNNING_JOBS: usize = 4;
+const MAX_JOB_SECS: u64 = 60 * 60;
 const MAX_EVENTS: usize = 20_000;
 const CHANNEL_CAPACITY: usize = 256;
 
@@ -146,6 +148,13 @@ impl JobRegistry {
                 false
             });
         }
+    }
+
+    fn running(&self) -> usize {
+        lock(&self.jobs)
+            .iter()
+            .filter(|j| lock(&j.state).status == JobStatus::Running)
+            .count()
     }
 
     pub(crate) fn get(&self, id: &str) -> Option<Arc<Job>> {
@@ -331,6 +340,14 @@ pub async fn create_job(
         }
     }
 
+    if state.jobs.running() >= MAX_RUNNING_JOBS {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            format!(
+                "{MAX_RUNNING_JOBS} runs are already in flight — wait for one to finish or cancel it before starting another"
+            ),
+        ));
+    }
     state.jobs.insert(job.clone());
     let summary = job.summary();
     match req.kind {
@@ -341,17 +358,22 @@ pub async fn create_job(
                 .and_then(|root| root.parent())
                 .map(super::project::project_variables)
                 .unwrap_or_default();
-            tokio::spawn(run_job(
-                job,
-                expanded,
-                req.up_to_step,
-                reports_base(&state).to_path_buf(),
-                data,
-                env,
+            let held = job.clone();
+            tokio::spawn(held_slot(
+                held,
+                run_job(
+                    job,
+                    expanded,
+                    req.up_to_step,
+                    reports_base(&state).to_path_buf(),
+                    data,
+                    env,
+                ),
             ));
         }
         JobKind::Bench => {
-            tokio::spawn(bench_job(job, files));
+            let held = job.clone();
+            tokio::spawn(held_slot(held, bench_job(job, files)));
         }
     }
     Ok(Json(summary))
@@ -386,6 +408,7 @@ pub async fn cancel_job(
         .ok_or((StatusCode::NOT_FOUND, "No such job".to_string()))?;
     job.cancel.store(true, Ordering::Relaxed);
     let _ = job.cancel_signal.send(true);
+    RunningSlot::finish(&job, JobStatus::Cancelled);
     Ok(Json(job.summary()))
 }
 
@@ -435,10 +458,11 @@ pub async fn job_report(
                     .count()
             })
             .unwrap_or(0);
+        let shown = super::api::shown_path(reports_base(&state), &path);
         let said = serde_json::json!({
-            "path": path.to_string_lossy(),
+            "path": shown,
             "files": results,
-            "open": format!("allure serve {}", path.to_string_lossy()),
+            "open": format!("allure serve {shown}"),
         });
         return axum::response::Response::builder()
             .header("content-type", "application/json")
@@ -595,6 +619,43 @@ async fn bench_job(job: Arc<Job>, files: Vec<(String, std::path::PathBuf)>) {
         JobStatus::Passed
     };
     st.tx = None;
+}
+
+struct RunningSlot(Arc<Job>);
+
+impl RunningSlot {
+    fn finish(job: &Arc<Job>, status: JobStatus) {
+        let mut st = lock(&job.state);
+        if st.status != JobStatus::Running {
+            return;
+        }
+        st.status = status;
+        st.finished_ms = Some(apif_cfg_runtime::now_unix_millis() as u64);
+        st.tx = None;
+    }
+}
+
+impl Drop for RunningSlot {
+    fn drop(&mut self) {
+        Self::finish(&self.0, JobStatus::Failed);
+    }
+}
+
+async fn held_slot(job: Arc<Job>, work: impl Future<Output = ()>) {
+    let slot = RunningSlot(job.clone());
+    if tokio::time::timeout(std::time::Duration::from_secs(MAX_JOB_SECS), work)
+        .await
+        .is_err()
+    {
+        job.emit(json!({
+            "type": "error",
+            "message": format!(
+                "the run passed {MAX_JOB_SECS}s and was given up on so the workbench can start another"
+            ),
+            "timestamp": apif_cfg_runtime::now_rfc3339(),
+        }));
+    }
+    drop(slot);
 }
 
 type DataRows = Vec<std::collections::HashMap<String, Value>>;
@@ -1264,6 +1325,9 @@ async fn run_one(
             }
             if let Some(code) = result.grpc_status {
                 event["grpcStatus"] = json!(code);
+            }
+            if let Some(code) = result.http_status {
+                event["httpStatus"] = json!(code);
             }
             if let Some(address) = &result.dialled_address {
                 event["address"] = json!(address);
@@ -2160,5 +2224,96 @@ mod tests {
         let summary = job.summary();
         assert_eq!(summary.failed, 6, "every file is judged");
         assert_eq!(summary.passed + summary.skipped, 0);
+    }
+
+    #[tokio::test]
+    async fn a_run_that_panics_gives_its_slot_back() {
+        let job = job_with("panicking");
+        let registry = JobRegistry::default();
+        registry.insert(job.clone());
+        assert_eq!(registry.running(), 1);
+
+        let held = job.clone();
+        let task = tokio::spawn(held_slot(held, async {
+            panic!("the runner fell over");
+        }));
+        assert!(task.await.is_err(), "the panic is not swallowed");
+
+        assert_eq!(
+            lock(&job.state).status,
+            JobStatus::Failed,
+            "a job that died is not left Running for ever"
+        );
+        assert!(lock(&job.state).finished_ms.is_some());
+        assert_eq!(registry.running(), 0, "the slot is free again");
+    }
+
+    #[tokio::test]
+    async fn a_run_that_finishes_keeps_the_verdict_it_reached() {
+        let job = job_with("passing");
+        lock(&job.state).status = JobStatus::Running;
+        let held = job.clone();
+        held_slot(held, async {
+            lock(&job.state).status = JobStatus::Passed;
+        })
+        .await;
+        assert_eq!(lock(&job.state).status, JobStatus::Passed);
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn cancelling_frees_the_slot_before_the_call_comes_back() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = state_in(dir.path());
+        let job = job_with("slow");
+        state.jobs.insert(job.clone());
+        assert_eq!(state.jobs.running(), 1);
+
+        let said = cancel_job(State(state.clone()), Path("slow".to_string()))
+            .await
+            .expect("the job is there")
+            .0;
+        assert_eq!(said.status, JobStatus::Cancelled);
+        assert!(
+            said.finished_ms.is_some(),
+            "it is finished, not merely asked"
+        );
+        assert_eq!(
+            state.jobs.running(),
+            0,
+            "the run the user cancelled stops holding a slot"
+        );
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn a_fifth_run_waits_for_one_of_four_to_finish() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("a.gctf"),
+            "--- ENDPOINT ---\na.B/C\n\n--- REQUEST ---\n{}\n",
+        )
+        .expect("write");
+        let state = state_in(dir.path());
+        for i in 0..MAX_RUNNING_JOBS {
+            state.jobs.insert(job_with(&format!("running-{i}")));
+        }
+        assert_eq!(state.jobs.running(), MAX_RUNNING_JOBS);
+
+        let (status, said) = create_job(
+            State(state.clone()),
+            Json(CreateJobRequest {
+                data: None,
+                kind: JobKind::Run,
+                reports: vec![],
+                paths: vec!["a.gctf".to_string()],
+                up_to_step: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(said.contains("in flight"), "{said}");
+        assert_eq!(state.jobs.list().len(), MAX_RUNNING_JOBS);
     }
 }

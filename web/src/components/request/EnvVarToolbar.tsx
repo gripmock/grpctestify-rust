@@ -51,16 +51,16 @@ export function EnvVarToolbar({ text }: { text: string }) {
 
   return (
     <div className="env-strip">
-      <span className="label">vars</span>
+      <span className="field-label">vars</span>
       {activeEnv && <span className="mono muted">{activeEnv.name}</span>}
       {used.map(({ key, value, muted, resolved, from, empty, runOnly }) => {
         const title =
           muted ? `"${key}" is muted — it will not be substituted`
           : runOnly ? `"${key}" ${SOURCE_NOTE[from]} — a run answers it, Execute has no ${from === 'extract' ? 'earlier step' : 'row'} and sends the braces as written`
-          : from === 'run' ? `"${key}" ${SOURCE_NOTE.run} — the call sends ${maskValue(key, value)}`
+          : from === 'run' ? `"${key}" ${SOURCE_NOTE.run} — the call sends ${maskValue(key, value, activeEnv?.secret)}`
           : from === 'dataset' || from === 'extract' || from === 'project' || from === 'source' ? `"${key}" ${SOURCE_NOTE[from]}`
           : empty ? `"${key}" is defined with no value — the call sends an empty string. Click to give it one.`
-          : resolved ? maskValue(key, value)
+          : resolved ? maskValue(key, value, activeEnv?.secret)
           : activeEnv ? `"${key}" is not set in ${activeEnv.name} — click to define it`
           : `"${key}" has no value — click to define it`;
         const className = `env from-${from}${resolved ? '' : ' is-unknown'}${empty ? ' is-empty' : ''}${muted ? ' is-muted' : ''}`;

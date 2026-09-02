@@ -54,7 +54,10 @@ X-Session: {{session}}
 
 --- EXTRACT ---
 user_ids = [.users[].id]
-// Document 3: fetch metrics from metrics-server (no ADDRESS, uses default)
+// Document 3: fetch metrics from metrics-server
+
+--- ADDRESS ---
+metrics-server:7070
 
 --- ENDPOINT ---
 metrics.MetricsService/GetCounters

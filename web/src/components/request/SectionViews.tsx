@@ -14,8 +14,8 @@ import { sectionRun } from '../../lib/message-attributes';
 import { unboundLines } from '../../lib/assert-problems';
 import { sectionAsWritten } from '../../lib/body-as-written';
 import { extractAudienceEmpty, extractionInput, previewSource, ranValue, reachLabel, reachOf, reachTitle } from '../../lib/extract-contract';
-import { useModal } from 'luvo/ui/ModalContext';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useModal } from 'luvo/ui/useModal';
+import { useToast } from 'luvo/ui/useToast';
 import { EDITOR_THEME, registerMonaco } from '../../lib/monaco-theme';
 import { count } from 'luvo/data/plural';
 import { answered } from '../../lib/response-seed';
@@ -185,7 +185,7 @@ export function RawEditor() {
         </div>
       );
     }
-    return <div className="empty">Reading the file…</div>;
+    return <div className="empty-state">Reading the file…</div>;
   }
 
   return (
@@ -405,7 +405,7 @@ export function ExtractsView({ extracts }: { extracts: Record<string, string> })
 
       {keys.length > 0 && (
         <div className="bar">
-          <span className="label grow">{source.note}</span>
+          <span className="field-label grow">{source.note}</span>
           <button
             className="btn is-sm is-ghost"
             disabled={!source.ok || checking}
@@ -519,5 +519,5 @@ export function ExtractsView({ extracts }: { extracts: Record<string, string> })
 }
 
 function EmptyMessage({ children }: { children: React.ReactNode }) {
-  return <div className="empty">{children}</div>;
+  return <div className="empty-state">{children}</div>;
 }

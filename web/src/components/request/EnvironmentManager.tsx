@@ -4,8 +4,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { looksLikeSecret } from '../../lib/secret-names';
 import { environmentAddressNote, targetNote } from '../../lib/env-address';
 import { useStore } from '../../lib/store';
-import { useModal } from 'luvo/ui/ModalContext';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useModal } from 'luvo/ui/useModal';
+import { useToast } from 'luvo/ui/useToast';
 import type { Environment, VariableUse } from '../../lib/types';
 import { pathTail } from '../../lib/path-tail';
 import { applyEntries, entriesOf, parseDotenv, serializeDotenv, type DotenvLine } from '../../lib/dotenv';
@@ -14,6 +14,7 @@ import { blankRow, duplicateNames, filterNames, hiddenValue, missingNames, overr
 import { findVariables, unusableNames } from '../../lib/env';
 import { Plus, Pencil, Trash2, Copy, Check, X, Globe, FolderGit2, Lock, LockOpen, Eye, EyeOff, ArrowLeft, FileText, Target, Search } from 'lucide-react';
 import { count, plural } from 'luvo/data/plural';
+import { browserSeed, openingSeed, type EnvView } from '../../lib/env-seed';
 
 interface Props {
   onClose: () => void;
@@ -29,10 +30,7 @@ function whereUsed(name: string, uses: VariableUse[], open: string[]): string {
 
 const MISSING_SHOWN = 6;
 
-type View =
-  | { kind: 'list' }
-  | { kind: 'edit'; name: string; origin: Origin }
-  | { kind: 'new' };
+type View = EnvView;
 
 export function EnvironmentManager({ onClose, defineVar, defineValue }: Props) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -58,26 +56,32 @@ export function EnvironmentManager({ onClose, defineVar, defineValue }: Props) {
   const modal = useModal();
   const toast = useToast();
 
-  const [view, setView] = useState<View>({ kind: 'list' });
-  const [rows, setRows] = useState<Row[]>([blankRow()]);
-  const [busy, setBusy] = useState(false);
+  const all = useMemo(
+    () => [...projectEnvs, ...browserEnvs.filter(b => !projectEnvs.some(p => p.name === b.name))],
+    [projectEnvs, browserEnvs],
+  );
+  const [seed] = useState(() => openingSeed(defineVar, defineValue, all.find(e => e.name === activeEnvironment)));
+  const [view, setView] = useState<View>(seed?.view ?? { kind: 'list' });
+  const [rows, setRows] = useState<Row[]>(seed?.rows ?? [blankRow()]);
+  const [busy, setBusy] = useState(() => !!defineVar && all.find(e => e.name === activeEnvironment)?.source === 'project');
   const [dirty, setDirty] = useState(false);
   const [showValues, setShowValues] = useState(false);
   const [missingOpen, setMissingOpen] = useState(false);
   const [missingFilter, setMissingFilter] = useState('');
-  const [name, setName] = useState('');
+  const [name, setName] = useState(seed?.name ?? '');
   const [place, setPlace] = useState<Origin>(projectRoot ? 'project' : 'browser');
   const [sharedLines, setSharedLines] = useState<DotenvLine[]>([]);
   const [localLines, setLocalLines] = useState<DotenvLine[]>([]);
-  const [address, setAddress] = useState('');
+  const [address, setAddress] = useState(seed?.address ?? '');
   const [addressLocal, setAddressLocal] = useState(false);
   const [addressShared, setAddressShared] = useState<string | undefined>(undefined);
-  const [tls, setTls] = useState<boolean | undefined>(undefined);
-  const [tlsOpen, setTlsOpen] = useState(false);
-  const [tlsCa, setTlsCa] = useState('');
-  const [tlsCert, setTlsCert] = useState('');
-  const [tlsKey, setTlsKey] = useState('');
-  const [tlsInsecure, setTlsInsecure] = useState(true);
+  const [tls, setTls] = useState<boolean | undefined>(seed?.tls);
+  const [tlsOpen, setTlsOpen] = useState(seed?.tlsOpen ?? false);
+  const [tlsCa, setTlsCa] = useState(seed?.tlsCa ?? '');
+  const [tlsCert, setTlsCert] = useState(seed?.tlsCert ?? '');
+  const [tlsKey, setTlsKey] = useState(seed?.tlsKey ?? '');
+  const [tlsInsecure, setTlsInsecure] = useState(seed?.tlsInsecure ?? false);
+  const [namedSecret, setNamedSecret] = useState<string[]>([]);
 
   const open = useStore(useShallow(s => {
     const text = [s.request.endpoint, ...Object.values(s.request.headers), ...s.request.bodies].join('\n');
@@ -90,19 +94,14 @@ export function EnvironmentManager({ onClose, defineVar, defineValue }: Props) {
     [open, uses],
   );
 
-  const all = useMemo(
-    () => [...projectEnvs, ...browserEnvs.filter(b => !projectEnvs.some(p => p.name === b.name))],
-    [projectEnvs, browserEnvs],
-  );
-
-  const openProject = useCallback(async (envName: string, extra?: string, extraValue = '') => {
-    setBusy(true);
+  const loadProject = useCallback(async (envName: string, extra?: string, extraValue = '') => {
     try {
       const [shared, local] = await Promise.all([
-        fetchProjectEnv(envName).catch(() => ''),
-        fetchProjectEnvLocal(envName).catch(() => ({ exists: false, content: null })),
+        fetchProjectEnv(envName).catch(() => ({ content: '', secret: [] })),
+        fetchProjectEnvLocal(envName).catch(() => ({ exists: false, content: null, secret: [] })),
       ]);
-      const sharedParsed = parseDotenv(typeof shared === 'string' ? shared : '');
+      setNamedSecret([...new Set([...shared.secret, ...local.secret])]);
+      const sharedParsed = parseDotenv(shared.content);
       const localParsed = parseDotenv(local.content || '');
       setSharedLines(sharedParsed);
       setLocalLines(localParsed);
@@ -123,18 +122,24 @@ export function EnvironmentManager({ onClose, defineVar, defineValue }: Props) {
     }
   }, [fetchProjectEnv, fetchProjectEnvLocal]);
 
+  const openProject = useCallback((envName: string, extra?: string, extraValue = '') => {
+    setBusy(true);
+    return loadProject(envName, extra, extraValue);
+  }, [loadProject]);
+
   const openBrowser = useCallback((env: Environment, extra?: string, extraValue = '') => {
-    const loaded: Row[] = Object.entries(env.variables).map(([key, value]) => ({ key, value, local: false }));
-    setAddress(env.address || '');
+    const opened = browserSeed(env, extra, extraValue);
+    setNamedSecret([]);
+    setAddress(opened.address);
     setAddressLocal(false);
-    setRows([...loaded, ...(extra && !loaded.some(r => r.key === extra) ? [{ key: extra, value: extraValue, local: false }] : []), blankRow()]);
-    setName(env.name);
+    setRows(opened.rows);
+    setName(opened.name);
     setSharedLines([]); setLocalLines([]);
-    setTls(env.tls);
-    setTlsOpen(env.tls !== undefined);
-    setTlsCa(env.tlsCa || ''); setTlsCert(env.tlsCert || ''); setTlsKey(env.tlsKey || '');
-    setTlsInsecure(env.tlsInsecure ?? true);
-    setView({ kind: 'edit', name: env.name, origin: 'browser' });
+    setTls(opened.tls);
+    setTlsOpen(opened.tlsOpen);
+    setTlsCa(opened.tlsCa); setTlsCert(opened.tlsCert); setTlsKey(opened.tlsKey);
+    setTlsInsecure(opened.tlsInsecure);
+    setView(opened.view);
     setDirty(false);
   }, []);
 
@@ -143,15 +148,8 @@ export function EnvironmentManager({ onClose, defineVar, defineValue }: Props) {
     if (prefilled.current || !defineVar) return;
     prefilled.current = true;
     const active = all.find(e => e.name === activeEnvironment);
-    if (!active) {
-      setView({ kind: 'new' });
-      setName('');
-      setRows([{ key: defineVar, value: defineValue ?? '', local: looksLikeSecret(defineVar) }, blankRow()]);
-      return;
-    }
-    if (active.source === 'project') void openProject(active.name, defineVar, defineValue);
-    else openBrowser(active, defineVar, defineValue);
-  }, [defineVar, defineValue, all, activeEnvironment, openProject, openBrowser]);
+    if (active?.source === 'project') void loadProject(active.name, defineVar, defineValue);
+  }, [defineVar, defineValue, all, activeEnvironment, loadProject]);
 
   const setRow = (i: number, patch: Partial<Row>) => {
     setRows(current => {
@@ -315,7 +313,7 @@ export function EnvironmentManager({ onClose, defineVar, defineValue }: Props) {
       <div className="modal-body stack">
         {view.kind === 'list' && (
           all.length === 0 ? (
-            <div className="empty">
+            <div className="empty-state">
               An environment is a set of <span className="mono">{'{{KEY}}'}</span> values a call is sent with.
             </div>
           ) : (
@@ -344,6 +342,7 @@ export function EnvironmentManager({ onClose, defineVar, defineValue }: Props) {
                       className="btn is-ghost is-icon"
                       onClick={() => (env.source === 'project' ? void openProject(env.name) : openBrowser(env))}
                       title="Edit"
+                      aria-label={`Edit ${env.name}`}
                     >
                       <Pencil size={13} />
                     </button>
@@ -352,6 +351,7 @@ export function EnvironmentManager({ onClose, defineVar, defineValue }: Props) {
                         className="btn is-ghost is-icon"
                         onClick={() => addEnvironment({ ...env, name: `${env.name} copy` })}
                         title="Duplicate"
+                        aria-label={`Duplicate ${env.name}`}
                       >
                         <Copy size={13} />
                       </button>
@@ -377,6 +377,7 @@ export function EnvironmentManager({ onClose, defineVar, defineValue }: Props) {
                         }
                       }}
                       title={env.source === 'project' ? `Delete .env.${env.name}` : 'Delete'}
+                      aria-label={env.source === 'project' ? `Delete .env.${env.name}` : `Delete ${env.name}`}
                     >
                       <Trash2 size={13} />
                     </button>
@@ -439,7 +440,7 @@ export function EnvironmentManager({ onClose, defineVar, defineValue }: Props) {
             )}
 
             <div className="env-target">
-              <span className="label"><Target size={11} /> target</span>
+              <span className="field-label"><Target size={11} /> target</span>
               <span />
               <input
                 className="field mono"
@@ -478,7 +479,7 @@ export function EnvironmentManager({ onClose, defineVar, defineValue }: Props) {
             {missing.length > 0 && (
               <div className="env-missing stack is-tight">
                 <div className="bar">
-                  <span className="label grow">
+                  <span className="field-label grow">
                     {missing.length === 1 ? 'one name the files ask for' : `${missing.length} names the files ask for`}, not set here
                   </span>
                   {missing.length <= MISSING_SHOWN * 2 && (
@@ -557,7 +558,7 @@ export function EnvironmentManager({ onClose, defineVar, defineValue }: Props) {
                   />
                   <input
                     className={`field mono${valueNamesVariable(row.value).length > 0 ? ' is-bad' : ''}`}
-                    type={hiddenValue(row) && !showValues ? 'password' : 'text'}
+                    type={hiddenValue(row, namedSecret) && !showValues ? 'password' : 'text'}
                     value={row.value}
                     onChange={e => setRow(i, { value: e.target.value })}
                     placeholder={row.local && row.shared !== undefined ? row.shared : 'value'}
@@ -608,7 +609,7 @@ export function EnvironmentManager({ onClose, defineVar, defineValue }: Props) {
                       </button>
                     )}
                     {(row.key.trim() || row.value.trim()) && (
-                      <button className="btn is-ghost is-icon" onClick={() => removeRow(i)} title="Remove"><X size={11} /></button>
+                      <button className="btn is-ghost is-icon" onClick={() => removeRow(i)} title="Remove" aria-label={`Remove ${row.key.trim() || 'this row'}`}><X size={11} /></button>
                     )}
                   </span>
                 </div>
@@ -625,7 +626,7 @@ export function EnvironmentManager({ onClose, defineVar, defineValue }: Props) {
               </div>
             )}
 
-            {rows.some(hiddenValue) && (
+            {rows.some(r => hiddenValue(r, namedSecret)) && (
               <div className="bar">
                 <button className="btn is-ghost is-sm" onClick={() => setShowValues(v => !v)}>
                   {showValues ? <EyeOff size={11} /> : <Eye size={11} />} {showValues ? 'Hide' : 'Show'} hidden values
@@ -672,7 +673,7 @@ export function EnvironmentManager({ onClose, defineVar, defineValue }: Props) {
                   </button>
                 ) : (
                   <div className="editor-frame stack is-tight">
-                    <div className="label">Connection</div>
+                    <div className="field-label">Connection</div>
                     <Seg
                       label="Transport security for this environment"
                       value={tls === undefined ? 'global' : tls ? 'on' : 'off'}

@@ -1,12 +1,7 @@
-import { createContext, useContext, useState, useCallback, useMemo, useRef, useEffect, type ReactNode } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect, type ReactNode } from 'react';
+import { ModalContext, type Choice, type ModalApi } from 'luvo/ui/useModal';
 
 type ModalType = 'confirm' | 'alert' | 'prompt' | 'choice';
-
-export interface Choice {
-  label: string;
-  value: string;
-  tone?: 'primary' | 'danger' | 'quiet';
-}
 
 interface ModalConfig {
   type: ModalType;
@@ -19,27 +14,6 @@ interface ModalConfig {
   /** The action cannot be undone: it is drawn as the danger it is, and focus
    *  starts on Cancel so Enter on an unread dialog destroys nothing. */
   danger?: boolean;
-}
-
-interface ModalApi {
-  confirm: (
-    title: string,
-    message?: string,
-    options?: { confirmText?: string; cancelText?: string; danger?: boolean },
-  ) => Promise<boolean>;
-  alert: (title: string, message?: string) => Promise<void>;
-  prompt: (title: string, message?: string, defaultValue?: string) => Promise<string | null>;
-  /** More than two ways out — closing an edited file is cancel, discard *or*
-      save. Dismissal resolves to null, never to one of the choices. */
-  choose: (title: string, message: string | undefined, choices: Choice[]) => Promise<string | null>;
-}
-
-const ModalContext = createContext<ModalApi | null>(null);
-
-export function useModal(): ModalApi {
-  const ctx = useContext(ModalContext);
-  if (!ctx) throw new Error('useModal must be used within ModalProvider');
-  return ctx;
 }
 
 /** What a dismissal resolves to, per kind: cancelling a confirm is `false`,

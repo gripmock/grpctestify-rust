@@ -1,4 +1,5 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { act } from 'react';
 import { ConnectionPopover } from './ConnectionPopover';
 import { ToastProvider } from 'luvo/ui/ToastContext';
 import { useStore } from '../../lib/store';
@@ -115,5 +116,29 @@ describe('what the chip says a call goes out on', () => {
     const text = mount(chip).get('.conn-chip').textContent ?? '';
     expect(text).toContain('tls');
     expect(text).not.toContain('insecure');
+  });
+});
+
+
+describe('asking whether the target is there', () => {
+  it('says it is asking until the answer lands, then what the answer was', async () => {
+    let answer: ((value: Response) => void) | null = null;
+    const fetchMock = vi.fn((url: unknown) => String(url).includes('/api/target-health')
+      ? new Promise<Response>(r => { answer = r; })
+      : Promise.resolve(new Response('{}', { status: 200 })));
+    vi.stubGlobal('fetch', fetchMock);
+    useStore.setState({
+      workspacePath: null, request: { endpoint: 'a.A/One', headers: {}, bodies: ['{}'] }, collectionParsed: null,
+      documents: [], activeStep: 0, protocol: 'grpc', tls: false, tlsInsecure: false,
+      address: '127.0.0.1:4790', addressTouched: true, environments: [], activeEnvironment: null,
+      serverEnv: { address: null }, projectEnvs: [], projectDefaults: null,
+    } as never);
+    const ui = mount(chip);
+    ui.click('.conn-chip');
+    expect(ui.get('.conn-health .dot').className).toBe('dot');
+    await act(async () => { answer!(new Response(JSON.stringify({ reachable: true }), { status: 200 })); await Promise.resolve(); });
+    expect(ui.get('.conn-health .dot').className).toContain('is-ok');
+    ui.unmount();
+    vi.unstubAllGlobals();
   });
 });

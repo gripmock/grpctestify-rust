@@ -13,6 +13,7 @@ import { servicesOf } from '../../lib/schema-miss';
 import { metaEmptyNote, outcomeBadge } from '../../lib/outcome';
 import { numbersRounded } from '../../lib/expect-model';
 import { Tabs } from 'luvo/ui/Tabs';
+import { tabPanelProps } from 'luvo/ui/tab-ids';
 import { JsonPick } from './JsonPick';
 import { metaActions, statusAction } from '../../lib/pick-actions';
 import { startHint, startSteps } from '../../lib/start-here';
@@ -26,8 +27,10 @@ import { readText, writeText } from 'luvo/data/storage';
 import { lineDiff } from 'luvo/data/diff';
 import { Diff } from 'luvo/ui/Diff';
 import { useDismiss } from 'luvo/input/useDismiss';
+import { useMenuKeys } from 'luvo/input/useMenuKeys';
+import { copyToClipboard } from 'luvo/data/clipboard';
 import { Popover } from 'luvo/ui/Popover';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useToast } from 'luvo/ui/useToast';
 import { EDITOR_THEME, registerMonaco } from '../../lib/monaco-theme';
 import { count } from 'luvo/data/plural';
 import { NOTHING_TO_EXPECT, serverAnswered } from '../../lib/answer-source';
@@ -128,7 +131,7 @@ export function ResponsePanel() {
 
   const copyText = async (text: string, what: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyToClipboard(text);
       toast.success(`${what} copied`);
     } catch {
       toast.error('The browser refused the clipboard');
@@ -138,7 +141,7 @@ export function ResponsePanel() {
   const copyJson = async (value: unknown, what: string) => {
     const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
     try {
-      await navigator.clipboard.writeText(text);
+      await copyToClipboard(text);
       toast.success(`${what} — ${humanBytes(byteSize(text))} copied`);
     } catch {
       toast.error('The browser refused the clipboard');
@@ -163,7 +166,7 @@ export function ResponsePanel() {
       <div className="panel-body stack">
 
         <div className="bar answer-head">
-          {benchIsThisFile && <span className="label">bench</span>}
+          {benchIsThisFile && <span className="field-label">bench</span>}
 
           {response && (() => {
             const badge = outcomeBadge(response, isHttp);
@@ -332,6 +335,7 @@ export function ResponsePanel() {
                 className="btn is-ghost is-icon is-sm"
                 onClick={() => setShowMore(v => !v)}
                 title="What to do with this response"
+                aria-label="What to do with this response"
                 aria-haspopup="menu"
                 aria-expanded={showMore}
               >
@@ -401,6 +405,7 @@ export function ResponsePanel() {
         {response && response.status !== 'pending' && (
           <>
             <Tabs
+              id="answer"
               label="What of the answer to show"
               items={tabs.map(tab => ({
                 key: tab,
@@ -423,13 +428,13 @@ export function ResponsePanel() {
             />
 
             {responseTab === 'response' && (
-              <div className="stack">
+              <div className="stack" {...tabPanelProps('answer', 'response')}>
                 {msgCount === 0 && (
                   response.error
                     ? <FailureCard error={response.error} statusCode={response.statusCode ?? null} />
                     : response.fromRun
-                      ? <div className="empty">The run kept the checks, not the body — it keeps bodies for failures. Execute to see this one.</div>
-                      : <div className="empty">{isHttp ? 'The answer carried no body' : 'No response messages'}</div>
+                      ? <div className="empty-state">The run kept the checks, not the body — it keeps bodies for failures. Execute to see this one.</div>
+                      : <div className="empty-state">{isHttp ? 'The answer carried no body' : 'No response messages'}</div>
                 )}
 
                 {msgCount > 1 && (
@@ -498,7 +503,7 @@ export function ResponsePanel() {
                 )}
 
                 {msgCount === 1 && binary && (
-                  <div className="empty binary-body">
+                  <div className="empty-state binary-body">
                     <span className="mono">{binary}</span>
                     <span>{payloadBytes} bytes — a binary answer is not shown, and not something to expect field by field.</span>
                     <span className="muted">Check it with <span className="mono">@status()</span> and a header, or with <span className="mono">@len()</span>.</span>
@@ -522,9 +527,9 @@ export function ResponsePanel() {
             )}
 
             {responseTab === 'assertions' && response.assertions && (
-              <div>
+              <div {...tabPanelProps('answer', 'assertions')}>
                 {response.assertions.length === 0 && (
-                  <div className="empty">
+                  <div className="empty-state">
                     Nothing to check — this file has no {isHttp ? 'RESPONSE or ASSERTS' : 'RESPONSE, ERROR or ASSERTS'} section
                   </div>
                 )}
@@ -597,7 +602,7 @@ export function ResponsePanel() {
             )}
 
             {responseTab === 'headers' && (
-              <div className="editor-frame stack">
+              <div className="editor-frame stack" {...tabPanelProps('answer', 'headers')}>
                 {metaCount === 0 && (
                   <div className="muted">{metaEmptyNote(isHttp, !!response.fromRun)}</div>
                 )}
@@ -692,11 +697,13 @@ function MetaList({ label, kind, rows, onCopy }: {
   const setRequestTab = useStore(s => s.setRequestTab);
   const toast = useToast();
   const [open, setOpen] = useState<string | null>(null);
-  const menuRef = useDismiss<HTMLDivElement>(open !== null, useCallback(() => setOpen(null), []));
+  const close = useCallback(() => setOpen(null), []);
+  const menuRef = useDismiss<HTMLDivElement>(open !== null, close);
+  const [assertMenuRef, onAssertMenuKeys] = useMenuKeys<HTMLDivElement>(open, close);
 
   return (
     <div>
-      <div className="label">{label}</div>
+      <div className="field-label">{label}</div>
       <dl className="kv">
         {Object.entries(rows).map(([k, v]) => (
           <div key={k} className="bar meta-row">
@@ -723,12 +730,14 @@ function MetaList({ label, kind, rows, onCopy }: {
                 <ListChecks size={12} />
               </button>
               <Popover open={open === k} anchor={menuRef} align="end">
-                <div className="menu" role="menu">
+                <div ref={assertMenuRef} className="menu" role="menu" aria-label={`Assert ${k}`} onKeyDown={onAssertMenuKeys}>
                   <div className="menu-group mono">{k}</div>
                   {metaActions(kind, k, v).map(action => (
                     <button
                       key={action.line}
                       className="menu-item mono"
+                      role="menuitem"
+                      tabIndex={-1}
                       onClick={() => {
                         if (!useStore.getState().focusAnswerStep()) {
                           const from = useStore.getState().response?.fromStep;
@@ -777,8 +786,8 @@ function StartHere() {
 
   if (firstRun) {
     return (
-      <div className="empty stack start-steps">
-        <span className="label">three steps to a first call</span>
+      <div className="empty-state stack start-steps">
+        <span className="field-label">three steps to a first call</span>
         <ol className="stack">
           {steps.map((step, i) => (
             <li key={step.key} className={`start-step${step.done ? ' is-done' : ''}`}>
@@ -811,7 +820,7 @@ function StartHere() {
   }
 
   return (
-    <div className="empty stack is-tight is-centred">
+    <div className="empty-state stack is-tight is-centred">
       <span>{title}</span>
       {ready ? (
         <span className="stack is-tight is-centred">

@@ -1,17 +1,17 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
-import { answeredHere, useStore } from '../../lib/store';
+import { answeredHere, openRefusal, useStore } from '../../lib/store';
 import type { HistoryEntry } from '../../lib/types';
 import { sortByRecency } from '../../lib/history-list';
-import { burstKey, burstRepeats, callSummary, groupByDay, methodOf, tookRange } from '../../lib/history-group';
-import { useModal } from 'luvo/ui/ModalContext';
-import { Trash2, Search, Play, X, MoreHorizontal } from 'lucide-react';
+import { burstKey, burstRepeats, callSummary, groupByDay, methodOf, msUntilMidnight, tookRange } from '../../lib/history-group';
+import { useModal } from 'luvo/ui/useModal';
+import { Trash2, Search, Play, X, MoreHorizontal, RefreshCw } from 'lucide-react';
 import { useDismiss } from 'luvo/input/useDismiss';
-import { flattenProjectHistory, type ProjectEntry } from '../../lib/project-history';
+import { readProjectHistory, type ProjectEntry } from '../../lib/project-history';
 import { unansweredNow } from '../../lib/env';
 import { SHAPE_LABEL, SHAPE_TONE, shapeOfName } from '../../lib/shape';
 import { copyToClipboard } from 'luvo/data/clipboard';
 import { runsTheWholeFile, commandLine } from '../../lib/docs';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useToast } from 'luvo/ui/useToast';
 import { callAddress } from '../../lib/store';
 import { HistoryPeek } from './HistoryPeek';
 import { entryFailed } from '../../lib/call-outcome';
@@ -37,6 +37,15 @@ function stamp(ts: number) {
 
 type RowMenu = { x: number; y: number; entry: HistoryEntry };
 
+function useToday(): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setTimeout(() => setNow(Date.now()), msUntilMidnight(now));
+    return () => clearTimeout(id);
+  }, [now]);
+  return now;
+}
+
 export function HistoryPanel() {
   const history = useStore(s => s.history);
   const restoreHistory = useStore(s => s.restoreHistory);
@@ -51,17 +60,21 @@ export function HistoryPanel() {
   const [failedOnly, setFailedOnly] = useState(false);
   const projectRoot = useStore(s => s.projectRoot);
   const [source, setSource] = useState<'browser' | 'project'>('browser');
-  const [project, setProject] = useState<ProjectEntry[] | null>(null);
+  const [read, setRead] = useState<{ asked: number; entries: ProjectEntry[]; error: string | null } | null>(null);
+  const [projectAsked, setProjectAsked] = useState(0);
 
   useEffect(() => {
     if (!projectRoot) return;
     let live = true;
-    fetch('/api/project/history')
-      .then(r => (r.ok ? r.json() : {}))
-      .then(payload => { if (live) setProject(flattenProjectHistory(payload)); })
-      .catch(() => { if (live) setProject([]); });
+    const asked = projectAsked;
+    void readProjectHistory().then(said => {
+      if (live) setRead({ asked, entries: said.entries, error: said.error });
+    });
     return () => { live = false; };
-  }, [source, projectRoot]);
+  }, [projectRoot, projectAsked]);
+
+  const answered = read !== null && read.asked === projectAsked;
+  const projectError = answered ? read.error : null;
 
   const [opened, setOpened] = useState<Set<string>>(new Set());
   const toggle = useCallback((id: string) => setOpened(prev => {
@@ -79,8 +92,8 @@ export function HistoryPanel() {
   const menuRef = useDismiss<HTMLDivElement>(menu !== null, useCallback(() => setMenu(null), []));
   const peekRef = useDismiss<HTMLDivElement>(peek !== null, useCallback(() => setPeek(null), []));
 
-  const loadingProject = !!projectRoot && project === null;
-  const projectRows = project ?? [];
+  const loadingProject = !!projectRoot && !answered;
+  const projectRows = answered ? read.entries : [];
   const rows = source === 'project' ? projectRows : history;
 
   const matched = useMemo(() => {
@@ -93,7 +106,7 @@ export function HistoryPanel() {
   }, [rows, search, failedOnly]);
 
   const total = matched.length;
-  const [now] = useState(() => Date.now());
+  const now = useToday();
   const failures = useMemo(() => rows.filter(entryFailed).length, [rows]);
 
   const replay = useCallback((entry: HistoryEntry) => {
@@ -101,7 +114,7 @@ export function HistoryPanel() {
     if (path) {
       void loadCollection(path, { pin: true }).then(opened => {
         if (opened) void useStore.getState().runTest();
-        else toast.error(`${path} is not in this workbench — it may have been renamed or removed`);
+        else toast.error(openRefusal(path) ?? `${path} is not in this workbench — it may have been renamed or removed`);
       });
       return;
     }
@@ -166,7 +179,7 @@ export function HistoryPanel() {
 
   return (
     <div className="stack history">
-      {history.length > 0 && (
+      {(matched.length > 0 || search) && (
         <div className="field-frame">
           <Search size={12} className="muted history-search-mark" />
           <input
@@ -183,7 +196,7 @@ export function HistoryPanel() {
         </div>
       )}
 
-      {history.length > 0 && (
+      {(projectRoot || history.length > 0) && (
         <div className="bar history-filters">
           {projectRoot && (
             <>
@@ -215,6 +228,17 @@ export function HistoryPanel() {
             </button>
           )}
           <span className="grow" />
+          {source === 'project' && (
+            <button
+              className="btn is-ghost is-icon is-sm history-reread"
+              onClick={() => setProjectAsked(n => n + 1)}
+              disabled={loadingProject}
+              title="Read the project’s record again — it grows as runs and other sessions call"
+              aria-label="Read the project’s record again"
+            >
+              <RefreshCw size={12} />
+            </button>
+          )}
           {source === 'browser' && (
             <button
               className="btn is-ghost is-icon is-sm"
@@ -227,6 +251,7 @@ export function HistoryPanel() {
                 if (ok) clearHistory();
               }}
               title="Clear this browser’s history"
+              aria-label="Clear this browser’s history"
             >
               <Trash2 size={12} />
             </button>
@@ -235,10 +260,19 @@ export function HistoryPanel() {
       )}
 
       {total === 0 && (
-        <div className="empty">
+        <div className="empty-state">
           {search ? 'No matches'
             : failedOnly ? 'Nothing failed'
-            : source === 'project' ? (loadingProject ? 'Reading the project’s record…' : 'The project has recorded no calls yet')
+            : source === 'project'
+              ? loadingProject ? 'Reading the project’s record…'
+              : projectError
+                ? (
+                  <>
+                    <span className="history-project-error">{projectError}</span>
+                    <button className="btn is-sm is-ghost" onClick={() => setProjectAsked(n => n + 1)}>try again</button>
+                  </>
+                )
+                : 'The project has recorded no calls yet'
             : 'No calls yet'}
         </div>
       )}
@@ -254,7 +288,7 @@ export function HistoryPanel() {
               onClick={() => {
                 const path = menu.entry.collectionPath!;
                 void loadCollection(path, { pin: true }).then(opened => {
-                  if (!opened) toast.error(`${path} is not in this workbench — it may have been renamed or removed`);
+                  if (!opened) toast.error(openRefusal(path) ?? `${path} is not in this workbench — it may have been renamed or removed`);
                 });
                 setMenu(null);
               }}

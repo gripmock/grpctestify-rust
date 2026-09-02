@@ -199,9 +199,8 @@ impl Plugin for RhaiPlugin {
     fn execute(&self, args: &[Value], _context: &PluginContext) -> Result<PluginResult> {
         if !self.is_trusted() {
             anyhow::bail!(
-                "@{}: refusing to execute untrusted plugin script {}",
-                self.name,
-                self.path.display()
+                "{}",
+                crate::trust::untrusted_message(&self.name, &self.path)
             );
         }
         let rhai_args: Vec<Dynamic> = args

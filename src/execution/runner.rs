@@ -151,6 +151,44 @@ pub struct ExecutionSummary {
     pub rpc_mode_name: String,
 }
 
+pub(crate) type SucceededAfterRetry = bool;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SendAttempt {
+    pub(crate) index: u32,
+    pub(crate) last: bool,
+}
+
+pub(crate) async fn send_with_retries<T, F, Fut>(
+    max_retries: u32,
+    failure: impl Fn(&T) -> Option<String>,
+    mut send: F,
+) -> (T, SucceededAfterRetry)
+where
+    F: FnMut(SendAttempt) -> Fut,
+    Fut: std::future::Future<Output = T> + Send,
+{
+    let mut attempt = 0u32;
+    loop {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(100 * u64::from(attempt))).await;
+        }
+        let outcome = send(SendAttempt {
+            index: attempt,
+            last: attempt >= max_retries,
+        })
+        .await;
+        let Some(message) = failure(&outcome) else {
+            return (outcome, attempt > 0);
+        };
+        if attempt >= max_retries {
+            return (outcome, false);
+        }
+        tracing::debug!("retry {}/{}: {}", attempt + 1, max_retries, message);
+        attempt += 1;
+    }
+}
+
 struct AssertionContext<'a> {
     headers: &'a HashMap<String, String>,
     trailers: &'a HashMap<String, String>,
@@ -659,6 +697,7 @@ pub struct TestExecutionResult {
     pub config_summary: apif_state::ConfigSummary,
     pub failure_kind: Option<FailureKind>,
     pub grpc_status: Option<u32>,
+    pub http_status: Option<u16>,
     pub assertions: Vec<apif_state::AssertionRecord>,
     pub retried: bool,
     pub dialled_address: Option<String>,
@@ -710,6 +749,7 @@ impl TestExecutionResult {
             config_summary: apif_state::ConfigSummary::default(),
             failure_kind: None,
             grpc_status: None,
+            http_status: None,
             assertions: Vec::new(),
             retried: false,
             extracted: Vec::new(),
@@ -740,6 +780,7 @@ impl TestExecutionResult {
             config_summary: apif_state::ConfigSummary::default(),
             failure_kind: Some(FailureKind::Assertion),
             grpc_status: None,
+            http_status: None,
             assertions: Vec::new(),
             retried: false,
             extracted: Vec::new(),
@@ -760,6 +801,11 @@ impl TestExecutionResult {
 
     pub fn with_grpc_status(mut self, code: u32) -> Self {
         self.grpc_status = Some(code);
+        self
+    }
+
+    pub fn with_http_status(mut self, code: u16) -> Self {
+        self.http_status = Some(code);
         self
     }
 
@@ -789,6 +835,7 @@ struct ChainAccumulator {
     status: Option<TestExecutionStatus>,
     failure_kind: Option<FailureKind>,
     grpc_status: Option<u32>,
+    http_status: Option<u16>,
     total_duration_ms: f64,
     total_duration_ns: u64,
     assertions: Vec<apif_state::AssertionRecord>,
@@ -833,7 +880,10 @@ impl ChainAccumulator {
         }
         self.document_durations_ms
             .push(result.call_duration_ms.unwrap_or(0));
-        self.grpc_status = result.grpc_status;
+        if self.status.is_none() {
+            self.grpc_status = result.grpc_status;
+            self.http_status = result.http_status;
+        }
         self.retried |= result.retried;
         if result.dialled_address.is_some() {
             self.dialled_address = result.dialled_address.clone();
@@ -863,6 +913,7 @@ impl ChainAccumulator {
             config_summary: apif_state::ConfigSummary::default(),
             failure_kind: self.failure_kind,
             grpc_status: self.grpc_status,
+            http_status: self.http_status,
             assertions: self.assertions,
             retried: self.retried,
             dialled_address: self.dialled_address,
@@ -1720,7 +1771,6 @@ impl TestRunner {
                             let effective_timeout =
                                 section_timeout.unwrap_or(effective_timeout_seconds);
                             let max_retries = get_retry().unwrap_or(0);
-                            let mut attempt = 0;
 
                             let send_with_timeout = |payload: Value| async {
                                 if effective_timeout > 0 {
@@ -1757,34 +1807,28 @@ impl TestRunner {
                                 }
                             };
 
-                            let result = loop {
-                                if attempt > 0 {
-                                    tokio::time::sleep(std::time::Duration::from_millis(
-                                        100 * attempt as u64,
-                                    ))
-                                    .await;
-                                }
-                                let payload = if attempt < max_retries {
-                                    request_value.clone()
-                                } else {
-                                    std::mem::take(&mut request_value)
-                                };
-                                let r = send_with_timeout(payload).await;
-                                if r.success || attempt >= max_retries {
-                                    if r.success && attempt > 0 {
-                                        retry_occurred = true;
-                                    }
-                                    break r;
-                                }
-                                tracing::debug!(
-                                    "retry {}/{} at line {}: {:?}",
-                                    attempt + 1,
-                                    max_retries,
-                                    section_header_line(section.start_line),
-                                    r.error_message
-                                );
-                                attempt += 1;
-                            };
+                            let (result, succeeded_after_retry) = send_with_retries(
+                                max_retries,
+                                |r: &RequestSendResult| {
+                                    (!r.success).then(|| {
+                                        format!(
+                                            "at line {}: {:?}",
+                                            section_header_line(section.start_line),
+                                            r.error_message
+                                        )
+                                    })
+                                },
+                                |attempt: SendAttempt| {
+                                    let payload = if attempt.last {
+                                        std::mem::take(&mut request_value)
+                                    } else {
+                                        request_value.clone()
+                                    };
+                                    send_with_timeout(payload)
+                                },
+                            )
+                            .await;
+                            retry_occurred |= succeeded_after_retry;
                             if !result.success
                                 && let Some(error) = result.error_message
                             {
@@ -2938,6 +2982,15 @@ impl TestRunner {
             .unwrap_or(default_seconds)
     }
 
+    fn http_follow_redirects(document: &GctfDocument) -> bool {
+        document
+            .get_options()
+            .as_ref()
+            .and_then(|o| o.get(apif_http_transport::FOLLOW_REDIRECTS_OPTION))
+            .and_then(|v| apif_http_transport::parse_follow_redirects(v))
+            .unwrap_or(false)
+    }
+
     async fn run_http(
         &self,
         document: &GctfDocument,
@@ -2969,14 +3022,15 @@ impl TestRunner {
             address.map(|a| runner_helpers::interpolate_variables(&a, variables).unwrap_or(a));
         let url = http::url_for(address.as_deref(), &path);
 
-        let mut headers = HashMap::new();
+        let mut headers = Vec::new();
         if let Some(declared) = document.get_request_headers() {
             for (key, value) in declared {
                 let value =
                     runner_helpers::interpolate_variables(&value, variables).unwrap_or(value);
-                headers.insert(key, value);
+                headers.push((key, value));
             }
         }
+        let follow_redirects = Self::http_follow_redirects(document);
 
         let body = document
             .first_section(SectionType::Request)
@@ -3005,15 +3059,16 @@ impl TestRunner {
             return TestExecutionResult::pass(Some(0));
         }
 
-        let answer = match http::send(http::HttpCall {
+        let sent = http::send(http::HttpCall {
             method: method.clone(),
             url: url.clone(),
             headers,
             body,
             timeout: std::time::Duration::from_secs(timeout_seconds),
+            follow_redirects,
         })
-        .await
-        {
+        .await;
+        let answer = match sent {
             Ok(answer) => answer,
             Err(message) => {
                 return TestExecutionResult::fail(message, None)
@@ -3127,7 +3182,7 @@ impl TestRunner {
             }
         }
         result.assertions = assertion_records;
-        result.grpc_status = Some(answer.status as u32);
+        result.http_status = Some(answer.status);
         if self.capture_exchange {
             result.captured_response = Some(captured);
         }
@@ -3382,6 +3437,158 @@ impl TestRunner {
         println!();
         println!("═══════════════════════════════════════════════════════════════");
         println!();
+    }
+}
+
+#[cfg(test)]
+mod retry_seam_tests {
+    use super::{ChainAccumulator, SendAttempt, TestExecutionResult, send_with_retries};
+
+    #[tokio::test(start_paused = true)]
+    async fn a_send_that_never_fails_is_not_a_retry() {
+        let mut attempts = Vec::new();
+        let (outcome, succeeded_after_retry) = send_with_retries(
+            3,
+            |r: &Result<u8, String>| r.as_ref().err().cloned(),
+            |attempt: SendAttempt| {
+                attempts.push(attempt);
+                std::future::ready(Ok::<u8, String>(7))
+            },
+        )
+        .await;
+        assert_eq!(outcome, Ok(7));
+        assert!(!succeeded_after_retry, "it never had to try twice");
+        assert_eq!(
+            attempts,
+            vec![SendAttempt {
+                index: 0,
+                last: false
+            }]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_send_that_settles_on_a_later_attempt_says_it_retried() {
+        let mut seen = Vec::new();
+        let started = tokio::time::Instant::now();
+        let mut delays = Vec::new();
+        let (outcome, succeeded_after_retry) = send_with_retries(
+            3,
+            |r: &Result<u8, String>| r.as_ref().err().cloned(),
+            |attempt: SendAttempt| {
+                seen.push(attempt);
+                delays.push(started.elapsed());
+                let answer = if attempt.index < 2 {
+                    Err("nothing answered".to_string())
+                } else {
+                    Ok(7u8)
+                };
+                std::future::ready(answer)
+            },
+        )
+        .await;
+
+        assert_eq!(outcome, Ok(7));
+        assert!(succeeded_after_retry);
+        assert_eq!(
+            seen,
+            vec![
+                SendAttempt {
+                    index: 0,
+                    last: false
+                },
+                SendAttempt {
+                    index: 1,
+                    last: false
+                },
+                SendAttempt {
+                    index: 2,
+                    last: false
+                },
+            ]
+        );
+        assert_eq!(
+            delays,
+            vec![
+                std::time::Duration::ZERO,
+                std::time::Duration::from_millis(100),
+                std::time::Duration::from_millis(300),
+            ],
+            "the delay grows by 100ms per attempt and the first send waits for nothing"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_last_attempt_is_told_it_is_the_last_so_it_can_hand_the_payload_over() {
+        let mut payloads: Vec<String> = Vec::new();
+        let mut request = Some("body".to_string());
+        let (outcome, succeeded_after_retry) = send_with_retries(
+            2,
+            |r: &Result<(), String>| r.as_ref().err().cloned(),
+            |attempt: SendAttempt| {
+                let payload = if attempt.last {
+                    request.take().unwrap_or_default()
+                } else {
+                    request.clone().unwrap_or_default()
+                };
+                payloads.push(payload);
+                std::future::ready(Err::<(), String>("nothing answered".to_string()))
+            },
+        )
+        .await;
+
+        assert!(outcome.is_err());
+        assert!(
+            !succeeded_after_retry,
+            "it exhausted the budget rather than succeeding after a retry"
+        );
+        assert_eq!(payloads, vec!["body", "body", "body"]);
+        assert!(request.is_none(), "the last attempt took the payload");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_budget_of_zero_sends_once_and_keeps_the_failure() {
+        let mut attempts = 0usize;
+        let (outcome, succeeded_after_retry) = send_with_retries(
+            0,
+            |r: &Result<(), String>| r.as_ref().err().cloned(),
+            |attempt: SendAttempt| {
+                attempts += 1;
+                assert!(attempt.last, "with no budget the first attempt is the last");
+                std::future::ready(Err::<(), String>("nothing answered".to_string()))
+            },
+        )
+        .await;
+        assert_eq!(attempts, 1);
+        assert!(!succeeded_after_retry);
+        assert_eq!(outcome, Err("nothing answered".to_string()));
+    }
+
+    #[test]
+    fn the_status_of_a_chain_is_the_status_of_the_step_that_settled_it() {
+        let mut chain = ChainAccumulator::default();
+        let grpc_failure =
+            TestExecutionResult::fail("Validation failed:\n  - .status".to_string(), Some(2))
+                .with_grpc_status(0);
+        let http_pass = TestExecutionResult::pass(Some(1)).with_http_status(503);
+
+        assert!(chain.absorb_group(vec![grpc_failure, http_pass]));
+        let result = chain.into_result();
+        assert_eq!(result.grpc_status, Some(0));
+        assert_eq!(
+            result.http_status, None,
+            "the failing gRPC step speaks for the chain, not a passing HTTP step beside it"
+        );
+    }
+
+    #[test]
+    fn a_chain_that_passes_reports_its_last_step() {
+        let mut chain = ChainAccumulator::default();
+        assert!(!chain.absorb(TestExecutionResult::pass(Some(1)).with_http_status(200)));
+        assert!(!chain.absorb(TestExecutionResult::pass(Some(1)).with_grpc_status(0)));
+        let result = chain.into_result();
+        assert_eq!(result.grpc_status, Some(0));
+        assert_eq!(result.http_status, None);
     }
 }
 

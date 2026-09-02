@@ -30,6 +30,8 @@ fn call_args(file: std::path::PathBuf) -> CallArgs {
         dump_header: None,
         silent: true,
         show_error: false,
+        fail: false,
+        location: false,
         connect_timeout: 5,
         insecure: false,
         plaintext: true,

@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Seg } from 'luvo/ui/Seg';
 import { COLUMNS_FIT } from '../../lib/layout-state';
+import { useIntentFlag, useIntentText } from '../../lib/use-intent';
+import { useKeyedCursor } from '../../lib/use-cursor';
 import { useStore, copyNote, isTabDirty, isActiveTabDirty, callAddress, effectiveTls, listedPaths, tabFileMissing } from '../../lib/store';
 import { useShallow } from 'zustand/react/shallow';
 import { isSecretHeader } from '../../lib/secret-headers';
@@ -20,8 +22,8 @@ import { Plus, X, XCircle, FileSymlink, Pencil, ArrowRightToLine, Search, Share2
 import { useDismiss } from 'luvo/input/useDismiss';
 import { Popover } from 'luvo/ui/Popover';
 import { isHttpRequest } from '../../lib/http-endpoint';
-import { useModal } from 'luvo/ui/ModalContext';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useModal } from 'luvo/ui/useModal';
+import { useToast } from 'luvo/ui/useToast';
 import { count } from 'luvo/data/plural';
 import { scrollForActive } from '../../lib/tab-scroll';
 import { closeWithGate, type CloseChoice } from '../../lib/close-gate';
@@ -106,10 +108,10 @@ export function TabBar() {
     if (id) void closeRef.current(id);
   }, [closeIntent]);
 
-  const [showList, setShowList] = useState(false);
-  const [listFilter, setListFilter] = useState('');
-  const [cursor, setCursor] = useState(0);
-  const listRef = useDismiss<HTMLDivElement>(showList, useCallback(() => setShowList(false), []));
+  const [showList, setShowList] = useIntentFlag(tabListIntent);
+  const [listFilter, setListFilter] = useIntentText(tabListIntent, '');
+  const listRef = useDismiss<HTMLDivElement>(showList, useCallback(() => setShowList(false), [setShowList]));
+  const openList = () => { setListFilter(''); setShowList(true); };
   const listed = useMemo(() => {
     const needle = listFilter.trim().toLowerCase();
     if (needle === '') return tabs;
@@ -117,10 +119,7 @@ export function TabBar() {
       nameOf(t).toLowerCase().includes(needle)
       || (t.collectionPath ?? '').toLowerCase().includes(needle));
   }, [tabs, listFilter, nameOf]);
-  useEffect(() => { if (!showList) setListFilter(''); }, [showList]);
-  useEffect(() => { setCursor(0); }, [listFilter, showList]);
-
-  useEffect(() => { if (tabListIntent > 0) setShowList(true); }, [tabListIntent]);
+  const [cursor, setCursor, stepCursor] = useKeyedCursor(`${tabListIntent}:${listFilter}`, listed.length);
 
   const closeAllRef = useRef<() => void>(() => {});
   useEffect(() => {
@@ -167,9 +166,8 @@ export function TabBar() {
     if (next !== null) view.scrollLeft = next;
   }, [activeTabId, tabs.length]);
   const activeLabel = tabs.find(t => t.id === activeTabId)?.label ?? 'this request';
-  const [showImport, setShowImport] = useState(false);
   const importIntent = useStore(s => s.importIntent);
-  useEffect(() => { if (importIntent > 0) setShowImport(true); }, [importIntent]);
+  const [showImport, setShowImport] = useIntentFlag(importIntent);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
 
@@ -333,25 +331,29 @@ export function TabBar() {
           headers: Object.keys(filteredHeaders).length > 0 ? filteredHeaders : undefined,
           bodies: request.bodies,
           address: dialled || undefined,
-          ...(isHttp ? {} : { protocol, tls, tls_insecure: tls ? tlsInsecure : undefined }),
+          ...(isHttp ? {} : { protocol, tls, tls_insecure: tls && tlsInsecure }),
           ttl_days: share?.ttl ?? 7,
           include_secrets: includeSecrets,
           omitted,
         }),
       });
-      if (!res.ok) { toast.error('Failed to create share'); return; }
+      if (!res.ok) {
+        const said = await res.text().catch(() => '');
+        toast.error(said.trim() || `The workbench refused to make a link (${res.status} ${res.statusText})`);
+        return;
+      }
       const data = await res.json();
       const link = `${window.location.origin}${data.url}`;
       const expires = new Date(data.expires_at).toLocaleDateString();
       shareCreated(link, expires);
       try {
         await copyToClipboard(link);
-        toast.success(`Link copied! Expires ${expires}`);
+        toast.success(`Link copied — it expires ${expires}`);
       } catch {
         toast.error('The browser refused the clipboard — the link is in the dialog');
       }
     } catch {
-      toast.error('Failed to create share');
+      toast.error('The workbench could not be reached — nothing was shared');
     } finally {
       setSharing(false);
     }
@@ -465,7 +467,7 @@ export function TabBar() {
         <div ref={listRef} className="picker">
           <button
             className="btn is-ghost tab-list-btn"
-            onClick={() => setShowList(v => !v)}
+            onClick={() => (showList ? setShowList(false) : openList())}
             aria-haspopup="menu"
             aria-expanded={showList}
             title={`All ${tabs.length} open tabs`}
@@ -490,8 +492,7 @@ export function TabBar() {
                     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                       e.preventDefault();
                       if (listed.length === 0) return;
-                      const step = e.key === 'ArrowDown' ? 1 : -1;
-                      setCursor(c => (c + step + listed.length) % listed.length);
+                      stepCursor(e.key === 'ArrowDown' ? 1 : -1);
                       return;
                     }
                     if (e.key !== 'Enter') return;
@@ -802,7 +803,7 @@ function ShareDialog({ open, headers, bodies, onToggleHeader, ttl, onTtl, sharin
         </div>
 
         <div>
-          <div className="label">Headers</div>
+          <div className="field-label">Headers</div>
           {keys.length === 0 && <div className="muted">No headers to share.</div>}
           {keys.map(key => {
             const secret = isSecretHeader(key);
@@ -823,7 +824,7 @@ function ShareDialog({ open, headers, bodies, onToggleHeader, ttl, onTtl, sharin
         </div>
 
         <div>
-          <div className="label">Messages</div>
+          <div className="field-label">Messages</div>
           <div className="muted">
             {count(bodies.length, 'message')}, {humanBytes(byteSize(bodies.join('')))}, sent as written
           </div>
@@ -836,7 +837,7 @@ function ShareDialog({ open, headers, bodies, onToggleHeader, ttl, onTtl, sharin
 
         {travelling.length > 0 && (
           <div>
-            <div className="label">Variables</div>
+            <div className="field-label">Variables</div>
             <div className="muted">
               <span className="mono">{travelling.map(v => `{{${v}}}`).join(' ')}</span>{' '}
               {travelling.length === 1 ? 'travels' : 'travel'} as written — the{' '}
@@ -847,7 +848,7 @@ function ShareDialog({ open, headers, bodies, onToggleHeader, ttl, onTtl, sharin
         )}
 
         <div>
-          <div className="label">Target</div>
+          <div className="field-label">Target</div>
           <div className="muted">
             {target
               ? <>The link opens against <span className="mono">{target}</span> — where this call goes from here.</>
@@ -856,7 +857,7 @@ function ShareDialog({ open, headers, bodies, onToggleHeader, ttl, onTtl, sharin
         </div>
 
         <div>
-          <div className="label">Expires in</div>
+          <div className="field-label">Expires in</div>
           <Seg
             label="How long the link lasts"
             value={String(ttl)}
@@ -868,7 +869,7 @@ function ShareDialog({ open, headers, bodies, onToggleHeader, ttl, onTtl, sharin
 
       {link && (
         <div className="note share-link">
-          <div className="label">The link{expires ? ` — expires ${expires}` : ''}</div>
+          <div className="field-label">The link{expires ? ` — expires ${expires}` : ''}</div>
           <input className="field mono" readOnly value={link} onFocus={e => e.currentTarget.select()} />
         </div>
       )}

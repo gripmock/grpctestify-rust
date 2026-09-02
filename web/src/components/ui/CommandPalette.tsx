@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useStore } from '../../lib/store';
+import { openRefusal, useStore } from '../../lib/store';
 import { COMMANDS, filterCommands } from '../../lib/commands';
 import type { CommandUi } from '../../lib/commands';
 import { formatHotkey } from 'luvo/input/hotkeys';
 import { rankPaths } from 'luvo/data/fuzzy';
 import { familyOf } from '../../lib/tree';
 import { FileJson, Globe, Network } from 'lucide-react';
-import { useToast } from 'luvo/ui/ToastContext';
+import { useToast } from 'luvo/ui/useToast';
 import { plural } from 'luvo/data/plural';
 
 const FILES_SHOWN = 8;
@@ -25,21 +25,25 @@ export function CommandPalette({ open, onClose, ui }: { open: boolean; onClose: 
     if (!open && el.open) el.close();
   }, [open]);
 
+  const state = useStore(s => (open ? s : null));
+  const collections = useStore(s => (open ? s.collections : null));
+
   const matches = useMemo(
-    () => (open ? filterCommands(COMMANDS, query, useStore.getState()) : []),
-    [open, query],
+    () => (state ? filterCommands(COMMANDS, query, state) : []),
+    [state, query],
   );
 
   const found = useMemo(() => {
-    if (!open) return [];
-    const all = useStore.getState().collections.filter(c => !c.is_dir && familyOf(c.path) !== 'unknown');
+    if (!collections) return [];
+    const all = collections.filter(c => !c.is_dir && familyOf(c.path) !== 'unknown');
     return rankPaths(all.map(c => c.path), query);
-  }, [open, query]);
+  }, [collections, query]);
 
   const files = found.slice(0, FILES_SHOWN);
   const hidden = found.length - files.length;
 
   const total = matches.length + files.length;
+  const optionId = (i: number) => (i < matches.length ? `palette-command-${matches[i].id}` : `palette-file-${i - matches.length}`);
 
   const listRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -60,7 +64,7 @@ export function CommandPalette({ open, onClose, ui }: { open: boolean; onClose: 
     if (!file) return;
     onClose();
     void useStore.getState().loadCollection(file).then(opened => {
-      if (!opened) toast.error(`${file} could not be opened — the list may be out of date`);
+      if (!opened) toast.error(openRefusal(file) ?? `${file} could not be opened — the list may be out of date`);
     });
   };
 
@@ -78,6 +82,10 @@ export function CommandPalette({ open, onClose, ui }: { open: boolean; onClose: 
           className="field"
           autoFocus
           value={query}
+          role="combobox"
+          aria-expanded
+          aria-controls="palette-options"
+          aria-activedescendant={total > 0 ? optionId(Math.min(cursor, total - 1)) : undefined}
           placeholder="Run, save, open a panel…"
           onChange={e => { setQuery(e.target.value); setCursor(0); }}
           onKeyDown={e => {
@@ -94,14 +102,18 @@ export function CommandPalette({ open, onClose, ui }: { open: boolean; onClose: 
         />
       </div>
 
-      <div ref={listRef} className="menu palette-list">
+      <div ref={listRef} id="palette-options" role="listbox" aria-label="Commands and files" className="menu palette-list">
         {total === 0 && (
-          <div className="empty">Nothing matches — the palette searches commands and the project's files.</div>
+          <div className="empty-state">Nothing matches — the palette searches commands and the project's files.</div>
         )}
         {matches.length > 0 && <div className="menu-group">actions</div>}
         {matches.map((c, i) => (
           <button
             key={c.id}
+            id={optionId(i)}
+            role="option"
+            aria-selected={i === cursor}
+            tabIndex={-1}
             className={`menu-item${i === cursor ? ' is-on' : ''}`}
             onMouseEnter={() => setCursor(i)}
             onClick={() => runAt(i)}
@@ -119,6 +131,10 @@ export function CommandPalette({ open, onClose, ui }: { open: boolean; onClose: 
           return (
             <button
               key={path}
+              id={optionId(index)}
+              role="option"
+              aria-selected={index === cursor}
+              tabIndex={-1}
               className={`menu-item${index === cursor ? ' is-on' : ''}`}
               onMouseEnter={() => setCursor(index)}
               onClick={() => runAt(index)}

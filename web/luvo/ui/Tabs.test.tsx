@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Tabs } from './Tabs';
+import { tabPanelProps } from './tab-ids';
 import { mount } from 'luvo/test/render';
 
 const ITEMS = [
@@ -65,6 +66,26 @@ describe('a strip with a name', () => {
   it('says what it is', () => {
     const ui = mount(<Tabs items={ITEMS} value="a" onChange={() => {}} label="Sections of this request" />);
     expect(ui.get('[role="tablist"]')?.getAttribute('aria-label')).toBe('Sections of this request');
+    ui.unmount();
+  });
+});
+
+describe('a strip and the panel it names', () => {
+  it('gives every tab an id and says which panel it controls', () => {
+    const ui = mount(<Tabs id="rail" items={ITEMS} value="a" onChange={() => {}} />);
+    const tabs = ui.all('[role="tab"]');
+    expect(tabs.map(t => t.id)).toEqual(['rail-tab-a', 'rail-tab-b', 'rail-tab-c']);
+    expect(tabs.map(t => t.getAttribute('aria-controls'))).toEqual(['rail-panel-a', 'rail-panel-b', 'rail-panel-c']);
+    expect(tabPanelProps('rail', 'b')).toEqual({ id: 'rail-panel-b', role: 'tabpanel', 'aria-labelledby': 'rail-tab-b' });
+    ui.unmount();
+  });
+
+  it('keeps the same ids from one render to the next without a name', () => {
+    const ui = mount(<Tabs items={ITEMS} value="a" onChange={() => {}} />);
+    const before = ui.all('[role="tab"]').map(t => [t.id, t.getAttribute('aria-controls')]);
+    expect(before.every(([id, panel]) => id && panel && id !== panel)).toBe(true);
+    ui.update(<Tabs items={ITEMS} value="b" onChange={() => {}} />);
+    expect(ui.all('[role="tab"]').map(t => [t.id, t.getAttribute('aria-controls')])).toEqual(before);
     ui.unmount();
   });
 });

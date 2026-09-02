@@ -399,6 +399,7 @@ protoc-bin-vendored = { version = "3", optional = true }
 [dev-dependencies]
 # Testing
 tempfile = "3.27"
+tokio = { workspace = true, features = ["test-util"] }
 uuid = { workspace = true }
 criterion = { version = "0.8", features = ["html_reports"] }
 tonic-health = "0.14.6"

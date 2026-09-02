@@ -22,6 +22,7 @@ export function registerEnvHoverProvider(
     name: string;
     variables: Record<string, string>;
     mutedVariables?: string[];
+    secret?: string[];
     source?: 'project' | 'browser';
   } | null | undefined,
 ) {
@@ -48,7 +49,7 @@ export function registerEnvHoverProvider(
         };
 
         const muted = (env.mutedVariables || []).includes(key);
-        const shown = maskValue(key, val);
+        const shown = maskValue(key, val, env.secret);
         const lines = [
           `**\`{{${key}}}\`** → ` + (val ? `\`${shown}\`` : '*empty (secret)*'),
           env.source === 'browser'
