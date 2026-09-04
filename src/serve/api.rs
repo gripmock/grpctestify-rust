@@ -168,7 +168,8 @@ fn tls_file(
     let Some(given) = given.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
-    if std::path::Path::new(given).is_absolute() {
+    let given_path = std::path::Path::new(given);
+    if given_path.is_absolute() || given_path.has_root() {
         return Ok(Some(given.to_string()));
     }
     let landed = lexically_normal(&beside.join(given));
@@ -8497,6 +8498,12 @@ mod tests {
             landed("../certs/ca.pem"),
             Some(std::path::PathBuf::from("/proj/collections/certs/ca.pem")),
             "`..` is a normal layout when certificates sit beside the collections"
+        );
+
+        assert_eq!(
+            landed("/etc/ca.pem"),
+            Some(std::path::PathBuf::from("/etc/ca.pem")),
+            "a rooted path is dialled as written, on every platform"
         );
 
         let outside = built("../../../etc/ca.pem").unwrap_err();
