@@ -8481,18 +8481,21 @@ mod tests {
             )
         };
 
-        assert_eq!(
-            built("ca.pem").unwrap().unwrap().ca_cert_path.as_deref(),
-            Some("/proj/collections/auth/ca.pem"),
-            "the runner resolves a relative TLS path against the test file's own directory"
-        );
-        assert_eq!(
-            built("../certs/ca.pem")
+        let landed = |given: &str| {
+            built(given)
                 .unwrap()
                 .unwrap()
                 .ca_cert_path
-                .as_deref(),
-            Some("/proj/collections/certs/ca.pem"),
+                .map(std::path::PathBuf::from)
+        };
+        assert_eq!(
+            landed("ca.pem"),
+            Some(std::path::PathBuf::from("/proj/collections/auth/ca.pem")),
+            "the runner resolves a relative TLS path against the test file's own directory"
+        );
+        assert_eq!(
+            landed("../certs/ca.pem"),
+            Some(std::path::PathBuf::from("/proj/collections/certs/ca.pem")),
             "`..` is a normal layout when certificates sit beside the collections"
         );
 
