@@ -13,7 +13,6 @@ pub enum TestStatus {
     Skip,
 }
 
-/// Test results storage
 #[derive(Debug, Clone, Serialize)]
 pub struct TestResults {
     total: usize,
@@ -114,16 +113,12 @@ mod tests {
     #[test]
     fn sum_test_ms_accumulates_per_test_walls_not_parallel_wall() {
         let mut r = TestResults::new();
-        // Three tests, each 30ms wall / 10ms gRPC.
         r.add(TestResult::pass("a.gctf", 30, Some(10)));
         r.add(TestResult::pass("b.gctf", 30, Some(10)));
         r.add(TestResult::fail("c.gctf", "x".into(), 30, Some(10)));
 
-        // sum of per-test walls (independent of how parallel the run was).
         assert_eq!(r.metrics().sum_test_ms, 90);
         assert_eq!(r.metrics().total_rpc_ms, 30);
-        // True average = 90/3 = 30ms; overhead = 90 - 30 = 60ms — both derive
-        // from per-test sums, not the parallel wall-clock.
         let avg = r.metrics().sum_test_ms as f64 / r.total() as f64;
         assert_eq!(avg, 30.0);
         assert_eq!(
@@ -149,6 +144,7 @@ mod tests {
         let mut r = TestResults::new();
         r.add(TestResult {
             name: "t.gctf".into(),
+            family: "gctf".into(),
             status: TestStatus::Skip,
             duration_ms: 0,
             call_duration_ms: None,

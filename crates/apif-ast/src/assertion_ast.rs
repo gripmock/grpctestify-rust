@@ -1,23 +1,7 @@
-//! AST nodes for assertion expressions.
-//!
-//! Pipeline: `text → tokenize_assertion() → Vec<Token> → parse_assertion() → AssertionExpr`
-//!
-//! The tokenizer (`super::tokenizer`) is the single source of tokens with exact byte positions.
-//!
-//! Precedence (low to high):
-//!   pipe (`| not`)
-//!   or
-//!   xor
-//!   and
-//!   binary (==, !=, >, <, contains, matches, …)
-//!   unary (!, not, not not, !!)
-//!   atom (literal, @plugin, .path, paren)
-
 use serde::{Deserialize, Serialize};
 
 use crate::tokenizer::{TokenKind, tokenize_assertion};
 
-/// A complete assertion expression (top-level).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AssertionExpr {
     Binary {
@@ -49,7 +33,6 @@ pub enum AssertionExpr {
     Raw(String),
 }
 
-/// Atomic expressions (leaf nodes).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Expr {
     JqPath(String),
@@ -65,8 +48,6 @@ pub enum Expr {
     },
     Json(String),
     Yaml(String),
-    /// Type annotation: `expr:TypeName`. Evaluates to `expr` at runtime,
-    /// but hints to the type checker that the expression has the given type.
     As(Box<Expr>, String),
 }
 
@@ -248,14 +229,36 @@ fn fmt_assertion(e: &AssertionExpr, f: &mut std::fmt::Formatter<'_>, prec: u8) -
     }
 }
 
-/// Maximum nesting depth for the recursive-descent parser. Guards against
-/// stack overflow on adversarial input such as thousands of nested `(` or `!`
-/// (each level recurses through `parse_unary`). Legitimate assertions nest far
-/// below this; over-limit expressions safely fall back to `Raw`.
 const MAX_PARSE_DEPTH: usize = 256;
 
-/// Parse a raw assertion string into an AST.
-/// Falls back to `Raw` if parsing fails.
+pub fn dangling_operator(raw: &str) -> Option<String> {
+    let tokens = crate::tokenizer::tokenize_assertion(raw);
+    let last = tokens.last()?;
+    let spelled = match &last.kind {
+        crate::tokenizer::TokenKind::Op(s) => s.clone(),
+        crate::tokenizer::TokenKind::Ident(s) if is_bin_op_keyword(s) => s.clone(),
+        crate::tokenizer::TokenKind::Pipe => return Some("|".to_string()),
+        _ => return None,
+    };
+    BinaryOp::try_parse(&spelled).map(|_| spelled)
+}
+
+pub fn reads_nothing(raw: &str) -> bool {
+    use crate::tokenizer::TokenKind;
+    let tokens = crate::tokenizer::tokenize_assertion(raw);
+    if tokens.is_empty() {
+        return false;
+    }
+    !tokens.iter().any(|t| match &t.kind {
+        TokenKind::Dot | TokenKind::At | TokenKind::VarDelim | TokenKind::LBracket => true,
+        TokenKind::Ident(name) => !matches!(
+            name.as_str(),
+            "true" | "false" | "null" | "and" | "or" | "not" | "xor"
+        ),
+        _ => false,
+    })
+}
+
 pub fn parse_assertion(raw: &str) -> AssertionExpr {
     let tokens = tokenize_assertion(raw);
     if tokens.is_empty() {
@@ -337,9 +340,6 @@ fn parse_bin(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> Asserti
     let mut left = parse_unary(ts, p, d);
     loop {
         let op = match ts.get(*p).map(|t| &t.kind) {
-            // Unknown operators (e.g. `-`, `=`) must not parse as a binary
-            // expression: stop here so the leftover token makes
-            // `parse_assertion` fall back to `Raw` (jq path).
             Some(TokenKind::Op(s)) => match BinaryOp::try_parse(s) {
                 Some(op) => op,
                 None => break,
@@ -352,6 +352,9 @@ fn parse_bin(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> Asserti
             _ => break,
         };
 
+        if *p + 1 >= ts.len() {
+            break;
+        }
         *p += 1;
         let right = parse_unary(ts, p, d);
         left = AssertionExpr::Binary {
@@ -364,8 +367,6 @@ fn parse_bin(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> Asserti
 }
 
 fn parse_unary(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> AssertionExpr {
-    // Every recursion cycle (nested parens, `!`/`not`, plugin args, if/then)
-    // passes through here, so a single depth guard bounds total stack usage.
     if d > MAX_PARSE_DEPTH {
         return AssertionExpr::Raw(String::new());
     }
@@ -409,15 +410,18 @@ fn parse_unary(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> Asser
 }
 
 fn parse_if(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> AssertionExpr {
+    let start = *p;
     *p += 1;
     let cond = parse_pipe(ts, p, d + 1);
     if *p >= ts.len() || !is_keyword(ts, *p, "then") {
-        return AssertionExpr::Raw("if..then missing".into());
+        *p = start;
+        return AssertionExpr::Raw(String::new());
     }
     *p += 1;
     let then_b = parse_pipe(ts, p, d + 1);
     if *p >= ts.len() || !is_keyword(ts, *p, "else") {
-        return AssertionExpr::Raw("if..else missing".into());
+        *p = start;
+        return AssertionExpr::Raw(String::new());
     }
     *p += 1;
     let else_b = parse_pipe(ts, p, d + 1);
@@ -457,8 +461,6 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> Assert
             Expr::Literal(Literal::Null)
         }
         TokenKind::VarDelim => {
-            // {{var}} in assertions is deprecated — use $var instead.
-            // Skip over the tokens to let the expression fall to Raw.
             *p += 1;
             while *p < ts.len() && !matches!(ts[*p].kind, TokenKind::VarDelim) {
                 *p += 1;
@@ -474,16 +476,15 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> Assert
                 if let TokenKind::Ident(s) = &ts[*p].kind {
                     *p += 1;
                     let mut name = s.clone();
-                    // @type.method syntax
                     if *p + 1 < ts.len()
                         && matches!(&ts[*p].kind, TokenKind::Dot)
                         && matches!(&ts[*p + 1].kind, TokenKind::Ident(_))
                     {
-                        *p += 1; // consume dot
+                        *p += 1;
                         if let TokenKind::Ident(method) = &ts[*p].kind {
                             name.push('.');
                             name.push_str(method);
-                            *p += 1; // consume method name
+                            *p += 1;
                         }
                     }
                     name
@@ -630,8 +631,10 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> Assert
         }
         TokenKind::Dot | TokenKind::Ident(_) => {
             let mut path = String::with_capacity(24);
+            let mut after_dot = false;
             while *p < ts.len() {
                 if let TokenKind::Ident(s) = &ts[*p].kind
+                    && !after_dot
                     && (is_bin_op_keyword(s) || is_keyword_token(&ts[*p].kind))
                 {
                     break;
@@ -639,10 +642,12 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> Assert
                 match &ts[*p].kind {
                     TokenKind::Dot => {
                         path.push('.');
+                        after_dot = true;
                         *p += 1;
                     }
                     TokenKind::Ident(s) => {
                         path.push_str(s);
+                        after_dot = false;
                         *p += 1;
                     }
                     TokenKind::StringLit(s) => {
@@ -650,14 +655,17 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> Assert
                         path.push('"');
                         path.push_str(s);
                         path.push('"');
+                        after_dot = false;
                         *p += 1;
                     }
                     TokenKind::Op(op) if op == "-" || op == ":" => {
                         path.push_str(op);
+                        after_dot = false;
                         *p += 1;
                     }
                     TokenKind::LBracket => {
                         path.push('[');
+                        after_dot = false;
                         *p += 1;
                         while *p < ts.len() && !matches!(ts[*p].kind, TokenKind::RBracket) {
                             if let TokenKind::NumberLit(n) = &ts[*p].kind {
@@ -693,13 +701,12 @@ fn parse_atom(ts: &[crate::tokenizer::Token], p: &mut usize, d: usize) -> Assert
         }
     };
 
-    // Parse optional `:TypeName` type annotation
     if *p + 1 < ts.len()
         && matches!(&ts[*p].kind, TokenKind::Colon)
         && let TokenKind::Ident(type_name) = &ts[*p + 1].kind
     {
         let name = type_name.clone();
-        *p += 2; // consume ':' and type name
+        *p += 2;
         expr = Expr::As(Box::new(expr), name);
     }
 
@@ -710,8 +717,6 @@ fn is_keyword(ts: &[crate::tokenizer::Token], idx: usize, kw: &str) -> bool {
     matches!(ts.get(idx), Some(t) if matches!(&t.kind, TokenKind::Ident(s) if s == kw))
 }
 
-/// Merge consecutive bare JqPath args that were split by `-`.
-/// e.g. `[JqPath("content"), JqPath("type")]` → `[JqPath("content-type")]`
 fn merge_hyphenated_args(args: Vec<AssertionExpr>) -> Vec<AssertionExpr> {
     if args.len() <= 1 {
         return args;
@@ -759,15 +764,12 @@ fn is_keyword_token(k: &TokenKind) -> bool {
             if matches!(
                 s.as_str(),
                 "and" | "or" | "xor" | "contains" | "matches" | "startsWith"
-                    | "endsWith" | "startswith" | "endswith"
+                    | "endsWith" | "startswith" | "endswith" | "if" | "then" | "else" | "end"
+                    | "true" | "false" | "null"
             )
     )
 }
 
-/// Convert AssertionExpr back to string (ternary for if-then-else).
-/// Render a string literal with the escapes the tokenizer decodes on the way in.
-/// Every renderer must use this: an unescaped one rewrites the literal into a
-/// different string.
 pub fn write_escaped_string_literal(out: &mut String, value: &str) {
     out.push('"');
     for c in value.chars() {
@@ -781,8 +783,6 @@ pub fn write_escaped_string_literal(out: &mut String, value: &str) {
             '\u{c}' => out.push_str("\\f"),
             '\u{b}' => out.push_str("\\v"),
             '\0' => out.push_str("\\0"),
-            // Remaining control characters have no short form; `\uXXXX` is what
-            // the tokenizer reads back.
             c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
             other => out.push(other),
         }
@@ -790,13 +790,41 @@ pub fn write_escaped_string_literal(out: &mut String, value: &str) {
     out.push('"');
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NegationStyle {
+    #[default]
+    Canonical,
+    Keyword,
+    Bang,
+}
+
+impl NegationStyle {
+    fn not_spelling(self) -> &'static str {
+        match self {
+            Self::Keyword => "not ",
+            Self::Canonical | Self::Bang => "!",
+        }
+    }
+
+    fn not_not_spelling(self) -> &'static str {
+        match self {
+            Self::Bang => "!!",
+            Self::Canonical | Self::Keyword => "not not ",
+        }
+    }
+}
+
 pub fn assertion_to_string(expr: &AssertionExpr) -> String {
+    assertion_to_string_with(expr, NegationStyle::Canonical)
+}
+
+pub fn assertion_to_string_with(expr: &AssertionExpr, style: NegationStyle) -> String {
     let mut out = String::with_capacity(64);
-    push_assertion(expr, &mut out, 0);
+    push_assertion(expr, &mut out, 0, style);
     out
 }
 
-fn push_expr(expr: &Expr, out: &mut String) {
+fn push_expr(expr: &Expr, out: &mut String, style: NegationStyle) {
     match expr {
         Expr::JqPath(p) => out.push_str(p),
         Expr::PluginCall { name, args } => {
@@ -807,7 +835,7 @@ fn push_expr(expr: &Expr, out: &mut String) {
                 if i > 0 {
                     out.push_str(", ");
                 }
-                push_assertion(a, out, 0);
+                push_assertion(a, out, 0, style);
             }
             out.push(')');
         }
@@ -827,22 +855,22 @@ fn push_expr(expr: &Expr, out: &mut String) {
         }
         Expr::Json(s) | Expr::Yaml(s) => out.push_str(s),
         Expr::As(inner, type_name) => {
-            push_expr(inner, out);
+            push_expr(inner, out, style);
             out.push(':');
             out.push_str(type_name);
         }
     }
 }
 
-fn push_assertion(expr: &AssertionExpr, out: &mut String, prec: u8) {
+fn push_assertion(expr: &AssertionExpr, out: &mut String, prec: u8, style: NegationStyle) {
     match expr {
         AssertionExpr::Or { left, right } => {
             if prec > 1 {
                 out.push('(');
             }
-            push_assertion(left, out, 1);
+            push_assertion(left, out, 1, style);
             out.push_str(" or ");
-            push_assertion(right, out, 1);
+            push_assertion(right, out, 1, style);
             if prec > 1 {
                 out.push(')');
             }
@@ -851,9 +879,9 @@ fn push_assertion(expr: &AssertionExpr, out: &mut String, prec: u8) {
             if prec > 1 {
                 out.push('(');
             }
-            push_assertion(left, out, 1);
+            push_assertion(left, out, 1, style);
             out.push_str(" xor ");
-            push_assertion(right, out, 1);
+            push_assertion(right, out, 1, style);
             if prec > 1 {
                 out.push(')');
             }
@@ -862,9 +890,9 @@ fn push_assertion(expr: &AssertionExpr, out: &mut String, prec: u8) {
             if prec > 2 {
                 out.push('(');
             }
-            push_assertion(left, out, 2);
+            push_assertion(left, out, 2, style);
             out.push_str(" and ");
-            push_assertion(right, out, 2);
+            push_assertion(right, out, 2, style);
             if prec > 2 {
                 out.push(')');
             }
@@ -873,50 +901,46 @@ fn push_assertion(expr: &AssertionExpr, out: &mut String, prec: u8) {
             if prec > 3 {
                 out.push('(');
             }
-            push_assertion(left, out, 3);
+            push_assertion(left, out, 3, style);
             out.push(' ');
             out.push_str(op.as_str());
             out.push(' ');
-            push_assertion(right, out, 3);
+            push_assertion(right, out, 3, style);
             if prec > 3 {
                 out.push(')');
             }
         }
         AssertionExpr::Not(inner) => {
-            out.push('!');
-            push_assertion(inner, out, 4);
+            out.push_str(style.not_spelling());
+            push_assertion(inner, out, 4, style);
         }
         AssertionExpr::NotNot(inner) => {
-            out.push_str("not not ");
-            push_assertion(inner, out, 4);
+            out.push_str(style.not_not_spelling());
+            push_assertion(inner, out, 4, style);
         }
         AssertionExpr::IfThenElse {
             condition,
             then_branch,
             else_branch,
         } => {
-            // Serialize as `if..then..else..end` — the only conditional form the
-            // parser accepts. The older `(cond ? then : else)` output did not
-            // round-trip (no `? :` reader), breaking `fmt` idempotency.
             out.push_str("if ");
-            push_assertion(condition, out, 0);
+            push_assertion(condition, out, 0, style);
             out.push_str(" then ");
-            push_assertion(then_branch, out, 0);
+            push_assertion(then_branch, out, 0, style);
             out.push_str(" else ");
-            push_assertion(else_branch, out, 0);
+            push_assertion(else_branch, out, 0, style);
             out.push_str(" end");
         }
         AssertionExpr::Paren(inner) => {
             out.push('(');
-            push_assertion(inner, out, 0);
+            push_assertion(inner, out, 0, style);
             out.push(')');
         }
-        AssertionExpr::Atom(e) => push_expr(e, out),
+        AssertionExpr::Atom(e) => push_expr(e, out, style),
         AssertionExpr::Raw(s) => out.push_str(s),
     }
 }
 
-/// Remove redundant parentheses.
 pub fn remove_redundant_parens(expr: &AssertionExpr) -> AssertionExpr {
     match expr {
         AssertionExpr::Paren(inner) => remove_redundant_parens(inner),
@@ -1242,10 +1266,68 @@ mod tests {
     }
 
     #[test]
+    fn a_path_condition_does_not_swallow_then() {
+        assert_eq!(
+            parse_assertion(".a then"),
+            AssertionExpr::Raw(".a then".to_string()),
+            "the keyword is left over, not glued onto the path"
+        );
+        for src in [
+            "if .a then .b else .c end",
+            "if .a then true else false end",
+            "if .a and .b then 1 else 2 end",
+            "if .a == 1 then .b else .c end",
+        ] {
+            assert!(
+                matches!(parse_assertion(src), AssertionExpr::IfThenElse { .. }),
+                "{src} parsed as {:?}",
+                parse_assertion(src)
+            );
+            assert_eq!(assertion_to_string(&parse_assertion(src)), src);
+        }
+    }
+
+    #[test]
+    fn a_field_named_like_a_keyword_stays_a_field() {
+        for src in [
+            ".then", ".else", ".end", ".and", ".a.end", ".end.x", ".true", ".false", ".a.null",
+        ] {
+            assert_eq!(
+                parse_assertion(src),
+                AssertionExpr::Atom(Expr::JqPath(src.to_string())),
+                "{src}"
+            );
+        }
+        assert!(matches!(
+            parse_assertion(".a and .b"),
+            AssertionExpr::And { .. }
+        ));
+    }
+
+    #[test]
+    fn a_literal_is_not_swallowed_into_a_path() {
+        for src in [".c true", ".a null", ".c ? true : false", ".c ? .a : .b"] {
+            assert_eq!(
+                parse_assertion(src),
+                AssertionExpr::Raw(src.to_string()),
+                "{src} must stay untouched rather than scan as one path"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unparsed_if_keeps_the_text_that_was_written() {
+        for src in ["if .a then .b", "if .a", "if .a then"] {
+            assert_eq!(parse_assertion(src), AssertionExpr::Raw(src.to_string()));
+        }
+        assert!(
+            !assertion_to_string(&parse_assertion("if .a then .b")).contains("missing"),
+            "a diagnostic string must never stand in for the author's expression"
+        );
+    }
+
+    #[test]
     fn if_then_else_roundtrips() {
-        // Must serialize back to `if..then..else..end` (the only form the parser
-        // reads), so the output re-parses to the same AST — required for `fmt`
-        // idempotency.
         let original = "if .x == 0 then true else false end";
         let expr = parse_assertion(original);
         let s = assertion_to_string(&expr);
@@ -1362,15 +1444,12 @@ mod tests {
 
     #[test]
     fn parse_trailing_colon_no_panic() {
-        // Regression: a trailing `:` used to index past the token list and panic.
         let expr = parse_assertion(".x:");
         assert_eq!(expr, AssertionExpr::Raw(".x:".to_string()));
     }
 
     #[test]
     fn parse_unknown_operator_falls_back_to_raw() {
-        // Regression: unknown operators in binary position used to silently
-        // parse as `endsWith`. They must fall back to Raw (jq path) instead.
         assert_eq!(
             parse_assertion("@len(.x) - 1 == 0"),
             AssertionExpr::Raw("@len(.x) - 1 == 0".to_string())
@@ -1383,8 +1462,6 @@ mod tests {
 
     #[test]
     fn parse_lone_equals_falls_back_to_raw() {
-        // Regression: `.x = 5` (typo for `==`) used to drop the `=` and parse
-        // as `.x 5`. It must not parse as a valid assertion.
         assert_eq!(
             parse_assertion(".x = 5"),
             AssertionExpr::Raw(".x = 5".to_string())
@@ -1643,9 +1720,6 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn deeply_nested_parens_does_not_overflow() {
-        // Regression: unbounded recursion on deeply nested `(` aborted the
-        // process with a stack overflow. It must now terminate and fall back
-        // to `Raw` instead of crashing.
         let src = "(".repeat(100_000);
         let expr = parse_assertion(&src);
         assert_eq!(expr, AssertionExpr::Raw(src));
@@ -1661,7 +1735,6 @@ mod tests {
 
     #[test]
     fn moderate_paren_nesting_still_parses() {
-        // Nesting well under the depth limit must still parse normally.
         let src = format!("{}.x == 1{}", "(".repeat(20), ")".repeat(20));
         let expr = parse_assertion(&src);
         assert!(
@@ -1763,7 +1836,6 @@ mod tests {
 
     #[test]
     fn a_trailing_underscore_is_not_part_of_a_number() {
-        // `1_` is not grouping; the `_` must stay outside the literal.
         let ast = parse_assertion(".a == 1_");
         assert!(
             !matches!(&ast, AssertionExpr::Binary { right, .. }
@@ -1774,10 +1846,6 @@ mod tests {
 
     #[test]
     fn encoder_and_decoder_are_inverses_over_every_char_class() {
-        // Exhaustive over the ranges where the two tables can disagree: every
-        // control char, the ASCII printables, and a sample of higher planes.
-        // A sequence added to one table and not the other fails here rather
-        // than surfacing as a silently unmatchable assertion.
         let mut values: Vec<String> = (0u32..0x80)
             .filter_map(char::from_u32)
             .map(|c| format!("x{c}y"))
@@ -1811,5 +1879,41 @@ mod tests {
                 "encode/decode disagree for {value:?} (rendered as {rendered})"
             );
         }
+    }
+
+    #[test]
+    fn a_comparison_with_nothing_on_the_right_is_not_a_comparison() {
+        assert_eq!(dangling_operator(".name ==").as_deref(), Some("=="));
+        assert_eq!(dangling_operator(".n >=").as_deref(), Some(">="));
+        assert_eq!(
+            dangling_operator(".s contains").as_deref(),
+            Some("contains")
+        );
+        assert_eq!(dangling_operator(".name == \"Ada\""), None);
+        assert_eq!(dangling_operator(".name"), None);
+        assert_eq!(dangling_operator(""), None);
+        assert_eq!(dangling_operator(".name |").as_deref(), Some("|"));
+        assert_eq!(dangling_operator(".name | length"), None);
+        assert!(matches!(parse_assertion(".name =="), AssertionExpr::Raw(_)));
+        assert!(!matches!(
+            parse_assertion(".name == \"Ada\""),
+            AssertionExpr::Raw(_)
+        ));
+    }
+
+    #[test]
+    fn an_assertion_that_cannot_read_the_answer_is_not_one() {
+        assert!(reads_nothing("200"));
+        assert!(reads_nothing("\"SERVING\""));
+        assert!(reads_nothing("true"));
+        assert!(reads_nothing("1 == 1"));
+        assert!(!reads_nothing(".name"));
+        assert!(!reads_nothing("@status() == 200"));
+        assert!(!reads_nothing("$count > 0"));
+        assert!(!reads_nothing("item_count == 2"));
+        assert!(!reads_nothing("has_more == true"));
+        assert!(reads_nothing("true and false"));
+        assert!(!reads_nothing(".items[0] == 1"));
+        assert!(!reads_nothing(""));
     }
 }

@@ -1,6 +1,3 @@
-//! Type methods — plugins registered under `@type.method` names.
-//! E.g., `@url.scheme(.x)`, `@email.domain(.x)`, `@json.key(.x, "k")`.
-
 use crate::core::{Plugin, PluginContext, PluginResult, PluginSignature};
 use crate::type_info::{ArgTypeInfo, TypeInfo};
 use anyhow::Result;
@@ -204,10 +201,6 @@ impl Plugin for EmailDomain {
             Value::String(s) => s,
             _ => return Ok(PluginResult::Value(Value::Null)),
         };
-        // Domain is everything after the FIRST '@', mirroring `EmailLocalPart`
-        // (which takes everything before the first '@') so local + "@" + domain
-        // round-trips the input. `split('@').nth(1)` dropped anything after a
-        // second '@' (e.g. "a@b@c" wrongly yielded "b" instead of "b@c").
         let domain = s
             .split_once('@')
             .map_or("", |(_, domain)| domain)
@@ -248,8 +241,6 @@ impl Plugin for IpVersion {
             Value::String(s) => s,
             _ => return Ok(PluginResult::Value(Value::Null)),
         };
-        // Actually parse the address so invalid input (e.g. "999.999.999.999"
-        // or a bare ":") returns Null instead of a bogus version number.
         match s.parse::<std::net::IpAddr>() {
             Ok(std::net::IpAddr::V4(_)) => Ok(PluginResult::Value(Value::Number(4.into()))),
             Ok(std::net::IpAddr::V6(_)) => Ok(PluginResult::Value(Value::Number(6.into()))),
@@ -290,8 +281,6 @@ impl Plugin for UuidVersion {
             Value::String(s) => s,
             _ => return Ok(PluginResult::Value(Value::Null)),
         };
-        // Parse the UUID rather than blindly reading a character position, so
-        // invalid input returns Null instead of a garbage version number.
         match uuid::Uuid::parse_str(s) {
             Ok(u) => Ok(PluginResult::Value(Value::Number(
                 u.get_version_num().into(),
@@ -369,7 +358,6 @@ impl Plugin for JsonKey {
     }
 }
 
-/// Register all type methods with a plugin manager.
 pub fn register_all(manager: &mut crate::core::PluginManager) {
     let plugins: Vec<Arc<dyn Plugin>> = vec![
         Arc::new(UrlScheme),
@@ -443,7 +431,6 @@ mod tests {
             .execute(&[json!("https://example.com:8080/path")], &ctx())
             .unwrap();
         assert_eq!(result, PluginResult::Value(json!("8080")));
-        // No port
         let result2 = UrlPort
             .execute(&[json!("https://example.com/path")], &ctx())
             .unwrap();
@@ -487,15 +474,12 @@ mod tests {
             &UrlQuery,
             &UrlFragment,
         ] {
-            // No args
             let result = method.execute(&[], &ctx()).unwrap();
             assert_eq!(result, PluginResult::Value(Value::Null));
 
-            // Non-string arg
             let result = method.execute(&[json!(42)], &ctx()).unwrap();
             assert_eq!(result, PluginResult::Value(Value::Null));
 
-            // Invalid URL
             let result = method.execute(&[json!("not-a-url")], &ctx()).unwrap();
             assert_eq!(result, PluginResult::Value(Value::Null));
         }
@@ -521,15 +505,11 @@ mod tests {
 
     #[test]
     fn email_domain_multiple_at() {
-        // Regression: input with more than one '@'. The domain is everything
-        // after the FIRST '@' (consistent with EmailLocalPart taking everything
-        // before it), not just the segment between the first two.
         let r = EmailDomain.execute(&[json!("a@b@c")], &ctx()).unwrap();
         assert_eq!(r, PluginResult::Value(json!("b@c")));
         let local = EmailLocalPart.execute(&[json!("a@b@c")], &ctx()).unwrap();
         assert_eq!(local, PluginResult::Value(json!("a")));
 
-        // Normal single-'@' email still behaves as before.
         let r = EmailDomain
             .execute(&[json!("user@example.com")], &ctx())
             .unwrap();
@@ -538,7 +518,6 @@ mod tests {
 
     #[test]
     fn email_methods_invalid() {
-        // EmailLocalPart: no @ → split returns [whole], so local part = whole string
         let r = EmailLocalPart.execute(&[], &ctx()).unwrap();
         assert_eq!(r, PluginResult::Value(Value::Null));
 
@@ -550,7 +529,6 @@ mod tests {
             .unwrap();
         assert_eq!(r, PluginResult::Value(json!("noatsign")));
 
-        // EmailDomain: no @ → split returns [whole], so domain = ""
         let r = EmailDomain.execute(&[json!("noatsign")], &ctx()).unwrap();
         assert_eq!(r, PluginResult::Value(json!("")));
 
@@ -570,7 +548,6 @@ mod tests {
         let r6 = IpVersion.execute(&[json!("::1")], &ctx()).unwrap();
         assert_eq!(r6, PluginResult::Value(json!(6)));
 
-        // Regression: invalid input must return Null, not a bogus version.
         let r = IpVersion.execute(&[json!("")], &ctx()).unwrap();
         assert_eq!(r, PluginResult::Value(Value::Null));
 
@@ -602,12 +579,9 @@ mod tests {
             .unwrap();
         assert_eq!(r, PluginResult::Value(json!(5)));
 
-        // Regression: invalid UUIDs must return Null, not a garbage version.
         let r = UuidVersion.execute(&[json!("not-a-uuid")], &ctx()).unwrap();
         assert_eq!(r, PluginResult::Value(Value::Null));
 
-        // A well-formed layout with a non-hex char at the version position must
-        // also fail to parse and return Null (previously returned a digit).
         let r = UuidVersion
             .execute(&[json!("550e8400-e29b-x1d4-a716-446655440000")], &ctx())
             .unwrap();
@@ -625,26 +599,22 @@ mod tests {
             .unwrap();
         assert_eq!(r, PluginResult::Value(json!("test")));
 
-        // Missing key
         let r = JsonKey
             .execute(&[json!(r#"{"name":"test"}"#), json!("missing")], &ctx())
             .unwrap();
         assert_eq!(r, PluginResult::Value(Value::Null));
 
-        // Invalid JSON string
         let r = JsonKey
             .execute(&[json!("not-json"), json!("key")], &ctx())
             .unwrap();
         assert_eq!(r, PluginResult::Value(Value::Null));
 
-        // Not enough args
         let r = JsonKey.execute(&[json!("{}")], &ctx()).unwrap();
         assert_eq!(r, PluginResult::Value(Value::Null));
 
         let r = JsonKey.execute(&[], &ctx()).unwrap();
         assert_eq!(r, PluginResult::Value(Value::Null));
 
-        // Non-string args
         let r = JsonKey.execute(&[json!(42), json!("key")], &ctx()).unwrap();
         assert_eq!(r, PluginResult::Value(Value::Null));
     }

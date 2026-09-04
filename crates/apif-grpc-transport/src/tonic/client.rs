@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::{Stream, StreamExt};
@@ -103,9 +103,6 @@ impl GrpcClient for TonicGrpcClient {
         >;
 
         if is_cs {
-            // Client-streaming or bidi. A message that fails JSON→proto
-            // conversion terminates the request stream and fails the call
-            // (previously it was silently dropped).
             let input_clone = input_desc.clone();
             let conversion_error: ConversionErrorSlot = Arc::new(std::sync::Mutex::new(None));
             let req_stream = Box::pin(requests.enumerate().scan(
@@ -118,7 +115,7 @@ impl GrpcClient for TonicGrpcClient {
                             Ok(msg) => Some(msg),
                             Err(e) => {
                                 *slot.lock().unwrap() = Some(e);
-                                None // end the request stream; error surfaces after the call
+                                None
                             }
                         }
                     }
@@ -149,13 +146,10 @@ impl GrpcClient for TonicGrpcClient {
                     Err(s) => Err(tonic_status_to_grpc_error(&s)),
                 }
             };
-            // A request conversion error is the root cause of whatever the
-            // server did with the truncated stream — surface it instead.
             if let Some(err) = conversion_error.lock().unwrap().take() {
                 result = Err(err);
             }
         } else {
-            // Unary or server-streaming: get first value directly
             let json_val = requests
                 .next()
                 .await
@@ -178,9 +172,6 @@ impl GrpcClient for TonicGrpcClient {
                     })
                     .map_err(|s| tonic_status_to_grpc_error(&s))
             } else {
-                // Unary over the wire is identical to a single-message stream;
-                // going through `streaming` keeps the response trailers
-                // accessible (tonic's `unary` merges them into the headers).
                 let mut req = Request::new(futures::stream::iter(vec![msg]));
                 insert_metadata(
                     req.metadata_mut(),
@@ -244,28 +235,11 @@ impl GrpcClient for TonicGrpcClient {
             output_type: m.output().full_name().to_string(),
         })
     }
-    fn generate_schema(&self, endpoint: &str) -> Result<Value, GrpcError> {
-        let p: Vec<&str> = endpoint.split('/').collect();
-        if p.len() != 2 {
-            return Err(GrpcError::new(3, format!("Invalid endpoint: {}", endpoint)));
-        }
-        let svc = self
-            .descriptor_pool
-            .get_service_by_name(p[0])
-            .ok_or_else(|| GrpcError::new(5, format!("Service not found: {}", p[0])))?;
-        let m = svc
-            .methods()
-            .find(|m| m.name() == p[1])
-            .ok_or_else(|| GrpcError::new(5, format!("Method not found: {}", p[1])))?;
-        Ok(generate_json_template(&m.input()))
-    }
 }
 
 type ItemStream = Pin<Box<dyn Stream<Item = Result<StreamItem, GrpcError>> + Send>>;
 type ConversionErrorSlot = Arc<std::sync::Mutex<Option<GrpcError>>>;
 
-/// Convert one request JSON value into a `DynamicMessage`, naming the message
-/// index in the error so a bad message in a stream is easy to locate.
 fn convert_request_json(
     index: usize,
     mut json: Value,
@@ -283,10 +257,6 @@ fn convert_request_json(
     })
 }
 
-/// Turn a streaming response into a `StreamItem` stream that, after the last
-/// message, fetches and emits the response trailers (needed for `@trailer`
-/// assertions on protocol=grpc). If a request-conversion error slot is
-/// provided, the error (if any) is surfaced after the response stream ends.
 fn streaming_response_to_items(
     body: tonic::Streaming<DynamicMessage>,
     conversion_error: Option<ConversionErrorSlot>,
@@ -322,13 +292,8 @@ fn streaming_response_to_items(
             Phase::Done => None,
         }
     });
-    // `unfold` panics if polled again after yielding `None`, and a consumer that
-    // drains the stream (report formats capture the whole exchange) does exactly
-    // that — so both halves are fused before they are handed out.
     match conversion_error {
         Some(slot) => {
-            // After the response ends, surface a request-conversion error (if
-            // one occurred while the call was in flight).
             let tail = futures::stream::unfold(slot, |slot| async move {
                 let err = slot.lock().unwrap().take();
                 err.map(|e| (Err(e), slot))
@@ -339,9 +304,6 @@ fn streaming_response_to_items(
     }
 }
 
-/// Handle a single-response call (unary / client-streaming) issued through
-/// `Grpc::streaming`: read exactly one message, then fetch the trailers and
-/// emit them as a separate `StreamItem::Trailers`.
 async fn single_response_to_items(
     response: tonic::Response<tonic::Streaming<DynamicMessage>>,
 ) -> Result<(HashMap<String, String>, ItemStream), GrpcError> {
@@ -351,8 +313,6 @@ async fn single_response_to_items(
         Ok(Some(msg)) => msg,
         Ok(None) => return Err(GrpcError::new(13, "Missing response message.")),
         Err(status) => {
-            // Mirror tonic's unary behavior: response headers are folded into
-            // the error metadata (without overriding trailer entries).
             let mut err = tonic_status_to_grpc_error(&status);
             for (k, v) in &headers {
                 err.metadata.entry(k.clone()).or_insert_with(|| v.clone());
@@ -450,7 +410,6 @@ fn dynamic_message_to_json(msg: &DynamicMessage) -> Value {
 }
 
 fn transform_input_json_for_well_known(value: &mut Value, desc: &MessageDescriptor) {
-    // Only a message-typed field can need this.
     if !desc.fields().any(|f| matches!(f.kind(), Kind::Message(_))) {
         return;
     }
@@ -496,112 +455,6 @@ fn transform_input_json_for_well_known(value: &mut Value, desc: &MessageDescript
     }
 }
 
-fn generate_json_template(desc: &prost_reflect::MessageDescriptor) -> Value {
-    let mut obj = serde_json::Map::new();
-    for field in desc.fields() {
-        let name = field.json_name().to_string();
-        let fv = fake_value(&name, &field.kind());
-        if field.is_list() {
-            obj.insert(name, Value::Array(vec![fv]));
-        } else if field.is_map() {
-            obj.insert(name, Value::Object(serde_json::Map::new()));
-        } else {
-            obj.insert(name, fv);
-        }
-    }
-    Value::Object(obj)
-}
-
-fn fake_value(field_name: &str, kind: &prost_reflect::Kind) -> Value {
-    let n = rand::random::<u32>() % 100000;
-    match kind {
-        Kind::Double | Kind::Float => serde_json::json!((n as f64) / 10.0),
-        Kind::Int32 | Kind::Sint32 | Kind::Sfixed32 => serde_json::json!(n as i32),
-        Kind::Int64 | Kind::Sint64 | Kind::Sfixed64 => serde_json::json!((n * 100) as i64),
-        Kind::Uint32 | Kind::Fixed32 => serde_json::json!(n),
-        Kind::Uint64 | Kind::Fixed64 => serde_json::json!((n * 100) as u64),
-        Kind::Bool => serde_json::json!(n.is_multiple_of(2)),
-        Kind::String => Value::String(fake_string(field_name)),
-        Kind::Bytes => Value::String(format!("{} bytes", n)),
-        Kind::Enum(ed) => Value::String(
-            ed.values()
-                .next()
-                .map(|v| v.name().to_string())
-                .unwrap_or("UNSPECIFIED".into()),
-        ),
-        Kind::Message(md) => {
-            let f = md.full_name();
-            if f == "google.protobuf.Timestamp" {
-                serde_json::json!("2024-06-15T10:30:00Z")
-            } else if f == "google.protobuf.Duration" {
-                serde_json::json!("30s")
-            } else if f == "google.protobuf.FieldMask" {
-                serde_json::json!({"paths": ["field"]})
-            } else if f == "google.protobuf.Struct" {
-                serde_json::json!({"key": "value"})
-            } else if f == "google.protobuf.Value" {
-                serde_json::json!("value")
-            } else if f == "google.protobuf.Any" {
-                serde_json::json!({"@type": "type.googleapis.com/example.Msg", "field": "v"})
-            } else {
-                generate_json_template(md)
-            }
-        }
-    }
-}
-
-fn fake_string(field_name: &str) -> String {
-    let l = field_name.to_lowercase();
-    if l.contains("email") {
-        "user@example.com"
-    } else if l.contains("first") && l.contains("name") {
-        "John"
-    } else if l.contains("last") && l.contains("name") {
-        "Doe"
-    } else if l.contains("name") {
-        "John Doe"
-    } else if l.contains("phone") {
-        "+1-555-123-4567"
-    } else if l.contains("url") {
-        "https://example.com"
-    } else if l.contains("uuid") {
-        "550e8400-e29b-41d4-a716-446655440000"
-    } else if l.contains("addr") {
-        "123 Main St"
-    } else if l.contains("city") {
-        "New York"
-    } else if l.contains("country") {
-        "US"
-    } else if l.contains("zip") || l.contains("post") {
-        "10001"
-    } else if l.contains("password") {
-        "••••••••"
-    } else if l.contains("token") {
-        "tok_abc"
-    } else if l.contains("desc") || l.contains("comment") {
-        "A description."
-    } else if l.contains("status") {
-        "active"
-    } else if l.contains("type") || l.contains("kind") {
-        "standard"
-    } else if l.contains("date") || l.contains("time") {
-        "2024-06-15T10:30:00Z"
-    } else if l.contains("color") {
-        "#3b82f6"
-    } else if l.contains("lang") {
-        "en-US"
-    } else if l.contains("title") {
-        "Title"
-    } else if l.contains("company") {
-        "Acme Corp"
-    } else if l.contains("job") {
-        "Engineer"
-    } else {
-        "sample"
-    }
-    .to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -643,7 +496,6 @@ mod tests {
     fn convert_request_json_error_names_message_index() {
         use prost_reflect::ReflectMessage;
         let desc = prost_types::Timestamp::default().descriptor();
-        // A JSON object is not a valid google.protobuf.Timestamp representation.
         let result = convert_request_json(2, serde_json::json!({"bogus": true}), &desc);
         let err = result.expect_err("invalid message must fail, not be dropped");
         assert_eq!(err.code, 3);
@@ -657,11 +509,7 @@ mod tests {
     #[test]
     fn tonic_status_to_grpc_error_carries_code_message_details() {
         use tonic::{Code, Status};
-        // Proto-encoded google.rpc.Status detail bytes (opaque here); the point
-        // is they survive verbatim across the boundary.
         let details = prost::bytes::Bytes::from_static(&[0x08, 0x05, 0x12, 0x02, 0x68, 0x69]);
-        // Message deliberately contains the literal `code=`/`message=` markers
-        // that the old string parser would have corrupted.
         let msg = "boom: code=42 message=nested details=[x]";
         let status = Status::with_details(Code::NotFound, msg, details.clone());
         let e = tonic_status_to_grpc_error(&status);
@@ -712,7 +560,6 @@ mod well_known_tests {
         .expect("compile proto")
     }
 
-    // The early return must not skip a message that does need transforming.
     #[test]
     fn a_field_mask_is_still_flattened() {
         let pool = pool_from(
@@ -724,7 +571,6 @@ mod well_known_tests {
         assert_eq!(value["mask"], serde_json::json!("a,b"));
     }
 
-    // A message with only scalar fields takes the early return and is untouched.
     #[test]
     fn a_scalar_only_message_is_left_alone() {
         let pool = pool_from(

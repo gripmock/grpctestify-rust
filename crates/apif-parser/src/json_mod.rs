@@ -1,19 +1,7 @@
 use serde_json::Value;
 
-/// Maximum structural nesting depth accepted before parsing.
-///
-/// The underlying `json5` parser is recursive, so pathologically deep input
-/// (e.g. thousands of nested `[`/`{`) overflows the stack and aborts the whole
-/// process — an abort that cannot be caught. This bound is far above any real
-/// gRPC payload while keeping recursion safely shallow.
 const MAX_JSON_DEPTH: usize = 256;
 
-/// A JSON5 parse failure, carrying the parser's own 0-based line/column
-/// (relative to the parsed content) alongside the rendered message, so a
-/// caller that knows where this content starts in the file can report an
-/// absolute position instead of just the section start. Comment stripping
-/// (`tokenize_strip_comments`) preserves every newline, so this line always
-/// lines up with the caller's own line-per-line view of the same content.
 #[derive(Debug)]
 pub struct JsonParseError {
     pub message: String,
@@ -29,18 +17,7 @@ impl std::fmt::Display for JsonParseError {
 
 impl std::error::Error for JsonParseError {}
 
-/// Parse JSON5 string into serde_json::Value
-/// Supports: comments (`//`, `#`, `/* */`), trailing commas, unquoted keys
 pub fn from_str(json_str: &str) -> Result<Value, anyhow::Error> {
-    // Plain JSON is the overwhelmingly common body, and JSON is a subset of
-    // JSON5, so anything `serde_json` accepts parses to the same value. Taking
-    // it directly skips a full-input copy in `tokenize_strip_comments` plus the
-    // much slower `json5` deserializer. Comments, trailing commas, unquoted
-    // keys, digit separators, `Infinity`, and over-deep input all fail here and
-    // fall through to the JSON5 path below, which owns the diagnostics.
-    //
-    // `serde_json` has its own recursion limit, so a too-deep document errors
-    // out here and still reaches the `MAX_JSON_DEPTH` check below.
     if let Ok(value) = serde_json::from_str::<Value>(json_str) {
         return Ok(value);
     }
@@ -63,15 +40,6 @@ pub fn from_str(json_str: &str) -> Result<Value, anyhow::Error> {
     })
 }
 
-/// Tokenize JSON5 content, stripping all comments.
-/// This is a single-pass state machine — no regex, no string hacks.
-///
-/// States:
-///   Normal → String → Escaped
-///   Normal → LineComment (`//`, `#`) → end of line
-///   Normal → BlockComment (`/*`) → `*/`
-/// Returns the comment-stripped output and the maximum structural nesting
-/// depth (`[`/`{` outside strings and comments) seen along the way.
 fn tokenize_strip_comments(input: &str) -> (String, usize) {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
@@ -80,10 +48,6 @@ fn tokenize_strip_comments(input: &str) -> (String, usize) {
 
     while let Some(ch) = chars.next() {
         match ch {
-            // JSON5 permits both double- and single-quoted strings. Comment
-            // markers (`//`, `#`, `/* */`) inside either kind of string must be
-            // preserved verbatim, so track the actual opening quote and only
-            // terminate on the matching one.
             '"' | '\'' => {
                 let quote = ch;
                 out.push(ch);
@@ -104,7 +68,6 @@ fn tokenize_strip_comments(input: &str) -> (String, usize) {
                     _ => Err(next),
                 }) {
                     if kind == '/' {
-                        // Line comment — skip to end of line
                         for c in chars.by_ref() {
                             if c == '\n' {
                                 out.push(c);
@@ -112,7 +75,6 @@ fn tokenize_strip_comments(input: &str) -> (String, usize) {
                             }
                         }
                     } else {
-                        // Block comment — skip until */
                         loop {
                             match chars.next() {
                                 Some('*') => {
@@ -133,7 +95,6 @@ fn tokenize_strip_comments(input: &str) -> (String, usize) {
                 }
             }
             '#' => {
-                // Line comment (GCTF-style) — skip to end of line
                 for c in chars.by_ref() {
                     if c == '\n' {
                         out.push(c);
@@ -141,8 +102,6 @@ fn tokenize_strip_comments(input: &str) -> (String, usize) {
                     }
                 }
             }
-            // Digit-separator (`1_000_000`): the `json5` crate doesn't support
-            // these, so drop the `_` here and let it see a plain number.
             '_' if out.chars().next_back().is_some_and(|c| c.is_ascii_digit())
                 && chars.peek().is_some_and(|c| c.is_ascii_digit()) => {}
             c => {
@@ -298,9 +257,6 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn deeply_nested_rejected_without_overflow() {
-        // Regression: deeply nested input previously reached the recursive json5
-        // parser and overflowed the stack (uncatchable process abort). It must
-        // now be rejected with a clean error instead.
         let n = 20_000;
         let input = format!("{}{}", "[".repeat(n), "]".repeat(n));
         let err = from_str(&input).unwrap_err().to_string();
@@ -316,7 +272,6 @@ mod tests {
 
     #[test]
     fn brackets_inside_string_not_counted_as_depth() {
-        // Brackets inside a string must not contribute to nesting depth.
         let input = "{a: \"[[[[[[[[[[\"}";
         let result = from_str(input).unwrap();
         assert_eq!(result["a"], "[[[[[[[[[[");
@@ -324,8 +279,6 @@ mod tests {
 
     #[test]
     fn single_quoted_string_hash_not_comment() {
-        // Regression: `#` inside a single-quoted JSON5 string must not be
-        // stripped as a comment.
         let input = "{a: '# not a comment'}";
         let result = from_str(input).unwrap();
         assert_eq!(result["a"], "# not a comment");
@@ -333,8 +286,6 @@ mod tests {
 
     #[test]
     fn single_quoted_string_double_slash_not_comment() {
-        // Regression: `//` inside a single-quoted string (e.g. a URL) must be
-        // preserved, not treated as a line comment.
         let input = "{url: 'http://example.com/path'}";
         let result = from_str(input).unwrap();
         assert_eq!(result["url"], "http://example.com/path");
@@ -342,8 +293,6 @@ mod tests {
 
     #[test]
     fn single_quoted_string_block_comment_preserved() {
-        // Regression: `/* */` inside a single-quoted string must not be stripped
-        // (previously silently corrupted the value).
         let input = "{a: 'has /* stars */ inside'}";
         let result = from_str(input).unwrap();
         assert_eq!(result["a"], "has /* stars */ inside");
@@ -363,10 +312,6 @@ mod tests {
         assert_eq!(result["key"], "value");
     }
 
-    // Plain JSON takes a `serde_json` fast path that skips comment stripping
-    // and the JSON5 deserializer. Every JSON5-only spelling must still reach
-    // the fallback and produce the same value it did before the fast path
-    // existed.
     #[test]
     fn strict_json_and_json5_paths_agree() {
         let strict = from_str(r#"{"a": 1, "b": [true, null], "c": {"d": "x"}}"#).unwrap();
@@ -385,9 +330,6 @@ mod tests {
 
     #[test]
     fn depth_limit_still_enforced_beyond_the_fast_path() {
-        // Deeper than MAX_JSON_DEPTH: `serde_json` rejects it too, so the
-        // fallback must still produce the depth diagnostic rather than a
-        // generic parse error.
         let deep = format!(
             "{}{}",
             "[".repeat(MAX_JSON_DEPTH + 10),

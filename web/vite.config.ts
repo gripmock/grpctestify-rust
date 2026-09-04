@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -5,10 +6,53 @@ import monacoEditorPluginModule from 'vite-plugin-monaco-editor'
 
 const monacoEditorPlugin = (monacoEditorPluginModule as any).default || monacoEditorPluginModule
 
+/** Monaco ships language services for CSS, HTML and TypeScript, and the barrel
+ *  imports all of them: 8.3 MB of web workers, compiled into every binary, for
+ *  languages a `.gctf` file cannot contain. The editor keeps everything else —
+ *  its contributions, its stylesheets, the basic-language grammars, and the
+ *  JSON service the request bodies are checked with. */
+const STUBBED_LANGUAGES = ['css', 'html', 'typescript']
+const STUB_ID = '\0monaco-language-stub'
+
+function dropMonacoLanguages() {
+  const drop = new RegExp(`monaco-editor/esm/vs/languages/features/(${STUBBED_LANGUAGES.join('|')})/register\\.js$`)
+  let dropped = 0
+  return {
+    name: 'drop-monaco-languages',
+    enforce: 'pre' as const,
+    async resolveId(this: any, source: string, importer: string | undefined, options: any) {
+      if (source === STUB_ID) return STUB_ID
+      const resolved = await this.resolve(source, importer, { ...options, skipSelf: true })
+      if (resolved && drop.test(resolved.id.replace(/\\/g, '/'))) {
+        dropped++
+        return STUB_ID
+      }
+      return null
+    },
+    load(id: string) {
+      return id === STUB_ID ? 'export {}' : null
+    },
+    buildEnd() {
+      /* Monaco moves these paths between releases; a silent no-op would put the
+         workers back and nothing would say so. */
+      if (dropped < STUBBED_LANGUAGES.length) {
+        throw new Error(
+          `drop-monaco-languages matched ${dropped} of ${STUBBED_LANGUAGES.length} language services — ` +
+          'monaco moved them, and the workers are back in the bundle',
+        )
+      }
+    },
+  }
+}
+
 export default defineConfig({
+  resolve: {
+    alias: { luvo: fileURLToPath(new URL('./luvo', import.meta.url)) },
+  },
   plugins: [
     react(),
     tailwindcss(),
+    dropMonacoLanguages(),
     monacoEditorPlugin({
       languageWorkers: ['editorWorkerService', 'json'],
     }),

@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-/// Protocol-agnostic TLS configuration.
 #[derive(Debug, Clone, Default)]
 pub struct TlsConfig {
     pub ca_cert: Option<String>,
@@ -10,7 +9,6 @@ pub struct TlsConfig {
     pub insecure: bool,
 }
 
-/// Configuration for creating a call client.
 #[derive(Debug, Clone, Default)]
 pub struct CallClientConfig {
     pub address: String,

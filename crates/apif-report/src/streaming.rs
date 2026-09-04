@@ -7,9 +7,6 @@ use std::sync::Once;
 use super::Reporter;
 
 pub struct StreamingJsonReporter {
-    /// Guarantees `suite_start` is emitted exactly once, and that the emit
-    /// completes before any concurrent caller proceeds — so no `test_start`
-    /// can ever race ahead of `suite_start` under parallel execution.
     suite_started: Once,
     test_count: usize,
     #[cfg(test)]
@@ -26,8 +23,6 @@ impl StreamingJsonReporter {
         }
     }
 
-    /// Emit `suite_start` exactly once, blocking concurrent callers until it has
-    /// been written. `Once::call_once` provides the ordering guarantee.
     fn ensure_suite_started(&self) {
         self.suite_started.call_once(|| {
             self.emit(&json!({
@@ -95,9 +90,6 @@ impl Reporter for StreamingJsonReporter {
             event["grpcDuration"] = json!(grpc_ms);
         }
 
-        // Per-assertion outcomes (line/expression/passed, expected/actual on
-        // failure) so an IDE consuming this stream can render the same diff
-        // the verbose console and other reporters show, without a second pass.
         if !result.assertions.is_empty() {
             event["assertions"] = json!(
                 result
@@ -160,7 +152,6 @@ mod tests {
     #[test]
     fn streaming_reporter_lifecycle() {
         let reporter = StreamingJsonReporter::new(2);
-        // These should not panic — emit writes to stdout but swallows errors
         reporter.on_test_start("test1");
         reporter.on_test_start("test2");
 
@@ -201,6 +192,7 @@ mod tests {
                 endpoint: None,
                 expected: Some("true".into()),
                 actual: Some("false".into()),
+                hint: None,
             }]);
         reporter.on_test_end("t", &result);
 
@@ -238,7 +230,6 @@ mod tests {
         let reporter = StreamingJsonReporter::new(1);
         reporter.on_test_start("t1");
         assert!(reporter.suite_started.is_completed());
-        // Subsequent calls should not re-emit suite_start
         reporter.on_test_start("t2");
         let cap = reporter.captured.lock().unwrap();
         assert_eq!(
@@ -264,13 +255,11 @@ mod tests {
         }
 
         let cap = reporter.captured.lock().unwrap();
-        // suite_start emitted exactly once...
         assert_eq!(
             cap.iter().filter(|l| l.contains("suite_start")).count(),
             1,
             "suite_start must be emitted exactly once: {cap:?}"
         );
-        // ...and strictly before the first test_start.
         let suite_pos = cap.iter().position(|l| l.contains("suite_start")).unwrap();
         let first_test_pos = cap.iter().position(|l| l.contains("test_start")).unwrap();
         assert!(

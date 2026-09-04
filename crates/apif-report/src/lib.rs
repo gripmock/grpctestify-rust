@@ -1,6 +1,3 @@
-//! Output reporters for test results — protocol-agnostic.
-//! gRPC-specific reporters (allure, coverage, kernel) stay in the main project.
-
 pub mod console;
 pub mod diagnostics;
 pub mod html;
@@ -12,6 +9,27 @@ pub mod yaml;
 
 use anyhow::Result;
 use apif_state::{TestResult, TestResults};
+use std::sync::OnceLock;
+
+static IDENTITY: OnceLock<(String, String)> = OnceLock::new();
+
+pub fn set_tool_identity(name: impl Into<String>, version: impl Into<String>) {
+    let _ = IDENTITY.set((name.into(), version.into()));
+}
+
+pub fn tool_name() -> &'static str {
+    IDENTITY
+        .get()
+        .map(|(name, _)| name.as_str())
+        .unwrap_or("grpctestify")
+}
+
+pub fn tool_version() -> &'static str {
+    IDENTITY
+        .get()
+        .map(|(_, version)| version.as_str())
+        .unwrap_or(env!("CARGO_PKG_VERSION"))
+}
 pub use console::{ConsoleMode, ConsoleReporter};
 pub use diagnostics::{
     AstOverview, BenchResolvedOption, CheckReport, CheckSummary, Diagnostic, DiagnosticSeverity,
@@ -23,8 +41,6 @@ pub use junit::JunitReporter;
 pub use streaming::StreamingJsonReporter;
 pub use yaml::YamlReporter;
 
-/// Each reporter accumulates results via `on_test_end`, then formats and
-/// writes its output when `on_suite_end` flushes.
 pub trait Reporter: Send + Sync {
     fn on_test_start(&self, _test_name: &str) {}
 

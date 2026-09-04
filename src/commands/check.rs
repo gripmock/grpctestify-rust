@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::cli::Cli;
 use crate::cli::args::HasFormat;
@@ -107,12 +107,6 @@ fn validation_hint(message: &str) -> Option<&'static str> {
     None
 }
 
-/// The real exported plugin names from every configured source — the
-/// user-global and project-local convention directories, same precedence
-/// as `run` (`apif_plugins::rhai_plugin::load_all_configured_plugins`).
-/// One `.rhai` file can define several plugins (multi-function-per-file
-/// contract), so this is no longer just filenames; it actually compiles
-/// each script the same way `run` would.
 pub fn rhai_plugin_names() -> std::collections::HashSet<String> {
     crate::plugins::rhai_plugin::load_all_configured_plugins()
         .iter()
@@ -120,10 +114,6 @@ pub fn rhai_plugin_names() -> std::collections::HashSet<String> {
         .collect()
 }
 
-/// The subset of configured `.rhai` plugins eligible for the optimizer's
-/// boolean rewrite (`@plugin(x) == true` -> `@plugin(x)`) — same filter
-/// `apif-optimizer`'s own `BOOLEAN_PLUGINS` applies to built-ins, applied
-/// here to convention-directory scripts (`@pure` + `@returns bool` doc-tags).
 pub fn rhai_boolean_plugin_names() -> std::collections::HashSet<String> {
     crate::plugins::rhai_plugin::load_all_configured_plugins()
         .iter()
@@ -138,56 +128,15 @@ pub fn rhai_boolean_plugin_names() -> std::collections::HashSet<String> {
         .collect()
 }
 
-fn check_preamble_section_order(doc: &parser::GctfDocument) -> Vec<(usize, String, String)> {
-    let mut out = Vec::new();
-    let first_body_idx = doc
-        .sections
-        .iter()
-        .position(|s| s.section_type.preamble_rank().is_none())
-        .unwrap_or(doc.sections.len());
-
-    let preamble: Vec<_> = doc.sections[..first_body_idx].iter().collect();
-
-    for i in 1..preamble.len() {
-        let prev_rank = preamble[i - 1].section_type.preamble_rank().unwrap();
-        let curr_rank = preamble[i].section_type.preamble_rank().unwrap();
-        if curr_rank < prev_rank {
-            let curr_line = preamble[i].start_line + 1;
-            let prev_name = preamble[i - 1].section_type.as_str();
-            let curr_name = preamble[i].section_type.as_str();
-            out.push((
-                curr_line,
-                format!(
-                    // Bug fix: this used to read `{prev_name} should come
-                    // before {curr_name}` — but `prev_name` is already
-                    // positioned before `curr_name` in the file (that's
-                    // what makes it "prev"), so that phrasing restated the
-                    // existing (wrong) order instead of recommending the
-                    // fix. `curr_name` has the earlier canonical rank, so
-                    // it's the one that belongs first.
-                    "Section order: {} should come before {} (canonical: META→BENCH→DATASET→ADDRESS→ENDPOINT→TLS→PROTO→OPTIONS)",
-                    curr_name, prev_name
-                ),
-                    "run `fmt --write` to reorder preamble sections into canonical order".to_string(),
-            ));
-        }
-    }
-    out
-}
-
 pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
     let mut files = Vec::new();
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
     let mut structure: Vec<DocumentStructure> = Vec::new();
     let mut files_with_errors = 0;
     let mut total_docs_in_suite = 0usize;
+    let mut grpc_docs_in_suite = 0usize;
     let mut docs_with_error_section = 0usize;
     let mut docs_with_asserts_section = 0usize;
-    // `PLUGIN_SIGNATURES` (what `collect_unknown_plugin_calls` checks against)
-    // is a process-wide, built-ins-only snapshot with no way to inject a
-    // `.rhai` script's name into it — so a valid plugin (from the
-    // user/project convention directories) would otherwise be reported as
-    // unknown.
     let rhai_plugin_names = rhai_plugin_names();
     apif_optimizer::register_extra_boolean_plugins(rhai_boolean_plugin_names());
     crate::parser::register_extra_inline_option_keys(
@@ -239,12 +188,6 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
         let mut file_has_error = false;
         match parser::parse_gctf(file) {
             Ok(doc) => {
-                // Deprecated spellings (HEADERS alias, kebab OPTIONS keys,
-                // kebab attributes) all come from the one shared token-level
-                // `detect_deprecations` (§7.1) — the same source the lenient
-                // commands use — instead of check's own scans + the validator's
-                // per-form warning blocks (removed). `metadata.source` carries
-                // the raw file content the parser already read.
                 if let Some(source) = doc.metadata.source.as_deref() {
                     for dep in parser::detect_deprecations(&parser::tokenize_gctf(source)) {
                         let line = dep.range.start.line + 1;
@@ -264,16 +207,18 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
                     }
                 }
 
-                for (line, msg, hint) in check_preamble_section_order(&doc) {
+                for (line, msg, hint) in semantics::preamble_section_order(&doc) {
                     diagnostics.push(
                         Diagnostic::warning(&file_str, "SECTION_ORDER", &msg, line)
                             .with_hint(&hint),
                     );
                 }
 
+                diagnostics.extend(bench_source_diagnostics(&file_str, &doc));
+
                 let validation_diagnostics = parser::validate_document_chain_diagnostics(&doc);
                 for d in validation_diagnostics {
-                    let line = d.line.unwrap_or(1);
+                    let line = d.line.map_or(1, |l| l + 1);
                     let mut mapped = match d.severity {
                         ErrorSeverity::Error => {
                             file_has_error = true;
@@ -371,24 +316,140 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
                     );
                 }
 
-                // Same detection the LSP already surfaces
-                // (`crate::lsp::handlers::collect_unused_variables`) — `check`
-                // never called it, so a dead EXTRACT variable was only ever
-                // visible in the editor, not in CI/terminal `check` output.
-                for unused in crate::lsp::handlers::collect_unused_variables(&doc) {
+                for unused in semantics::collect_unused_variables(&doc) {
                     diagnostics.push(
                         Diagnostic::warning(
                             &file_str,
                             "UNUSED_VARIABLE",
-                            &format!(
-                                "Variable '{}' is extracted but never used in subsequent documents",
-                                unused.name
-                            ),
+                            &semantics::unused_variable_message(&unused),
                             unused.line + 1,
                         )
                         .with_hint(
                             "Remove the unused EXTRACT entry, or reference it via {{var_name}}",
                         ),
+                    );
+                }
+
+                for diag in doc
+                    .metadata
+                    .source
+                    .as_deref()
+                    .map(|src| crate::lsp::handlers::collect_insecure_tls_diagnostics(&doc, src))
+                    .unwrap_or_default()
+                {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            &file_str,
+                            "TLS_VERIFICATION_SKIPPED",
+                            &diag.message,
+                            diag.range.start.line as usize + 1,
+                        )
+                        .with_hint(
+                            "Name the CA with `ca_cert:` when the certificate is private, or drop `insecure: true` when it is not",
+                        ),
+                    );
+                }
+
+                for diag in doc
+                    .metadata
+                    .source
+                    .as_deref()
+                    .map(|src| crate::lsp::handlers::collect_half_identity_diagnostics(&doc, src))
+                    .unwrap_or_default()
+                {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            &file_str,
+                            "TLS_CLIENT_IDENTITY_INCOMPLETE",
+                            &diag.message,
+                            diag.range.start.line as usize + 1,
+                        )
+                        .with_hint("Name both `client_cert:` and `client_key:`, or neither"),
+                    );
+                }
+
+                for wrong in doc
+                    .metadata
+                    .source
+                    .as_deref()
+                    .map(|src| {
+                        crate::lsp::handlers::collect_wrong_family_plugin_diagnostics(
+                            src, &file_str,
+                        )
+                    })
+                    .unwrap_or_default()
+                {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            &file_str,
+                            "PLUGIN_WRONG_FAMILY",
+                            &wrong.message,
+                            wrong.range.start.line as usize + 1,
+                        )
+                        .with_hint(
+                            "Assert on the answer this family carries, or move the check to a file of the other family",
+                        ),
+                    );
+                }
+
+                for unhonoured in doc
+                    .metadata
+                    .source
+                    .as_deref()
+                    .map(|src| {
+                        crate::lsp::handlers::collect_unhonoured_attribute_diagnostics(
+                            src, &file_str,
+                        )
+                    })
+                    .unwrap_or_default()
+                {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            &file_str,
+                            "ATTRIBUTE_NOT_HONOURED",
+                            &unhonoured.message,
+                            unhonoured.range.start.line as usize + 1,
+                        )
+                        .with_hint("Remove it, or write the repetition as separate documents"),
+                    );
+                }
+
+                for race in crate::lsp::handlers::collect_group_race_diagnostics(&doc) {
+                    file_has_error = true;
+                    diagnostics.push(
+                        Diagnostic::error(
+                            &file_str,
+                            "PARALLEL_RACE",
+                            &race.message,
+                            race.range.start.line as usize + 1,
+                        )
+                        .with_hint(
+                            "Move the step out of the group, or bind the value before the group",
+                        ),
+                    );
+                }
+
+                for placeholder in doc
+                    .metadata
+                    .source
+                    .as_deref()
+                    .map(crate::lsp::handlers::collect_placeholder_diagnostics)
+                    .unwrap_or_default()
+                {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            &file_str,
+                            "UNSUBSTITUTED_PLACEHOLDER",
+                            &placeholder.message,
+                            placeholder.range.start.line as usize + 1,
+                        )
+                        .with_hint(if placeholder.message.contains("read as paths") {
+                            "Write the path itself — a certificate and a schema are read from the directory of the file that names them"
+                        } else if placeholder.message.contains("{{dataset.") {
+                            "Compare the row's value with a RESPONSE section, which is substituted — or send it in REQUEST or REQUEST_HEADERS"
+                        } else {
+                            "Use $name for a value from EXTRACT, or move the placeholder into REQUEST, REQUEST_HEADERS, RESPONSE or ERROR"
+                        }),
                     );
                 }
 
@@ -445,6 +506,9 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
                     }
 
                     total_docs_in_suite += 1;
+                    if chain_doc.transport() == parser::ast::Transport::Grpc {
+                        grpc_docs_in_suite += 1;
+                    }
                     if chain_doc
                         .first_section(parser::ast::SectionType::Error)
                         .is_some()
@@ -459,7 +523,6 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
                     }
                 }
 
-                // Use same optimizer pipeline as fmt — shared logic
                 let opt_level = cli.optimize_level(OptimizeLevel::Safe);
                 let opt_hints = crate::optimizer::collect_assertion_optimizations(&doc, opt_level);
                 for hint in opt_hints {
@@ -496,12 +559,27 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
                 }
             }
             Err(e) => {
-                diagnostics.push(Diagnostic::error(
-                    &file_str,
-                    "PARSE_ERROR",
-                    &e.to_string(),
-                    1,
-                ));
+                let said = e.to_string();
+                let line = std::fs::read_to_string(file)
+                    .ok()
+                    .map(|text| {
+                        crate::parser::error_recovery::parse_content_with_recovery(&text, &file_str)
+                    })
+                    .and_then(|recovered| {
+                        recovered
+                            .diagnostics
+                            .diagnostics
+                            .iter()
+                            .find(|d| said.contains(&d.message) || d.message.contains(&said))
+                            .map(|d| d.range.start.line + 1)
+                    })
+                    .or_else(|| {
+                        std::fs::read_to_string(file).ok().and_then(|text| {
+                            crate::lsp::handlers::line_of_cause(&text, &said).map(|line| line + 1)
+                        })
+                    })
+                    .unwrap_or(1);
+                diagnostics.push(Diagnostic::error(&file_str, "PARSE_ERROR", &said, line));
                 file_has_error = true;
             }
         }
@@ -511,12 +589,12 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
         }
     }
 
-    if total_docs_in_suite > 0 && docs_with_error_section == 0 {
+    if grpc_docs_in_suite > 0 && docs_with_error_section == 0 {
         diagnostics.push(Diagnostic::info(
             "<suite>",
             "NO_ERROR_CASE_COVERAGE",
             &format!(
-                "No test in this suite exercises an ERROR case (0/{total_docs_in_suite} documents have an ERROR section)"
+                "No test in this suite exercises an ERROR case (0/{grpc_docs_in_suite} documents have an ERROR section)"
             ),
             1,
         ).with_hint("Consider adding at least one test asserting a gRPC error status for the covered services"));
@@ -554,6 +632,20 @@ pub async fn handle_check(args: &CheckArgs, cli: &Cli) -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+fn bench_source_diagnostics(file_str: &str, doc: &parser::GctfDocument) -> Vec<Diagnostic> {
+    parser::validator::missing_bench_source_files(doc)
+        .into_iter()
+        .map(|d| {
+            Diagnostic::warning(
+                file_str,
+                "VALIDATION_WARNING",
+                &d.message,
+                d.line.map_or(1, |l| l + 1),
+            )
+        })
+        .collect()
 }
 
 fn print_check_summary(diagnostics: &[Diagnostic], total_files: usize, files_with_errors: usize) {
@@ -604,8 +696,9 @@ fn print_check_summary(diagnostics: &[Diagnostic], total_files: usize, files_wit
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::bench_source_diagnostics;
     use crate::parser::ast::{GctfDocument, Section, SectionContent, SectionSpan, SectionType};
+    use crate::semantics;
 
     fn doc_with_sections(sections: Vec<Section>) -> GctfDocument {
         GctfDocument {
@@ -637,6 +730,24 @@ mod tests {
         section(ty, kv)
     }
 
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn a_missing_bench_source_is_reported_on_the_bench_header_line_one_based() {
+        let src = "--- ENDPOINT ---\npkg.Svc/M\n\n--- BENCH ---\nsources:\n  - name: users\n    file: nowhere/users.csv\n\n--- REQUEST ---\n{}\n";
+        let doc = crate::parser::parse_gctf_from_str(src, "b.gctf").expect("parse");
+        let found = bench_source_diagnostics("b.gctf", &doc);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(
+            found[0].range.start.line, 4,
+            "1-based line of `--- BENCH ---`"
+        );
+        assert!(
+            found[0].message.contains("nowhere/users.csv"),
+            "{}",
+            found[0].message
+        );
+    }
+
     #[test]
     fn check_preamble_order_clean() {
         let doc = doc_with_sections(vec![
@@ -646,7 +757,7 @@ mod tests {
             kv_section(SectionType::Endpoint, &[("ep", "svc/method")]),
             kv_section(SectionType::Options, &[("timeout", "10")]),
         ]);
-        let issues = check_preamble_section_order(&doc);
+        let issues = semantics::preamble_section_order(&doc);
         assert!(
             issues.is_empty(),
             "Expected no ordering issues, got {:?}",
@@ -660,9 +771,8 @@ mod tests {
             kv_section(SectionType::Options, &[]),
             kv_section(SectionType::Bench, &[("mode", "fixed")]),
         ]);
-        let issues = check_preamble_section_order(&doc);
+        let issues = semantics::preamble_section_order(&doc);
         assert_eq!(issues.len(), 1);
-        // BENCH has the earlier canonical rank — it's what should move, not OPTIONS.
         assert!(issues[0].1.contains("BENCH should come before OPTIONS"));
     }
 
@@ -672,7 +782,7 @@ mod tests {
             kv_section(SectionType::Address, &[]),
             kv_section(SectionType::Bench, &[]),
         ]);
-        let issues = check_preamble_section_order(&doc);
+        let issues = semantics::preamble_section_order(&doc);
         assert_eq!(issues.len(), 1);
         assert!(issues[0].1.contains("BENCH should come before ADDRESS"));
     }
@@ -684,7 +794,7 @@ mod tests {
             kv_section(SectionType::Address, &[]),
             kv_section(SectionType::Bench, &[]),
         ]);
-        let issues = check_preamble_section_order(&doc);
+        let issues = semantics::preamble_section_order(&doc);
         assert_eq!(issues.len(), 2);
     }
 
@@ -704,19 +814,17 @@ mod tests {
                 ..Default::default()
             },
         ]);
-        let issues = check_preamble_section_order(&doc);
+        let issues = semantics::preamble_section_order(&doc);
         assert!(issues.is_empty());
     }
 
-    // `fmt --write` really does reorder the preamble (format_gctf_chain sorts
-    // blocks by preamble_rank), so this hint must keep promising it.
     #[test]
     fn section_order_hint_promises_fmt_autofix() {
         let doc = doc_with_sections(vec![
             kv_section(SectionType::Address, &[]),
             kv_section(SectionType::Bench, &[]),
         ]);
-        let issues = check_preamble_section_order(&doc);
+        let issues = semantics::preamble_section_order(&doc);
         let hint = &issues[0].2;
         assert!(
             hint.contains("fmt --write"),

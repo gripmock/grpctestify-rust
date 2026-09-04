@@ -1,62 +1,3 @@
-//! Assertion plugins backed by user-authored `.rhai` scripts, loaded from
-//! the convention directories — [`user_plugin_dir`] (`~/.grpctestify/plugins`)
-//! and [`project_plugin_dir`] (`./.grpctestify/plugins`); see
-//! [`load_all_configured_plugins`].
-//!
-//! v1 contract: every public top-level function in a script becomes its own
-//! plugin, named directly after itself — `fn is_even(x) {...}` anywhere
-//! under one of those directories becomes `@is_even(...)`. One file can
-//! define many (no single magic function name like `check`); the file it
-//! lives in is just where the definition happens to be, not part of the
-//! plugin's name.
-//! `private fn` (Rhai's own visibility keyword) stays internal — a helper
-//! used by other functions in the file, never itself exposed as a plugin.
-//! `on_test_start`/`on_test_end`/`on_suite_end` are reserved for the
-//! separate Reporter contract ([`crate::rhai_stdlib`]'s sibling in
-//! `rhai_reporter.rs`) and never become assertion plugins even if public.
-//! Two public functions (in the same file or different files) sharing a
-//! name is a load-time conflict — see [`load_rhai_plugins`].
-//!
-//! Each function takes one named parameter per assertion argument — `fn
-//! check(value)`, `fn check(value, min, max)`, whatever arity the call site
-//! uses — and returns either a `bool` (pass/fail) or any other value
-//! (composed further, e.g. inside a jq expression). Dispatch is by arity,
-//! same as Rhai's own function overloading: a script can define more than
-//! one overload of the same function name to serve more than one call
-//! shape. A `///` doc comment immediately above a function becomes that
-//! plugin's `description()`.
-//!
-//! No access to the response/headers/trailers — pure functions only, so a
-//! script-backed plugin behaves identically whether called directly or from
-//! inside a jq subexpression.
-//!
-//! # Type tags (optional, trust-based)
-//!
-//! A doc comment MAY also carry `@param <name>: <type>`, `@returns <type>`,
-//! and `@pure` tags (`<type>` is one of `bool`/`uint`/`number`/`string`/
-//! `time`/`json`/`yaml`, case-insensitive):
-//!
-//! ```rhai
-//! /// Checks a value is within [min, max].
-//! /// @param value: number
-//! /// @param min: number
-//! /// @param max: number
-//! /// @returns bool
-//! /// @pure
-//! fn in_range(value, min, max) { value >= min && value <= max }
-//! ```
-//!
-//! These aren't verified against the script body — a script author can
-//! claim `@pure`/a wrong return type and nothing here catches it (the same
-//! trust boundary `unsafe` is in Rust: a promise, not a proof). Without
-//! `@pure`, a plugin's purity/determinism stays exactly as conservative as
-//! before (never used as the basis for an optimizer rewrite). Untagged
-//! parameters/return default to `Any`, same as today.
-//!
-//! A bare `@inline_option` tag makes the plugin's own name a valid inline
-//! option key on a section header (`--- RESPONSE my_check=5 ---`) instead of
-//! the parser rejecting it as unknown — see [`load_all_inline_option_keys`].
-
 use anyhow::Result;
 use apif_assert::engine::AssertionResult;
 use rhai::{AST, Dynamic, Engine, FnAccess};
@@ -68,36 +9,20 @@ use crate::{
     ArgTypeInfo, Plugin, PluginContext, PluginPurity, PluginResult, PluginSignature, TypeInfo,
 };
 
-/// Reporter hooks — never exposed as assertion plugins even though they're
-/// public functions, so a reporter script doesn't also register itself
-/// under `@on_test_end` etc.
 const RESERVED_FN_NAMES: &[&str] = &["on_test_start", "on_test_end", "on_suite_end"];
 
 const DEFAULT_DESCRIPTION: &str = "User-defined assertion plugin (.rhai script)";
 
 pub struct RhaiPlugin {
-    /// Also the Rhai function this plugin calls — the plugin's name IS the
-    /// function's own name, one to one.
     name: String,
     description: String,
-    /// Shared across every plugin loaded from the same file — one compile,
-    /// many plugin views into it.
     engine: Arc<Engine>,
     ast: Arc<AST>,
     arg_names: &'static [&'static str],
     arg_types: &'static [ArgTypeInfo],
-    /// From an `@returns <type>` doc tag — `Any` if untagged.
     return_type: TypeInfo,
-    /// From a `@pure` doc tag. Drives `purity`/`deterministic`/`idempotent`/
-    /// `safe_for_rewrite` — see [`Plugin::signature`]. A script's behavior
-    /// can't actually be verified, so this is a trust boundary: `@pure` is
-    /// a claim, not a proof.
     pure: bool,
-    /// From an `@inline_option` doc tag — this plugin's own name is also
-    /// accepted as an inline-option key on a section header (e.g.
-    /// `--- RESPONSE my_check=5 ---`). See [`load_all_inline_option_keys`].
     inline_option: bool,
-    /// Resolved on first execution, not at load, so `check` never asks.
     path: std::path::PathBuf,
     digest: Arc<str>,
     trusted: Arc<std::sync::OnceLock<bool>>,
@@ -110,10 +35,6 @@ impl RhaiPlugin {
             .get_or_init(|| crate::trust::is_trusted(&self.path, &self.digest))
     }
 
-    /// Compile a `.rhai` file and return one [`RhaiPlugin`] per public
-    /// top-level function (excluding reporter hooks). Empty (not an error)
-    /// when the file defines no public functions — it might be a
-    /// reporter-only script. Fails only if the file doesn't parse.
     pub fn load_all(path: &Path) -> Result<Vec<Self>> {
         let engine = crate::rhai_stdlib::build_engine();
         let (ast, digest) = crate::rhai_stdlib::compile_with_digest(&engine, path)?;
@@ -130,8 +51,6 @@ impl RhaiPlugin {
             if f.access != FnAccess::Public || RESERVED_FN_NAMES.contains(&f.name) {
                 continue;
             }
-            // Multiple arity overloads share one name — only the first
-            // occurrence (source order) becomes the plugin's arg_names/doc.
             if !seen.insert(f.name.to_string()) {
                 continue;
             }
@@ -162,13 +81,8 @@ impl RhaiPlugin {
     }
 }
 
-/// Parsed from a function's `///` doc comment: the human-readable
-/// description (every non-tag line, joined) plus whichever `@param`/
-/// `@returns`/`@pure` tags were present — see the module-level "Type tags"
-/// section for the exact syntax.
 struct ParsedDoc {
     description: Option<String>,
-    /// Parallel to `params` — `None` where a parameter had no `@param` tag.
     param_types: Vec<Option<TypeInfo>>,
     return_type: TypeInfo,
     pure: bool,
@@ -188,10 +102,6 @@ fn parse_type_tag(token: &str) -> TypeInfo {
     }
 }
 
-/// Strip Rhai's `///`/`/**`-block comment markers, then split each line
-/// into a doc-tag (`@param`/`@returns`/`@pure`) or plain description text.
-/// Unrecognized types/tags are ignored, not errors — this is best-effort,
-/// trust-based metadata, not a strict schema.
 fn parse_doc_comment(comments: &[&str], params: &[&str]) -> ParsedDoc {
     let mut description_lines = Vec::new();
     let mut param_types: Vec<Option<TypeInfo>> = vec![None; params.len()];
@@ -199,9 +109,6 @@ fn parse_doc_comment(comments: &[&str], params: &[&str]) -> ParsedDoc {
     let mut pure = false;
     let mut inline_option = false;
 
-    // Rhai merges a contiguous `///` block into one entry per `comments`
-    // slot, with the original line breaks kept as embedded `\n` — split
-    // back into individual lines before tag-matching each one.
     for raw in comments.iter().flat_map(|c| c.split('\n')) {
         let line = raw
             .trim()
@@ -240,9 +147,6 @@ fn parse_doc_comment(comments: &[&str], params: &[&str]) -> ParsedDoc {
     }
 }
 
-/// Copy Rhai's borrowed parameter names out to `'static` — leaked once per
-/// plugin at load time (a bounded, one-time cost for the process lifetime,
-/// not a per-call or per-reload allocation).
 fn leak_arg_names(params: &[&str]) -> &'static [&'static str] {
     let owned: Vec<&'static str> = params
         .iter()
@@ -251,8 +155,6 @@ fn leak_arg_names(params: &[&str]) -> &'static [&'static str] {
     Box::leak(owned.into_boxed_slice())
 }
 
-/// `param_types[i]` (from an `@param` tag), or `Any` when the parameter
-/// wasn't tagged.
 fn leak_arg_types(count: usize, param_types: &[Option<TypeInfo>]) -> &'static [ArgTypeInfo] {
     let types: Vec<ArgTypeInfo> = (0..count)
         .map(|i| ArgTypeInfo {
@@ -281,10 +183,6 @@ impl Plugin for RhaiPlugin {
         PluginSignature {
             return_type: self.return_type,
             arg_types: self.arg_types,
-            // A script's behavior can't actually be verified — `@pure` is a
-            // trust boundary (a claim, not a proof); untagged scripts keep
-            // the fully conservative defaults so the optimizer never
-            // rewrites around one.
             purity: if self.pure {
                 PluginPurity::Pure
             } else {
@@ -301,9 +199,8 @@ impl Plugin for RhaiPlugin {
     fn execute(&self, args: &[Value], _context: &PluginContext) -> Result<PluginResult> {
         if !self.is_trusted() {
             anyhow::bail!(
-                "@{}: refusing to execute untrusted plugin script {}",
-                self.name,
-                self.path.display()
+                "{}",
+                crate::trust::untrusted_message(&self.name, &self.path)
             );
         }
         let rhai_args: Vec<Dynamic> = args
@@ -341,21 +238,6 @@ impl Plugin for RhaiPlugin {
     }
 }
 
-/// Load every `.rhai` file directly under `dir`, registering one plugin per
-/// public function found (see [`RhaiPlugin::load_all`]). A file that fails
-/// to compile is skipped with a logged error rather than aborting the whole
-/// load — one broken script shouldn't take down every other plugin.
-///
-/// Two public functions sharing a name — same file or different files — is
-/// a real conflict, not a "last one wins" situation: silently shadowing one
-/// plugin with another means `@name(...)` calls whichever loaded last,
-/// which depends on directory read order. Files are processed in sorted
-/// order for determinism, and the *first* definition of a name wins; every
-/// later conflicting one is skipped with a loud `tracing::error!` naming
-/// both files, so the conflict is visible even though this loader can't
-/// fail outright — it runs inside a `LazyLock` initializer
-/// ([`crate::execution::plugin_dir`] in the main crate), which can't
-/// propagate a `Result`.
 pub fn load_rhai_plugins(dir: &Path) -> Vec<Arc<dyn Plugin>> {
     load_rhai_plugins_typed(dir)
         .into_iter()
@@ -363,10 +245,6 @@ pub fn load_rhai_plugins(dir: &Path) -> Vec<Arc<dyn Plugin>> {
         .collect()
 }
 
-/// Same as [`load_rhai_plugins`], but returns the concrete [`RhaiPlugin`]
-/// (not yet erased to `Arc<dyn Plugin>`) — needed by callers that read a
-/// `RhaiPlugin`-only field like `inline_option` (the shared `Plugin` trait
-/// doesn't carry it).
 fn load_rhai_plugins_typed(dir: &Path) -> Vec<RhaiPlugin> {
     let mut plugins: Vec<RhaiPlugin> = Vec::new();
     let mut owner: std::collections::HashMap<String, std::path::PathBuf> =
@@ -416,10 +294,6 @@ fn load_rhai_plugins_typed(dir: &Path) -> Vec<RhaiPlugin> {
     plugins
 }
 
-/// The user's home directory, resolved without a dependency: `$HOME` first
-/// (set on every Unix-like OS, and often on Windows too under
-/// Git-Bash/MSYS/WSL-adjacent shells), falling back to `%USERPROFILE%` on
-/// Windows (native `cmd`/PowerShell don't set `$HOME`).
 fn home_dir() -> Option<std::path::PathBuf> {
     if let Ok(home) = std::env::var("HOME")
         && !home.is_empty()
@@ -435,26 +309,14 @@ fn home_dir() -> Option<std::path::PathBuf> {
     None
 }
 
-/// Non-empty string from `var`, if set — the shared helper behind both
-/// directory env-var overrides below.
 fn non_empty_env(var: &str) -> Option<String> {
     std::env::var(var).ok().filter(|v| !v.is_empty())
 }
 
-/// `<home>/.grpctestify/plugins` — the user-global settings directory
-/// (`.grpctestify/` isn't plugin-specific; `plugins/` is the one subpath
-/// this crate reads). Same directory on every OS (Windows tolerates a
-/// dot-prefixed directory name exactly like `.cargo`/`.rustup`/`.ssh`
-/// already do) — no XDG/AppData branching. `GRPCTESTIFY_HOME` stands in for
-/// `<home>` (not for `.grpctestify` itself), same meaning as `$HOME`, just
-/// overridable. Never created by this crate — only read if it already
-/// exists.
 pub fn user_plugin_dir() -> Option<std::path::PathBuf> {
     Some(user_state_dir()?.join("plugins"))
 }
 
-/// `<home>/.grpctestify`. Separate from [`user_plugin_dir`] so the trust store
-/// still resolves on a machine where `plugins/` was never created.
 pub fn user_state_dir() -> Option<std::path::PathBuf> {
     let home = non_empty_env("GRPCTESTIFY_HOME")
         .map(std::path::PathBuf::from)
@@ -462,11 +324,6 @@ pub fn user_state_dir() -> Option<std::path::PathBuf> {
     Some(home.join(".grpctestify"))
 }
 
-/// `<cwd>/.grpctestify/plugins` — the project-local settings directory, the
-/// same `.grpctestify/` a project already gets from `play --init`.
-/// `GRPCTESTIFY_PROJECT_DIR` stands in for `<cwd>` (e.g. to point at a repo
-/// root from a monorepo subdirectory without `cd`-ing there). Never created
-/// by this crate — only read if it already exists.
 pub fn project_plugin_dir() -> std::path::PathBuf {
     let cwd = non_empty_env("GRPCTESTIFY_PROJECT_DIR")
         .map(std::path::PathBuf::from)
@@ -474,8 +331,6 @@ pub fn project_plugin_dir() -> std::path::PathBuf {
     cwd.join(".grpctestify").join("plugins")
 }
 
-/// Leaf directories under `<plugins_dir>/installed/<host>/<owner>/<repo>`,
-/// as populated by `plugins install` — sorted for deterministic load order.
 fn installed_leaf_dirs(plugins_dir: &Path) -> Vec<std::path::PathBuf> {
     let mut leaves = Vec::new();
     for host in read_subdirs(&plugins_dir.join("installed")) {
@@ -497,16 +352,6 @@ fn read_subdirs(dir: &Path) -> Vec<std::path::PathBuf> {
         .collect()
 }
 
-/// Load every configured plugin source, lowest to highest precedence:
-/// [`user_plugin_dir`] (global default) → [`project_plugin_dir`]
-/// (project-local, same `.grpctestify/` `play --init` creates). A name
-/// defined in both is not a load-time conflict the way two names colliding
-/// *within* one directory are ([`load_rhai_plugins`]) — the more specific
-/// (project-local) tier silently wins, the same local-overrides-global
-/// precedence most tools give a project config over a user-wide default
-/// (npm: project > user; git: local > global > system). Within one tier,
-/// hand-authored scripts (directly under the tier's directory) outrank
-/// `plugins install`ed ones (under `installed/<host>/<owner>/<repo>/`).
 pub fn load_all_configured_plugins() -> Vec<Arc<dyn Plugin>> {
     load_all_configured_plugins_typed()
         .into_iter()
@@ -514,10 +359,6 @@ pub fn load_all_configured_plugins() -> Vec<Arc<dyn Plugin>> {
         .collect()
 }
 
-/// Names of `.rhai` plugins whose doc comment carries a bare `@inline_option`
-/// tag — each becomes a valid inline-option key on a section header (e.g.
-/// `--- RESPONSE my_check=5 ---`) that the parser would otherwise reject as
-/// unknown. Same precedence/dedup rules as [`load_all_configured_plugins`].
 pub fn load_all_inline_option_keys() -> std::collections::HashSet<String> {
     load_all_configured_plugins_typed()
         .into_iter()
@@ -527,6 +368,10 @@ pub fn load_all_inline_option_keys() -> std::collections::HashSet<String> {
 }
 
 fn load_all_configured_plugins_typed() -> Vec<RhaiPlugin> {
+    if !apif_cfg_runtime::supports(apif_cfg_runtime::Capability::IsolatedFsIo) {
+        return Vec::new();
+    }
+
     let mut plugins: Vec<RhaiPlugin> = Vec::new();
     let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -554,7 +399,6 @@ fn load_all_configured_plugins_typed() -> Vec<RhaiPlugin> {
 
 #[cfg(test)]
 mod tests {
-    /// `load_all` + pre-approve, so a temp script doesn't hit `crate::trust`.
     fn load_trusted(path: &std::path::Path) -> anyhow::Result<Vec<super::RhaiPlugin>> {
         let plugins = super::RhaiPlugin::load_all(path)?;
         for p in &plugins {
@@ -763,8 +607,6 @@ mod tests {
             .map(|p| std::sync::Arc::new(p) as std::sync::Arc<dyn Plugin>)
             .collect();
         assert_eq!(plugins.len(), 1, "only the first definition should win");
-        // "a_first.rhai" sorts before "b_second.rhai" — its `conflict_fn`
-        // (always true) must be the one that survived.
         let result = plugins[0]
             .execute(&[Value::Number(1.into())], &ctx())
             .unwrap();
@@ -871,8 +713,6 @@ mod tests {
         );
         let plugins = load_trusted(&path).unwrap();
         let sig = plugins[0].signature();
-        // Type tags and @pure are independent — no @pure means still Impure,
-        // regardless of how precisely the types are declared.
         assert_eq!(sig.purity, PluginPurity::Impure);
         assert!(!sig.deterministic);
         assert!(!sig.safe_for_rewrite);

@@ -40,8 +40,8 @@ What's in `allure-results/`:
   (expected/actual on failure), META (owner/tags/summary/links)
 - `{uuid}-exchange-attachment.json` — the captured request/response headers,
   trailers, and body, attached to its test
-- `{uuid}-container.json` per directory that has a `_setup.gctf`/
-  `_teardown.gctf` fixture — links the fixture in as a before/after and the
+- `{uuid}-container.json` per directory that has a `_setup`/
+  `_teardown` fixture — links the fixture in as a before/after and the
   directory's ordinary tests as its children
 - `categories.json` — a static defect taxonomy (assertion / gRPC status /
   connection / timeout / parse / validation) so failures group sensibly in

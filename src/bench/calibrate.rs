@@ -1,6 +1,3 @@
-//! In-process gRPC target answering every unary method with an empty message,
-//! used to measure the generator's own floor.
-
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use tonic::Status;
@@ -58,8 +55,6 @@ impl tonic::server::StreamingService<()> for NoopService {
 
     fn call(&mut self, request: tonic::Request<tonic::Streaming<()>>) -> Self::Future {
         Box::pin(async move {
-            // Drain first: a client-streaming caller only sees its request
-            // accepted once the server has read it.
             let mut inbound = request.into_inner();
             let mut received = 0usize;
             while inbound.message().await?.is_some() {
@@ -79,7 +74,6 @@ async fn answer(request: axum::extract::Request) -> axum::response::Response {
         .map(axum::body::Body::new)
 }
 
-/// Stops when dropped.
 pub struct CalibrationTarget {
     address: String,
     task: tokio::task::JoinHandle<()>,

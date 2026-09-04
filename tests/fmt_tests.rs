@@ -349,14 +349,11 @@ fn fmt_preserves_escapes_in_assertion_string_literals() {
 }
 
 #[test]
-fn fmt_still_rewrites_assertions_without_escapes() {
+fn fmt_keeps_what_an_assertion_means_unless_asked_to_optimize() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("plain.gctf");
-    std::fs::write(
-        &file,
-        "--- ENDPOINT ---\nsvc.S/M\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{ \"p\": \"x\" }\n\n--- ASSERTS ---\n!(.plain == \"abc\")\n",
-    )
-    .unwrap();
+    let source = "--- ENDPOINT ---\nsvc.S/M\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{ \"p\": \"x\" }\n\n--- ASSERTS ---\n!(.plain == \"abc\")\nif true then .a else .b end\nnot (.x == 1 or .y == 2)\n@is_uuid(.id) == true\n";
+    std::fs::write(&file, source).unwrap();
 
     let output = support::cli_command()
         .args(["fmt", "--write", &file.to_string_lossy()])
@@ -365,9 +362,32 @@ fn fmt_still_rewrites_assertions_without_escapes() {
     assert!(output.status.success());
 
     let after = std::fs::read_to_string(&file).unwrap();
+    for kept in [
+        r#"!(.plain == "abc")"#,
+        "if true then .a else .b end",
+        "not (.x == 1 or .y == 2)",
+        "@is_uuid(.id) == true",
+    ] {
+        assert!(
+            after.contains(kept),
+            "fmt rewrote the meaning of {kept}:\n{after}"
+        );
+    }
+
+    let output = support::cli_command()
+        .args(["fmt", "-O", "safe", "--write", &file.to_string_lossy()])
+        .output()
+        .expect("failed to run fmt");
+    assert!(output.status.success());
+
+    let after = std::fs::read_to_string(&file).unwrap();
     assert!(
         after.contains(r#".plain != "abc""#),
-        "the negation rule must still apply:\n{after}"
+        "the negation rule still applies when the optimizer is asked for:\n{after}"
+    );
+    assert!(
+        !after.contains("if true then"),
+        "the dead branch goes when the optimizer is asked for:\n{after}"
     );
 }
 

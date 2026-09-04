@@ -12,7 +12,8 @@
       {
         "allowConstantExport": true
       }
-    ]
+    ],
+    "react/set-state-in-effect": "error"
   },
   "ignorePatterns": [
     "dist/**",

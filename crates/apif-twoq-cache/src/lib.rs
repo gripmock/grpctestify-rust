@@ -1,15 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
-
-//! 2Q cache: a small LRU of frequently-reused keys (`hot`) protected from a
-//! scan by a larger admission queue (`cold`).
-//!
-//! Recency is tracked by a monotonic tick stored with each entry, and the order
-//! queues hold `(key, tick)` pairs that are allowed to go stale. That keeps
-//! every operation O(1) amortised. The previous shape kept one queue entry per
-//! key and located it with `iter().position()`, so a hit cost a linear scan of
-//! up to `hot_limit` keys plus a `VecDeque` middle-removal memmove — with the
-//! 2048-entry hot limit the dimension-join path uses, looking a row up in the
-//! cache was dearer than the mmap read it existed to avoid.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
@@ -47,8 +36,6 @@ impl<K: Hash + Eq + Clone, V> TwoQCache<K, V> {
         self.clock
     }
 
-    /// Drop order entries whose tick no longer matches the map, so the queue
-    /// cannot grow without bound when one key is hit repeatedly.
     fn compact(order: &mut VecDeque<(K, u64)>, map: &HashMap<K, Entry<V>>, limit: usize) {
         if order.len() <= (limit + 1).saturating_mul(4) {
             return;
@@ -87,8 +74,6 @@ impl<K: Hash + Eq + Clone, V> TwoQCache<K, V> {
     pub fn insert(&mut self, key: K, value: V) {
         let tick = self.next_tick();
 
-        // Updating an existing key must refresh its recency, otherwise a
-        // frequently-rewritten hot key can be evicted as if it were stale.
         if let Some(slot) = self.hot.get_mut(&key) {
             slot.value = value;
             slot.tick = tick;
@@ -139,7 +124,6 @@ impl<K: Hash + Eq + Clone, V> TwoQCache<K, V> {
         self.cold.len()
     }
 
-    /// The queue entry is left behind and skipped at eviction time.
     pub fn remove(&mut self, key: &K) -> Option<V> {
         if let Some(e) = self.hot.remove(key) {
             return Some(e.value);
@@ -147,7 +131,6 @@ impl<K: Hash + Eq + Clone, V> TwoQCache<K, V> {
         self.cold.remove(key).map(|e| e.value)
     }
 
-    /// Least-recently-used live key, dropping stale queue entries on the way.
     fn pop_lru(order: &mut VecDeque<(K, u64)>, map: &HashMap<K, Entry<V>>) -> Option<K> {
         while let Some((key, tick)) = order.pop_front() {
             if map.get(&key).is_some_and(|e| e.tick == tick) {
@@ -159,8 +142,6 @@ impl<K: Hash + Eq + Clone, V> TwoQCache<K, V> {
 
     fn evict_hot(&mut self) {
         while self.hot.len() > self.hot_limit {
-            // An empty queue with a non-empty map would spin forever; bail
-            // instead, the next insert re-establishes the ordering.
             let Some(oldest) = Self::pop_lru(&mut self.hot_order, &self.hot) else {
                 break;
             };
@@ -219,13 +200,13 @@ mod tests {
     fn hot_eviction_to_cold() {
         let mut cache = TwoQCache::new(1, 2);
         cache.insert("a", 1);
-        let _ = cache.get(&"a"); // promote to hot
+        let _ = cache.get(&"a");
         cache.insert("b", 2);
-        let _ = cache.get(&"b"); // promote to hot, evicts "a" to cold
+        let _ = cache.get(&"b");
 
         assert_eq!(cache.hot_len(), 1);
-        assert!(cache.contains(&"a")); // still in cold
-        assert!(cache.contains(&"b")); // in hot
+        assert!(cache.contains(&"a"));
+        assert!(cache.contains(&"b"));
     }
 
     #[test]
@@ -287,23 +268,16 @@ mod tests {
         assert_eq!(cache.get(&"a"), Some(&42));
     }
 
-    // Bug 8: updating an existing hot key must refresh its recency, otherwise a
-    // frequently-rewritten key is evicted as if it were the stale one.
     #[test]
     fn update_refreshes_hot_recency() {
         let mut cache = TwoQCache::new(2, 1);
         cache.insert("a", 1);
-        let _ = cache.get(&"a"); // promote a to hot
+        let _ = cache.get(&"a");
         cache.insert("b", 2);
-        let _ = cache.get(&"b"); // promote b; hot order = [a (older), b]
+        let _ = cache.get(&"b");
 
-        // Updating "a" makes it the most-recently-used hot entry. (A `get` here
-        // would refresh recency by itself, so we must rely on `insert` alone.)
         cache.insert("a", 10);
 
-        // Promote two fresh keys, forcing hot evictions. With recency refreshed,
-        // "b" is the stale entry pushed out (and dropped via the size-1 cold
-        // queue); without the fix "a" would have been the victim instead.
         cache.insert("c", 3);
         let _ = cache.get(&"c");
         cache.insert("d", 4);
@@ -320,8 +294,6 @@ mod tests {
         assert_eq!(cache.get(&"missing"), None);
     }
 
-    // Lazy eviction leaves stale `(key, tick)` pairs behind; the queue must not
-    // grow without bound when the same key is hit over and over.
     #[test]
     fn repeated_hits_do_not_grow_the_queue_without_bound() {
         let mut cache: TwoQCache<String, i32> = TwoQCache::new(4, 4);
@@ -338,8 +310,6 @@ mod tests {
         assert_eq!(cache.get(&"k".to_string()), Some(&1));
     }
 
-    // A key removed while its order entry is still queued must not resurrect
-    // and must not stall eviction.
     #[test]
     fn removed_keys_do_not_block_eviction() {
         let mut cache: TwoQCache<String, i32> = TwoQCache::new(1, 1);

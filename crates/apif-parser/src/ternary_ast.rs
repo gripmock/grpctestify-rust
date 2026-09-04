@@ -1,22 +1,14 @@
-// AST nodes for ternary expressions in EXTRACT section
-// Uses ternary_to_jq from ternary.rs for conversion
-
 use crate::ternary::ternary_to_jq;
 use serde::{Deserialize, Serialize};
 
-/// Extract value type
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ExtractValue {
-    /// Simple JQ path: .user.id
     Simple(String),
-    /// JQ expression: .items | length
     JqExpr(String),
-    /// Ternary expression (raw string): .status == 200 ? "OK" : "Error"
     Ternary(String),
 }
 
 impl ExtractValue {
-    /// Parse extract value string into AST
     pub fn parse(value: &str) -> Self {
         if is_ternary(value) {
             ExtractValue::Ternary(value.to_string())
@@ -27,7 +19,6 @@ impl ExtractValue {
         }
     }
 
-    /// Convert to JQ syntax
     pub fn to_jq(&self) -> String {
         match self {
             ExtractValue::Simple(path) => path.clone(),
@@ -37,12 +28,10 @@ impl ExtractValue {
     }
 }
 
-/// Check if string contains top-level ternary operator
 fn is_ternary(value: &str) -> bool {
     find_top_level_char(value, '?').is_some() && find_top_level_char(value, ':').is_some()
 }
 
-/// Find character that's not inside quotes, parentheses, or brackets
 fn find_top_level_char(expr: &str, target: char) -> Option<usize> {
     let mut quote: Option<char> = None;
     let mut escaped = false;
@@ -50,8 +39,6 @@ fn find_top_level_char(expr: &str, target: char) -> Option<usize> {
     let mut bracket_depth = 0;
 
     for (i, c) in expr.char_indices() {
-        // Everything inside a string literal is opaque — brackets in there are
-        // text, and a `\"` does not end the literal.
         if let Some(q) = quote {
             if escaped {
                 escaped = false;
@@ -78,7 +65,6 @@ fn find_top_level_char(expr: &str, target: char) -> Option<usize> {
     None
 }
 
-/// Extract variable definition
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExtractVar {
     pub name: String,
@@ -86,7 +72,6 @@ pub struct ExtractVar {
 }
 
 impl ExtractVar {
-    /// Parse "name = value" into ExtractVar
     pub fn parse(line: &str) -> Option<Self> {
         let line = line.trim();
 
@@ -102,7 +87,6 @@ impl ExtractVar {
         })
     }
 
-    /// Parse pre-split name and value (from tokenizer).
     pub fn parse_raw(name: &str, value: &str) -> Option<Self> {
         if name.is_empty() || value.is_empty() {
             return None;
@@ -113,7 +97,6 @@ impl ExtractVar {
         })
     }
 
-    /// Convert to JQ syntax
     pub fn to_jq(&self) -> String {
         format!("{} = {}", self.name, self.value.to_jq())
     }
@@ -203,10 +186,6 @@ mod tests {
         assert_eq!(result, Some(17));
     }
 
-    /// A bracket inside a string literal is text, not nesting. Counting it
-    /// left `paren_depth` stuck above zero for the rest of the expression, so
-    /// the real top-level `?` after it was never found and the ternary silently
-    /// stopped being recognised.
     #[test]
     fn find_top_level_ignores_brackets_inside_string_literals() {
         assert_eq!(
@@ -219,9 +198,6 @@ mod tests {
         );
     }
 
-    /// An escaped quote does not end the literal. Treating it as a close made
-    /// the rest of the string count as top level, so a `?`/`:` that is really
-    /// part of the text was reported as a ternary operator.
     #[test]
     fn find_top_level_respects_escaped_quotes() {
         assert_eq!(find_top_level_char(r#".a == "x \" ? y : z""#, '?'), None);
@@ -247,7 +223,6 @@ mod tests {
         .unwrap();
         assert_eq!(var.name, "size");
         assert!(matches!(var.value, ExtractValue::Ternary(_)));
-        // Parentheses are preserved in output (valid jq syntax)
         assert_eq!(
             var.to_jq(),
             "size = if .count == 0 then \"empty\" else (if .count > 10 then \"large\" else \"small\" end) end"

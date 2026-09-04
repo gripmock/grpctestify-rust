@@ -1,26 +1,33 @@
+import { useMemo, useState } from 'react';
 import { useStore } from '../../lib/store';
-import { colors } from '../../lib/theme';
-import { Plus, X } from 'lucide-react';
+import { Plus, X, TriangleAlert, Info, Eye, EyeOff } from 'lucide-react';
 import { EnvVarToolbar } from './EnvVarToolbar';
-
-function resolveValue(val: string, env: { variables: Record<string, string> } | null): string {
-  if (!env) return val;
-  let r = val;
-  for (const [k, v] of Object.entries(env.variables)) {
-    r = r.replaceAll(`{{${k}}}`, v);
-  }
-  return r;
-}
+import { effectiveEnvironment, substituteEnv } from '../../lib/env';
+import { checkMetadataKey, checkMetadataValue } from '../../lib/metadata';
+import { isHttpRequest } from '../../lib/http-endpoint';
+import { hidesTyped, isSecretHeader, splitScheme, variableNameFor } from '../../lib/secret-headers';
+import { knownHeaders } from '../../lib/known-headers';
+import { droppedLines } from '../../lib/assert-problems';
 
 export function HeadersEditor() {
   const request = useStore(s => s.request);
+  const isHttp = useStore(s => isHttpRequest(s.workspacePath, s.request.endpoint));
+  const wire = isHttp ? 'http' : 'grpc';
+  const [shown, setShown] = useState<Set<string>>(new Set());
   const setRequestHeaders = useStore(s => s.setRequestHeaders);
+  const openEnvManager = useStore(s => s.openEnvManager);
   const activeEnv = useStore(s => {
     const ae = s.activeEnvironment;
     return ae ? s.environments.find(e => e.name === ae) : null;
   });
+  const env = useMemo(() => effectiveEnvironment(activeEnv), [activeEnv]);
+
+  const diagnostics = useStore(s => s.diagnostics);
+  const dropped = useMemo(() => droppedLines(diagnostics, 'REQUEST_HEADERS'), [diagnostics]);
 
   const entries = Object.entries(request.headers);
+  const known = knownHeaders(wire);
+  const hasUnnamed = entries.some(([k]) => k === '');
 
   const set = (key: string, value: string, oldKey?: string) => {
     const h = { ...request.headers };
@@ -38,52 +45,109 @@ export function HeadersEditor() {
 
   return (
     <div>
-      <div style={{ border: '1px solid var(--border)', borderRadius: 6, padding: 8 }}>
-        {entries.length === 0 && (
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>No headers</div>
-        )}
-        {entries.map(([k, v], i) => {
-          const hasVarPattern = v.includes('{{');
-          const resolved = hasVarPattern && activeEnv ? resolveValue(v, activeEnv) : v;
-          const isDifferent = resolved !== v;
-          return (
-          <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 4, alignItems: 'center' }}>
-            <input
-              value={k}
-              onChange={e => set(e.target.value, v, k)}
-              placeholder="Key"
-              style={{ flex: 1, padding: '4px 8px', fontSize: 12, borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none', fontFamily: 'monospace' }}
-            />
-            <div style={{ position: 'relative', flex: 2 }}>
-              <input
-                value={v}
-                onChange={e => set(k, e.target.value, k)}
-                placeholder="Value"
-                title={isDifferent ? `Resolves to: ${resolved}` : undefined}
-                style={{
-                  width: '100%', padding: '4px 8px', fontSize: 12, borderRadius: 4, boxSizing: 'border-box',
-                  border: hasVarPattern && activeEnv ? `2px solid ${colors.accent}` : '1px solid var(--border)',
-                  background: hasVarPattern && activeEnv ? `${colors.accent}08` : 'var(--bg-primary)',
-                  color: 'var(--text-primary)', outline: 'none', fontFamily: 'monospace',
-                }}
-              />
-            </div>
-            {isDifferent && (
-              <span style={{
-                fontSize: 9, padding: '2px 5px', borderRadius: 3, whiteSpace: 'nowrap',
-                background: `${colors.accent}15`, color: colors.accent,
-                fontFamily: 'monospace', flexShrink: 0,
-              }} title={resolved}>
-                {resolved}
+      <datalist id={`known-headers-${wire}`}>
+        {known.map(name => <option key={name} value={name} />)}
+      </datalist>
+      <div className="editor-frame stack">
+        {dropped.map((line, i) => (
+          <div key={`dropped-${i}`} className="assert is-fail">
+            <span className="assert-mark"><TriangleAlert size={12} /></span>
+            <span className="stack is-tight">
+              <span className="mono">{line}</span>
+              <span className="assert-said">
+                This line is not a <span className="mono">key: value</span> pair, so the file drops
+                it and the call goes out without it.
               </span>
-            )}
-            <button onClick={() => set('', '', k)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: 'var(--text-muted)', flexShrink: 0 }}>
-              <X size={14} />
-            </button>
+            </span>
           </div>
+        ))}
+        {entries.length === 0 && dropped.length === 0 && (
+          <div className="muted">
+            Sent {isHttp ? 'as request headers' : 'as gRPC metadata'} — a value takes{' '}
+            <span className="mono">{'{{VAR}}'}</span> from the environment.
+          </div>
+        )}
+
+        {entries.map(([k, v], i) => {
+          const resolved = substituteEnv(v, env);
+          const isDifferent = resolved !== v;
+          const note = checkMetadataKey(k, wire) ?? checkMetadataValue(k, resolved, wire);
+          const secret = isSecretHeader(k);
+          const hidden = hidesTyped(k, v) && !shown.has(k);
+          const visible = shown.has(k);
+          const secretResolved = secret && !visible;
+          return (
+            <div key={i} className={`kvrow${note ? ` is-${note.level}` : ''}`}>
+              <span className="kv-mark" title={note?.reason}>
+                {note?.level === 'bad' ? <TriangleAlert size={11} />
+                  : note?.level === 'note' ? <Info size={11} />
+                  : null}
+              </span>
+              <input
+                className="field field-frame mono"
+                value={k}
+                onChange={e => set(e.target.value, v, k)}
+                placeholder="key"
+                list={`known-headers-${wire}`}
+                spellCheck={false}
+              />
+              <span className={`field-frame${v.includes('{{') && env ? ' is-templated' : ''}`}>
+                <input
+                  className="field mono"
+                  type={hidden ? 'password' : 'text'}
+                  autoComplete="off"
+                  value={v}
+                  onChange={e => set(k, e.target.value, k)}
+                  placeholder="value"
+                  spellCheck={false}
+                  title={isDifferent && !secretResolved ? `Goes out as: ${resolved}` : undefined}
+                />
+                {isDifferent && !secretResolved && (
+                  <span className="badge is-info mono" title={resolved}>{resolved}</span>
+                )}
+                {hidesTyped(k, v) && v.trim() !== '' && (
+                  <button
+                    className="btn is-ghost is-sm"
+                    onClick={() => {
+                      const { prefix, secret: credential } = splitScheme(v);
+                      const name = variableNameFor(k);
+                      set(k, `${prefix}{{${name}}}`, k);
+                      openEnvManager(name, credential);
+                    }}
+                    title={`Move this value into {{${variableNameFor(k)}}} — the file keeps the name, the environment keeps the value, and a credential-shaped name is kept out of git`}
+                  >
+                    keep it in the environment
+                  </button>
+                )}
+                {secret && (
+                  <button
+                    className="btn is-ghost is-icon is-sm"
+                    onClick={() => setShown(prev => {
+                      const next = new Set(prev);
+                      if (!next.delete(k)) next.add(k);
+                      return next;
+                    })}
+                    title={visible ? `Hide the ${k} value` : `Show the ${k} value`}
+                    aria-label={visible ? 'Hide value' : 'Show value'}
+                  >
+                    {visible ? <EyeOff size={11} /> : <Eye size={11} />}
+                  </button>
+                )}
+              </span>
+              <button className="btn is-ghost is-icon" onClick={() => set('', '', k)} aria-label={`Remove ${k || 'header'}`}>
+                <X size={14} />
+              </button>
+              {note && <span className="kv-why">{note.reason}</span>}
+            </div>
           );
         })}
-        <button onClick={add} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '4px 8px', background: 'none', border: '1px dashed var(--border)', borderRadius: 4, cursor: 'pointer', fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+
+        <button
+          className="btn is-quiet add-row"
+          onClick={add}
+          disabled={hasUnnamed}
+          title={hasUnnamed ? 'Name the empty header first' : isHttp ? 'One more header' : 'One more metadata pair'}
+        >
           <Plus size={12} /> Add header
         </button>
       </div>

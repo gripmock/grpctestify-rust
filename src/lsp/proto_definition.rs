@@ -1,11 +1,3 @@
-// LSP go-to-definition for proto service/method symbols in ENDPOINT sections.
-//
-// Only resolves when the descriptor pool was compiled from local `.proto`
-// files (`PROTO.files=`) — that's the only source that keeps
-// `SourceCodeInfo` (server-reflection-loaded pools have it stripped, see
-// `apif_grpc_transport::tonic::descriptor::load_via_reflection`), so there is
-// no source position to jump to for a reflection-only schema.
-
 use crate::lsp::position::utf16_col_to_byte;
 use crate::parser::GctfDocument;
 use crate::parser::ast::SectionType;
@@ -99,12 +91,6 @@ fn location_in_file(
     })
 }
 
-/// If `position` sits on the ENDPOINT line's `pkg.Service` or `Method` half,
-/// resolve it against `pool` and return its declaration site in the local
-/// `.proto` source. `import_paths` maps the pool's logical file name (e.g.
-/// `myservice.proto`) back to a real path on disk. Returns `None` for
-/// reflection-loaded pools (no `SourceCodeInfo`), an unresolved symbol, or a
-/// proto file that can't be found under `import_paths`.
 pub fn find_proto_definition(
     doc: &GctfDocument,
     content: &str,
@@ -160,8 +146,6 @@ mod tests {
         let doc = parse_doc();
         let import_paths = vec![tmp.path().to_string_lossy().to_string()];
 
-        // Line 8 (0-based) is "example.Greeter/SayHello"; put the cursor on
-        // "SayHello", past the '/'.
         let position = Position {
             line: 8,
             character: 20,
@@ -198,7 +182,6 @@ mod tests {
         let doc = parse_doc();
         let import_paths = vec![tmp.path().to_string_lossy().to_string()];
 
-        // Line 10 (0-based) is inside REQUEST, not ENDPOINT.
         let position = Position {
             line: 10,
             character: 0,
@@ -212,7 +195,6 @@ mod tests {
     fn none_when_source_code_info_is_stripped() {
         let tmp = tempfile::tempdir().unwrap();
         let mut pool = build_pool(tmp.path());
-        // Simulate a reflection-loaded pool: rebuild without source info.
         let mut fds = pool.file_descriptor_protos().cloned().collect::<Vec<_>>();
         for f in &mut fds {
             f.source_code_info = None;

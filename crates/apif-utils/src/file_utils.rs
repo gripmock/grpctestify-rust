@@ -4,8 +4,6 @@ use std::path::{Path, PathBuf};
 pub struct FileUtils;
 
 impl FileUtils {
-    /// Collect all .gctf files from a directory, optionally excluding patterns.
-    /// Uses `ignore` crate which respects `.gitignore` and `.ignore` files.
     pub fn collect_test_files(path: &Path, exclude_patterns: &[String]) -> Vec<PathBuf> {
         let mut files = Vec::new();
         let walker = ignore::WalkBuilder::new(path)
@@ -17,7 +15,7 @@ impl FileUtils {
         for entry in walker.flatten() {
             let p = entry.path();
             if p.extension()
-                .is_some_and(|ext| ext == "gctf" || ext == "apif")
+                .is_some_and(|ext| ext == "gctf" || ext == "httf" || ext == "apif")
                 && !is_excluded(p, exclude_patterns)
             {
                 files.push(p.to_path_buf());
@@ -26,7 +24,6 @@ impl FileUtils {
         files
     }
 
-    /// Sort files by name or modification time
     pub fn sort_files(files: &mut [PathBuf], sort_by: &str) {
         match sort_by {
             "name" => files.sort_by(|a, b| a.file_name().cmp(&b.file_name())),
@@ -42,15 +39,10 @@ impl FileUtils {
                 let mut rng = StdRng::from_rng(&mut rand::rng());
                 files.shuffle(&mut rng);
             }
-            // "path" (the CLI default) and anything unrecognized: sort
-            // lexically by full path — `collect_test_files`'s `ignore::Walk`
-            // otherwise yields raw filesystem directory order, which is not
-            // guaranteed stable across runs/platforms.
             _ => files.sort(),
         }
     }
 
-    /// Get file modification time as Unix timestamp
     pub fn get_mtime(path: &Path) -> Result<i64> {
         let metadata = std::fs::metadata(path)?;
         let mtime = metadata
@@ -61,13 +53,11 @@ impl FileUtils {
         Ok(mtime)
     }
 
-    /// Get file size in bytes
     pub fn get_file_size(path: &Path) -> Result<u64> {
         let metadata = std::fs::metadata(path)?;
         Ok(metadata.len())
     }
 
-    /// Resolve a relative path against a base file's directory
     pub fn resolve_relative_path(base_file_path: &Path, relative_path: &str) -> PathBuf {
         let base_dir = base_file_path.parent().unwrap_or(Path::new("."));
         base_dir.join(relative_path)
@@ -81,10 +71,6 @@ fn is_excluded(path: &Path, exclude_patterns: &[String]) -> bool {
     let path_str = path.to_string_lossy();
     exclude_patterns.iter().any(|pattern| {
         if let Ok(glob) = globset::Glob::new(pattern).map(|g| g.compile_matcher()) {
-            // A glob like `smoke*` is whole-path anchored, so it would only
-            // match a bare filename, never `dir/smoke1.gctf`. Match it against
-            // the full path AND every path component (including the basename)
-            // so patterns such as `smoke*` exclude matching files anywhere.
             glob.is_match(path_str.as_ref())
                 || path
                     .components()
@@ -145,13 +131,10 @@ mod tests {
         assert!(!is_excluded(Path::new("test.gctf"), &[]));
         assert!(is_excluded(Path::new("test.gctf"), &["test*".into()]));
         assert!(!is_excluded(Path::new("other.gctf"), &["test*".into()]));
-        // Glob pattern matching
         assert!(is_excluded(Path::new("test.gctf"), &["*.gctf".into()]));
         assert!(!is_excluded(Path::new("test.gctf"), &["*.txt".into()]));
     }
 
-    // Bug 7: `smoke*` (not `**/smoke*`) must exclude matching files anywhere,
-    // matching against each path component / basename, not just the full path.
     #[test]
     fn is_excluded_matches_basename_glob() {
         assert!(is_excluded(
@@ -166,9 +149,7 @@ mod tests {
             Path::new("tests/regular.gctf"),
             &["smoke*".into()]
         ));
-        // Full-path anchored globs still work.
         assert!(is_excluded(Path::new("tests/x.gctf"), &["tests/*".into()]));
-        // Excluding by directory component.
         assert!(is_excluded(
             Path::new("fixtures/skip/x.gctf"),
             &["skip".into()]
@@ -190,10 +171,6 @@ mod tests {
 
     #[test]
     fn sort_files_path_is_deterministic_not_a_no_op() {
-        // Regression: the "path" arm (the CLI's default `--sort` value) used
-        // to fall through to a no-op `_ => {}`, silently trusting whatever
-        // order `collect_test_files`'s `ignore::Walk` happened to yield —
-        // unsorted filesystem directory order, which flips run-to-run.
         let mut files = vec![PathBuf::from("b.gctf"), PathBuf::from("a.gctf")];
         FileUtils::sort_files(&mut files, "path");
         assert_eq!(files[0].file_name().unwrap(), "a.gctf");

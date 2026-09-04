@@ -93,9 +93,11 @@ grpctestify scaffold user.UserService/GetUser --reflect --address api.example.co
 grpctestify health --address api.example.com:443 --tls
 ```
 
-In the `play` UI, TLS lives in the settings panel — and each saved
-environment can carry its own certificate paths, so switching environment
-switches certs.
+In the `play` UI, the session's TLS lives in the connection chip beside the address — transport,
+security and timeout in one place. A file that carries its own `TLS` section wins over it for every
+call made from that file, the way it does for a run. Certificate paths there are read as written,
+relative to the file that names them: they are paths, not `{{VARIABLES}}`, and the workbench respells
+them when the file is moved or saved elsewhere.
 
 ## Troubleshooting
 

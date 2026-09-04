@@ -3,10 +3,10 @@ use super::runner_helpers;
 use super::{AssertionHandler, RequestHandler, RequestSendResult, ResponseHandler};
 use crate::assert::{AssertionEngine, JsonComparator, get_json_diff};
 use crate::grpc::{GrpcClient, GrpcClientConfig};
-use crate::optimizer;
 use crate::parser::ast::{SectionContent, SectionType};
 use crate::plugins::AssertionTiming;
 use crate::report::CoverageCollector;
+use crate::utils::section_header_line;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,11 +18,9 @@ use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 
-/// Global plugin registry used by all assertion engines.
 static PLUGIN_REGISTRY: LazyLock<Arc<dyn apif_assert::registry::PluginRegistry>> =
     LazyLock::new(|| Arc::new(crate::execution::plugin_dir::build_plugin_manager()));
 
-/// Execution plan for inspect workflow visualization
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionPlan {
     pub file_path: String,
@@ -61,6 +59,8 @@ pub struct HeadersInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestInfo {
     pub index: usize,
+    #[serde(default)]
+    pub skipped: bool,
     pub content: Value,
     pub content_type: String,
     pub line_start: usize,
@@ -70,7 +70,9 @@ pub struct RequestInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExpectationInfo {
     pub index: usize,
-    pub expectation_type: String, // "response" or "error"
+    #[serde(default)]
+    pub skipped: bool,
+    pub expectation_type: String,
     pub content: Option<Value>,
     pub message_count: Option<usize>,
     pub comparison_options: ComparisonOptions,
@@ -90,6 +92,8 @@ pub struct ComparisonOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssertionInfo {
     pub index: usize,
+    #[serde(default)]
+    pub skipped: bool,
     pub assertions: Vec<String>,
     pub line_start: usize,
     pub line_end: usize,
@@ -99,6 +103,8 @@ pub struct AssertionInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractionInfo {
     pub index: usize,
+    #[serde(default)]
+    pub skipped: bool,
     pub variables: crate::parser::OrderedStringMap,
     pub line_start: usize,
     pub line_end: usize,
@@ -123,7 +129,6 @@ pub enum RpcMode {
     Unknown,
 }
 
-/// Actual RPC mode from proto descriptor (for runtime validation)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RpcModeInfo {
     Unary,
@@ -141,56 +146,114 @@ pub struct ExecutionSummary {
     pub error_expected: bool,
     pub assertion_blocks: usize,
     pub variable_extractions: usize,
+    #[serde(default)]
+    pub skipped_sections: usize,
     pub rpc_mode_name: String,
+}
+
+pub(crate) type SucceededAfterRetry = bool;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SendAttempt {
+    pub(crate) index: u32,
+    pub(crate) last: bool,
+}
+
+pub(crate) async fn send_with_retries<T, F, Fut>(
+    max_retries: u32,
+    failure: impl Fn(&T) -> Option<String>,
+    mut send: F,
+) -> (T, SucceededAfterRetry)
+where
+    F: FnMut(SendAttempt) -> Fut,
+    Fut: std::future::Future<Output = T> + Send,
+{
+    let mut attempt = 0u32;
+    loop {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(100 * u64::from(attempt))).await;
+        }
+        let outcome = send(SendAttempt {
+            index: attempt,
+            last: attempt >= max_retries,
+        })
+        .await;
+        let Some(message) = failure(&outcome) else {
+            return (outcome, attempt > 0);
+        };
+        if attempt >= max_retries {
+            return (outcome, false);
+        }
+        tracing::debug!("retry {}/{}: {}", attempt + 1, max_retries, message);
+        attempt += 1;
+    }
 }
 
 struct AssertionContext<'a> {
     headers: &'a HashMap<String, String>,
     trailers: &'a HashMap<String, String>,
     timing: Option<&'a AssertionTiming>,
-    /// EXTRACT-bound variables, so `$name` references in ASSERTS resolve.
     variables: &'a HashMap<String, Value>,
-    /// Wire protocol that produced this response (`"grpc"`/`"grpc-web"`/
-    /// `"connectrpc"`) — forwarded to assertion plugins via `PluginContext`.
     protocol: &'static str,
 }
 
 impl ExecutionPlan {
-    /// Build execution plan from a GctfDocument
     pub fn from_document(doc: &GctfDocument) -> Self {
         let file_path = doc.file_path.clone();
+
+        let backend = doc
+            .first_section(SectionType::Options)
+            .and_then(|s| match &s.content {
+                SectionContent::KeyValues(kv) => kv.get("protocol").cloned(),
+                _ => None,
+            })
+            .filter(|p| !p.trim().is_empty())
+            .unwrap_or_else(|| "grpc".to_string());
+
+        let http = doc.transport() == crate::parser::ast::Transport::Http;
+        let backend = if http {
+            doc.get_address(None)
+                .filter(|a| a.trim().starts_with("https://"))
+                .map(|_| "https".to_string())
+                .unwrap_or_else(|| "http".to_string())
+        } else {
+            backend
+        };
 
         let connection = if let Some(section) = doc.first_section(SectionType::Address) {
             if let SectionContent::Single(addr) = &section.content {
                 ConnectionInfo {
                     address: addr.clone(),
                     source: format!(
-                        "ADDRESS section [Line {}-{}]",
-                        section.start_line, section.end_line
+                        "ADDRESS section [line {}]",
+                        section_header_line(section.start_line)
                     ),
-                    backend: "default".to_string(),
+                    backend: backend.clone(),
                 }
             } else {
                 ConnectionInfo {
                     address: "<env:GRPCTESTIFY_ADDRESS>".to_string(),
                     source: "Environment variable (implicit)".to_string(),
-                    backend: "default".to_string(),
+                    backend: backend.clone(),
                 }
             }
         } else {
             ConnectionInfo {
                 address: "<env:GRPCTESTIFY_ADDRESS>".to_string(),
                 source: "Environment variable (implicit)".to_string(),
-                backend: "default".to_string(),
+                backend,
             }
         };
 
         let target = if let Some(section) = doc.first_section(SectionType::Endpoint) {
             if let SectionContent::Single(endpoint) = &section.content {
-                let (package, service, method) = doc
-                    .parse_endpoint()
-                    .map(|(p, s, m)| (Some(p), Some(s), Some(m)))
-                    .unwrap_or((None, None, None));
+                let (package, service, method) = if http {
+                    (None, None, None)
+                } else {
+                    doc.parse_endpoint()
+                        .map(|(p, s, m)| (Some(p), Some(s), Some(m)))
+                        .unwrap_or((None, None, None))
+                };
                 TargetInfo {
                     endpoint: endpoint.clone(),
                     package,
@@ -240,6 +303,7 @@ impl ExecutionPlan {
                 };
                 RequestInfo {
                     index: i + 1,
+                    skipped: section.get_skip(),
                     content,
                     content_type: content_type.to_string(),
                     line_start: section.start_line,
@@ -263,6 +327,7 @@ impl ExecutionPlan {
                     };
                     ExpectationInfo {
                         index: i + 1,
+                        skipped: section.get_skip(),
                         expectation_type: "response".to_string(),
                         content,
                         message_count,
@@ -285,6 +350,7 @@ impl ExecutionPlan {
             };
             vec![ExpectationInfo {
                 index: 1,
+                skipped: section.get_skip(),
                 expectation_type: "error".to_string(),
                 content,
                 message_count: None,
@@ -308,18 +374,13 @@ impl ExecutionPlan {
             .enumerate()
             .map(|(i, section)| {
                 let assertions = if let SectionContent::Assertions(lines) = &section.content {
-                    lines
-                        .iter()
-                        .map(|line| {
-                            optimizer::rewrite_assertion_expression_fixed_point_if_changed_with_level(line, optimizer::OptimizeLevel::Safe)
-                                .unwrap_or_else(|| line.clone())
-                        })
-                        .collect()
+                    lines.clone()
                 } else {
                     vec![]
                 };
                 AssertionInfo {
                     index: i + 1,
+                    skipped: section.get_skip(),
                     assertions,
                     line_start: section.start_line,
                     line_end: section.end_line,
@@ -340,6 +401,7 @@ impl ExecutionPlan {
                 };
                 ExtractionInfo {
                     index: i + 1,
+                    skipped: section.get_skip(),
                     variables,
                     line_start: section.start_line,
                     line_end: section.end_line,
@@ -372,7 +434,17 @@ impl ExecutionPlan {
             error_expected: expectations.iter().any(|e| e.expectation_type == "error"),
             assertion_blocks: assertions.len(),
             variable_extractions: extractions.len(),
-            rpc_mode_name: rpc_mode_name.to_string(),
+            skipped_sections: requests.iter().filter(|r| r.skipped).count()
+                + expectations.iter().filter(|e| e.skipped).count()
+                + assertions.iter().filter(|a| a.skipped).count()
+                + extractions.iter().filter(|e| e.skipped).count(),
+            rpc_mode_name: if http {
+                doc.parse_http_endpoint()
+                    .map(|(m, _)| m)
+                    .unwrap_or_else(|| "HTTP".to_string())
+            } else {
+                rpc_mode_name.to_string()
+            },
         };
 
         ExecutionPlan {
@@ -390,8 +462,6 @@ impl ExecutionPlan {
     }
 }
 
-/// Get actual RPC mode from method descriptor
-/// What `run_one` derives from the document rather than from the request.
 pub struct PreparedDocument {
     address: String,
     package: String,
@@ -406,12 +476,8 @@ pub struct PreparedDocument {
     rpc_mode: RpcModeInfo,
 }
 
-/// One entry per chain document. `None` where deriving it would swallow an
-/// error the ordinary path reports.
 pub struct PreparedChain(Vec<Option<PreparedDocument>>);
 
-/// Dropping a `JoinHandle` only detaches the task; nothing here wants an
-/// abandoned in-flight call per request.
 struct AbortOnDrop<T>(Option<tokio::task::JoinHandle<T>>);
 
 impl<T> AbortOnDrop<T> {
@@ -460,7 +526,6 @@ fn rpc_mode_info(mode: crate::grpc::RpcMode) -> RpcModeInfo {
     }
 }
 
-/// Format protocol name for display in verbose output.
 fn protocol_display(protocol: crate::grpc::WireProtocol) -> &'static str {
     match protocol {
         crate::grpc::WireProtocol::Grpc => "gRPC",
@@ -469,10 +534,6 @@ fn protocol_display(protocol: crate::grpc::WireProtocol) -> &'static str {
     }
 }
 
-/// Canonical machine-readable protocol string — the same form
-/// `OPTIONS.protocol:` accepts (`WireProtocol::from_str`) — forwarded to
-/// assertion plugins via `PluginContext::protocol`, distinct from
-/// [`protocol_display`]'s human-facing form.
 fn protocol_str(protocol: crate::grpc::WireProtocol) -> &'static str {
     match protocol {
         crate::grpc::WireProtocol::Grpc => "grpc",
@@ -481,11 +542,7 @@ fn protocol_str(protocol: crate::grpc::WireProtocol) -> &'static str {
     }
 }
 
-/// Infer RPC mode from GCTF section structure (without proto descriptor)
 pub(crate) fn infer_rpc_mode_for_section_types(document: &GctfDocument) -> RpcModeInfo {
-    // A single JsonLines REQUEST section sends N messages on one stream, same
-    // as N separate REQUEST sections — count messages, not sections, so
-    // client/bidi-streaming inference works either way.
     let request_count: usize = document
         .sections_by_type(SectionType::Request)
         .iter()
@@ -519,18 +576,15 @@ pub(crate) fn infer_rpc_mode_for_section_types(document: &GctfDocument) -> RpcMo
     }
 }
 
-/// Check compatibility between inferred and actual RPC mode
 fn check_rpc_mode_compatibility(inferred: &RpcModeInfo, actual: &RpcModeInfo) -> Option<String> {
     match (inferred, actual) {
-        // Compatible pairs
         (RpcModeInfo::Unary, RpcModeInfo::Unary) => None,
         (RpcModeInfo::ServerStreaming, RpcModeInfo::ServerStreaming) => None,
         (RpcModeInfo::ClientStreaming, RpcModeInfo::ClientStreaming) => None,
         (RpcModeInfo::BidirectionalStreaming, RpcModeInfo::BidirectionalStreaming) => None,
-        (RpcModeInfo::Unknown, _) => None, // Can't validate unknown
-        (_, RpcModeInfo::Unknown) => None,  // Actual unknown means no descriptor
+        (RpcModeInfo::Unknown, _) => None,
+        (_, RpcModeInfo::Unknown) => None,
 
-        // Incompatible: inferred Unary but actual is streaming
         (RpcModeInfo::Unary, RpcModeInfo::ServerStreaming) => {
             Some("gCTF defines Unary RPC but proto expects Server Streaming. Client will send ONE request and expect multiple responses.".to_string())
         }
@@ -541,7 +595,6 @@ fn check_rpc_mode_compatibility(inferred: &RpcModeInfo, actual: &RpcModeInfo) ->
             Some("gCTF defines Unary RPC but proto expects Bidirectional Streaming. Client will send ONE request but server expects stream.".to_string())
         }
 
-        // Incompatible: inferred streaming but actual is Unary
         (RpcModeInfo::ServerStreaming, RpcModeInfo::Unary) => {
             Some("gCTF defines Server Streaming (multiple RESPONSE sections) but proto expects Unary. gCTF may fail.".to_string())
         }
@@ -552,7 +605,6 @@ fn check_rpc_mode_compatibility(inferred: &RpcModeInfo, actual: &RpcModeInfo) ->
             Some("gCTF defines Bidirectional Streaming but proto expects Unary. gCTF may fail.".to_string())
         }
 
-        // Cross-streaming mismatches
         (RpcModeInfo::ServerStreaming, RpcModeInfo::ClientStreaming) => {
             Some("gCTF expects Server Streaming but proto declares Client Streaming. Behavior may be incorrect.".to_string())
         }
@@ -574,11 +626,6 @@ fn check_rpc_mode_compatibility(inferred: &RpcModeInfo, actual: &RpcModeInfo) ->
     }
 }
 
-/// Counts messages, not sections: one json-lines REQUEST/RESPONSE carries N
-/// messages on a single stream, which is the same shape as N separate sections.
-/// Counting sections made this disagree with `Workflow::rpc_mode_name` (which
-/// counts events) for the same file, so `inspect`'s text and JSON output gave
-/// two different modes.
 fn infer_rpc_mode(
     requests: &[RequestInfo],
     expectations: &[ExpectationInfo],
@@ -617,7 +664,7 @@ fn infer_rpc_mode(
         RpcMode::ClientStreaming {
             request_count: req_count,
         }
-    } else if req_count == 1 && resp_count == 1 {
+    } else if req_count == 1 {
         RpcMode::Unary
     } else if req_count == 0 && resp_count > 0 {
         RpcMode::ServerStreaming {
@@ -634,15 +681,9 @@ pub enum TestExecutionStatus {
     Fail(String),
 }
 
-/// Classifies *why* a test failed, so callers (e.g. retry logic) can key off the
-/// real error kind instead of pattern-matching the failure message text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureKind {
-    /// Connection/stream/transport-level failure. Potentially retryable
-    /// (subject to the gRPC status code).
     Transport,
-    /// Assertion mismatch, validation, parse, or configuration error.
-    /// Never retryable.
     Assertion,
 }
 
@@ -650,37 +691,18 @@ pub enum FailureKind {
 pub struct TestExecutionResult {
     pub status: TestExecutionStatus,
     pub call_duration_ms: Option<u64>,
-    /// The same span as `call_duration_ms` at nanosecond resolution: the gRPC
-    /// call plus response validation, measured from after the client and
-    /// descriptors are resolved. Milliseconds are useless for the sub-millisecond
-    /// RPCs a load run measures, and `bench` needs this rather than wall-clock
-    /// around the whole document — that would fold client construction, `Value`
-    /// clones and variable substitution into the server's reported latency.
     pub call_duration_ns: Option<u64>,
     pub captured_response: Option<crate::grpc::GrpcResponse>,
     pub meta: crate::state::TestMeta,
-    /// What this test declared (sections, TLS, DATASET rows, PROTO files) —
-    /// see [`apif_state::ConfigSummary`].
     pub config_summary: apif_state::ConfigSummary,
-    /// Set only when `status` is `Fail`; classifies the failure for retry logic.
     pub failure_kind: Option<FailureKind>,
-    /// Numeric gRPC status code observed for the call, when one is available.
-    /// `Some(0)` for an OK response, `Some(code)` when the server/transport
-    /// returned a gRPC status, and `None` when the request never produced a
-    /// gRPC status (e.g. a pure assertion/config failure).
     pub grpc_status: Option<u32>,
-    /// Per-assertion outcome + timing, in source order. Empty for pre-flight
-    /// failures (e.g. bad OPTIONS) that never reach assertion evaluation.
+    pub http_status: Option<u16>,
     pub assertions: Vec<apif_state::AssertionRecord>,
-    /// `true` when at least one REQUEST needed more than one attempt to
-    /// succeed — a Pass with `retried = true` is flaky, not a clean pass.
     pub retried: bool,
-    /// Real wall-clock duration of each document in the chain, in source
-    /// order — only populated on the whole-chain result [`ChainAccumulator`]
-    /// produces (per-document results have their own duration in
-    /// `call_duration_ms` instead). Lets reporters give each document its
-    /// actual timing instead of splitting the total evenly.
+    pub dialled_address: Option<String>,
     pub document_durations_ms: Vec<u64>,
+    pub extracted: Vec<(String, String)>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -727,20 +749,27 @@ impl TestExecutionResult {
             config_summary: apif_state::ConfigSummary::default(),
             failure_kind: None,
             grpc_status: None,
+            http_status: None,
             assertions: Vec::new(),
             retried: false,
+            extracted: Vec::new(),
+            dialled_address: None,
             document_durations_ms: Vec::new(),
         }
     }
 
-    /// Attach the nanosecond-resolution call duration.
+    pub fn dialled(mut self, address: &str) -> Self {
+        if !address.trim().is_empty() {
+            self.dialled_address = Some(address.to_string());
+        }
+        self
+    }
+
     pub fn with_call_duration_ns(mut self, ns: u64) -> Self {
         self.call_duration_ns = Some(ns);
         self
     }
 
-    /// Build a failure. Defaults to `Assertion` (non-retryable); transport-level
-    /// failures should override via [`with_failure_kind`].
     pub fn fail(message: String, call_duration_ms: Option<u64>) -> Self {
         Self {
             status: TestExecutionStatus::Fail(message),
@@ -751,8 +780,11 @@ impl TestExecutionResult {
             config_summary: apif_state::ConfigSummary::default(),
             failure_kind: Some(FailureKind::Assertion),
             grpc_status: None,
+            http_status: None,
             assertions: Vec::new(),
             retried: false,
+            extracted: Vec::new(),
+            dialled_address: None,
             document_durations_ms: Vec::new(),
         }
     }
@@ -769,6 +801,11 @@ impl TestExecutionResult {
 
     pub fn with_grpc_status(mut self, code: u32) -> Self {
         self.grpc_status = Some(code);
+        self
+    }
+
+    pub fn with_http_status(mut self, code: u16) -> Self {
+        self.http_status = Some(code);
         self
     }
 
@@ -793,50 +830,74 @@ impl TestExecutionResult {
     }
 }
 
-/// Folds a multi-document chain's per-document [`TestExecutionResult`]s into
-/// one aggregate. Shared by `run_test_with_variables` and
-/// `run_test_capturing_vars`, which differ only in whether they also return
-/// the final variable map.
 #[derive(Default)]
 struct ChainAccumulator {
     status: Option<TestExecutionStatus>,
     failure_kind: Option<FailureKind>,
     grpc_status: Option<u32>,
+    http_status: Option<u16>,
     total_duration_ms: f64,
     total_duration_ns: u64,
     assertions: Vec<apif_state::AssertionRecord>,
-    /// Last document's captured response wins — write mode/exchange capture
-    /// always target a single physical file, so only the final call's
-    /// response (the one that matters for snapshotting) is kept.
     captured_response: Option<crate::grpc::GrpcResponse>,
-    /// `true` once any document in the chain retried — sticky across the
-    /// whole chain, since one flaky request makes the overall test flaky.
     retried: bool,
-    /// Each absorbed document's own wall-clock duration, in chain order —
-    /// including the failing document's, when the chain stops early.
     document_durations_ms: Vec<u64>,
+    dialled_address: Option<String>,
+    extracted: Vec<(String, String)>,
 }
 
 impl ChainAccumulator {
-    /// Fold one document's result in. Returns `true` when the chain should
-    /// stop (this document failed — fail-fast).
-    fn absorb(&mut self, mut result: TestExecutionResult) -> bool {
-        if let Some(dur) = result.call_duration_ms {
+    fn absorb(&mut self, result: TestExecutionResult) -> bool {
+        self.absorb_with(result, true)
+    }
+
+    fn absorb_group(&mut self, results: Vec<TestExecutionResult>) -> bool {
+        let slowest_ms = results
+            .iter()
+            .filter_map(|r| r.call_duration_ms)
+            .max()
+            .unwrap_or(0);
+        let slowest_ns = results
+            .iter()
+            .filter_map(|r| r.call_duration_ns)
+            .max()
+            .unwrap_or(0);
+        let mut stop = false;
+        for result in results {
+            stop |= self.absorb_with(result, false);
+        }
+        self.total_duration_ms += slowest_ms as f64;
+        self.total_duration_ns += slowest_ns;
+        stop
+    }
+
+    fn absorb_with(&mut self, mut result: TestExecutionResult, charge: bool) -> bool {
+        if charge && let Some(dur) = result.call_duration_ms {
             self.total_duration_ms += dur as f64;
         }
-        self.total_duration_ns += result.call_duration_ns.unwrap_or(0);
+        if charge {
+            self.total_duration_ns += result.call_duration_ns.unwrap_or(0);
+        }
         self.document_durations_ms
             .push(result.call_duration_ms.unwrap_or(0));
-        self.grpc_status = result.grpc_status;
+        if self.status.is_none() {
+            self.grpc_status = result.grpc_status;
+            self.http_status = result.http_status;
+        }
         self.retried |= result.retried;
+        if result.dialled_address.is_some() {
+            self.dialled_address = result.dialled_address.clone();
+        }
         self.assertions.append(&mut result.assertions);
         if result.captured_response.is_some() {
             self.captured_response = result.captured_response.take();
         }
 
         if matches!(result.status, TestExecutionStatus::Fail(_)) {
-            self.failure_kind = result.failure_kind;
-            self.status = Some(result.status);
+            if self.status.is_none() {
+                self.failure_kind = result.failure_kind;
+                self.status = Some(result.status);
+            }
             return true;
         }
         false
@@ -852,9 +913,12 @@ impl ChainAccumulator {
             config_summary: apif_state::ConfigSummary::default(),
             failure_kind: self.failure_kind,
             grpc_status: self.grpc_status,
+            http_status: self.http_status,
             assertions: self.assertions,
             retried: self.retried,
+            dialled_address: self.dialled_address,
             document_durations_ms: self.document_durations_ms,
+            extracted: self.extracted,
         }
     }
 }
@@ -866,13 +930,9 @@ pub struct TestRunner {
     write_mode: bool,
     verbose: bool,
     protocol_override: Option<crate::grpc::WireProtocol>,
-    /// Client-side connection pool slot. Threaded into `GrpcClientConfig` so the
-    /// transport channel cache keys by it — distinct ids open distinct channels.
     connection_id: u64,
     address_override: Option<String>,
-    /// When true, capture headers/trailers/response messages even outside
-    /// write mode, so reports (e.g. Allure attachments) can show what actually
-    /// happened. Off by default: skips the extra buffering unless requested.
+    env_address: Option<String>,
     capture_exchange: bool,
     assertion_engine: AssertionEngine,
     coverage_collector: Option<Arc<CoverageCollector>>,
@@ -881,8 +941,50 @@ pub struct TestRunner {
     assertion_handler: AssertionHandler,
 }
 
+fn response_record(
+    section: &crate::parser::ast::Section,
+    diffs: &[crate::assert::AssertionResult],
+    expected: &Value,
+    actual: &Value,
+) -> apif_state::AssertionRecord {
+    let passed = diffs.is_empty();
+    let message = diffs.iter().find_map(|d| match d {
+        crate::assert::AssertionResult::Fail { message, .. } => Some(message.clone()),
+        crate::assert::AssertionResult::Error(m) => Some(m.clone()),
+        crate::assert::AssertionResult::Pass => None,
+    });
+    apif_state::AssertionRecord {
+        line: section_header_line(section.start_line),
+        expression: section.format_header(),
+        passed,
+        elapsed_ms: 0,
+        message,
+        endpoint: None,
+        expected: (!passed).then(|| runner_helpers::format_json_pretty(expected)),
+        actual: (!passed).then(|| runner_helpers::format_json_pretty(actual)),
+        hint: None,
+    }
+}
+
+pub(crate) fn chain_addresses(document: &GctfDocument) -> Vec<Option<String>> {
+    let mut grpc: Option<String> = None;
+    let mut http: Option<String> = None;
+    document
+        .iter_chain()
+        .map(|doc| {
+            let inherited = match doc.transport() {
+                crate::parser::ast::Transport::Http => &mut http,
+                crate::parser::ast::Transport::Grpc => &mut grpc,
+            };
+            if let Some(own) = doc.get_address(None).filter(|a| !a.trim().is_empty()) {
+                *inherited = Some(own);
+            }
+            inherited.clone()
+        })
+        .collect()
+}
+
 impl TestRunner {
-    /// Create expected values from a response section.
     pub fn expected_values_for_response_section(
         section: &crate::parser::ast::Section,
     ) -> Vec<Value> {
@@ -923,7 +1025,7 @@ impl TestRunner {
             failure_reasons.push(format!(
                 "{} at line {} has 'with_asserts' but is not followed by ASSERTS",
                 section.section_type.as_str(),
-                section.start_line
+                section_header_line(section.start_line)
             ));
         }
 
@@ -947,6 +1049,7 @@ impl TestRunner {
             protocol_override: None,
             connection_id: 0,
             address_override: None,
+            env_address: None,
             capture_exchange: false,
             assertion_engine: AssertionEngine::with_registry(PLUGIN_REGISTRY.clone()),
             coverage_collector: coverage_collector.clone(),
@@ -956,49 +1059,39 @@ impl TestRunner {
         }
     }
 
-    /// Set protocol override. When set, this takes priority over the GCTF file's OPTIONS.protocol.
     pub fn with_protocol(mut self, protocol: crate::grpc::WireProtocol) -> Self {
         self.protocol_override = Some(protocol);
         self
     }
 
-    /// Send every request here regardless of the document's ADDRESS section.
     pub fn with_address_override(mut self, address: String) -> Self {
         self.address_override = Some(address);
         self
     }
 
-    /// Ask the runner to capture headers/trailers/response messages for every
-    /// test, not just in write mode, so reports can show what actually
-    /// happened. Capped internally — see [`apif_state::CapturedExchange`].
+    pub fn with_env_address(mut self, address: String) -> Self {
+        self.env_address = Some(address);
+        self
+    }
+
     pub fn with_capture_exchange(mut self, capture: bool) -> Self {
         self.capture_exchange = capture;
         self
     }
 
-    /// Assign the connection-pool slot for this runner. Distinct ids map to
-    /// distinct cached transport channels (see `GrpcClientConfig::connection_id`).
     pub fn with_connection_id(mut self, connection_id: u64) -> Self {
         self.connection_id = connection_id;
         self
     }
 
-    /// Whether snapshot-update mode (`--write`) is on. Callers must consult this
-    /// before rewriting a `.gctf` from a captured response: `capture_exchange`
-    /// also populates `captured_response`, and it is enabled by report formats
-    /// that have nothing to do with `--write`.
     pub fn is_write_mode(&self) -> bool {
         self.write_mode
     }
 
-    /// Run a test document chain.
-    /// Walks the `next_document` linked list, accumulating EXTRACT variables
-    /// between documents. Fail-fast: stops on first failure.
     pub async fn run_test(&self, document: &GctfDocument) -> Result<TestExecutionResult> {
         self.run_test_with_variables(document, HashMap::new()).await
     }
 
-    /// Run a test document chain with pre-populated variables (for data-driven bench).
     fn resolve_protocol(&self, document: &GctfDocument) -> crate::grpc::WireProtocol {
         self.protocol_override.unwrap_or_else(|| {
             document
@@ -1013,13 +1106,15 @@ impl TestRunner {
         })
     }
 
-    /// Derive what is constant for this document once, for callers that issue
-    /// many requests from it.
     pub fn prepare(&self, document: &GctfDocument) -> PreparedChain {
+        let mut chain_address: Option<String> = None;
         PreparedChain(
             document
                 .iter_chain()
                 .map(|doc| {
+                    if let Some(own) = doc.get_address(None).filter(|a| !a.trim().is_empty()) {
+                        chain_address = Some(own);
+                    }
                     let options = doc.get_options().unwrap_or_default();
                     let (package, service, method) = doc.parse_endpoint()?;
                     let timeout_seconds = match options.get("timeout") {
@@ -1039,7 +1134,11 @@ impl TestRunner {
                     Some(PreparedDocument {
                         address: match &self.address_override {
                             Some(a) => a.clone(),
-                            None => runner_helpers::effective_address(doc, self.protocol_override),
+                            None => runner_helpers::effective_address_with(
+                                doc,
+                                self.protocol_override,
+                                chain_address.as_deref().or(self.env_address.as_deref()),
+                            ),
                         },
                         full_service: runner_helpers::full_service_name(&package, &service),
                         package,
@@ -1057,7 +1156,6 @@ impl TestRunner {
         )
     }
 
-    /// [`run_test_with_variables`] with the derivation done by the caller.
     pub async fn run_test_prepared(
         &self,
         document: &GctfDocument,
@@ -1068,13 +1166,48 @@ impl TestRunner {
         let mut acc = ChainAccumulator::default();
 
         for (doc, prep) in document.iter_chain().zip(prepared.0.iter()) {
-            let result = self.run_one(doc, &mut variables, prep.as_ref()).await?;
+            let result = self
+                .run_one(doc, &mut variables, prep.as_ref(), None)
+                .await?;
             if acc.absorb(result) {
                 break;
             }
         }
 
         Ok(acc.into_result())
+    }
+
+    fn extracted_by(
+        document: &GctfDocument,
+        variables: &HashMap<String, Value>,
+    ) -> Vec<(String, String)> {
+        const MAX_VALUE_BYTES: usize = 4 * 1024;
+
+        let mut out = Vec::new();
+        for doc in document.iter_chain() {
+            for section in doc.sections_by_type(SectionType::Extract) {
+                let SectionContent::Extract(bindings) = &section.content else {
+                    continue;
+                };
+                for (name, _) in bindings.iter() {
+                    if out.iter().any(|(seen, _): &(String, String)| seen == name) {
+                        continue;
+                    }
+                    let Some(value) = variables.get(name) else {
+                        continue;
+                    };
+                    let rendered = match value {
+                        Value::String(text) => text.clone(),
+                        other => other.to_string(),
+                    };
+                    if rendered.len() > MAX_VALUE_BYTES {
+                        continue;
+                    }
+                    out.push((name.clone(), rendered));
+                }
+            }
+        }
+        out
     }
 
     pub async fn run_test_with_variables(
@@ -1082,47 +1215,133 @@ impl TestRunner {
         document: &GctfDocument,
         initial_variables: HashMap<String, Value>,
     ) -> Result<TestExecutionResult> {
-        let mut variables = initial_variables;
-        let mut acc = ChainAccumulator::default();
-
-        for doc in document.iter_chain() {
-            let result = self.run_one(doc, &mut variables, None).await?;
-            if acc.absorb(result) {
-                break;
-            }
-        }
-
-        Ok(acc.into_result())
+        Ok(self.run_chain(document, initial_variables).await?.0)
     }
 
-    /// Run a test document chain like [`run_test_with_variables`], but also
-    /// return the final accumulated variable map (post-EXTRACT). Used to seed
-    /// per-directory fixtures: a `_setup.gctf`'s EXTRACT bindings become the
-    /// initial variables for the tests in that directory. Execution semantics
-    /// are identical to a normal chain run started with no initial variables.
     pub async fn run_test_capturing_vars(
         &self,
         document: &GctfDocument,
     ) -> Result<(TestExecutionResult, HashMap<String, Value>)> {
-        let mut variables: HashMap<String, Value> = HashMap::new();
-        let mut acc = ChainAccumulator::default();
+        self.run_chain(document, HashMap::new()).await
+    }
 
-        for doc in document.iter_chain() {
-            let result = self.run_one(doc, &mut variables, None).await?;
-            if acc.absorb(result) {
+    pub async fn run_chain(
+        &self,
+        document: &GctfDocument,
+        initial_variables: HashMap<String, Value>,
+    ) -> Result<(TestExecutionResult, HashMap<String, Value>)> {
+        let mut variables = initial_variables;
+        let mut acc = ChainAccumulator::default();
+        let addresses = chain_addresses(document);
+        let steps: Vec<&GctfDocument> = document.iter_chain().collect();
+
+        if let Some(nowhere) = self.step_with_nowhere_to_go(&steps, &addresses) {
+            let mut refused = TestExecutionResult::pass(None);
+            refused.status = TestExecutionStatus::Fail(nowhere);
+            return Ok((refused, variables));
+        }
+
+        let mut step = 0;
+        while step < steps.len() {
+            if !steps[step].runs_in_parallel() {
+                let chain_address = addresses.get(step).cloned().flatten();
+                let result = self
+                    .run_step(steps[step], &mut variables, chain_address.as_deref())
+                    .await?;
+                if acc.absorb(result) {
+                    break;
+                }
+                step += 1;
+                continue;
+            }
+
+            let mut end = step;
+            while end < steps.len() && steps[end].runs_in_parallel() {
+                end += 1;
+            }
+            let bound = variables.clone();
+            let group = futures::future::join_all(steps[step..end].iter().enumerate().map(
+                |(offset, doc)| {
+                    let mut own = bound.clone();
+                    let chain_address = addresses.get(step + offset).cloned().flatten();
+                    async move {
+                        let result = self
+                            .run_step(doc, &mut own, chain_address.as_deref())
+                            .await?;
+                        Ok::<_, anyhow::Error>((own, result))
+                    }
+                },
+            ))
+            .await;
+
+            let mut results = Vec::with_capacity(group.len());
+            for outcome in group {
+                let (own, result) = outcome?;
+                for (name, value) in own {
+                    if bound.get(&name) != Some(&value) {
+                        variables.insert(name, value);
+                    }
+                }
+                results.push(result);
+            }
+            let stop = acc.absorb_group(results);
+            step = end;
+            if stop {
                 break;
             }
         }
 
+        acc.extracted = Self::extracted_by(document, &variables);
         Ok((acc.into_result(), variables))
     }
 
-    /// Run a single document, sharing variables with the chain.
+    fn step_with_nowhere_to_go(
+        &self,
+        steps: &[&GctfDocument],
+        addresses: &[Option<String>],
+    ) -> Option<String> {
+        if self.address_override.is_some() || self.env_address.is_some() {
+            return None;
+        }
+        steps.iter().enumerate().find_map(|(index, doc)| {
+            if doc.transport() != crate::parser::ast::Transport::Http {
+                return None;
+            }
+            if addresses.get(index).cloned().flatten().is_some() {
+                return None;
+            }
+            let path = doc
+                .parse_http_endpoint()
+                .map(|(_, path)| path)
+                .unwrap_or_else(|| "this step".to_string());
+            if path.starts_with("http://") || path.starts_with("https://") {
+                return None;
+            }
+            Some(format!(
+                "no address for {path}: an HTTP call needs a target with a scheme — this file's ADDRESS, or the environment's written as `http://host:port` — and nothing was dialled"
+            ))
+        })
+    }
+
+    async fn run_step(
+        &self,
+        doc: &GctfDocument,
+        variables: &mut HashMap<String, Value>,
+        chain_address: Option<&str>,
+    ) -> Result<TestExecutionResult> {
+        if doc.transport() == crate::parser::ast::Transport::Http {
+            Ok(self.run_http(doc, variables, chain_address).await)
+        } else {
+            self.run_one(doc, variables, None, chain_address).await
+        }
+    }
+
     async fn run_one(
         &self,
         document: &GctfDocument,
         variables: &mut HashMap<String, Value>,
         prepared: Option<&PreparedDocument>,
+        chain_address: Option<&str>,
     ) -> Result<TestExecutionResult> {
         let effective_dry_run = self.dry_run;
         let effective_no_assert = self.no_assert;
@@ -1151,8 +1370,6 @@ impl TestRunner {
             },
         };
 
-        // Canonical precedence: section attribute > OPTIONS > env default.
-        // An explicit-but-invalid value is a configuration error, not a fall-back.
         let compression = match prepared.map(|p| p.compression) {
             Some(c) => c,
             None => match runner_helpers::resolve_compression(
@@ -1187,9 +1404,14 @@ impl TestRunner {
             Some(p) => p.address.clone(),
             None => match &self.address_override {
                 Some(a) => a.clone(),
-                None => runner_helpers::effective_address(document, self.protocol_override),
+                None => runner_helpers::effective_address_with(
+                    document,
+                    self.protocol_override,
+                    chain_address.or(self.env_address.as_deref()),
+                ),
             },
         };
+        let address = runner_helpers::interpolate_variables(&address, variables).unwrap_or(address);
 
         let endpoint_parts =
             prepared.map(|p| (p.package.clone(), p.service.clone(), p.method.clone()));
@@ -1233,8 +1455,6 @@ impl TestRunner {
             None => runner_helpers::full_service_name(&package, &service),
         };
 
-        // Substitute variables in request header values, then guard against any
-        // undefined/typo'd placeholder being shipped verbatim in metadata.
         let request_metadata = match document.get_request_headers() {
             Some(headers) => {
                 let mut substituted = HashMap::with_capacity(headers.len());
@@ -1302,8 +1522,6 @@ impl TestRunner {
         );
         let client = GrpcClient::new(client_config).await?;
 
-        // Field coverage is the only consumer; without a collector this is two
-        // descriptor-pool walks and two allocations per request for nothing.
         let (input_message_type, output_message_type) = if self.coverage_collector.is_some() {
             client
                 .descriptor_pool()
@@ -1319,12 +1537,6 @@ impl TestRunner {
             (None, None)
         };
 
-        // Phase 1: RPC mode. The section shape is only a guess -- a
-        // server-streaming method with one RESPONSE looks unary, and an ERROR
-        // section hides streaming entirely. gRPC does not care, but Connect and
-        // gRPC-Web pick the content type and the framing from the mode, and a
-        // streaming method addressed as unary is rejected with 415. So on those
-        // transports the descriptor wins whenever it knows the method.
         let inferred_rpc_mode = match prepared {
             Some(p) => p.rpc_mode.clone(),
             None => infer_rpc_mode_for_section_types(document),
@@ -1363,7 +1575,6 @@ impl TestRunner {
 
         let start_time = std::time::Instant::now();
 
-        // Determine RPC mode for HTTP transport (connectrpc/grpc-web needs to know streaming type)
         let rpc_mode: Option<crate::grpc::RpcMode> = match wire_rpc_mode {
             RpcModeInfo::Unary => Some(crate::grpc::RpcMode::Unary),
             RpcModeInfo::ServerStreaming => Some(crate::grpc::RpcMode::ServerStream),
@@ -1372,13 +1583,10 @@ impl TestRunner {
             RpcModeInfo::Unknown => None,
         };
 
-        // For HTTP bidi, the runner must send all requests before reading any responses.
         let is_http_bidi = client_protocol != crate::grpc::WireProtocol::Grpc
             && rpc_mode == Some(crate::grpc::RpcMode::Bidi);
         let mut deferred_bidi_expectations: Vec<Value> = Vec::new();
 
-        // Start the gRPC call in background so unary/server-streaming methods can wait
-        // for the first request message without deadlocking this task.
         let full_service_clone = full_service.clone();
         let method_clone = method.clone();
         let mut client_for_call = client;
@@ -1390,10 +1598,6 @@ impl TestRunner {
 
         let mut response_stream = None;
 
-        // variables passed from caller (shared across chain)
-        // When the wire went quiet. Everything after it — assertion
-        // evaluation, JSON diffing, snapshot capture — is our cost, not the
-        // server's, and must not land in the reported latency.
         let mut rpc_end: Option<std::time::Instant> = None;
         let mut last_message: Option<Value> = None;
         let mut last_error_message: Option<String> = None;
@@ -1404,32 +1608,20 @@ impl TestRunner {
         let mut failure_reasons: Vec<String> = Vec::new();
         let mut assertion_records: Vec<apif_state::AssertionRecord> = Vec::new();
         let mut assertion_timing = AssertionScopeTimingState::default();
-        // Transport-level failures (connection refused, stream startup errors,
-        // stream read timeouts, ...) must never be masked in write mode and
-        // must never trigger a snapshot rewrite.
         let mut transport_failure = false;
-        // Set when any REQUEST's retry loop needed more than one attempt to
-        // succeed — surfaced on the result so a test that only passed after a
-        // retry can be flagged flaky instead of looking like a clean pass.
         let mut retry_occurred = false;
-        // Numeric gRPC status observed on this call (from a returned GrpcError),
-        // surfaced on the result so bench can bucket by real status code.
         let mut grpc_status: Option<u32> = None;
 
-        // We iterate by index to allow lookahead
         let sections = &document.sections;
 
-        // Pre-compute last request index to avoid O(n²) lookups in loop
         let last_request_idx = sections
             .iter()
             .rposition(|s| s.section_type == SectionType::Request);
 
         let has_request_sections = sections
             .iter()
-            .any(|s| s.section_type == SectionType::Request);
+            .any(|s| s.section_type == SectionType::Request && !s.get_skip());
 
-        // Legacy behavior: if no REQUEST section is provided, send an empty
-        // JSON object as a single request message for unary/server-stream calls.
         if !has_request_sections && let Some(tx_ref) = tx.as_mut() {
             if let Err(e) = tx_ref.send(Value::Object(serde_json::Map::new())).await {
                 failure_reasons.push(format!("Failed to send implicit empty request: {}", e));
@@ -1446,8 +1638,6 @@ impl TestRunner {
             None
         };
 
-        /// Awaits the gRPC call handle and extracts the response stream.
-        /// Eliminates duplication across Response and Asserts section handlers.
         macro_rules! ensure_stream_ready {
             () => {
                 if response_stream.is_none()
@@ -1523,7 +1713,7 @@ impl TestRunner {
                 if repeat_count > 1 {
                     eprintln!(
                         "   [repeat] section at line {} — iteration {}/{}",
-                        section.start_line,
+                        section_header_line(section.start_line),
                         repeat_iter + 1,
                         repeat_count
                     );
@@ -1531,10 +1721,6 @@ impl TestRunner {
 
                 match section.section_type {
                     SectionType::Request => {
-                        // A JsonLines REQUEST sends one message per value, in
-                        // order, on the same stream — the client/bidi-streaming
-                        // symmetric counterpart to RESPONSE's JsonLines (one
-                        // expected value per streamed message received).
                         let request_values: Vec<Value> = match &section.content {
                             SectionContent::Json(req_json) => vec![req_json.clone()],
                             SectionContent::JsonLines(values) => values.clone(),
@@ -1543,9 +1729,6 @@ impl TestRunner {
                         };
 
                         for mut request_value in request_values {
-                            // The parser proves at load time whether the file
-                            // holds a `{{` anywhere; when it does not, both
-                            // walks below can only report "nothing changed".
                             let may_substitute = !document.metadata.placeholder_free;
                             if may_substitute && !matches!(section.content, SectionContent::Empty) {
                                 self.substitute_variables(&mut request_value, variables);
@@ -1556,12 +1739,10 @@ impl TestRunner {
                                     &mut unresolved,
                                 );
                                 if !unresolved.is_empty() {
-                                    // An undefined/typo'd variable must never be
-                                    // shipped to the wire as a literal `{{...}}`.
                                     return Ok(TestExecutionResult::fail(
                                         format!(
                                             "Unresolved variable placeholder(s) in REQUEST at line {}: {}",
-                                            section.start_line,
+                                            section_header_line(section.start_line),
                                             runner_helpers::format_unresolved_placeholders(
                                                 &unresolved,
                                             )
@@ -1581,7 +1762,7 @@ impl TestRunner {
                             let Some(tx_ref) = tx.as_mut() else {
                                 failure_reasons.push(format!(
                                     "Failed to send request at line {}: request stream already closed",
-                                    section.start_line
+                                    section_header_line(section.start_line)
                                 ));
                                 break 'repeat_iters;
                             };
@@ -1590,14 +1771,13 @@ impl TestRunner {
                             let effective_timeout =
                                 section_timeout.unwrap_or(effective_timeout_seconds);
                             let max_retries = get_retry().unwrap_or(0);
-                            let mut attempt = 0;
 
                             let send_with_timeout = |payload: Value| async {
                                 if effective_timeout > 0 {
                                     let send_fut = self.request_handler.send_request(
                                         tx_ref,
                                         payload,
-                                        section.start_line,
+                                        section_header_line(section.start_line),
                                         None,
                                     );
                                     match tokio::time::timeout(
@@ -1617,39 +1797,38 @@ impl TestRunner {
                                     }
                                 } else {
                                     self.request_handler
-                                        .send_request(tx_ref, payload, section.start_line, None)
+                                        .send_request(
+                                            tx_ref,
+                                            payload,
+                                            section_header_line(section.start_line),
+                                            None,
+                                        )
                                         .await
                                 }
                             };
 
-                            let result = loop {
-                                if attempt > 0 {
-                                    tokio::time::sleep(std::time::Duration::from_millis(
-                                        100 * attempt as u64,
-                                    ))
-                                    .await;
-                                }
-                                let payload = if attempt < max_retries {
-                                    request_value.clone()
-                                } else {
-                                    std::mem::take(&mut request_value)
-                                };
-                                let r = send_with_timeout(payload).await;
-                                if r.success || attempt >= max_retries {
-                                    if r.success && attempt > 0 {
-                                        retry_occurred = true;
-                                    }
-                                    break r;
-                                }
-                                tracing::debug!(
-                                    "retry {}/{} at line {}: {:?}",
-                                    attempt + 1,
-                                    max_retries,
-                                    section.start_line,
-                                    r.error_message
-                                );
-                                attempt += 1;
-                            };
+                            let (result, succeeded_after_retry) = send_with_retries(
+                                max_retries,
+                                |r: &RequestSendResult| {
+                                    (!r.success).then(|| {
+                                        format!(
+                                            "at line {}: {:?}",
+                                            section_header_line(section.start_line),
+                                            r.error_message
+                                        )
+                                    })
+                                },
+                                |attempt: SendAttempt| {
+                                    let payload = if attempt.last {
+                                        std::mem::take(&mut request_value)
+                                    } else {
+                                        request_value.clone()
+                                    };
+                                    send_with_timeout(payload)
+                                },
+                            )
+                            .await;
+                            retry_occurred |= succeeded_after_retry;
                             if !result.success
                                 && let Some(error) = result.error_message
                             {
@@ -1667,7 +1846,6 @@ impl TestRunner {
                             drop(tx.take());
                         }
 
-                        // For HTTP bidi, buffer expected values until stream is ready.
                         if is_http_bidi && i < last_request_idx.unwrap_or(usize::MAX) {
                             let expected_values =
                                 Self::expected_values_for_response_section(section);
@@ -1681,8 +1859,6 @@ impl TestRunner {
 
                         let mut received_messages_for_section: Vec<Value> = Vec::new();
                         let section_expected = Self::expected_values_for_response_section(section);
-                        // Merge deferred expectations (from earlier skipped response sections)
-                        // with the current section's expectations in order.
                         let expected_values: Vec<Value> = deferred_bidi_expectations
                             .drain(..)
                             .chain(section_expected)
@@ -1691,7 +1867,7 @@ impl TestRunner {
                         let Some(stream) = response_stream.as_mut() else {
                             failure_reasons.push(format!(
                                 "No response stream available for RESPONSE section at line {}",
-                                section.start_line
+                                section_header_line(section.start_line)
                             ));
                             transport_failure = true;
                             break;
@@ -1699,9 +1875,6 @@ impl TestRunner {
 
                         let read_timeout_secs = get_timeout().unwrap_or(effective_timeout_seconds);
 
-                        // A RESPONSE with no messages is the only way to assert
-                        // that a server-streaming call yielded none. It used to
-                        // skip the loop below and pass whatever arrived.
                         if expected_values.is_empty()
                             && matches!(section.content, SectionContent::Empty)
                             && !effective_no_assert
@@ -1722,7 +1895,7 @@ impl TestRunner {
                                 rpc_end = Some(std::time::Instant::now());
                                 failure_reasons.push(format!(
                                     "RESPONSE section at line {} expects no messages, but the stream produced one: {}",
-                                    section.start_line,
+                                    section_header_line(section.start_line),
                                     msg
                                 ));
                             }
@@ -1730,8 +1903,6 @@ impl TestRunner {
 
                         let mut stream_read_timed_out = false;
                         for expected_template in expected_values {
-                            // Bound each stream read: tonic's Endpoint::timeout only
-                            // covers the request/headers phase, not stalled streams.
                             let next_item = if read_timeout_secs > 0 {
                                 match tokio::time::timeout(
                                     std::time::Duration::from_secs(read_timeout_secs),
@@ -1743,7 +1914,7 @@ impl TestRunner {
                                     Err(_) => {
                                         failure_reasons.push(format!(
                                             "Timed out after {}s waiting for stream message for RESPONSE section at line {}",
-                                            read_timeout_secs, section.start_line
+                                            read_timeout_secs, section_header_line(section.start_line)
                                         ));
                                         transport_failure = true;
                                         stream_read_timed_out = true;
@@ -1796,10 +1967,14 @@ impl TestRunner {
                                                 &section.inline_options,
                                             );
 
+                                            assertion_records.push(response_record(
+                                                section, &diffs, &expected, &msg,
+                                            ));
+
                                             if !diffs.is_empty() {
                                                 self.append_response_diffs(
                                                     diffs,
-                                                    section.start_line,
+                                                    section_header_line(section.start_line),
                                                     &expected,
                                                     &msg,
                                                     &mut failure_reasons,
@@ -1819,7 +1994,7 @@ impl TestRunner {
                                         if !effective_no_assert {
                                             failure_reasons.push(format!(
                                                 "Expected message for RESPONSE section at line {}, but received Trailers (End of Stream)",
-                                                section.start_line
+                                                section_header_line(section.start_line)
                                             ));
                                         }
                                         break;
@@ -1845,7 +2020,7 @@ impl TestRunner {
                                     if !effective_no_assert {
                                         failure_reasons.push(format!(
                                         "Expected message for RESPONSE section at line {}, but received Error: {}",
-                                        section.start_line,
+                                        section_header_line(section.start_line),
                                         status.message()
                                     ));
                                     } else if self.verbose {
@@ -1858,7 +2033,7 @@ impl TestRunner {
                                     if !effective_no_assert {
                                         failure_reasons.push(format!(
                                         "Expected message for RESPONSE section at line {}, but stream ended",
-                                        section.start_line
+                                        section_header_line(section.start_line)
                                     ));
                                     }
                                     break;
@@ -1867,18 +2042,9 @@ impl TestRunner {
                         }
 
                         if stream_read_timed_out {
-                            // The stream is stalled; drop it so later sections
-                            // fail fast instead of timing out one by one.
                             response_stream = None;
                         }
 
-                        // If this RESPONSE is the last section that reads from the
-                        // stream, drain any trailing items so trailers are captured
-                        // before the attached assertions run. Otherwise `@trailer(...)`
-                        // on the final RESPONSE sees empty trailers, because trailers
-                        // arrive only after the last message. We do NOT drain when a
-                        // later section still needs the stream (avoids stealing its
-                        // messages / reordering multi-response streams).
                         if !stream_read_timed_out && let Some(stream) = response_stream.as_mut() {
                             let attaches_next = section.inline_options.with_asserts
                                 && matches!(
@@ -1910,8 +2076,6 @@ impl TestRunner {
                                         .await
                                         {
                                             Ok(it) => it,
-                                            // Expectations already satisfied; a stalled
-                                            // trailer read must not fail the test.
                                             Err(_) => break,
                                         }
                                     } else {
@@ -1928,13 +2092,10 @@ impl TestRunner {
                                             break;
                                         }
                                         Some(Ok(crate::grpc::client::StreamItem::Message(msg))) => {
-                                            // Over-delivery beyond expectations: keep for
-                                            // snapshot fidelity but do not assert on it.
                                             if let Some(resp) = &mut captured_response {
                                                 resp.messages.push(msg);
                                             }
                                         }
-                                        // Error or end-of-stream: nothing more to capture.
                                         _ => break,
                                     }
                                 }
@@ -1962,7 +2123,7 @@ impl TestRunner {
                                         &mut assertion_records,
                                         format!(
                                             "(attached to RESPONSE at line {})",
-                                            section.start_line
+                                            section_header_line(section.start_line)
                                         ),
                                         section.start_line,
                                         AssertionContext {
@@ -1979,7 +2140,7 @@ impl TestRunner {
                         } else if section.inline_options.with_asserts && !effective_no_assert {
                             failure_reasons.push(format!(
                             "RESPONSE at line {} has 'with_asserts' but is not followed by ASSERTS",
-                            section.start_line
+                            section_header_line(section.start_line)
                         ));
                         }
                     }
@@ -1990,8 +2151,6 @@ impl TestRunner {
 
                         ensure_stream_ready!();
 
-                        // If we have a captured error context (from a preceding ERROR section),
-                        // use that instead of reading from the stream.
                         if last_error_json.is_some() || last_error_message.is_some() {
                             if !effective_no_assert
                                 && let SectionContent::Assertions(lines) = &section.content
@@ -2002,7 +2161,10 @@ impl TestRunner {
                                         error_value,
                                         &mut failure_reasons,
                                         &mut assertion_records,
-                                        format!("after ERROR at line {}", section.start_line),
+                                        format!(
+                                            "after ERROR at line {}",
+                                            section_header_line(section.start_line)
+                                        ),
                                         section.start_line,
                                         AssertionContext {
                                             headers: &captured_headers,
@@ -2019,7 +2181,10 @@ impl TestRunner {
                                         &error_value,
                                         &mut failure_reasons,
                                         &mut assertion_records,
-                                        format!("after ERROR at line {}", section.start_line),
+                                        format!(
+                                            "after ERROR at line {}",
+                                            section_header_line(section.start_line)
+                                        ),
                                         section.start_line,
                                         AssertionContext {
                                             headers: &captured_headers,
@@ -2038,7 +2203,7 @@ impl TestRunner {
                             if !effective_no_assert {
                                 failure_reasons.push(format!(
                                     "ASSERTS section at line {} has no active response/error context",
-                                    section.start_line
+                                    section_header_line(section.start_line)
                                 ));
                             }
                             continue;
@@ -2056,7 +2221,7 @@ impl TestRunner {
                                 Err(_) => {
                                     failure_reasons.push(format!(
                                         "Timed out after {}s waiting for stream message for ASSERTS section at line {}",
-                                        read_timeout_secs, section.start_line
+                                        read_timeout_secs, section_header_line(section.start_line)
                                     ));
                                     transport_failure = true;
                                     response_stream = None;
@@ -2107,7 +2272,10 @@ impl TestRunner {
                                         &msg,
                                         &mut failure_reasons,
                                         &mut assertion_records,
-                                        format!("at line {}", section.start_line),
+                                        format!(
+                                            "at line {}",
+                                            section_header_line(section.start_line)
+                                        ),
                                         section.start_line,
                                         AssertionContext {
                                             headers: &captured_headers,
@@ -2125,12 +2293,6 @@ impl TestRunner {
                                         .extend(t.iter().map(|(k, v)| (k.clone(), v.clone())));
                                 }
                                 captured_trailers.extend(t);
-                                // Trailers arrive at end-of-stream. A standalone ASSERTS
-                                // positioned here is asserting on trailers/status rather
-                                // than a message body: evaluate it against the last
-                                // received message (or Null when none) with the captured
-                                // trailers in context, so `@trailer(...)`/`@has_trailer(...)`
-                                // work instead of the section unconditionally failing.
                                 if !effective_no_assert
                                     && let SectionContent::Assertions(lines) = &section.content
                                 {
@@ -2140,7 +2302,10 @@ impl TestRunner {
                                         &target,
                                         &mut failure_reasons,
                                         &mut assertion_records,
-                                        format!("(trailers) at line {}", section.start_line),
+                                        format!(
+                                            "(trailers) at line {}",
+                                            section_header_line(section.start_line)
+                                        ),
                                         section.start_line,
                                         AssertionContext {
                                             headers: &captured_headers,
@@ -2178,7 +2343,10 @@ impl TestRunner {
                                         &error_json,
                                         &mut failure_reasons,
                                         &mut assertion_records,
-                                        format!("after ERROR at line {}", section.start_line),
+                                        format!(
+                                            "after ERROR at line {}",
+                                            section_header_line(section.start_line)
+                                        ),
                                         section.start_line,
                                         AssertionContext {
                                             headers: &captured_headers,
@@ -2197,7 +2365,7 @@ impl TestRunner {
                                 if !effective_no_assert {
                                     failure_reasons.push(format!(
                                     "Expected message for ASSERTS section at line {}, but stream ended",
-                                    section.start_line
+                                    section_header_line(section.start_line)
                                 ));
                                 }
                             }
@@ -2218,14 +2386,15 @@ impl TestRunner {
                                             } else {
                                                 failure_reasons.push(format!(
                                                  "Extraction failed at line {}: Query '{}' returned no results",
-                                                 section.start_line, query
+                                                 section_header_line(section.start_line), query
                                              ));
                                             }
                                         }
                                         Err(e) => {
                                             failure_reasons.push(format!(
                                                 "Extraction error at line {}: {}",
-                                                section.start_line, e
+                                                section_header_line(section.start_line),
+                                                e
                                             ));
                                         }
                                     }
@@ -2234,7 +2403,7 @@ impl TestRunner {
                         } else {
                             failure_reasons.push(format!(
                                 "EXTRACT at line {} requires a previous response message",
-                                section.start_line
+                                section_header_line(section.start_line)
                             ));
                         }
                     }
@@ -2266,9 +2435,6 @@ impl TestRunner {
                                     }
                                     if let Some(resp) = &mut captured_response {
                                         match e.downcast_ref::<apif_grpc_transport::GrpcError>() {
-                                            // Code 14 = UNAVAILABLE: connection-level
-                                            // failure, not a genuine server response —
-                                            // never snapshot it.
                                             Some(status) if status.code() != 14 => {
                                                 resp.error = Some(status.message().to_string());
                                             }
@@ -2283,7 +2449,6 @@ impl TestRunner {
                                             let mut expected = expected_json.clone();
                                             self.substitute_variables(&mut expected, variables);
 
-                                            // Try to extract tonic Status from anyhow::Error
                                             let (matches, got, mismatch_reason) = if let Some(
                                                 status,
                                             ) =
@@ -2322,7 +2487,6 @@ impl TestRunner {
                                                 ),
                                             )
                                             } else {
-                                                // Fallback to error string representation
                                                 let text = e.to_string();
                                                 error_assert_target =
                                                     Some(Value::String(text.clone()));
@@ -2360,7 +2524,7 @@ impl TestRunner {
                                             if !matches {
                                                 failure_reasons.push(format!(
                                                     "Error mismatch at line {}:",
-                                                    section.start_line
+                                                    section_header_line(section.start_line)
                                                 ));
                                                 if let Some(reason) = mismatch_reason {
                                                     failure_reasons.push(format!("  - {}", reason));
@@ -2423,7 +2587,7 @@ impl TestRunner {
                                                     &mut assertion_records,
                                                     format!(
                                                         "(attached to ERROR at line {})",
-                                                        section.start_line
+                                                        section_header_line(section.start_line)
                                                     ),
                                                     section.start_line,
                                                     AssertionContext {
@@ -2439,7 +2603,6 @@ impl TestRunner {
                                         skip_next_section = true;
                                     }
 
-                                    // Error has been consumed at startup stage; continue with next sections.
                                     continue;
                                 }
                                 Err(e) => {
@@ -2456,7 +2619,7 @@ impl TestRunner {
                         let Some(error_stream) = response_stream.as_mut() else {
                             failure_reasons.push(format!(
                                 "No response stream available for ERROR section at line {}",
-                                section.start_line
+                                section_header_line(section.start_line)
                             ));
                             transport_failure = true;
                             break;
@@ -2473,7 +2636,7 @@ impl TestRunner {
                                 Err(_) => {
                                     failure_reasons.push(format!(
                                         "Timed out after {}s waiting for stream error for ERROR section at line {}",
-                                        read_timeout_secs, section.start_line
+                                        read_timeout_secs, section_header_line(section.start_line)
                                     ));
                                     transport_failure = true;
                                     response_stream = None;
@@ -2497,8 +2660,6 @@ impl TestRunner {
                                 let status_message = status.message();
                                 last_error_message = Some(status_message.to_string());
                                 if let Some(resp) = &mut captured_response {
-                                    // Genuine error response received from an
-                                    // established stream — capture for snapshots.
                                     resp.error = Some(status_message.to_string());
                                 }
                                 let error_json =
@@ -2556,7 +2717,7 @@ impl TestRunner {
                                     ) {
                                         failure_reasons.push(format!(
                                             "Error mismatch at line {}:",
-                                            section.start_line
+                                            section_header_line(section.start_line)
                                         ));
                                         if let Some(reason) =
                                             super::error_handler::ErrorHandler::status_mismatch_reason_with_options(
@@ -2594,7 +2755,7 @@ impl TestRunner {
                                             &mut assertion_records,
                                             format!(
                                                 "(attached to ERROR at line {})",
-                                                section.start_line
+                                                section_header_line(section.start_line)
                                             ),
                                             section.start_line,
                                             AssertionContext {
@@ -2608,7 +2769,6 @@ impl TestRunner {
                                         skip_next_section = true;
                                     }
                                 } else {
-                                    // In no_assert mode, we still need to skip the attached ASSERTS section if present
                                     if section.inline_options.with_asserts
                                         && let Some(next_section) = sections.get(i + 1)
                                         && next_section.section_type == SectionType::Asserts
@@ -2621,10 +2781,9 @@ impl TestRunner {
                                 if !effective_no_assert {
                                     failure_reasons.push(format!(
                                     "Expected ERROR at line {}, but received success message or trailers",
-                                    section.start_line
+                                    section_header_line(section.start_line)
                                 ));
                                 } else {
-                                    // If we got a message instead of error in no_assert mode, print it
                                     if let crate::grpc::client::StreamItem::Message(msg) = msg_item
                                     {
                                         println!("--- RESPONSE (Raw) ---");
@@ -2636,7 +2795,7 @@ impl TestRunner {
                                 if !effective_no_assert {
                                     failure_reasons.push(format!(
                                         "Expected ERROR at line {}, but stream ended successfully",
-                                        section.start_line
+                                        section_header_line(section.start_line)
                                     ));
                                 }
                             }
@@ -2644,8 +2803,8 @@ impl TestRunner {
                     }
                     _ => {}
                 }
-            } // close repeat_iter
-        } // close for (i, section)
+            }
+        }
 
         drop(tx.take());
 
@@ -2716,8 +2875,6 @@ impl TestRunner {
             }
         }
 
-        // Tag this document's assertions with its endpoint so multi-document
-        // chains group per endpoint in verbose reports.
         if assertion_records.iter().any(|rec| rec.endpoint.is_none()) {
             let endpoint_label = format!("{}/{}", full_service, method);
             for rec in &mut assertion_records {
@@ -2727,9 +2884,6 @@ impl TestRunner {
             }
         }
 
-        // Ends when the wire did, not when validation finished. Falls back to
-        // "now" only when nothing was ever received (a setup failure), where
-        // the two are the same anyway.
         let grpc_elapsed = rpc_end.map_or_else(
             || start_time.elapsed(),
             |end| end.saturating_duration_since(start_time),
@@ -2738,10 +2892,6 @@ impl TestRunner {
         let grpc_duration_ns = grpc_elapsed.as_nanos() as u64;
 
         if !failure_reasons.is_empty() {
-            // In write mode, assertion mismatches are expected because we are
-            // updating snapshots — but transport failures (connection refused,
-            // stream startup errors, timeouts) must stay failures and must not
-            // rewrite the file with an empty/partial response.
             if effective_write_mode
                 && !transport_failure
                 && let Some(resp) = captured_response
@@ -2751,6 +2901,7 @@ impl TestRunner {
                     .with_response(resp)
                     .with_grpc_status(grpc_status.unwrap_or(0))
                     .with_assertions(assertion_records)
+                    .dialled(&client_address)
                     .with_retried(retry_occurred));
             }
 
@@ -2766,10 +2917,8 @@ impl TestRunner {
             .with_call_duration_ns(grpc_duration_ns)
             .with_failure_kind(kind)
             .with_assertions(assertion_records)
+            .dialled(&client_address)
             .with_retried(retry_occurred);
-            // Only surface a gRPC status for transport failures (the real code
-            // the server/transport returned). A pure assertion failure reached
-            // no defined gRPC status, so it stays `None`.
             if transport_failure && let Some(code) = grpc_status {
                 result = result.with_grpc_status(code);
             }
@@ -2783,6 +2932,7 @@ impl TestRunner {
             .with_call_duration_ns(grpc_duration_ns)
             .with_grpc_status(grpc_status.unwrap_or(0))
             .with_assertions(assertion_records)
+            .dialled(&client_address)
             .with_retried(retry_occurred);
         if !transport_failure && let Some(resp) = captured_response {
             result = result.with_response(resp);
@@ -2790,7 +2940,6 @@ impl TestRunner {
         Ok(result)
     }
 
-    /// Validates a collected response against the document (for testing purposes)
     pub fn validate_response(
         &self,
         document: &GctfDocument,
@@ -2801,6 +2950,245 @@ impl TestRunner {
 
     fn substitute_variables(&self, value: &mut Value, variables: &HashMap<String, Value>) {
         runner_helpers::substitute_variables(value, variables);
+    }
+
+    fn dialled_origin(address: Option<&str>, url: &str) -> String {
+        if let Some(address) = address.map(str::trim).filter(|a| !a.is_empty()) {
+            return address.to_string();
+        }
+        match url.split_once("://") {
+            Some((scheme, rest)) => {
+                let host = rest.split('/').next().unwrap_or(rest);
+                format!("{scheme}://{host}")
+            }
+            None => url.split('/').next().unwrap_or(url).to_string(),
+        }
+    }
+
+    fn http_timeout_seconds(document: &GctfDocument, default_seconds: u64) -> u64 {
+        document
+            .sections
+            .iter()
+            .filter_map(|s| s.get_timeout())
+            .next()
+            .or_else(|| {
+                document
+                    .get_options()
+                    .as_ref()
+                    .and_then(|o| o.get("timeout"))
+                    .and_then(|v| v.trim().parse::<u64>().ok())
+                    .filter(|v| *v > 0)
+            })
+            .unwrap_or(default_seconds)
+    }
+
+    fn http_follow_redirects(document: &GctfDocument) -> bool {
+        document
+            .get_options()
+            .as_ref()
+            .and_then(|o| o.get(apif_http_transport::FOLLOW_REDIRECTS_OPTION))
+            .and_then(|v| apif_http_transport::parse_follow_redirects(v))
+            .unwrap_or(false)
+    }
+
+    async fn run_http(
+        &self,
+        document: &GctfDocument,
+        variables: &mut HashMap<String, Value>,
+        chain_address: Option<&str>,
+    ) -> TestExecutionResult {
+        use apif_http_transport as http;
+
+        let Some((method, path)) = document.parse_http_endpoint() else {
+            return TestExecutionResult::fail(
+                "ENDPOINT must be a method and a path, like `POST /v1/users`".to_string(),
+                None,
+            );
+        };
+
+        let timeout_seconds = Self::http_timeout_seconds(document, self.timeout_seconds);
+
+        let address = match &self.address_override {
+            Some(a) => Some(a.clone()),
+            None => document
+                .get_address(None)
+                .filter(|a| !a.trim().is_empty())
+                .or_else(|| chain_address.map(str::to_string))
+                .or_else(|| self.env_address.clone())
+                .filter(|a| !a.trim().is_empty()),
+        };
+        let path = runner_helpers::interpolate_variables(&path, variables).unwrap_or(path);
+        let address =
+            address.map(|a| runner_helpers::interpolate_variables(&a, variables).unwrap_or(a));
+        let url = http::url_for(address.as_deref(), &path);
+
+        let mut headers = Vec::new();
+        if let Some(declared) = document.get_request_headers() {
+            for (key, value) in declared {
+                let value =
+                    runner_helpers::interpolate_variables(&value, variables).unwrap_or(value);
+                headers.push((key, value));
+            }
+        }
+        let follow_redirects = Self::http_follow_redirects(document);
+
+        let body = document
+            .first_section(SectionType::Request)
+            .filter(|section| !section.get_skip())
+            .and_then(|section| match &section.content {
+                SectionContent::Json(value) => {
+                    let mut value = value.clone();
+                    self.substitute_variables(&mut value, variables);
+                    Some(runner_helpers::format_json_pretty(&value))
+                }
+                SectionContent::Single(text) => Some(
+                    runner_helpers::interpolate_variables(text, variables)
+                        .unwrap_or_else(|| text.clone()),
+                ),
+                SectionContent::Empty => None,
+                _ => {
+                    let raw = section.raw_content.trim();
+                    (!raw.is_empty()).then(|| {
+                        runner_helpers::interpolate_variables(raw, variables)
+                            .unwrap_or_else(|| raw.to_string())
+                    })
+                }
+            });
+
+        if self.dry_run {
+            return TestExecutionResult::pass(Some(0));
+        }
+
+        let sent = http::send(http::HttpCall {
+            method: method.clone(),
+            url: url.clone(),
+            headers,
+            body,
+            timeout: std::time::Duration::from_secs(timeout_seconds),
+            follow_redirects,
+        })
+        .await;
+        let answer = match sent {
+            Ok(answer) => answer,
+            Err(message) => {
+                return TestExecutionResult::fail(message, None)
+                    .dialled(&Self::dialled_origin(address.as_deref(), &url))
+                    .with_failure_kind(FailureKind::Transport);
+            }
+        };
+
+        let mut failure_reasons: Vec<String> = Vec::new();
+        let mut assertion_records: Vec<apif_state::AssertionRecord> = Vec::new();
+        let trailers: HashMap<String, String> = HashMap::new();
+        let timing = AssertionTiming {
+            elapsed_ms: answer.duration_ms,
+            total_elapsed_ms: answer.duration_ms,
+            scope_message_count: 1,
+            scope_index: 0,
+        };
+
+        for section in &document.sections {
+            if section.get_skip() {
+                continue;
+            }
+            match section.section_type {
+                SectionType::Response => {
+                    let expected = match &section.content {
+                        SectionContent::Json(value) => value.clone(),
+                        SectionContent::Single(text) => Value::String(text.clone()),
+                        SectionContent::Empty => continue,
+                        _ => Value::String(section.raw_content.trim().to_string()),
+                    };
+                    let diffs =
+                        JsonComparator::compare(&answer.body, &expected, &section.inline_options);
+                    assertion_records.push(response_record(
+                        section,
+                        &diffs,
+                        &expected,
+                        &answer.body,
+                    ));
+                    if !diffs.is_empty() {
+                        self.append_response_diffs(
+                            diffs,
+                            section_header_line(section.start_line),
+                            &expected,
+                            &answer.body,
+                            &mut failure_reasons,
+                        );
+                    }
+                }
+                SectionType::Asserts => {
+                    if self.no_assert {
+                        continue;
+                    }
+                    if let SectionContent::Assertions(lines) = &section.content {
+                        self.run_assertions(
+                            lines,
+                            &answer.body,
+                            &mut failure_reasons,
+                            &mut assertion_records,
+                            "ASSERTS".to_string(),
+                            section.start_line,
+                            AssertionContext {
+                                headers: &answer.headers,
+                                trailers: &trailers,
+                                timing: Some(&timing),
+                                variables,
+                                protocol: "http",
+                            },
+                        );
+                    }
+                }
+                SectionType::Extract => {
+                    if let SectionContent::Extract(extractions) = &section.content {
+                        for (key, query) in extractions {
+                            match self.assertion_engine.query(query, &answer.body) {
+                                Ok(results) => match results.first() {
+                                    Some(value) => {
+                                        variables.insert(key.clone(), value.clone());
+                                    }
+                                    None => failure_reasons.push(format!(
+                                        "Extraction failed at line {}: Query '{}' returned no results",
+                                        section_header_line(section.start_line), query
+                                    )),
+                                },
+                                Err(e) => failure_reasons.push(format!(
+                                    "Extraction error at line {}: {}",
+                                    section_header_line(section.start_line), e
+                                )),
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut captured = crate::grpc::GrpcResponse::new();
+        captured.headers = answer.headers.clone();
+        captured.messages = vec![answer.body.clone()];
+
+        let mut result = if failure_reasons.is_empty() {
+            TestExecutionResult::pass(Some(answer.duration_ms))
+        } else {
+            TestExecutionResult::fail(
+                format!("Validation failed:\n  - {}", failure_reasons.join("\n  - ")),
+                Some(answer.duration_ms),
+            )
+        };
+        for record in &mut assertion_records {
+            if record.endpoint.is_none() {
+                record.endpoint = Some(format!("{method} {path}"));
+            }
+        }
+        result.assertions = assertion_records;
+        result.http_status = Some(answer.status);
+        if self.capture_exchange {
+            result.captured_response = Some(captured);
+        }
+        result.meta = crate::commands::run::extract_test_meta(document);
+        result.dialled_address = Some(Self::dialled_origin(address.as_deref(), &url));
+        result
     }
 
     #[expect(clippy::too_many_arguments)]
@@ -2814,26 +3202,8 @@ impl TestRunner {
         start_line: usize,
         assertion_context: AssertionContext<'_>,
     ) {
-        let mut optimized_lines: Option<Vec<String>> = None;
-
-        for (idx, line) in lines.iter().enumerate() {
-            if let Some(rewritten) =
-                optimizer::rewrite_assertion_expression_fixed_point_if_changed_with_level(
-                    line,
-                    optimizer::OptimizeLevel::Safe,
-                )
-            {
-                let vec = optimized_lines.get_or_insert_with(|| lines[..idx].to_vec());
-                vec.push(rewritten);
-            } else if let Some(vec) = optimized_lines.as_mut() {
-                vec.push(line.clone());
-            }
-        }
-
-        let lines_to_evaluate: &[String] = optimized_lines.as_deref().unwrap_or(lines);
-
         let result = self.assertion_handler.evaluate_assertions_for_section(
-            lines_to_evaluate,
+            lines,
             target_value,
             assertion_context.headers,
             assertion_context.trailers,
@@ -2850,7 +3220,6 @@ impl TestRunner {
         assertion_records.extend(result.records);
     }
 
-    /// Format JSON comparison diffs and append to failure_reasons.
     fn append_response_diffs(
         &self,
         diffs: Vec<crate::assert::AssertionResult>,
@@ -2866,6 +3235,7 @@ impl TestRunner {
                     message,
                     expected: exp,
                     actual: act,
+                    hint: _,
                 } => {
                     let mut msg = format!("  - {}", message);
                     if let (Some(e), Some(a)) = (exp, act) {
@@ -2882,7 +3252,6 @@ impl TestRunner {
         failure_reasons.push(get_json_diff(expected, actual));
     }
 
-    /// Log a response message for debug/verbose/raw modes.
     fn log_response_message(msg: &Value, verbose: bool, protocol: &str, addr: &str) {
         let should_format = tracing::enabled!(tracing::Level::DEBUG) || verbose;
         if !should_format {
@@ -2897,7 +3266,6 @@ impl TestRunner {
         }
     }
 
-    /// Print dry-run preview of test execution
     fn print_dry_run_preview(
         &self,
         document: &GctfDocument,
@@ -2967,14 +3335,15 @@ impl TestRunner {
                             let json_str = runner_helpers::format_json_pretty(json);
                             println!(
                                 "   ↤ RESPONSE (Line {}):{}",
-                                section.start_line, with_asserts
+                                section_header_line(section.start_line),
+                                with_asserts
                             );
                             println!("     {}", json_str.replace('\n', "\n     "));
                         }
                         SectionContent::JsonLines(values) => {
                             println!(
                                 "   ↤ RESPONSE (Line {}, {} messages):{}",
-                                section.start_line,
+                                section_header_line(section.start_line),
                                 values.len(),
                                 with_asserts
                             );
@@ -3072,22 +3441,393 @@ impl TestRunner {
 }
 
 #[cfg(test)]
+mod retry_seam_tests {
+    use super::{ChainAccumulator, SendAttempt, TestExecutionResult, send_with_retries};
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(start_paused = true)]
+    async fn a_send_that_never_fails_is_not_a_retry() {
+        let mut attempts = Vec::new();
+        let (outcome, succeeded_after_retry) = send_with_retries(
+            3,
+            |r: &Result<u8, String>| r.as_ref().err().cloned(),
+            |attempt: SendAttempt| {
+                attempts.push(attempt);
+                std::future::ready(Ok::<u8, String>(7))
+            },
+        )
+        .await;
+        assert_eq!(outcome, Ok(7));
+        assert!(!succeeded_after_retry, "it never had to try twice");
+        assert_eq!(
+            attempts,
+            vec![SendAttempt {
+                index: 0,
+                last: false
+            }]
+        );
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(start_paused = true)]
+    async fn a_send_that_settles_on_a_later_attempt_says_it_retried() {
+        let mut seen = Vec::new();
+        let started = tokio::time::Instant::now();
+        let mut delays = Vec::new();
+        let (outcome, succeeded_after_retry) = send_with_retries(
+            3,
+            |r: &Result<u8, String>| r.as_ref().err().cloned(),
+            |attempt: SendAttempt| {
+                seen.push(attempt);
+                delays.push(started.elapsed());
+                let answer = if attempt.index < 2 {
+                    Err("nothing answered".to_string())
+                } else {
+                    Ok(7u8)
+                };
+                std::future::ready(answer)
+            },
+        )
+        .await;
+
+        assert_eq!(outcome, Ok(7));
+        assert!(succeeded_after_retry);
+        assert_eq!(
+            seen,
+            vec![
+                SendAttempt {
+                    index: 0,
+                    last: false
+                },
+                SendAttempt {
+                    index: 1,
+                    last: false
+                },
+                SendAttempt {
+                    index: 2,
+                    last: false
+                },
+            ]
+        );
+        assert_eq!(
+            delays,
+            vec![
+                std::time::Duration::ZERO,
+                std::time::Duration::from_millis(100),
+                std::time::Duration::from_millis(300),
+            ],
+            "the delay grows by 100ms per attempt and the first send waits for nothing"
+        );
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(start_paused = true)]
+    async fn the_last_attempt_is_told_it_is_the_last_so_it_can_hand_the_payload_over() {
+        let mut payloads: Vec<String> = Vec::new();
+        let mut request = Some("body".to_string());
+        let (outcome, succeeded_after_retry) = send_with_retries(
+            2,
+            |r: &Result<(), String>| r.as_ref().err().cloned(),
+            |attempt: SendAttempt| {
+                let payload = if attempt.last {
+                    request.take().unwrap_or_default()
+                } else {
+                    request.clone().unwrap_or_default()
+                };
+                payloads.push(payload);
+                std::future::ready(Err::<(), String>("nothing answered".to_string()))
+            },
+        )
+        .await;
+
+        assert!(outcome.is_err());
+        assert!(
+            !succeeded_after_retry,
+            "it exhausted the budget rather than succeeding after a retry"
+        );
+        assert_eq!(payloads, vec!["body", "body", "body"]);
+        assert!(request.is_none(), "the last attempt took the payload");
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test(start_paused = true)]
+    async fn a_budget_of_zero_sends_once_and_keeps_the_failure() {
+        let mut attempts = 0usize;
+        let (outcome, succeeded_after_retry) = send_with_retries(
+            0,
+            |r: &Result<(), String>| r.as_ref().err().cloned(),
+            |attempt: SendAttempt| {
+                attempts += 1;
+                assert!(attempt.last, "with no budget the first attempt is the last");
+                std::future::ready(Err::<(), String>("nothing answered".to_string()))
+            },
+        )
+        .await;
+        assert_eq!(attempts, 1);
+        assert!(!succeeded_after_retry);
+        assert_eq!(outcome, Err("nothing answered".to_string()));
+    }
+
+    #[test]
+    fn the_status_of_a_chain_is_the_status_of_the_step_that_settled_it() {
+        let mut chain = ChainAccumulator::default();
+        let grpc_failure =
+            TestExecutionResult::fail("Validation failed:\n  - .status".to_string(), Some(2))
+                .with_grpc_status(0);
+        let http_pass = TestExecutionResult::pass(Some(1)).with_http_status(503);
+
+        assert!(chain.absorb_group(vec![grpc_failure, http_pass]));
+        let result = chain.into_result();
+        assert_eq!(result.grpc_status, Some(0));
+        assert_eq!(
+            result.http_status, None,
+            "the failing gRPC step speaks for the chain, not a passing HTTP step beside it"
+        );
+    }
+
+    #[test]
+    fn a_chain_that_passes_reports_its_last_step() {
+        let mut chain = ChainAccumulator::default();
+        assert!(!chain.absorb(TestExecutionResult::pass(Some(1)).with_http_status(200)));
+        assert!(!chain.absorb(TestExecutionResult::pass(Some(1)).with_grpc_status(0)));
+        let result = chain.into_result();
+        assert_eq!(result.grpc_status, Some(0));
+        assert_eq!(result.http_status, None);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn an_http_document_that_does_not_name_a_method_says_so_before_dialling() {
+        let doc = crate::parser::parse_gctf_from_str(
+            "--- ADDRESS ---\nhttp://127.0.0.1:1\n\n--- ENDPOINT ---\n/v1/users\n\n--- ASSERTS ---\n.ok\n",
+            "t.httf",
+        )
+        .expect("parses");
+        let result = TestRunner::new(false, 30, false, false, false, None)
+            .run_test(&doc)
+            .await
+            .expect("runs");
+        match result.status {
+            TestExecutionStatus::Fail(message) => {
+                assert!(message.contains("POST /v1/users"), "{message}")
+            }
+            TestExecutionStatus::Pass => panic!("an endpoint with no method cannot pass"),
+        }
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn a_result_says_where_the_call_went() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 2048];
+            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+            let _ = tokio::io::AsyncWriteExt::write_all(
+                &mut socket,
+                b"HTTP/1.1 200 OK\r\ncontent-length: 14\r\n\r\n{\"name\":\"Ada\"}",
+            )
+            .await;
+        });
+
+        let src = format!("--- ADDRESS ---\nhttp://{addr}\n\n--- ENDPOINT ---\nGET /x\n");
+        let document = crate::parser::parse_content_with_recovery(&src, "where.httf").document;
+        let runner = TestRunner::new(false, 5, false, false, false, None);
+        let mut variables = HashMap::new();
+        let result = runner.run_http(&document, &mut variables, None).await;
+
+        assert_eq!(
+            result.dialled_address.as_deref(),
+            Some(format!("http://{addr}").as_str()),
+            "the address it was pointed at, not the URL it built from it"
+        );
+        assert_eq!(
+            TestRunner::dialled_origin(None, "https://api.example.com/v1/users"),
+            "https://api.example.com"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn a_skipped_section_is_not_checked_for_an_http_file() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 2048];
+            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+            let _ = tokio::io::AsyncWriteExt::write_all(
+                &mut socket,
+                b"HTTP/1.1 200 OK\r\ncontent-length: 14\r\n\r\n{\"name\":\"Ada\"}",
+            )
+            .await;
+        });
+
+        let src = format!(
+            "--- ADDRESS ---\nhttp://{addr}\n\n--- ENDPOINT ---\nGET /x\n\n#[skip]\n--- ASSERTS ---\n.name == \"Grace\"\n"
+        );
+        let document = crate::parser::parse_content_with_recovery(&src, "skipped.httf").document;
+        let runner = TestRunner::new(false, 5, false, false, false, None);
+        let mut variables = HashMap::new();
+        let result = runner.run_http(&document, &mut variables, None).await;
+
+        assert!(
+            matches!(result.status, TestExecutionStatus::Pass),
+            "a skipped ASSERTS must not be checked: {:?}",
+            result.status
+        );
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn an_http_check_names_the_request_it_checked() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 2048];
+            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+            let _ = tokio::io::AsyncWriteExt::write_all(
+                &mut socket,
+                b"HTTP/1.1 200 OK\r\ncontent-length: 14\r\n\r\n{\"name\":\"Ada\"}",
+            )
+            .await;
+        });
+
+        let src = format!(
+            "--- ADDRESS ---\nhttp://{addr}\n\n--- ENDPOINT ---\nGET /v1/users/{{{{who}}}}\n\n--- ASSERTS ---\n.name == \"Ada\"\n"
+        );
+        let document = crate::parser::parse_content_with_recovery(&src, "named.httf").document;
+        let runner = TestRunner::new(false, 5, false, false, false, None);
+        let mut variables = HashMap::new();
+        variables.insert("who".to_string(), json!("7"));
+        let result = runner.run_http(&document, &mut variables, None).await;
+
+        assert_eq!(result.assertions.len(), 1, "{result:?}");
+        assert_eq!(
+            result.assertions[0].endpoint.as_deref(),
+            Some("GET /v1/users/7"),
+        );
+    }
+
+    #[test]
+    fn an_http_file_is_bounded_by_its_own_attribute_first() {
+        let doc =
+            |body: &str| crate::parser::parse_content_with_recovery(body, "waits.httf").document;
+
+        let attributed = doc(
+            "--- ENDPOINT ---\nGET /v1/users\n\n--- OPTIONS ---\ntimeout: 30\n\n#[timeout(5)]\n--- REQUEST ---\n{}\n",
+        );
+        assert_eq!(
+            TestRunner::http_timeout_seconds(&attributed, 60),
+            5,
+            "the gRPC path reads the attribute first and this one read the OPTIONS line alone"
+        );
+
+        let options_only = doc("--- ENDPOINT ---\nGET /v1/users\n\n--- OPTIONS ---\ntimeout: 30\n");
+        assert_eq!(TestRunner::http_timeout_seconds(&options_only, 60), 30);
+
+        let silent = doc("--- ENDPOINT ---\nGET /v1/users\n");
+        assert_eq!(TestRunner::http_timeout_seconds(&silent, 60), 60);
+
+        let zero = doc("--- ENDPOINT ---\nGET /v1/users\n\n--- OPTIONS ---\ntimeout: 0\n");
+        assert_eq!(TestRunner::http_timeout_seconds(&zero, 60), 60);
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn a_dry_run_of_an_http_file_sends_nothing() {
+        let doc = crate::parser::parse_gctf_from_str(
+            "--- ADDRESS ---\nhttp://127.0.0.1:1\n\n--- ENDPOINT ---\nGET /v1/users\n\n--- ASSERTS ---\n.ok\n",
+            "t.httf",
+        )
+        .expect("parses");
+        let result = TestRunner::new(true, 30, false, false, false, None)
+            .run_test(&doc)
+            .await
+            .expect("runs");
+        assert!(matches!(result.status, TestExecutionStatus::Pass));
+    }
+
+    #[test]
+    fn the_plan_of_an_http_file_is_http() {
+        let doc = crate::parser::parse_gctf_from_str(
+            "--- ADDRESS ---\nhttps://api.example.com\n\n--- ENDPOINT ---\nPOST /v1/users\n\n--- REQUEST ---\n{}\n\n--- ASSERTS ---\n.ok\n",
+            "t.httf",
+        )
+        .expect("parses");
+        let plan = ExecutionPlan::from_document(&doc);
+        assert_eq!(plan.connection.backend, "https");
+        assert_eq!(plan.summary.rpc_mode_name, "POST");
+        assert_eq!(plan.target.endpoint, "POST /v1/users");
+        assert_eq!(plan.target.service, None);
+        assert_eq!(plan.target.method, None);
+    }
+
+    #[test]
+    fn a_plain_http_file_says_http_not_https() {
+        let doc = crate::parser::parse_gctf_from_str(
+            "--- ADDRESS ---\nlocalhost:8080\n\n--- ENDPOINT ---\nGET /health\n\n--- ASSERTS ---\n.ok\n",
+            "t.httf",
+        )
+        .expect("parses");
+        assert_eq!(
+            ExecutionPlan::from_document(&doc).connection.backend,
+            "http"
+        );
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn the_plan_names_the_transport_the_file_selects() {
+        let plain = parse(
+            "--- ENDPOINT ---\npkg.Svc/M\n\n--- REQUEST ---\n{}\n\n--- ASSERTS ---\n.ok == true\n",
+        );
+        assert_eq!(
+            ExecutionPlan::from_document(&plain).connection.backend,
+            "grpc"
+        );
+
+        let web = parse(
+            "--- ENDPOINT ---\npkg.Svc/M\n\n--- OPTIONS ---\nprotocol: grpc-web\n\n--- REQUEST ---\n{}\n\n--- ASSERTS ---\n.ok == true\n",
+        );
+        assert_eq!(
+            ExecutionPlan::from_document(&web).connection.backend,
+            "grpc-web"
+        );
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn a_request_checked_only_by_asserts_is_still_unary() {
+        let doc = parse(
+            "--- ENDPOINT ---\npkg.Svc/M\n\n--- REQUEST ---\n{}\n\n--- ASSERTS ---\n.ok == true\n",
+        );
+        let plan = ExecutionPlan::from_document(&doc);
+        assert_eq!(plan.summary.rpc_mode_name, "Unary");
+    }
 
     fn runner() -> TestRunner {
         TestRunner::new(false, 30, false, false, false, None)
     }
 
     fn parse(text: &str) -> crate::parser::GctfDocument {
+        parse_named(text, "t.gctf")
+    }
+
+    fn parse_named(text: &str, name: &str) -> crate::parser::GctfDocument {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("t.gctf");
+        let path = dir.path().join(name);
         std::fs::write(&path, text).expect("write");
         crate::parser::parse_with_recovery(&path).document
     }
 
-    // Preparation must reproduce what the ordinary path derives, or a bench run
-    // silently talks to somewhere else.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn preparation_matches_the_document() {
@@ -3104,8 +3844,6 @@ mod tests {
         assert_eq!(prep.timeout_seconds, 30);
     }
 
-    // A document whose OPTIONS cannot be honoured must fall back, so the error
-    // is still reported instead of being papered over with a default.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn an_unusable_timeout_is_not_prepared() {
@@ -3127,6 +3865,77 @@ mod tests {
         assert!(prepared.0[0].is_none());
     }
 
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn an_http_test_with_no_address_says_which_target_is_missing() {
+        let doc = parse_named(
+            "--- ENDPOINT ---\nGET /data.json\n\n--- ASSERTS ---\n@status() == 200\n",
+            "t.httf",
+        );
+        let result = TestRunner::new(false, 5, false, false, false, None)
+            .run_test_with_variables(&doc, HashMap::new())
+            .await
+            .expect("runs");
+        match result.status {
+            TestExecutionStatus::Fail(message) => {
+                assert!(message.contains("no address for /data.json"), "{message}");
+                assert!(message.contains("ADDRESS"), "{message}");
+            }
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn a_later_step_inherits_the_address_the_chain_started_with() {
+        let doc = parse(
+            "--- ADDRESS ---\n127.0.0.1:9\n\n--- ENDPOINT ---\npkg.Svc/A\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n\n--- ENDPOINT ---\npkg.Svc/B\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n",
+        );
+        let prepared = runner()
+            .with_env_address("elsewhere:1".to_string())
+            .prepare(&doc);
+        assert_eq!(
+            prepared.0[0].as_ref().expect("preparable").address,
+            "127.0.0.1:9"
+        );
+        assert_eq!(
+            prepared.0[1].as_ref().expect("preparable").address,
+            "127.0.0.1:9"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn a_step_that_names_its_own_address_keeps_it_and_passes_it_on() {
+        let doc = parse(
+            "--- ADDRESS ---\n127.0.0.1:9\n\n--- ENDPOINT ---\npkg.Svc/A\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n\n--- ADDRESS ---\n127.0.0.1:11\n\n--- ENDPOINT ---\npkg.Svc/B\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n\n--- ENDPOINT ---\npkg.Svc/C\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n",
+        );
+        let prepared = runner().prepare(&doc);
+        assert_eq!(
+            prepared.0[1].as_ref().expect("preparable").address,
+            "127.0.0.1:11"
+        );
+        assert_eq!(
+            prepared.0[2].as_ref().expect("preparable").address,
+            "127.0.0.1:11"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn a_chain_with_no_address_still_reads_the_environment() {
+        let doc = parse(
+            "--- ENDPOINT ---\npkg.Svc/A\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n\n--- ENDPOINT ---\npkg.Svc/B\n\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n",
+        );
+        let prepared = runner()
+            .with_env_address("elsewhere:1".to_string())
+            .prepare(&doc);
+        assert_eq!(
+            prepared.0[1].as_ref().expect("preparable").address,
+            "elsewhere:1"
+        );
+    }
+
     #[test]
     #[cfg_attr(miri, ignore)]
     fn an_address_override_wins_over_the_document() {
@@ -3142,8 +3951,6 @@ mod tests {
         );
     }
 
-    // Dropping a `JoinHandle` only detaches the task. Under load that left one
-    // abandoned gRPC call per request in the runtime.
     #[tokio::test]
     #[cfg_attr(miri, ignore)]
     async fn dropping_the_guard_cancels_the_task() {
@@ -3174,16 +3981,31 @@ mod tests {
 
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
-    // Regression: `run_test_with_variables`/`run_test_capturing_vars` used to
-    // hardcode `captured_response: None` on the aggregate, discarding every
-    // per-document response — so `--write` snapshot mode never rewrote files
-    // with the real captured response for the happy path. `ChainAccumulator`
-    // carries the last document's response through.
-    // A single JsonLines REQUEST section sending 3 messages must infer the
-    // same ClientStreaming mode as 3 separate REQUEST sections would — the
-    // inference must count messages, not sections, or `rpc_mode` (which
-    // drives the actual wire streaming type for non-gRPC protocols) silently
-    // misclassifies a JsonLines request as unary.
+    #[test]
+    fn a_skipped_request_leaves_the_file_as_one_with_no_request() {
+        let skipped = crate::parser::parse_gctf_from_str(
+            "--- ENDPOINT ---\npkg.Svc/M\n\n#[skip]\n--- REQUEST ---\n{\"a\": 1}\n\n--- RESPONSE ---\n{}\n",
+            "t.gctf",
+        )
+        .expect("parses");
+        let sends = |doc: &crate::parser::GctfDocument| {
+            doc.sections
+                .iter()
+                .any(|s| s.section_type == SectionType::Request && !s.get_skip())
+        };
+        assert!(
+            !sends(&skipped),
+            "a skipped REQUEST is not a message to send"
+        );
+
+        let written = crate::parser::parse_gctf_from_str(
+            "--- ENDPOINT ---\npkg.Svc/M\n\n--- REQUEST ---\n{\"a\": 1}\n\n--- RESPONSE ---\n{}\n",
+            "t.gctf",
+        )
+        .expect("parses");
+        assert!(sends(&written));
+    }
+
     #[test]
     fn infer_rpc_mode_counts_jsonlines_request_messages_not_sections() {
         let content = r#"--- ENDPOINT ---
@@ -3258,6 +4080,7 @@ chat.ChatService/SendMessages
             endpoint: None,
             expected: None,
             actual: None,
+            hint: None,
         };
         acc.absorb(TestExecutionResult::pass(None).with_assertions(vec![record.clone()]));
         acc.absorb(TestExecutionResult::pass(None).with_assertions(vec![record.clone()]));
@@ -3265,8 +4088,6 @@ chat.ChatService/SendMessages
         assert_eq!(acc.into_result().assertions.len(), 2);
     }
 
-    // Regression: `retried` must be sticky across a chain — one flaky document
-    // makes the whole chain flaky, even if later documents didn't need a retry.
     #[test]
     fn chain_accumulator_retried_is_sticky_across_documents() {
         let mut acc = ChainAccumulator::default();
@@ -3282,8 +4103,6 @@ chat.ChatService/SendMessages
         assert!(!acc.into_result().retried);
     }
 
-    // Regression: each document's own duration must be collected in order, not
-    // just summed — reporters need the individual values for real step timing.
     #[test]
     fn chain_accumulator_collects_per_document_durations_in_order() {
         let mut acc = ChainAccumulator::default();
@@ -3291,7 +4110,6 @@ chat.ChatService/SendMessages
         acc.absorb(TestExecutionResult::pass(Some(30)));
         let result = acc.into_result();
         assert_eq!(result.document_durations_ms, vec![50, 30]);
-        // total_duration_ms (call_duration_ms) still sums, unaffected.
         assert_eq!(result.call_duration_ms, Some(80));
     }
 
@@ -3303,7 +4121,6 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn runner_new() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
         assert!(!runner.dry_run);
@@ -3314,28 +4131,24 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn runner_with_dry_run() {
         let runner = TestRunner::new(true, 30, false, false, false, None);
         assert!(runner.dry_run);
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn runner_with_timeout() {
         let runner = TestRunner::new(false, 60, false, false, false, None);
         assert_eq!(runner.timeout_seconds, 60);
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn runner_with_no_assert() {
         let runner = TestRunner::new(false, 30, true, false, false, None);
         assert!(runner.no_assert);
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn runner_with_write_mode() {
         let runner = TestRunner::new(false, 30, false, true, false, None);
         assert!(runner.write_mode);
@@ -3485,7 +4298,6 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn runner_with_verbose() {
         let runner = TestRunner::new(false, 30, false, false, true, None);
         assert!(runner.verbose);
@@ -3556,7 +4368,6 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn substitute_variables_exact_match_preserves_type() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
         let mut value = json!("{{ count }}");
@@ -3568,7 +4379,6 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn substitute_variables_interpolation_single_pass() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
         let mut value = json!("id={{id}}, user={{ user }}, ok={{ok}}");
@@ -3582,7 +4392,6 @@ chat.ChatService/SendMessages
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn substitute_variables_keeps_unknown_placeholder() {
         let runner = TestRunner::new(false, 30, false, false, false, None);
         let mut value = json!("hello {{known}} and {{unknown}}");
@@ -3591,6 +4400,73 @@ chat.ChatService/SendMessages
 
         runner.substitute_variables(&mut value, &vars);
         assert_eq!(value, json!("hello world and {{unknown}}"));
+    }
+
+    #[test]
+    fn response_record_line_is_the_editor_line() {
+        use crate::parser::ast::{InlineOptions, Section, SectionContent, SectionSpan};
+
+        let section = Section {
+            section_type: crate::parser::ast::SectionType::Response,
+            content: SectionContent::Json(json!({"key": "value"})),
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 11,
+            end_line: 14,
+            attributes: Vec::new(),
+            span: SectionSpan::default(),
+        };
+
+        let record = response_record(&section, &[], &json!({}), &json!({}));
+        assert_eq!(record.line, 12);
+    }
+
+    #[test]
+    fn with_asserts_failure_names_the_editor_line() {
+        use crate::parser::ast::{
+            InlineOptions, Section, SectionContent, SectionSpan, SectionType,
+        };
+
+        let section = Section {
+            section_type: SectionType::Response,
+            content: SectionContent::Json(json!({})),
+            inline_options: InlineOptions {
+                with_asserts: true,
+                ..InlineOptions::default()
+            },
+            raw_content: String::new(),
+            start_line: 6,
+            end_line: 8,
+            attributes: Vec::new(),
+            span: SectionSpan::default(),
+        };
+
+        let mut reasons = Vec::new();
+        let ok = TestRunner::has_required_followup_asserts(
+            &section,
+            std::slice::from_ref(&section),
+            0,
+            false,
+            &mut reasons,
+        );
+        assert!(!ok);
+        assert_eq!(reasons.len(), 1);
+        assert!(
+            reasons[0].contains("at line 7"),
+            "message names the parser's line, not the editor's: {}",
+            reasons[0]
+        );
+    }
+
+    #[test]
+    fn plan_names_the_address_line_as_written() {
+        let doc = crate::parser::parse_gctf_from_str(
+            "--- ADDRESS ---\nlocalhost:4770\n\n--- ENDPOINT ---\na.B/C\n\n--- ASSERTS ---\n.ok == true\n",
+            "plan.gctf",
+        )
+        .expect("parses");
+        let plan = ExecutionPlan::from_document(&doc);
+        assert_eq!(plan.connection.source, "ADDRESS section [line 1]");
     }
 
     #[test]
@@ -3641,8 +4517,6 @@ chat.ChatService/SendMessages
             InlineOptions, Section, SectionContent, SectionSpan, SectionType,
         };
 
-        // The function returns values for any Json content, not just Response sections
-        // This is expected behavior - it extracts Json values regardless of section type
         let section = Section {
             section_type: SectionType::Request,
             content: SectionContent::Json(json!({"key": "value"})),
@@ -3655,7 +4529,6 @@ chat.ChatService/SendMessages
         };
 
         let values = TestRunner::expected_values_for_response_section(&section);
-        // Returns 1 because the content is Json, even though it's a Request section
         assert_eq!(values.len(), 1);
         assert_eq!(values[0], json!({"key": "value"}));
     }
@@ -3749,7 +4622,7 @@ chat.ChatService/SendMessages
 
         assert!(!has_followup);
         assert_eq!(failures.len(), 1);
-        assert!(failures[0].contains("ERROR at line 12 has 'with_asserts'"));
+        assert!(failures[0].contains("ERROR at line 13 has 'with_asserts'"));
     }
 
     #[test]
@@ -3836,19 +4709,152 @@ chat.ChatService/SendMessages
         assert!(assertion_records.iter().all(|r| r.passed));
     }
 
+    #[test]
+    fn a_group_costs_its_slowest_step_and_reports_all_of_them() {
+        let mut acc = ChainAccumulator::default();
+        let mut failed = TestExecutionResult::pass(Some(40));
+        failed.status = TestExecutionStatus::Fail("the first one".to_string());
+        let mut also_failed = TestExecutionResult::pass(Some(90));
+        also_failed.status = TestExecutionStatus::Fail("the second one".to_string());
+
+        let stop = acc.absorb_group(vec![
+            failed,
+            also_failed,
+            TestExecutionResult::pass(Some(50)),
+        ]);
+
+        assert!(stop, "the chain stops after the group");
+        assert_eq!(
+            acc.document_durations_ms,
+            vec![40, 90, 50],
+            "every step is reported"
+        );
+        assert_eq!(
+            acc.total_duration_ms as u64, 90,
+            "the group cost its slowest step"
+        );
+        match acc.into_result().status {
+            TestExecutionStatus::Fail(said) => {
+                assert_eq!(
+                    said, "the first one",
+                    "the file's order decides which failure is the chain's"
+                );
+            }
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_group_that_all_passes_carries_on() {
+        let mut acc = ChainAccumulator::default();
+        let stop = acc.absorb_group(vec![
+            TestExecutionResult::pass(Some(10)),
+            TestExecutionResult::pass(Some(20)),
+        ]);
+        assert!(!stop);
+        assert_eq!(acc.total_duration_ms as u64, 20);
+    }
+
+    #[test]
+    fn a_step_dials_the_address_of_its_own_transport() {
+        let content = "--- ADDRESS ---\nhttp://api.test\n\n--- ENDPOINT ---\nGET /v1/users\n\n--- ASSERTS ---\n@status() == 200\n\n--- ADDRESS ---\n127.0.0.1:4770\n\n--- ENDPOINT ---\nauth.v1.Auth/Login\n\n--- REQUEST ---\n{}\n\n--- ASSERTS ---\n.ok == true\n\n--- ENDPOINT ---\nGET /v1/orders\n\n--- ASSERTS ---\n@status() == 200\n";
+        let doc = crate::parser::parse_gctf_from_str(content, "checkout.apif").unwrap();
+
+        assert_eq!(
+            chain_addresses(&doc),
+            vec![
+                Some("http://api.test".to_string()),
+                Some("127.0.0.1:4770".to_string()),
+                Some("http://api.test".to_string()),
+            ]
+        );
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn a_step_with_nowhere_to_go_stops_the_file_before_anything_is_dialled() {
+        let content = "--- ADDRESS ---\n127.0.0.1:4770\n\n--- ENDPOINT ---\na.A/One\n\n--- REQUEST ---\n{}\n\n--- ASSERTS ---\n.ok == true\n\n--- ENDPOINT ---\nGET /v1/orders\n\n--- ASSERTS ---\n@status() == 200\n";
+        let doc = crate::parser::parse_gctf_from_str(content, "checkout.apif").unwrap();
+        let runner = TestRunner::new(false, 30, false, false, false, None);
+
+        let (result, _) = runner
+            .run_chain(&doc, HashMap::new())
+            .await
+            .expect("returns");
+
+        match result.status {
+            TestExecutionStatus::Fail(said) => {
+                assert!(said.contains("no address for /v1/orders"), "{said}");
+                assert!(said.contains("nothing was dialled"), "{said}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert!(
+            result.document_durations_ms.is_empty(),
+            "no step ran, so none has a duration",
+        );
+    }
+
+    #[test]
+    fn a_transport_nobody_addressed_has_nowhere_to_go() {
+        let content = "--- ADDRESS ---\n127.0.0.1:4770\n\n--- ENDPOINT ---\nauth.v1.Auth/Login\n\n--- REQUEST ---\n{}\n\n--- ASSERTS ---\n.ok == true\n\n--- ENDPOINT ---\nGET /v1/orders\n\n--- ASSERTS ---\n@status() == 200\n";
+        let doc = crate::parser::parse_gctf_from_str(content, "checkout.apif").unwrap();
+        assert_eq!(
+            chain_addresses(&doc),
+            vec![Some("127.0.0.1:4770".to_string()), None]
+        );
+    }
+
     #[tokio::test]
     #[cfg_attr(miri, ignore)]
     async fn run_test_capturing_vars_returns_result_and_map() {
-        // Dry-run short-circuits before any network call, so this exercises the
-        // additive method's plumbing (result + variable map) without a server.
         let content = "--- ENDPOINT ---\nsvc.Svc/Call\n\n--- REQUEST ---\n{}\n";
         let doc = crate::parser::parse_gctf_from_str(content, "capture.gctf").unwrap();
         let runner = TestRunner::new(true, 30, false, false, false, None);
 
         let (result, vars) = runner.run_test_capturing_vars(&doc).await.unwrap();
         assert!(matches!(result.status, TestExecutionStatus::Pass));
-        // No EXTRACT was executed (dry-run), so the captured map is empty, but a
-        // map is returned alongside the result as the fixture seeding relies on.
         assert!(vars.is_empty());
+    }
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn a_whole_url_in_the_endpoint_is_its_own_address() {
+        let runner = TestRunner::new(true, 30, false, false, false, None);
+        let aimed = crate::parser::parse_gctf_from_str(
+            "--- ENDPOINT ---\nGET https://api.example.com/v1/users\n\n--- ASSERTS ---\n@status() == 200\n",
+            "t.httf",
+        )
+        .expect("parses");
+        let steps: Vec<&crate::parser::GctfDocument> = aimed.iter_chain().collect();
+        assert!(runner.step_with_nowhere_to_go(&steps, &[None]).is_none());
+
+        let bare = crate::parser::parse_gctf_from_str(
+            "--- ENDPOINT ---\nGET /v1/users\n\n--- ASSERTS ---\n@status() == 200\n",
+            "t.httf",
+        )
+        .expect("parses");
+        let steps: Vec<&crate::parser::GctfDocument> = bare.iter_chain().collect();
+        assert!(runner.step_with_nowhere_to_go(&steps, &[None]).is_some());
+    }
+
+    #[test]
+    fn a_plan_says_which_sections_a_run_walks_past() {
+        let doc = crate::parser::parse_gctf_from_str(
+            "--- ENDPOINT ---\npkg.Svc/M\n\n#[skip]\n--- REQUEST ---\n{\"a\": 1}\n\n--- REQUEST ---\n{\"a\": 2}\n\n#[skip]\n--- RESPONSE ---\n{}\n\n--- ASSERTS ---\n.a == 1\n",
+            "t.gctf",
+        )
+        .expect("parses");
+        let plan = ExecutionPlan::from_document(&doc);
+        assert_eq!(
+            plan.requests.iter().map(|r| r.skipped).collect::<Vec<_>>(),
+            vec![true, false],
+        );
+        assert!(plan.expectations.iter().all(|e| e.skipped));
+        assert!(plan.assertions.iter().all(|a| !a.skipped));
+        assert_eq!(plan.summary.skipped_sections, 2);
+        assert_eq!(
+            plan.summary.total_requests, 2,
+            "the totals stay what the file holds"
+        );
     }
 }

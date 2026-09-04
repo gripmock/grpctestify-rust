@@ -1,5 +1,3 @@
-// JUnit reporter - outputs test results in JUnit XML format
-
 use super::Reporter;
 use anyhow::{Context, Result};
 use apif_state::{TestResults, TestStatus};
@@ -16,11 +14,7 @@ fn escape_xml(s: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&apos;"),
-            // Tab, LF and CR are the only control chars valid in XML 1.0.
             '\t' | '\n' | '\r' => out.push(c),
-            // Strip other C0 control chars (0x00-0x08, 0x0B, 0x0C, 0x0E-0x1F):
-            // they are forbidden in XML 1.0 documents — even as numeric
-            // character references — and make the output unparsable by CI tools.
             c if (c as u32) < 0x20 => {}
             c => out.push(c),
         }
@@ -34,15 +28,8 @@ struct TestCaseBuilder {
     duration_ms: u64,
     status: TestStatus,
     error_message: Option<String>,
-    /// Detailed `<failure>` body (per-assertion expected/actual). Falls back to
-    /// `error_message` when absent.
     failure_body: Option<String>,
-    /// `<system-out>` body — the captured request/response exchange, when the
-    /// run buffered it. `None` omits the element.
     system_out: Option<String>,
-    /// `true` when the test failed before any ASSERTS ran (connection/timeout/
-    /// parse) — reported as JUnit `<error>` instead of `<failure>`, which is
-    /// reserved for an evaluated assertion that didn't hold.
     is_execution_error: bool,
     tags: Vec<String>,
     extra_properties: Vec<(String, String)>,
@@ -81,8 +68,6 @@ impl TestCaseBuilder {
 
         match self.status {
             TestStatus::Fail if self.is_execution_error => {
-                // No assertion was evaluated — the run failed before ASSERTS
-                // (connection/timeout/parse/etc), which JUnit models as <error>.
                 let msg = self.error_message.as_deref().unwrap_or("Test errored");
                 xml.push_str(&format!(
                     "      <error message=\"{}\" type=\"ExecutionError\">{}</error>\n",
@@ -121,8 +106,6 @@ impl TestCaseBuilder {
     }
 }
 
-/// Render the captured exchange (headers/trailers/response) as a `<system-out>`
-/// text block. `None` when nothing was captured.
 fn build_system_out(result: &apif_state::TestResult) -> Option<String> {
     let ex = result.exchange.as_ref()?;
     let mut out = String::from("=== Captured exchange ===");
@@ -151,9 +134,6 @@ fn build_system_out(result: &apif_state::TestResult) -> Option<String> {
     Some(out)
 }
 
-/// Build a detailed `<failure>` body listing each failed assertion with its
-/// expected/actual diff. Returns `None` when no per-assertion detail is
-/// available (the caller then falls back to the plain error message).
 fn build_failure_body(result: &apif_state::TestResult) -> Option<String> {
     let failed: Vec<_> = result.assertions.iter().filter(|a| !a.passed).collect();
     if failed.is_empty() {
@@ -180,9 +160,6 @@ fn build_failure_body(result: &apif_state::TestResult) -> Option<String> {
     Some(body)
 }
 
-/// `true` when a Fail result has no failed assertion on record — it failed
-/// before ASSERTS ran (connection/timeout/parse/etc), which JUnit models as
-/// `<error>` rather than `<failure>`.
 fn is_execution_error(result: &apif_state::TestResult) -> bool {
     result.status == TestStatus::Fail && !result.assertions.iter().any(|a| !a.passed)
 }
@@ -204,9 +181,6 @@ impl Reporter for JunitReporter {
         let total = results.total();
         let skipped = results.skipped();
 
-        // Split Fail results into JUnit `failures` (an assertion was evaluated
-        // and didn't hold) vs `errors` (failed before any assertion ran —
-        // connection/timeout/parse/etc), instead of hardcoding errors="0".
         let (failures, errors): (usize, usize) = results
             .all()
             .iter()
@@ -233,9 +207,8 @@ impl Reporter for JunitReporter {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "unknown".to_string());
 
-            // Surface META owner/summary/links as properties (general data that
-            // CI dashboards can index), alongside the existing tag properties.
             let mut extra_properties = Vec::new();
+            extra_properties.push(("family".to_string(), result.family.clone()));
             if let Some(owner) = &result.meta.owner {
                 extra_properties.push(("owner".to_string(), owner.clone()));
             }
@@ -297,17 +270,13 @@ mod tests {
 
     #[test]
     fn escape_xml_strips_invalid_control_chars() {
-        // NUL, backspace, vertical tab, form feed, unit separator are invalid
-        // in XML 1.0 and must be removed so the output stays parseable.
         let input = "a\u{0}b\u{8}c\u{b}d\u{c}e\u{1f}f";
         assert_eq!(escape_xml(input), "abcdef");
-        // Tab, LF and CR are valid and must be preserved.
         assert_eq!(escape_xml("a\tb\nc\rd"), "a\tb\nc\rd");
     }
 
     #[test]
     fn junit_failure_with_control_chars_is_well_formed() {
-        // gRPC error text containing control chars must not leak into the XML.
         let tc = TestCaseBuilder {
             name: "ctrl".into(),
             classname: "suite".into(),
@@ -447,6 +416,7 @@ mod tests {
                 endpoint: None,
                 expected: Some("active".into()),
                 actual: Some("pending".into()),
+                hint: None,
             }]);
         r.meta = TestMeta {
             owner: Some("team-a".into()),
@@ -475,9 +445,6 @@ mod tests {
         );
     }
 
-    // Regression: a connection/timeout failure (no assertion evaluated) must be
-    // reported as JUnit <error>, not <failure> — and an assertion failure must
-    // stay <failure>. The suite-level errors="N" must no longer be hardcoded 0.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn junit_splits_errors_from_assertion_failures() {
@@ -488,14 +455,12 @@ mod tests {
         let reporter = JunitReporter::new(path.clone());
         let mut results = TestResults::new();
 
-        // Connection error: Fail status, no assertions recorded at all.
         results.add(TestResult::fail(
             "conn.gctf",
             "connection refused".into(),
             5,
             None,
         ));
-        // Assertion failure: Fail status, a failed assertion on record.
         results.add(
             TestResult::fail("assert.gctf", "1 assertion failed".into(), 5, None).with_assertions(
                 vec![AssertionRecord {
@@ -507,6 +472,7 @@ mod tests {
                     endpoint: None,
                     expected: Some("true".into()),
                     actual: Some("false".into()),
+                    hint: None,
                 }],
             ),
         );

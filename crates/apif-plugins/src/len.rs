@@ -44,14 +44,12 @@ impl Plugin for LenPlugin {
         let arg = &args[0];
 
         match arg {
-            // Match jq `length`: count Unicode scalar values (codepoints), not bytes.
             Value::String(s) => Ok(PluginResult::Value(Value::Number(
                 serde_json::Number::from(s.chars().count()),
             ))),
             Value::Array(arr) => Ok(PluginResult::Value(Value::Number(
                 serde_json::Number::from(arr.len()),
             ))),
-            // jq `length` on an object counts its entries.
             Value::Object(map) => Ok(PluginResult::Value(Value::Number(
                 serde_json::Number::from(map.len()),
             ))),
@@ -128,7 +126,6 @@ mod tests {
 
     #[test]
     fn len_plugin_unicode_string_counts_codepoints() {
-        // Regression: "привет" is 12 bytes but 6 codepoints; jq `length` == 6.
         let plugin = LenPlugin;
         let context = create_context();
         let result = plugin.execute(&[Value::String("привет".to_string())], &context);

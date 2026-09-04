@@ -8,11 +8,8 @@ use crate::grpc::GrpcResponse;
 use crate::parser::GctfDocument;
 use crate::parser::ast::{InlineOptions, SectionContent, SectionType};
 
-// Re-export base FileUtils from crate — all shared methods live there
 pub use apif_utils::file_utils::FileUtils;
 
-/// Snapshot update — write actual server response back to .gctf file.
-/// Local because it depends on `GrpcResponse` and `GctfDocument`.
 pub fn update_test_file(
     path: &Path,
     document: &GctfDocument,
@@ -37,9 +34,6 @@ pub fn update_test_file(
 
         if section.section_type == SectionType::Response && remaining > 0 {
             let with_asserts = section.inline_options.with_asserts;
-            // Preserve the message count the section originally declared:
-            // a streaming (JsonLines) section keeps all of its messages,
-            // while `with_asserts` sections capture every remaining message.
             let expected_count = if with_asserts {
                 remaining
             } else {
@@ -85,8 +79,6 @@ pub fn update_test_file(
             }
             current_line = section_end;
         } else {
-            // Non-snapshot section, or a RESPONSE/ERROR section with no
-            // captured data — keep the original content untouched.
             while current_line < section_end && current_line < lines.len() {
                 new_lines.push(lines[current_line].to_string());
                 current_line += 1;
@@ -108,8 +100,6 @@ pub fn update_test_file(
     Ok(())
 }
 
-/// A file's permission bits, if it exists. `None` on a platform without them
-/// or when the file is new.
 #[cfg(unix)]
 pub(crate) fn file_mode(path: &Path) -> Option<u32> {
     use std::os::unix::fs::PermissionsExt;
@@ -121,9 +111,6 @@ pub(crate) fn file_mode(_path: &Path) -> Option<u32> {
     None
 }
 
-/// Put `mode` back on `path` after an atomic replace. `NamedTempFile` is 0600
-/// by design, so without this, rewriting a file in place would quietly strip
-/// group/other read access it had before.
 #[cfg(unix)]
 pub(crate) fn restore_mode(path: &Path, mode: Option<u32>) {
     use std::os::unix::fs::PermissionsExt;
@@ -135,15 +122,11 @@ pub(crate) fn restore_mode(path: &Path, mode: Option<u32>) {
 #[cfg(not(unix))]
 pub(crate) fn restore_mode(_path: &Path, _mode: Option<u32>) {}
 
-/// Writes `content` to a temp file in the same directory, then atomically
-/// renames it over `path` so a crash mid-write cannot corrupt the file.
 pub(crate) fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
     let parent = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
     };
-    // The old `.<file>.<pid>.tmp` was pre-creatable by anyone who can write the
-    // directory, and `fs::write` follows a symlink planted there.
     let mut tmp = tempfile::Builder::new()
         .prefix(".grpctestify-")
         .suffix(".tmp")
@@ -152,8 +135,6 @@ pub(crate) fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
     use std::io::Write;
     tmp.write_all(content.as_bytes())?;
     tmp.flush()?;
-    // Close the handle before renaming: Windows refuses to move a file that is
-    // still open, which is what `persist` does.
     let (file, tmp_path) = tmp.keep().map_err(|e| e.error)?;
     drop(file);
     if let Err(e) = std::fs::rename(&tmp_path, path) {
@@ -292,7 +273,6 @@ mod tests {
             return;
         }
         let temp_file = NamedTempFile::new().unwrap();
-        // A single RESPONSE section with two streamed messages (JsonLines).
         let content = "--- ENDPOINT ---\nService/Method\n\n--- RESPONSE ---\n{\"index\": 0}\n{\"index\": 1}\n";
         std::fs::write(temp_file.path(), content).unwrap();
         let doc = crate::parser::parse_gctf(temp_file.path()).unwrap();
@@ -307,7 +287,6 @@ mod tests {
         };
         update_test_file(temp_file.path(), &doc, &response).expect("update_test_file failed");
         let updated = std::fs::read_to_string(temp_file.path()).unwrap();
-        // Both streamed messages must survive the rewrite, not just the first.
         assert!(updated.contains("\"index\": 10"), "updated: {updated}");
         assert!(updated.contains("\"index\": 11"), "updated: {updated}");
     }
@@ -322,7 +301,6 @@ mod tests {
         let content = "--- ENDPOINT ---\nService/Method\n\n--- RESPONSE ---\n{\"result\": \"old\"}\n\n--- ERROR ---\n{\"code\": 5}\n";
         std::fs::write(temp_file.path(), content).unwrap();
         let doc = crate::parser::parse_gctf(temp_file.path()).unwrap();
-        // Nothing captured (e.g. server down) — snapshot must not be emptied.
         let response = crate::grpc::GrpcResponse {
             headers: HashMap::new(),
             trailers: HashMap::new(),
@@ -363,7 +341,6 @@ mod tests {
             updated.ends_with('\n'),
             "trailing newline must be preserved"
         );
-        // Atomic write must not leave temp files behind.
         let leftovers: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .filter_map(|e| e.ok())

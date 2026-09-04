@@ -49,18 +49,12 @@ pub struct TextEdit {
 pub struct CheckReport {
     pub diagnostics: Vec<Diagnostic>,
     pub summary: CheckSummary,
-    /// Per-document section presence — JSON-only (not printed in text mode,
-    /// which stays quiet unless something needs attention): which section
-    /// types each document in the suite actually has, for tooling/CI to
-    /// build a completeness view without re-parsing every file itself.
     pub structure: Vec<DocumentStructure>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentStructure {
     pub file: String,
-    /// 1-based position within a multi-document chain file (always 1 for a
-    /// single-document file).
     pub document_index: usize,
     pub sections: Vec<String>,
 }

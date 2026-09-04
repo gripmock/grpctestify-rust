@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use anyhow::{Context, Result, anyhow};
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor, SerializeOptions};
@@ -17,8 +17,6 @@ fn extract_headers(headers: &reqwest::header::HeaderMap) -> ResponseHeaders {
     map
 }
 
-/// Response metadata a `.gctf` test can assert on via `@header(...)`: everything
-/// except the framing-level `grpc-*` status headers and HTTP content headers.
 fn public_response_headers(headers: ResponseHeaders) -> ResponseHeaders {
     headers
         .into_iter()
@@ -26,12 +24,6 @@ fn public_response_headers(headers: ResponseHeaders) -> ResponseHeaders {
         .collect()
 }
 
-/// Split Connect unary response metadata into leading headers and trailers.
-///
-/// The Connect protocol carries trailing metadata for unary responses as HTTP
-/// headers prefixed with `trailer-`; the prefix must be stripped when reading
-/// from the wire. Without this, `@trailer(...)` assertions never see anything
-/// over the Connect protocol.
 fn split_connect_trailers(headers: ResponseHeaders) -> (ResponseHeaders, ResponseHeaders) {
     let mut leading = ResponseHeaders::new();
     let mut trailers = ResponseHeaders::new();
@@ -50,17 +42,12 @@ fn split_connect_trailers(headers: ResponseHeaders) -> (ResponseHeaders, Respons
     (public_response_headers(leading), trailers)
 }
 
-/// True when the response is gRPC-Web text framing (`application/grpc-web-text`),
-/// in which case the entire body — data and trailer frames alike — is base64.
 fn is_grpc_web_text(headers: &ResponseHeaders) -> bool {
     headers
         .get("content-type")
         .is_some_and(|c| c.contains("grpc-web-text"))
 }
 
-/// Undo gRPC-Web text (base64) framing when the server used it, yielding the raw
-/// length-prefixed frame stream. Binary gRPC-Web bodies pass through unchanged;
-/// undecodable text bodies fall back to the raw bytes rather than erroring.
 fn decode_grpc_web_body(body: Vec<u8>, headers: &ResponseHeaders) -> Vec<u8> {
     if is_grpc_web_text(headers) {
         base64_decode(&body).unwrap_or(body)
@@ -69,9 +56,6 @@ fn decode_grpc_web_body(body: Vec<u8>, headers: &ResponseHeaders) -> Vec<u8> {
     }
 }
 
-/// Decode a standard-alphabet base64 body, ignoring ASCII whitespace/newlines.
-/// gRPC-Web text encodes the whole response stream as one base64 blob; returns
-/// `None` on any invalid input so the caller can fall back to the raw bytes.
 fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
     fn val(b: u8) -> Option<u8> {
         match b {
@@ -97,7 +81,7 @@ fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
             n += 1;
         } else {
             if pads != 0 {
-                return None; // data after padding
+                return None;
             }
             quad[n] = val(b)?;
             n += 1;
@@ -115,13 +99,11 @@ fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
         }
     }
     if n != 0 {
-        return None; // truncated (non-multiple-of-4) input
+        return None;
     }
     Some(out)
 }
 
-/// Standard-alphabet base64 encoder (with `=` padding). Used to emit
-/// gRPC-Web text (base64) request bodies.
 fn base64_encode(input: &[u8]) -> String {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
@@ -145,10 +127,6 @@ fn base64_encode(input: &[u8]) -> String {
     out
 }
 
-/// Decode base64 that MAY omit padding: gRPC binary metadata (`-bin` headers
-/// such as `grpc-status-details-bin`) is base64 and frequently sent unpadded.
-/// Whitespace is ignored; the tail is re-padded so the strict [`base64_decode`]
-/// does the actual decoding.
 fn base64_decode_lenient(input: &[u8]) -> Option<Vec<u8>> {
     let mut cleaned: Vec<u8> = input
         .iter()
@@ -157,13 +135,12 @@ fn base64_decode_lenient(input: &[u8]) -> Option<Vec<u8>> {
         .collect();
     match cleaned.len() % 4 {
         0 => {}
-        1 => return None, // invalid base64 length
+        1 => return None,
         r => cleaned.resize(cleaned.len() + (4 - r), b'='),
     }
     base64_decode(&cleaned)
 }
 
-/// gzip (RFC 1952) a message payload — the on-wire encoding gRPC calls `gzip`.
 fn gzip_compress(data: &[u8]) -> Result<Vec<u8>> {
     use flate2::{Compression, write::GzEncoder};
     use std::io::Write;
@@ -176,7 +153,6 @@ fn gzip_compress(data: &[u8]) -> Result<Vec<u8>> {
         .with_context(|| "Failed to finish gzip stream")
 }
 
-/// gunzip a gzip-compressed message payload.
 fn gzip_decompress(data: &[u8]) -> Result<Vec<u8>> {
     use flate2::read::GzDecoder;
     use std::io::Read;
@@ -194,11 +170,6 @@ use crate::grpc::{
 use futures::{Stream, StreamExt};
 use std::sync::{LazyLock, Mutex};
 
-/// Incremental decoder for the 5-byte length-prefixed frames shared by gRPC-Web
-/// and Connect (`[flags:1][len:4][payload:len]`). Bytes are appended as they
-/// arrive off the wire; complete frames are popped one at a time, so a framed
-/// body split at arbitrary chunk boundaries decodes to the same frames as the
-/// whole-buffer parsers.
 #[derive(Default)]
 struct FrameDecoder {
     buf: Vec<u8>,
@@ -213,8 +184,6 @@ impl FrameDecoder {
         self.buf.extend_from_slice(chunk);
     }
 
-    /// Pop the next fully-buffered frame, or `None` while the head frame is still
-    /// incomplete (needs more chunks).
     fn next_frame(&mut self) -> Option<(u8, Vec<u8>)> {
         if self.buf.len() < 5 {
             return None;
@@ -229,20 +198,11 @@ impl FrameDecoder {
         Some((flags, payload))
     }
 
-    /// Bytes buffered but not yet forming a complete frame — used for the
-    /// unframed-body fallback the buffered proto/connect parsers also apply.
     fn remaining(&self) -> &[u8] {
         &self.buf
     }
 }
 
-/// Request-compression header for a content type when `config` selects gzip.
-///
-/// Three wire conventions coexist: gRPC-Web advertises message compression with
-/// `grpc-encoding`; Connect *streaming* uses `connect-content-encoding` (with a
-/// per-envelope compressed flag); Connect *unary* uses standard HTTP
-/// `content-encoding` on the whole body. Returns `None` when uncompressed
-/// (the default) or for content types that carry no compression.
 fn compression_header(
     content_type: &str,
     config: &GrpcClientConfig,
@@ -261,10 +221,6 @@ fn compression_header(
     }
 }
 
-/// Gzip a Connect *unary* request body when compression is enabled — the whole
-/// body is compressed and advertised with `content-encoding: gzip` (added by the
-/// send layer). No-op when uncompressed (the default). Streaming Connect uses
-/// per-envelope compression instead (see [`encode_connect_envelope_compressed`]).
 fn maybe_gzip_request(body: Vec<u8>, config: &GrpcClientConfig) -> Result<Vec<u8>> {
     if config.compression == CompressionMode::Gzip {
         gzip_compress(&body)
@@ -273,11 +229,6 @@ fn maybe_gzip_request(body: Vec<u8>, config: &GrpcClientConfig) -> Result<Vec<u8
     }
 }
 
-/// Wrap a sequence of pre-framed request messages as a streaming reqwest body:
-/// each frame is yielded as its own chunk, so the request is sent incrementally
-/// (frame-by-frame) rather than buffered into one blob. This is the client
-/// side of true client-streaming/bidi; how much interleaving is actually
-/// realized still depends on the server and HTTP version (see module notes).
 fn frames_to_body(frames: Vec<Vec<u8>>) -> reqwest::Body {
     reqwest::Body::wrap_stream(futures::stream::iter(
         frames.into_iter().map(Ok::<Vec<u8>, std::io::Error>),
@@ -317,14 +268,12 @@ pub async fn execute_web_with_mode(
 #[derive(Debug, Default)]
 pub struct WebResponse {
     pub messages: Vec<Value>,
+    pub message_offsets_ms: Vec<u64>,
     pub headers: HashMap<String, String>,
     pub trailers: HashMap<String, String>,
     pub error: Option<GrpcError>,
 }
 
-/// Map a gRPC status code token to its numeric code. Connect reports the code as
-/// a lowercase name (e.g. `"unavailable"`); grpc-web reports it numerically. A
-/// numeric token is parsed directly; an unrecognized token is UNKNOWN(2).
 fn grpc_code_from_token(token: &str) -> u32 {
     token.parse::<u32>().unwrap_or(match token {
         "cancelled" => 1,
@@ -347,14 +296,6 @@ fn grpc_code_from_token(token: &str) -> u32 {
     })
 }
 
-/// Build a structured [`GrpcError`] from a Connect error JSON object
-/// `{ "code": <string>, "message": <string>, "details"?: [ … ] }`.
-///
-/// `details` for the HTTP protocols is the JSON detail array serialized to bytes
-/// verbatim (e.g. `[{"type":"…","value":"…"}]`), empty when absent — the runner
-/// decodes it as raw JSON-array bytes (`decode_json_details`). This is distinct
-/// from the tonic/grpc path, where `details` is the proto-encoded
-/// `google.rpc.Status`.
 fn connect_error_from_json(err: &Value) -> GrpcError {
     let code = err
         .get("code")
@@ -374,10 +315,6 @@ fn connect_error_from_json(err: &Value) -> GrpcError {
     GrpcError::with_details(code, message, details)
 }
 
-/// Build a structured [`GrpcError`] from grpc-web / Connect trailer status
-/// (`grpc-status` numeric + `grpc-message`). No details are available at the
-/// trailer level; grpc-web details ride in a data frame (see
-/// [`enrich_grpc_web_error`]).
 fn trailer_status_error(code_token: &str, message: String) -> GrpcError {
     GrpcError::new(grpc_code_from_token(code_token), message)
 }
@@ -386,6 +323,7 @@ impl From<WebResponse> for TransportResult {
     fn from(r: WebResponse) -> Self {
         TransportResult {
             messages: r.messages,
+            message_offsets_ms: r.message_offsets_ms,
             headers: r.headers,
             trailers: r.trailers,
             error: r.error,
@@ -439,8 +377,6 @@ async fn resolve_method(
     })
 }
 
-/// Load proto descriptor pool from local config files only.
-/// No network connection is made — avoids hanging on HTTP ports.
 fn load_descriptor_pool(config: &GrpcClientConfig) -> Result<DescriptorPool> {
     let desc_path = config
         .proto_config
@@ -535,8 +471,6 @@ async fn connect_rpc_unary_json(
         return Ok(WebResponse::http_error(status, &response_bytes, headers));
     }
 
-    // Try parsing as plain JSON first; fall back to Connect envelope framing
-    // if the server treated our unframed request as streaming.
     match serde_json::from_slice::<Value>(&response_bytes) {
         Ok(v) => {
             let mut error = None;
@@ -547,18 +481,18 @@ async fn connect_rpc_unary_json(
             let (response_headers, trailers) = split_connect_trailers(headers);
             return Ok(WebResponse {
                 messages: vec![v],
+                message_offsets_ms: vec![0],
                 headers: response_headers,
                 trailers,
                 error,
             });
         }
         Err(_) => {
-            // Not plain JSON — might be a Connect envelope response (server treated
-            // our unframed request as streaming). Try parsing as framed response.
             let (messages, trailers, error) = parse_connect_framed(&response_bytes, None, &headers);
             if !messages.is_empty() || error.is_some() {
                 return Ok(WebResponse {
                     messages,
+                    message_offsets_ms: vec![],
                     headers: HashMap::new(),
                     trailers,
                     error,
@@ -573,7 +507,6 @@ async fn connect_rpc_unary_json(
     ))
 }
 
-/// ConnectRPC binary unary: `application/proto`
 async fn connect_rpc_unary_proto(
     config: &GrpcClientConfig,
     service_name: &str,
@@ -620,13 +553,13 @@ async fn connect_rpc_unary_proto(
 
     Ok(WebResponse {
         messages: vec![result],
+        message_offsets_ms: vec![0],
         headers: response_headers,
         trailers,
         error,
     })
 }
 
-/// ConnectRPC streaming JSON: `application/connect+json` with Connect envelope framing
 async fn connect_rpc_stream_json(
     config: &GrpcClientConfig,
     service_name: &str,
@@ -662,17 +595,17 @@ async fn connect_rpc_stream_json(
         return Ok(WebResponse::http_error(status, &response_bytes, headers));
     }
 
-    let (messages, trailers, error) =
+    let (messages, message_offsets_ms, trailers, error) =
         parse_connect_stream(&mut body_stream, None, &headers).await?;
     Ok(WebResponse {
         messages,
+        message_offsets_ms,
         headers: public_response_headers(headers),
         trailers,
         error,
     })
 }
 
-/// ConnectRPC streaming proto: `application/connect+proto` with Connect envelope framing
 async fn connect_rpc_stream_proto(
     config: &GrpcClientConfig,
     service_name: &str,
@@ -709,24 +642,19 @@ async fn connect_rpc_stream_proto(
         return Ok(WebResponse::http_error(status, &response_bytes, headers));
     }
 
-    let (messages, trailers, error) =
+    let (messages, message_offsets_ms, trailers, error) =
         parse_connect_stream(&mut body_stream, Some(output_desc), &headers).await?;
     Ok(WebResponse {
         messages,
+        message_offsets_ms,
         headers: public_response_headers(headers),
         trailers,
         error,
     })
 }
 
-/// Request-metadata flag that opts a gRPC-Web call into text (base64) request
-/// framing. Set it from a `.gctf` OPTIONS/header section, e.g.
-/// `header: "grpc-web-text: true"`. Default (absent/false) sends binary
-/// `application/grpc-web+proto`/`+json`. The flag is consumed by the transport
-/// and never forwarded as an HTTP header (see [`send_http_post`]).
 const GRPC_WEB_TEXT_FLAG: &str = "grpc-web-text";
 
-/// Whether the configured request metadata opts into gRPC-Web text framing.
 fn grpc_web_text_enabled(config: &GrpcClientConfig) -> bool {
     config.metadata.as_ref().is_some_and(|m| {
         m.iter().any(|(k, v)| {
@@ -736,14 +664,6 @@ fn grpc_web_text_enabled(config: &GrpcClientConfig) -> bool {
     })
 }
 
-/// Frame a single gRPC-Web request message and pick its content type.
-///
-/// Applies per-message gzip when `config.compression` is `Gzip` (compressed
-/// frame flag `0x01`; the caller-side `grpc-encoding: gzip` header is added in
-/// [`send_http_post`]), prefixes the standard 5-byte length header, and — when
-/// [`grpc_web_text_enabled`] — base64-encodes the whole frame and switches the
-/// content type to the `grpc-web-text` variant. `base_content_type` is the
-/// binary type, e.g. `application/grpc-web+proto` or `application/grpc-web+json`.
 fn frame_grpc_web_request(
     payload: Vec<u8>,
     base_content_type: &str,
@@ -792,7 +712,6 @@ async fn grpc_web(
     grpc_web_json(config, service_name, method_name, request_body).await
 }
 
-/// Proper gRPC-Web JSON: `application/grpc-web+json` with 5-byte framing.
 async fn grpc_web_json(
     config: &GrpcClientConfig,
     service_name: &str,
@@ -820,40 +739,44 @@ async fn grpc_web_json(
         return Ok(WebResponse::http_error(status, &response_bytes, headers));
     }
 
-    let (mut messages, mut trailers, mut error) =
+    let (mut messages, mut message_offsets_ms, mut trailers, mut error) =
         parse_grpc_web_response(&mut body_stream, None, &headers).await?;
     apply_grpc_web_header_trailers(&headers, &mut trailers, &mut error);
     enrich_grpc_web_error(&mut messages, &mut error);
+    message_offsets_ms.truncate(messages.len());
 
     let response_headers = public_response_headers(headers);
 
     Ok(WebResponse {
         messages,
+        message_offsets_ms,
         headers: response_headers,
         trailers,
         error,
     })
 }
 
-/// Read a gRPC-Web response body, incrementally when possible. Binary framing is
-/// frame-decoded as chunks arrive ([`parse_grpc_web_stream`]); gRPC-Web *text*
-/// (`grpc-web-text`) encodes the whole stream as one base64 blob and so must be
-/// buffered before decoding — an honest limit of that framing.
 async fn parse_grpc_web_response<S>(
     body_stream: &mut S,
     output_desc: Option<&MessageDescriptor>,
     headers: &ResponseHeaders,
-) -> Result<(Vec<Value>, HashMap<String, String>, Option<GrpcError>)>
+) -> Result<(
+    Vec<Value>,
+    Vec<u64>,
+    HashMap<String, String>,
+    Option<GrpcError>,
+)>
 where
     S: Stream<Item = Result<Vec<u8>>> + Unpin,
 {
     if is_grpc_web_text(headers) {
         let raw = collect_stream(body_stream).await?;
         let framed = decode_grpc_web_body(raw, headers);
-        Ok(match output_desc {
+        let (messages, trailers, error) = match output_desc {
             Some(desc) => parse_grpc_web_framed_proto(&framed, desc),
             None => parse_grpc_web_framed_json(&framed),
-        })
+        };
+        Ok((messages, vec![], trailers, error))
     } else {
         parse_grpc_web_stream(body_stream, output_desc).await
     }
@@ -895,24 +818,18 @@ async fn grpc_web_binary(
         };
     }
 
-    let (messages, mut trailers, mut error) =
+    let (messages, message_offsets_ms, mut trailers, mut error) =
         parse_grpc_web_response(&mut body_stream, Some(output_desc), &headers).await?;
     apply_grpc_web_header_trailers(&headers, &mut trailers, &mut error);
     Ok(WebResponse {
         messages,
+        message_offsets_ms,
         headers: public_response_headers(headers),
         trailers,
         error,
     })
 }
 
-/// Frame multiple requests as a ConnectRPC envelope stream: one data frame per
-/// message, no end-of-stream frame. The protocol reserves the end-stream flag
-/// for responses -- "request streams must always leave this bit unset" -- and
-/// the end of the HTTP request body is what terminates a request stream.
-/// Returned per-frame so the same frames can either be concatenated into a
-/// buffered body ([`encode_multi_request`]) or streamed one chunk at a time
-/// ([`frames_to_body`]).
 fn frame_messages_connect(requests: &[Value]) -> Vec<Vec<u8>> {
     requests
         .iter()
@@ -923,8 +840,6 @@ fn frame_messages_connect(requests: &[Value]) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// Frame multiple requests as gRPC-Web data frames (flag 0x00), one per message.
-/// No explicit end-of-stream frame — connection close signals end in gRPC-Web.
 fn frame_messages_grpc_web(requests: &[Value]) -> Vec<Vec<u8>> {
     requests
         .iter()
@@ -939,18 +854,15 @@ fn frame_messages_grpc_web(requests: &[Value]) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// Encode one message as a single Connect data frame.
 pub(crate) fn encode_connect_frame(data: &[u8]) -> Vec<u8> {
     encode_connect_envelope(data, false)
 }
 
-/// Encode the empty end-of-stream frame a Connect server appends.
 #[cfg(test)]
 pub(crate) fn encode_connect_frame_end() -> Vec<u8> {
     encode_connect_envelope(b"", true)
 }
 
-/// Encode one message as a single gRPC-Web data frame.
 pub(crate) fn encode_grpc_web_frame(data: &[u8]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(data.len() + 5);
     frame.push(0x00);
@@ -959,8 +871,6 @@ pub(crate) fn encode_grpc_web_frame(data: &[u8]) -> Vec<u8> {
     frame
 }
 
-/// Payloads of every data frame in a framed body, skipping the trailers and
-/// end-of-stream frames that both protocols append.
 pub(crate) fn data_frame_payloads(data: &[u8]) -> Vec<Vec<u8>> {
     let mut decoder = FrameDecoder::new();
     decoder.extend(data);
@@ -975,17 +885,14 @@ pub(crate) fn data_frame_payloads(data: &[u8]) -> Vec<Vec<u8>> {
     payloads
 }
 
-/// Encode multiple requests as a ConnectRPC envelope stream (buffered).
 pub(crate) fn encode_multi_request(requests: &[Value]) -> Vec<u8> {
     frame_messages_connect(requests).concat()
 }
 
-/// Encode multiple requests as a gRPC-Web frame stream (buffered).
 pub(crate) fn encode_multi_request_grpc_web(requests: &[Value]) -> Vec<u8> {
     frame_messages_grpc_web(requests).concat()
 }
 
-/// Public wrapper for parse_connect_framed so client.rs can use it.
 pub(crate) fn parse_connect_framed_public(
     data: &[u8],
     output_desc: Option<&prost_reflect::MessageDescriptor>,
@@ -994,22 +901,13 @@ pub(crate) fn parse_connect_framed_public(
     parse_connect_framed(data, output_desc, headers)
 }
 
-/// Public wrapper for parse_grpc_web_framed_json so client.rs can use it.
 pub(crate) fn parse_grpc_web_framed_json_public(
     data: &[u8],
 ) -> (Vec<Value>, HashMap<String, String>, Option<GrpcError>) {
     parse_grpc_web_framed_json(data)
 }
 
-/// Fold structured error details from a gRPC-Web data frame into the status.
-/// grpc-web carries only `grpc-status`/`grpc-message` in trailers; when the
-/// server also emits a `google.rpc.Status` JSON as the last data frame (has
-/// `code` + `message`), promote its numeric code/message and attach its
-/// `details` array (as raw JSON-array bytes) to the [`GrpcError`], then drop the
-/// consumed message frame.
 pub(crate) fn enrich_grpc_web_error(messages: &mut Vec<Value>, error: &mut Option<GrpcError>) {
-    // Prefer the standard `grpc-status-details-bin` trailer: if it already
-    // supplied structured details, leave the data frame untouched.
     if error.as_ref().is_some_and(|e| !e.details.is_empty()) {
         return;
     }
@@ -1034,14 +932,8 @@ pub(crate) fn enrich_grpc_web_error(messages: &mut Vec<Value>, error: &mut Optio
     }
 }
 
-/// Default request timeout (seconds) applied only when no timeout is configured.
 const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 5;
 
-/// Resolve the HTTP request timeout for grpc-web/connect transports.
-///
-/// The configured timeout is honored verbatim; a floor is applied *only* when
-/// the value is 0 (unset), defaulting to [`DEFAULT_HTTP_TIMEOUT_SECS`]. An
-/// explicit small timeout (e.g. `OPTIONS.timeout: 1`) must never be inflated.
 fn effective_request_timeout_secs(configured: u64) -> u64 {
     if configured == 0 {
         DEFAULT_HTTP_TIMEOUT_SECS
@@ -1050,8 +942,6 @@ fn effective_request_timeout_secs(configured: u64) -> u64 {
     }
 }
 
-/// What makes two reqwest clients interchangeable. `connection_id` belongs here
-/// too: one client per slot is what makes `--connections` mean anything.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct HttpClientCacheKey {
     timeout_seconds: u64,
@@ -1067,7 +957,6 @@ fn http_client_cache_key(config: &GrpcClientConfig) -> HttpClientCacheKey {
     }
 }
 
-/// Sized so a large `--connections` pool fits; a rebuild drops a live pool.
 const HTTP_CLIENT_CACHE_MAX_ENTRIES: usize = 512;
 
 struct BoundedHttpClientCache {
@@ -1100,9 +989,6 @@ static HTTP_CLIENT_CACHE: LazyLock<Mutex<BoundedHttpClientCache>> = LazyLock::ne
     })
 });
 
-/// Return a process-global reqwest client for this config, building (and reading
-/// TLS PEM files) at most once per distinct effective config. `reqwest::Client`
-/// is `Send + Sync` and cheaply cloneable — clones share one connection pool.
 pub(crate) fn cached_http_client(config: &GrpcClientConfig) -> Result<reqwest::Client> {
     let key = http_client_cache_key(config);
     {
@@ -1117,8 +1003,6 @@ pub(crate) fn cached_http_client(config: &GrpcClientConfig) -> Result<reqwest::C
     Ok(client)
 }
 
-/// Build the reqwest client for gRPC-Web / ConnectRPC calls, applying the
-/// full TLS configuration: skip-verify, custom CA, and client identity (mTLS).
 pub(crate) fn build_http_client(config: &GrpcClientConfig) -> Result<reqwest::Client> {
     let user_agent = format!("grpctestify/{}", env!("CARGO_PKG_VERSION"));
 
@@ -1180,8 +1064,6 @@ pub(crate) fn build_http_client(config: &GrpcClientConfig) -> Result<reqwest::Cl
     })
 }
 
-/// Resolve the POST URL for a service/method, honoring an explicit scheme in
-/// `config.address` and defaulting to https when TLS is configured.
 fn request_url(config: &GrpcClientConfig, service_name: &str, method_name: &str) -> String {
     let path = format!("/{}/{}", service_name, method_name);
     let scheme = if config.tls_config.is_some() {
@@ -1196,8 +1078,6 @@ fn request_url(config: &GrpcClientConfig, service_name: &str, method_name: &str)
     }
 }
 
-/// Build the POST request (URL, content type, compression header, user metadata)
-/// short of the body — shared by the buffered and streaming send paths.
 fn build_post_request(
     config: &GrpcClientConfig,
     url: &str,
@@ -1206,17 +1086,12 @@ fn build_post_request(
     let http_client = cached_http_client(config)?;
     let mut http_req = http_client.post(url).header("Content-Type", content_type);
 
-    // Advertise request compression with the header this content type expects
-    // (grpc-encoding / connect-content-encoding / content-encoding). The body
-    // is gzipped by the caller before it reaches here.
     if let Some((name, value)) = compression_header(content_type, config) {
         http_req = http_req.header(name, value);
     }
 
     if let Some(ref metadata) = config.metadata {
         for (k, v) in metadata {
-            // `user-agent` is set on the client; `grpc-web-text` is an internal
-            // transport flag, not a wire header.
             if k.eq_ignore_ascii_case("user-agent") || k.eq_ignore_ascii_case(GRPC_WEB_TEXT_FLAG) {
                 continue;
             }
@@ -1250,12 +1125,6 @@ pub(crate) async fn send_http_post(
     Ok((status, response_bytes.to_vec(), headers))
 }
 
-/// Send a POST whose request body may itself be a stream ([`frames_to_body`]) and
-/// return the response's status/headers plus an incremental body-chunk stream —
-/// the client half of streaming: request frames go out as they are produced and
-/// response frames are read as they arrive. The returned stream yields the raw
-/// body bytes; frame decoding is the caller's (see [`parse_grpc_web_stream`] /
-/// [`parse_connect_stream`]).
 async fn send_http(
     config: &GrpcClientConfig,
     service_name: &str,
@@ -1282,15 +1151,22 @@ async fn send_http(
     Ok((status, headers, stream))
 }
 
-/// Drain a response body-chunk stream into one buffer — used for the buffered
-/// sub-cases of a streaming send (HTTP errors, gRPC-Web text base64 bodies).
+const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+
 async fn collect_stream<S>(mut chunks: S) -> Result<Vec<u8>>
 where
     S: Stream<Item = Result<Vec<u8>>> + Unpin,
 {
     let mut buf = Vec::new();
     while let Some(chunk) = chunks.next().await {
-        buf.extend_from_slice(&chunk?);
+        let chunk = chunk?;
+        if buf.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            return Err(anyhow!(
+                "the response is larger than {} MiB, which is more than the client keeps in memory",
+                MAX_RESPONSE_BYTES / (1024 * 1024)
+            ));
+        }
+        buf.extend_from_slice(&chunk);
     }
     Ok(buf)
 }
@@ -1359,8 +1235,6 @@ fn parse_grpc_web_trailers(
 ) {
     let text = String::from_utf8_lossy(payload);
     for line in text.lines() {
-        // gRPC-Web / tonic-web emit `grpc-status:0` with NO space after the colon;
-        // split on the first ':' and trim so both `key:value` and `key: value` work.
         if let Some((k, v)) = line.split_once(':') {
             trailers.insert(k.trim().to_ascii_lowercase(), percent_decode(v.trim()));
         }
@@ -1368,9 +1242,6 @@ fn parse_grpc_web_trailers(
     if let Some(status) = trailers.get("grpc-status").filter(|s| *s != "0") {
         let msg = trailers.get("grpc-message").cloned().unwrap_or_default();
         let mut err = trailer_status_error(status, msg);
-        // Standard gRPC-Web error details ride in the `grpc-status-details-bin`
-        // trailer as base64 of a `google.rpc.Status` proto — the SAME shape the
-        // tonic path produces, so `decode_status_details` handles both uniformly.
         if let Some(details_b64) = trailers.get("grpc-status-details-bin")
             && let Some(bytes) = base64_decode_lenient(details_b64.as_bytes())
         {
@@ -1380,14 +1251,6 @@ fn parse_grpc_web_trailers(
     }
 }
 
-/// gRPC-Web "Trailers-Only" fallback. For an immediate RPC error tonic-web (and
-/// gRPC-Web generally) reply HTTP 200 with an EMPTY body and carry
-/// `grpc-status`/`grpc-message`/`grpc-status-details-bin` in the HTTP RESPONSE
-/// HEADERS — there is no in-body trailer frame. When the framed body yielded no
-/// in-body trailers, mirror those headers into `trailers` and, for a non-zero
-/// status, build the structured [`GrpcError`] (decoding `grpc-status-details-bin`
-/// as the same `google.rpc.Status` base64 the in-body trailer path handles).
-/// In-body trailers win: if the body already produced a `grpc-status`, do nothing.
 fn apply_grpc_web_header_trailers(
     headers: &ResponseHeaders,
     trailers: &mut HashMap<String, String>,
@@ -1421,9 +1284,6 @@ fn apply_grpc_web_header_trailers(
     }
 }
 
-/// Materialize a gRPC-Web data-frame payload, gunzipping it when the frame's
-/// compressed flag (`0x01`) is set. Returns `None` for a trailer frame (`0x80`)
-/// or when decompression fails.
 fn grpc_web_frame_data(flags: u8, raw: &[u8]) -> Option<Vec<u8>> {
     if flags & 0x80 != 0 {
         return None;
@@ -1435,10 +1295,6 @@ fn grpc_web_frame_data(flags: u8, raw: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-/// Fold one gRPC-Web frame (JSON payloads) into the running result. A trailer
-/// frame (`0x80`) updates trailers/error; a data frame is gunzipped as needed
-/// and pushed as a JSON message. Shared by the buffered and streaming parsers so
-/// both yield identical output.
 fn push_grpc_web_frame_json(
     flags: u8,
     raw: &[u8],
@@ -1455,7 +1311,6 @@ fn push_grpc_web_frame_json(
     }
 }
 
-/// gRPC-Web frame handler for protobuf payloads (see [`push_grpc_web_frame_json`]).
 fn push_grpc_web_frame_proto(
     flags: u8,
     raw: &[u8],
@@ -1520,22 +1375,24 @@ fn parse_grpc_web_framed_proto(
     (messages, trailers, error)
 }
 
-/// Incrementally parse a gRPC-Web response as its body chunks arrive off the
-/// wire. Frames are decoded and emitted as soon as they are complete, so
-/// server-streaming/bidi messages surface without buffering the whole body.
-/// `output_desc` selects protobuf vs JSON decoding. Chunk boundaries are
-/// irrelevant — a frame split across chunks reassembles in [`FrameDecoder`].
 async fn parse_grpc_web_stream<S>(
     mut chunks: S,
     output_desc: Option<&MessageDescriptor>,
-) -> Result<(Vec<Value>, HashMap<String, String>, Option<GrpcError>)>
+) -> Result<(
+    Vec<Value>,
+    Vec<u64>,
+    HashMap<String, String>,
+    Option<GrpcError>,
+)>
 where
     S: Stream<Item = Result<Vec<u8>>> + Unpin,
 {
     let mut decoder = FrameDecoder::new();
     let mut messages = Vec::new();
+    let mut offsets_ms = Vec::new();
     let mut trailers = HashMap::new();
     let mut error = None;
+    let started = std::time::Instant::now();
 
     while let Some(chunk) = chunks.next().await {
         decoder.extend(&chunk?);
@@ -1557,10 +1414,13 @@ where
                     &mut error,
                 ),
             }
+            let arrived = started.elapsed().as_millis() as u64;
+            while offsets_ms.len() < messages.len() {
+                offsets_ms.push(arrived);
+            }
         }
     }
 
-    // Same unframed-body fallback the buffered proto parser applies.
     if let Some(desc) = output_desc
         && messages.is_empty()
         && trailers.is_empty()
@@ -1568,9 +1428,10 @@ where
         && let Ok(msg) = DynamicMessage::decode(desc.clone(), decoder.remaining())
     {
         messages.push(dynamic_message_to_json(&msg));
+        offsets_ms.push(started.elapsed().as_millis() as u64);
     }
 
-    Ok((messages, trailers, error))
+    Ok((messages, offsets_ms, trailers, error))
 }
 
 fn dynamic_message_to_json(msg: &DynamicMessage) -> Value {
@@ -1623,18 +1484,11 @@ fn make_test_message(desc: &MessageDescriptor) -> DynamicMessage {
     DynamicMessage::deserialize(desc.clone(), &mut de).unwrap()
 }
 
-/// Encode a ConnectRPC envelope frame.
-/// Per spec: bit 0 = compressed, bit 1 = end_stream.
-/// See: https://connectrpc.com/docs/protocol/#streaming-rpcs
 fn encode_connect_envelope(data: &[u8], end_stream: bool) -> Vec<u8> {
-    // Uncompressed path cannot fail (gzip is the only fallible branch).
     encode_connect_envelope_compressed(data, end_stream, false)
         .expect("uncompressed envelope encoding is infallible")
 }
 
-/// Encode a ConnectRPC envelope, gzipping the payload and setting the compressed
-/// flag (bit 0) when `compress`. Used for Connect request compression; the
-/// matching `connect-content-encoding: gzip` header is added by the send layer.
 fn encode_connect_envelope_compressed(
     data: &[u8],
     end_stream: bool,
@@ -1657,13 +1511,6 @@ fn encode_connect_envelope_compressed(
     Ok(buf)
 }
 
-/// Parse a Connect end-of-stream message.
-///
-/// The Connect streaming protocol terminates a response with a frame (flag
-/// `0x02`) carrying `{"error"?: {code,message,details}, "metadata"?: {k:[v,…]}}`.
-/// `metadata` becomes trailers (so `@trailer`/`@has_trailer` work), and the
-/// error — nested under `"error"` for streaming, or flat for a defensive unary
-/// fallback — is carried as a structured [`GrpcError`].
 fn parse_connect_end_stream(
     payload: &[u8],
     trailers: &mut HashMap<String, String>,
@@ -1692,18 +1539,12 @@ fn parse_connect_end_stream(
         }
     }
 
-    // Streaming errors are nested under "error"; fall back to a flat body so a
-    // unary error envelope routed here is still understood.
     let err_obj = v.get("error").unwrap_or(&v);
     if err_obj.get("code").and_then(|c| c.as_str()).is_some() {
         *error = Some(connect_error_from_json(err_obj));
     }
 }
 
-/// Fold one Connect envelope into the running result. Shared by the buffered and
-/// streaming parsers. End-of-stream frames (`0x02`) surface metadata as trailers
-/// and the (nested or flat) error as a structured status; data frames decode as
-/// protobuf when `output_desc` is set, else JSON.
 fn push_connect_frame(
     flags: u8,
     payload: &[u8],
@@ -1715,7 +1556,6 @@ fn push_connect_frame(
 ) {
     let is_end_stream = flags & 0x02 != 0;
     if is_end_stream && payload.is_empty() {
-        // End stream with no data — check headers for error.
         if let Some(status) = headers.get("grpc-status").filter(|s| *s != "0") {
             let msg = headers.get("grpc-message").cloned().unwrap_or_default();
             *error = Some(trailer_status_error(status, msg));
@@ -1737,9 +1577,6 @@ fn push_connect_frame(
     }
 }
 
-/// Fallback for a server that answered a streaming request with a single raw
-/// (unframed) message: reinterpret `[flags][len]` + trailing bytes as one
-/// payload. Applied only when framed parsing yielded nothing.
 fn connect_unframed_fallback(
     tail: &[u8],
     output_desc: Option<&MessageDescriptor>,
@@ -1788,21 +1625,25 @@ fn parse_connect_framed(
     (messages, trailers, error)
 }
 
-/// Incremental Connect response parser (see [`parse_grpc_web_stream`]): decodes
-/// envelope frames as body chunks arrive, surfacing streamed messages and the
-/// end-of-stream trailers/error without buffering the whole response.
 async fn parse_connect_stream<S>(
     mut chunks: S,
     output_desc: Option<&MessageDescriptor>,
     headers: &HashMap<String, String>,
-) -> Result<(Vec<Value>, HashMap<String, String>, Option<GrpcError>)>
+) -> Result<(
+    Vec<Value>,
+    Vec<u64>,
+    HashMap<String, String>,
+    Option<GrpcError>,
+)>
 where
     S: Stream<Item = Result<Vec<u8>>> + Unpin,
 {
     let mut decoder = FrameDecoder::new();
     let mut messages = Vec::new();
+    let mut offsets_ms = Vec::new();
     let mut trailers = HashMap::new();
     let mut error = None;
+    let started = std::time::Instant::now();
 
     while let Some(chunk) = chunks.next().await {
         decoder.extend(&chunk?);
@@ -1816,14 +1657,22 @@ where
                 &mut trailers,
                 &mut error,
             );
+            let arrived = started.elapsed().as_millis() as u64;
+            while offsets_ms.len() < messages.len() {
+                offsets_ms.push(arrived);
+            }
         }
     }
 
     if messages.is_empty() && trailers.is_empty() && error.is_none() {
         connect_unframed_fallback(decoder.remaining(), output_desc, &mut messages);
+        let arrived = started.elapsed().as_millis() as u64;
+        while offsets_ms.len() < messages.len() {
+            offsets_ms.push(arrived);
+        }
     }
 
-    Ok((messages, trailers, error))
+    Ok((messages, offsets_ms, trailers, error))
 }
 
 #[cfg(test)]
@@ -1833,7 +1682,6 @@ mod tests {
 
     #[test]
     fn request_timeout_honors_explicit_small_values() {
-        // A configured sub-5s timeout must not be inflated.
         assert_eq!(effective_request_timeout_secs(1), 1);
         assert_eq!(effective_request_timeout_secs(3), 3);
         assert_eq!(effective_request_timeout_secs(60), 60);
@@ -1841,13 +1689,11 @@ mod tests {
 
     #[test]
     fn request_timeout_applies_default_only_when_unset() {
-        // Only an unset (0) timeout falls back to the default floor.
         assert_eq!(effective_request_timeout_secs(0), DEFAULT_HTTP_TIMEOUT_SECS);
     }
 
     #[test]
     fn parse_grpc_web_trailers_handles_no_space_after_colon() {
-        // Real tonic-web / gRPC-Web emit `grpc-status:0` with NO space after ':'.
         let mut trailers = HashMap::new();
         let mut error = None;
         parse_grpc_web_trailers(
@@ -1859,7 +1705,6 @@ mod tests {
         assert_eq!(trailers.get("grpc-message").map(String::as_str), Some("ok"));
         assert!(error.is_none(), "status 0 is not an error");
 
-        // A non-zero no-space status trailer must still build the error.
         let mut trailers = HashMap::new();
         let mut error = None;
         parse_grpc_web_trailers(
@@ -1874,11 +1719,9 @@ mod tests {
 
     #[test]
     fn header_only_error_builds_structured_grpc_error() {
-        // Trailers-Only response: empty body, grpc-* status in the HTTP headers.
         let mut headers = ResponseHeaders::new();
         headers.insert("grpc-status".to_string(), "5".to_string());
         headers.insert("grpc-message".to_string(), "greeting not found".to_string());
-        // Unpadded base64 of a google.rpc.Status (code=5, message="boom").
         headers.insert(
             "grpc-status-details-bin".to_string(),
             "CAUSBGJvb20".to_string(),
@@ -1899,13 +1742,11 @@ mod tests {
             err.details,
             vec![0x08, 0x05, 0x12, 0x04, b'b', b'o', b'o', b'm']
         );
-        // Status also surfaces as a trailer so `@trailer("grpc-status")` sees it.
         assert_eq!(trailers.get("grpc-status").map(String::as_str), Some("5"));
     }
 
     #[test]
     fn header_trailers_do_not_override_in_body_trailers() {
-        // In-body trailer frame already carried the status: headers must not clobber it.
         let mut headers = ResponseHeaders::new();
         headers.insert("grpc-status".to_string(), "5".to_string());
 
@@ -1917,7 +1758,6 @@ mod tests {
         assert!(error.is_none(), "in-body status 0 wins over header status");
     }
 
-    // Self-signed test certificate (CN=localhost, EC P-256) and its PKCS#8 key.
     const TEST_CERT_PEM: &str = "-----BEGIN CERTIFICATE-----
 MIIBfTCCASOgAwIBAgIUWcL1fmtrrhRDH/YETZY49ueE6y0wCgYIKoZIzj0EAwIw
 FDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDcxOTIwNTI1NloXDTM2MDcxNjIw
@@ -2006,7 +1846,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     fn build_http_client_invalid_ca_fails() {
         let dir = tempfile::tempdir().unwrap();
         let ca_path = dir.path().join("ca.pem");
-        // PEM framing with corrupt base64 payload.
         std::fs::write(
             &ca_path,
             "-----BEGIN CERTIFICATE-----\n!!!not-base64!!!\n-----END CERTIFICATE-----\n",
@@ -2018,8 +1857,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
             ..Default::default()
         });
         let err = build_http_client(&config).expect_err("corrupt CA must fail");
-        // reqwest defers certificate parsing to build(); the error must still
-        // point the user at the TLS files.
         assert!(
             err.to_string().contains("Invalid CA certificate")
                 || err.to_string().contains("TLS configuration invalid"),
@@ -2058,13 +1895,11 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     fn http_client_cache_key_distinguishes_tls_and_timeout() {
         let plain = GrpcClientConfig::default();
         let plain2 = GrpcClientConfig::default();
-        // Same effective config -> same key (client would be reused).
         assert_eq!(
             http_client_cache_key(&plain),
             http_client_cache_key(&plain2)
         );
 
-        // Differing insecure flag -> different key.
         let insecure = tls_test_config(crate::grpc::client::TlsConfig {
             insecure_skip_verify: true,
             ..Default::default()
@@ -2074,7 +1909,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
             http_client_cache_key(&insecure)
         );
 
-        // Differing timeout -> different key.
         let slower = GrpcClientConfig {
             timeout_seconds: 99,
             ..Default::default()
@@ -2085,10 +1919,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         );
     }
 
-    // Overflow used to clear the whole map, rebuilding every worker's client —
-    // and dropping its live connection pool — on each subsequent insert.
-    // `reqwest::Client::new` initialises TLS through a C library, which Miri
-    // cannot call.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn http_client_cache_evicts_only_the_oldest() {
@@ -2115,8 +1945,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         );
     }
 
-    // Without `connection_id` in the key every `--connections` slot shared one
-    // reqwest client, making the flag a silent no-op over connectrpc/grpc-web.
     #[test]
     fn http_client_cache_key_separates_connection_slots() {
         let first = GrpcClientConfig {
@@ -2140,8 +1968,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     #[test]
     #[cfg_attr(miri, ignore)]
     fn cached_http_client_reuses_same_config() {
-        // A unique timeout keeps this key from colliding with other tests that
-        // may populate the shared cache.
         let config = GrpcClientConfig {
             address: "localhost:8080".to_string(),
             timeout_seconds: 4242,
@@ -2157,8 +1983,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         assert!(HTTP_CLIENT_CACHE.lock().unwrap().get(&key).is_some());
         let len_after_first = HTTP_CLIENT_CACHE.lock().unwrap().map.len();
 
-        // A second call with the same config must hit the cache — no new entry,
-        // no PEM re-read, no rebuild.
         let _second = cached_http_client(&config).expect("second call reuses");
         assert_eq!(HTTP_CLIENT_CACHE.lock().unwrap().map.len(), len_after_first);
     }
@@ -2461,7 +2285,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         let pool = make_test_descriptor_pool();
         let desc = pool.get_message_by_name("test.TestResponse").unwrap();
         let val = dynamic_message_to_json(&DynamicMessage::new(desc));
-        // Empty message serializes to {} not null
         assert_eq!(val, json!({}));
     }
 
@@ -2498,9 +2321,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         assert_eq!(json["name"], "hello");
     }
 
-    // Was a byte-for-byte copy of the test above, so it asserted nothing new.
-    // The behaviour its name reached for — a field the descriptor doesn't know
-    // is refused rather than silently dropped — had no coverage at all.
     #[test]
     fn serialize_message_rejects_an_unknown_field() {
         let pool = make_test_descriptor_pool();
@@ -2539,15 +2359,13 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
 
     #[test]
     fn base64_decode_rejects_invalid() {
-        assert!(base64_decode(b"@@@@").is_none()); // invalid alphabet
-        assert!(base64_decode(b"abc").is_none()); // truncated (not multiple of 4)
-        assert!(base64_decode(b"ab=c").is_none()); // data after padding
+        assert!(base64_decode(b"@@@@").is_none());
+        assert!(base64_decode(b"abc").is_none());
+        assert!(base64_decode(b"ab=c").is_none());
     }
 
     #[test]
     fn decode_grpc_web_text_body_frames() {
-        // Build a binary gRPC-Web stream: one JSON data frame + a trailer frame,
-        // then base64 the whole thing as `application/grpc-web-text` does.
         let msg = json!({"reply": "hi"});
         let body = serde_json::to_vec(&msg).unwrap();
         let mut raw = vec![0x00];
@@ -2582,14 +2400,11 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
             "content-type".to_string(),
             "application/grpc-web+proto".to_string(),
         );
-        // Binary framing is not base64 — must pass through untouched.
         assert_eq!(decode_grpc_web_body(raw.clone(), &headers), raw);
     }
 
     #[test]
     fn parse_connect_end_stream_error_and_metadata() {
-        // Connect streaming end-of-stream: error nested under "error",
-        // trailers carried in "metadata" (values are arrays of strings).
         let end = json!({
             "error": {
                 "code": "resource_exhausted",
@@ -2614,7 +2429,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         let e = error.unwrap();
         assert_eq!(e.code, 8, "resource_exhausted maps to 8");
         assert_eq!(e.message, "quota hit");
-        // details are the JSON detail array serialized to bytes, verbatim.
         let details = String::from_utf8(e.details.clone()).unwrap();
         assert!(details.contains("RetryInfo"), "details missing: {details}");
     }
@@ -2636,7 +2450,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     #[test]
     fn parse_connect_framed_streaming_end_stream_surfaces_trailers_and_error() {
         let headers = HashMap::new();
-        // A data frame, then a Connect end-of-stream frame with nested error + metadata.
         let mut framed =
             encode_connect_envelope(&serde_json::to_vec(&json!({"n": 1})).unwrap(), false);
         let end = json!({
@@ -2707,9 +2520,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
 
     #[test]
     fn connect_error_json_builds_structured_grpc_error() {
-        // A Connect error JSON with details must yield a GrpcError with the
-        // numeric code, the message, and the detail array as raw JSON bytes —
-        // no string round-trip.
         let err = json!({
             "code": "resource_exhausted",
             "message": "quota exceeded",
@@ -2724,8 +2534,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
 
     #[test]
     fn grpc_web_trailer_and_details_build_structured_grpc_error() {
-        // grpc-web reports the status numerically in the trailer frame, with the
-        // structured google.rpc.Status (code/message/details) as a data frame.
         let status_msg = "denied: code=42 message=nested details=[x]";
         let status_json = json!({
             "code": 7,
@@ -2742,12 +2550,9 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         data.extend_from_slice(trailer);
 
         let (mut messages, _trailers, mut error) = parse_grpc_web_framed_json(&data);
-        // Trailer frame yields the numeric code + trailer message.
         let te = error.clone().unwrap();
         assert_eq!(te.code, 7, "grpc-status: 7 -> 7");
         assert_eq!(te.message, "permission denied");
-        // The data frame promotes the richer google.rpc.Status (verbatim message
-        // with `code=` markers + details as raw JSON-array bytes).
         enrich_grpc_web_error(&mut messages, &mut error);
         let e = error.unwrap();
         assert_eq!(e.code, 7);
@@ -2759,10 +2564,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
 
     #[test]
     fn error_message_containing_code_marker_survives_verbatim() {
-        // Regression: the old string parser re-parsed a formatted
-        // `code=/message=/details=[` string and corrupted any message that
-        // itself contained those markers. Structurally, the message is carried
-        // byte-for-byte and the code stays correct.
         let nasty = "bad request: code=42 message=nested details=[inline]";
         let err = json!({
             "code": "invalid_argument",
@@ -2774,7 +2575,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         assert_eq!(e.message, nasty, "message must survive verbatim");
         assert_eq!(e.details, json!([{"k": "v"}]).to_string().into_bytes());
 
-        // Same guarantee through the Connect end-of-stream parser.
         let end = json!({"error": {"code": "internal", "message": nasty}});
         let mut trailers = HashMap::new();
         let mut error = None;
@@ -2788,13 +2588,9 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         assert_eq!(e.message, nasty);
     }
 
-    // GAP 1 — standard gRPC-Web error details via `grpc-status-details-bin`.
-
-    /// Hand-encode a `google.rpc.Status` proto (field 1 = code varint,
-    /// field 2 = message string) — the same shape the tonic path emits.
     fn encode_status_proto(code: u8, message: &str) -> Vec<u8> {
-        let mut buf = vec![0x08, code]; // field 1 (code), varint
-        buf.push(0x12); // field 2 (message), length-delimited
+        let mut buf = vec![0x08, code];
+        buf.push(0x12);
         buf.push(message.len() as u8);
         buf.extend_from_slice(message.as_bytes());
         buf
@@ -2820,8 +2616,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         assert_eq!(trailers.get("grpc-status").unwrap(), "9");
         let e = error.unwrap();
         assert_eq!(e.code, 9);
-        // details are the proto-encoded google.rpc.Status bytes verbatim — the
-        // SAME bytes the native gRPC path stores, so decode_status_details works.
         assert_eq!(e.details, status);
     }
 
@@ -2839,9 +2633,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
 
     #[test]
     fn grpc_web_status_details_bin_preferred_over_data_frame() {
-        // A data frame carrying a google.rpc.Status JSON (the legacy heuristic
-        // source) plus a standard grpc-status-details-bin trailer: the trailer
-        // wins and the data frame is left intact.
         let status = encode_status_proto(7, "denied");
         let status_json = json!({"code": 7, "message": "denied", "details": [{"x": "y"}]});
         let body = serde_json::to_vec(&status_json).unwrap();
@@ -2874,8 +2665,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         assert_eq!(base64_decode_lenient(unpadded.as_bytes()).unwrap(), data);
     }
 
-    // GAP 2 — gRPC-Web text (base64) REQUEST mode.
-
     fn grpc_web_text_config() -> GrpcClientConfig {
         GrpcClientConfig {
             protocol: WireProtocol::GrpcWeb,
@@ -2890,9 +2679,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     #[test]
     fn grpc_web_text_flag_detection() {
         assert!(grpc_web_text_enabled(&grpc_web_text_config()));
-        // Absent flag -> binary (default).
         assert!(!grpc_web_text_enabled(&GrpcClientConfig::default()));
-        // Falsey value -> binary.
         let off = GrpcClientConfig {
             metadata: Some(HashMap::from([(
                 GRPC_WEB_TEXT_FLAG.to_string(),
@@ -2913,11 +2700,9 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
             frame_grpc_web_request(payload, "application/grpc-web+json", &config).unwrap();
         assert_eq!(content_type, "application/grpc-web-text+json");
 
-        // The body is base64 of a normal (uncompressed) framed message.
         let framed = base64_decode(&body).unwrap();
         assert_eq!(framed[0], 0x00, "uncompressed data-frame flag");
 
-        // Round-trip through the response decoder path (text bodies are base64).
         let mut headers = HashMap::new();
         headers.insert("content-type".to_string(), content_type);
         let decoded = decode_grpc_web_body(body, &headers);
@@ -2937,14 +2722,11 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         assert_eq!(&body[5..], b"raw", "payload unframed and unencoded");
     }
 
-    // GAP 3 — gzip compression on the HTTP transports.
-
     #[test]
     fn gzip_framed_message_roundtrips() {
-        // compress -> frame (compressed flag) -> deframe -> decompress -> original
         let original = b"hello gzip world, this string is long enough to compress";
         let compressed = gzip_compress(original).unwrap();
-        let mut framed = vec![0x01]; // per-message compressed flag
+        let mut framed = vec![0x01];
         framed.extend_from_slice(&(compressed.len() as u32).to_be_bytes());
         framed.extend_from_slice(&compressed);
 
@@ -2982,25 +2764,18 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
             frame_grpc_web_request(payload.clone(), "application/grpc-web+proto", &config).unwrap();
         assert_eq!(content_type, "application/grpc-web+proto");
         assert_eq!(body[0], 0x01, "compressed data-frame flag set");
-        // Frame body deframes+gunzips back to the original payload.
         let raw = &body[5..];
         assert_eq!(grpc_web_frame_data(0x01, raw).unwrap(), payload);
     }
-
-    // TASK 1 — streaming request body: the incremental frame stream must equal
-    // the buffered body, frame-for-frame and in order.
 
     #[test]
     fn streaming_connect_request_frames_equal_buffered_body() {
         let reqs = vec![json!({"seq": 0}), json!({"seq": 1}), json!({"seq": 2})];
         let frames = frame_messages_connect(&reqs);
 
-        // One data frame per message, no end-of-stream frame on a request.
         assert_eq!(frames.len(), reqs.len());
-        // Concatenating the streamed frames reproduces the buffered body exactly.
         assert_eq!(frames.concat(), encode_multi_request(&reqs));
 
-        // Each frame is one intact, in-order envelope.
         let headers = HashMap::new();
         for (i, frame) in frames.iter().enumerate() {
             let (msgs, _t, _e) = parse_connect_framed(frame, None, &headers);
@@ -3014,12 +2789,10 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         let reqs = vec![json!({"n": 1}), json!({"n": 2})];
         let frames = frame_messages_grpc_web(&reqs);
         assert_eq!(frames.len(), reqs.len());
-        // Each frame is a data frame (flag 0x00) and concatenation == buffered.
         assert!(frames.iter().all(|f| f[0] == 0x00));
         assert_eq!(frames.concat(), encode_multi_request_grpc_web(&reqs));
     }
 
-    /// Split `data` into `n`-ish byte chunks so a frame straddles boundaries.
     fn chunk_at(data: &[u8], boundaries: &[usize]) -> Vec<Vec<u8>> {
         let mut chunks = Vec::new();
         let mut prev = 0;
@@ -3031,13 +2804,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         chunks
     }
 
-    // TASK 1 — incremental response parsing: a framed body split at ARBITRARY
-    // chunk boundaries decodes to the same messages/trailers as the whole-buffer
-    // parser (chunk-boundary robustness).
-
-    /// These parse in-memory chunks and need no I/O driver. `#[tokio::test]`
-    /// builds one anyway, which pulls in mio and makes them unrunnable under
-    /// Miri.
     fn block_on<F: std::future::Future>(future: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread()
             .build()
@@ -3048,7 +2814,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     #[test]
     fn grpc_web_stream_parse_matches_buffered_across_chunk_boundaries() {
         block_on(async {
-            // Two JSON data frames + a trailer frame — a realistic server-stream body.
             let mut data = Vec::new();
             for m in [json!({"seq": 0}), json!({"seq": 1})] {
                 let body = serde_json::to_vec(&m).unwrap();
@@ -3064,13 +2829,11 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
             let (want_m, want_t, want_e) = parse_grpc_web_framed_json(&data);
             assert_eq!(want_m.len(), 2);
 
-            // Every single-cut split (including mid-frame-header and mid-payload)
-            // must reproduce the buffered result exactly.
             for cut in 1..data.len() {
                 let chunks = chunk_at(&data, &[cut]);
                 let stream =
                     futures::stream::iter(chunks.into_iter().map(Ok::<Vec<u8>, anyhow::Error>));
-                let (m, t, e) = parse_grpc_web_stream(Box::pin(stream), None).await.unwrap();
+                let (m, _o, t, e) = parse_grpc_web_stream(Box::pin(stream), None).await.unwrap();
                 assert_eq!(m, want_m, "messages differ at cut {cut}");
                 assert_eq!(t, want_t, "trailers differ at cut {cut}");
                 assert_eq!(e.is_some(), want_e.is_some(), "error differs at cut {cut}");
@@ -3081,7 +2844,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     #[test]
     fn connect_stream_parse_matches_buffered_across_chunk_boundaries() {
         block_on(async {
-            // Two data frames + a Connect end-of-stream frame carrying metadata.
             let mut data = Vec::new();
             for m in [json!({"seq": 0}), json!({"seq": 1})] {
                 data.extend_from_slice(&encode_connect_envelope(
@@ -3104,7 +2866,7 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
                 let chunks = chunk_at(&data, &[cut]);
                 let stream =
                     futures::stream::iter(chunks.into_iter().map(Ok::<Vec<u8>, anyhow::Error>));
-                let (m, t, _e) = parse_connect_stream(Box::pin(stream), None, &headers)
+                let (m, _o, t, _e) = parse_connect_stream(Box::pin(stream), None, &headers)
                     .await
                     .unwrap();
                 assert_eq!(m, want_m, "messages differ at cut {cut}");
@@ -3116,7 +2878,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     #[test]
     fn grpc_web_stream_parse_many_tiny_chunks() {
         block_on(async {
-            // A single frame delivered one byte at a time still decodes.
             let body = serde_json::to_vec(&json!({"reply": "hi"})).unwrap();
             let mut data = vec![0x00];
             data.extend_from_slice(&(body.len() as u32).to_be_bytes());
@@ -3125,30 +2886,24 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
             let chunks: Vec<Vec<u8>> = data.iter().map(|b| vec![*b]).collect();
             let stream =
                 futures::stream::iter(chunks.into_iter().map(Ok::<Vec<u8>, anyhow::Error>));
-            let (m, _t, _e) = parse_grpc_web_stream(Box::pin(stream), None).await.unwrap();
+            let (m, _o, _t, _e) = parse_grpc_web_stream(Box::pin(stream), None).await.unwrap();
             assert_eq!(m.len(), 1);
             assert_eq!(m[0]["reply"], "hi");
         });
     }
-
-    // TASK 2 — Connect request compression (gzip).
 
     #[test]
     fn connect_request_envelope_gzip_roundtrips_and_sets_flag() {
         let original = b"a connect request payload long enough to be worth compressing";
         let framed = encode_connect_envelope_compressed(original, false, true).unwrap();
 
-        // Compressed flag (bit 0) set, end-stream (bit 1) clear.
         assert_eq!(framed[0] & 0x01, 0x01, "compressed flag set");
         assert_eq!(framed[0] & 0x02, 0x00, "not end-of-stream");
 
-        // Deframe: length prefix matches the compressed payload, which gunzips
-        // back to the original.
         let len = u32::from_be_bytes([framed[1], framed[2], framed[3], framed[4]]) as usize;
         let payload = &framed[5..5 + len];
         assert_eq!(gzip_decompress(payload).unwrap(), original);
 
-        // Uncompressed default leaves the payload verbatim and the flag clear.
         let plain = encode_connect_envelope_compressed(original, false, false).unwrap();
         assert_eq!(plain[0], 0x00);
         assert_eq!(&plain[5..], original);
@@ -3161,17 +2916,14 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
             compression: CompressionMode::Gzip,
             ..Default::default()
         };
-        // gRPC-Web message compression.
         assert_eq!(
             compression_header("application/grpc-web+proto", &gz),
             Some(("grpc-encoding", "gzip"))
         );
-        // Connect streaming: per-envelope compression.
         assert_eq!(
             compression_header("application/connect+json", &gz),
             Some(("connect-content-encoding", "gzip"))
         );
-        // Connect unary: whole-body HTTP content encoding.
         assert_eq!(
             compression_header("application/proto", &gz),
             Some(("content-encoding", "gzip"))
@@ -3180,7 +2932,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
             compression_header("application/json", &gz),
             Some(("content-encoding", "gzip"))
         );
-        // Default (uncompressed) advertises nothing.
         assert_eq!(
             compression_header("application/proto", &GrpcClientConfig::default()),
             None
@@ -3205,10 +2956,8 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
     #[test]
     fn frame_decoder_reassembles_split_frames() {
         let mut dec = FrameDecoder::new();
-        // Feed a partial header — nothing complete yet.
         dec.extend(&[0x00, 0x00, 0x00]);
         assert!(dec.next_frame().is_none());
-        // Complete the header + payload across two more pushes.
         dec.extend(&[0x00, 0x02, 0xAA]);
         assert!(dec.next_frame().is_none(), "payload still short one byte");
         dec.extend(&[0xBB]);
@@ -3255,8 +3004,6 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
         assert!(decoder.next_frame().is_none());
     }
 
-    // "Request streams must always leave this bit unset" -- the end-stream flag
-    // is response-only, so no request frame may carry it.
     #[test]
     fn encode_multi_request_never_sets_the_end_stream_flag() {
         let body = encode_multi_request(&[serde_json::json!({"a": 1})]);
@@ -3267,5 +3014,42 @@ a9iy8oFRmGwJBQb5oxLGtdLhWOyhRANCAAQTC9x4TBp/gTmAGuIHWKFvEBrXpgRG
             assert_eq!(flags & 0x02, 0);
         }
         assert!(decoder.remaining().is_empty());
+    }
+    #[test]
+    fn a_stream_reports_an_arrival_offset_per_message() {
+        block_on(async {
+            let mut data = Vec::new();
+            for m in [json!({"seq": 0}), json!({"seq": 1})] {
+                let body = serde_json::to_vec(&m).unwrap();
+                data.push(0x00);
+                data.extend_from_slice(&(body.len() as u32).to_be_bytes());
+                data.extend_from_slice(&body);
+            }
+            let stream = futures::stream::iter(vec![Ok::<Vec<u8>, anyhow::Error>(data)]);
+            let (messages, offsets, _t, _e) =
+                parse_grpc_web_stream(Box::pin(stream), None).await.unwrap();
+            assert_eq!(messages.len(), 2);
+            assert_eq!(offsets.len(), messages.len(), "one offset per message");
+            assert!(offsets[0] <= offsets[1], "offsets are monotonic");
+        });
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[tokio::test]
+    async fn a_body_past_the_memory_cap_is_refused_before_it_is_held() {
+        let piece = vec![0u8; 8 * 1024 * 1024];
+        let chunks: Vec<Result<Vec<u8>>> = (0..5).map(|_| Ok(piece.clone())).collect();
+        let err = collect_stream(Box::pin(futures::stream::iter(chunks)))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("32 MiB"), "{err}");
+
+        let small = collect_stream(Box::pin(futures::stream::iter(vec![
+            Ok::<Vec<u8>, anyhow::Error>(vec![1, 2]),
+            Ok(vec![3]),
+        ])))
+        .await
+        .unwrap();
+        assert_eq!(small, vec![1, 2, 3]);
     }
 }

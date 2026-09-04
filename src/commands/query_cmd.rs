@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use crate::bench::sources::{
     SourceDefinition, SourceIndex, SourceReader, SourceRow, detect_format,
 };
@@ -34,11 +34,11 @@ pub fn handle_query(args: &QueryArgs) -> Result<()> {
             for entry in WalkDir::new(file)
                 .into_iter()
                 .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("gctf"))
+                .filter(|e| is_test_file(e.path()))
             {
                 load_gctf_file(entry.path(), &mut sources)?;
             }
-        } else if file.extension().and_then(|s| s.to_str()) == Some("gctf") {
+        } else if is_test_file(file) {
             load_gctf_file(file, &mut sources)?;
         } else {
             let name = file
@@ -53,7 +53,6 @@ pub fn handle_query(args: &QueryArgs) -> Result<()> {
     match decide_query_action(!args.files.is_empty(), args.query.is_some(), args.shell) {
         QueryAction::Shell => run_shell(sources, args)?,
         QueryAction::Execute => {
-            // `Execute` is only chosen when a query is present.
             let query = args.query.as_deref().unwrap_or_default();
             execute_query(query, &sources, args)?;
         }
@@ -63,37 +62,25 @@ pub fn handle_query(args: &QueryArgs) -> Result<()> {
     Ok(())
 }
 
-/// What `query` should do given the presence of file args, a `-q` query, and
-/// the `-s/--shell` flag.
 #[derive(Debug, PartialEq, Eq)]
 enum QueryAction {
-    /// Start the interactive shell.
     Shell,
-    /// Execute the provided `-q` query.
     Execute,
-    /// Files given but no query and no shell: preview the loaded sources.
     Preview,
 }
 
 fn decide_query_action(has_files: bool, has_query: bool, shell: bool) -> QueryAction {
     if shell {
-        // Explicit `-s/--shell` always starts the shell (sources preloaded).
         QueryAction::Shell
     } else if has_query {
         QueryAction::Execute
     } else if !has_files {
-        // No files, no query, no shell flag: default to the interactive shell.
         QueryAction::Shell
     } else {
-        // Files given but nothing to run: preview schema + sample rows so the
-        // command is never a silent no-op.
         QueryAction::Preview
     }
 }
 
-/// Print each loaded source's schema and a few sample rows. Used when files are
-/// given without a `-q` query or `-s/--shell` flag, so `query <file>` is
-/// informative rather than a silent success.
 fn preview_sources(sources: &SourceCollection) -> Result<()> {
     let mut names = sources.list_sources();
     names.sort();
@@ -128,7 +115,6 @@ fn detect_format_from_content(content: &str) -> Option<crate::bench::sources::So
     if first_line.contains('\t') && !first_line.contains(',') {
         Some(crate::bench::sources::SourceFormat::Tsv)
     } else if first_line.trim().starts_with('{') {
-        // Could be NDJSON - check if lines look like JSON objects
         if content
             .lines()
             .all(|l| l.trim().is_empty() || l.trim().starts_with('{'))
@@ -142,6 +128,12 @@ fn detect_format_from_content(content: &str) -> Option<crate::bench::sources::So
     } else {
         None
     }
+}
+
+fn is_test_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("gctf") || e.eq_ignore_ascii_case("httf"))
 }
 
 fn load_gctf_file(path: &Path, sources: &mut SourceCollection) -> Result<()> {
@@ -605,7 +597,6 @@ fn write_rows_to_output(
             }
         }
         _ => {
-            // table format
             let widths: Vec<usize> = columns
                 .iter()
                 .map(|col| {
@@ -842,7 +833,6 @@ impl QuerySource for DirectFileSource {
             Some(r) => r,
             None => return vec![],
         };
-        // For NdjsonReader, we need to read the first row to discover headers
         if reader.headers().is_empty() {
             let _ = reader.next_row();
         }
@@ -854,7 +844,6 @@ impl QuerySource for DirectFileSource {
         let mut results = Vec::new();
         let mut headers = reader.headers().to_vec();
 
-        // For NdjsonReader, headers are populated after first next_row() call
         if headers.is_empty()
             && let Some(row) = reader.next_row()?
         {
@@ -1094,11 +1083,18 @@ fn print_table(rows: &[HashMap<String, String>], columns: &[String], show_header
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn both_families_are_walked_for_sources() {
+        assert!(is_test_file(Path::new("a/b.gctf")));
+        assert!(is_test_file(Path::new("a/b.HTTF")));
+        assert!(!is_test_file(Path::new("a/b.csv")));
+        assert!(!is_test_file(Path::new("gctf")));
+    }
     use super::*;
 
     #[test]
     fn shell_flag_forces_shell() {
-        // -s wins regardless of files/query.
         assert_eq!(decide_query_action(false, false, true), QueryAction::Shell);
         assert_eq!(decide_query_action(true, false, true), QueryAction::Shell);
         assert_eq!(decide_query_action(true, true, true), QueryAction::Shell);
@@ -1120,7 +1116,6 @@ mod tests {
 
     #[test]
     fn file_without_query_previews() {
-        // `query <file>` with no -q and no -s must not be a silent no-op.
         assert_eq!(
             decide_query_action(true, false, false),
             QueryAction::Preview

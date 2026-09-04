@@ -3,10 +3,6 @@ use crate::grpc::{GrpcClient, GrpcClientConfig, TlsConfig, WireProtocol};
 use anyhow::Result;
 use std::time::Duration;
 
-/// Resolve `--tls`/`--insecure` into a `TlsConfig` (or `None` for the
-/// existing plaintext-by-default behaviour). `--tls` is new: previously
-/// `--insecure` was the only way to get a TLS connection at all (skipping
-/// verification), with no way to request a *verified* TLS connection.
 fn resolve_tls_config(tls: bool, insecure: bool) -> Option<TlsConfig> {
     (tls || insecure).then(|| super::tls_config_from_flags(None, None, None, insecure))
 }
@@ -18,10 +14,6 @@ fn client_config(args: &HealthArgs) -> GrpcClientConfig {
         tls_config: resolve_tls_config(args.tls, args.insecure),
         proto_config: None,
         metadata: None,
-        // Load the full reflection set (ListServices) rather than resolving a
-        // single symbol: some servers (e.g. gripmock) don't answer
-        // FileContainingSymbol for the health service, but do list it. The
-        // health descriptor ends up in the pool either way.
         target_service: None,
         compression: crate::grpc::CompressionMode::None,
         connection_id: 0,
@@ -33,12 +25,6 @@ fn client_config(args: &HealthArgs) -> GrpcClientConfig {
     }
 }
 
-/// One service's check outcome. `status` is the raw health status string
-/// (`SERVING`/`NOT_SERVING`/`UNKNOWN`) or `UNREACHABLE` when the connection
-/// itself failed (server not up yet, wrong port, ...) — kept as data rather
-/// than an early `Err` so callers checking multiple services, or polling in
-/// `--watch` mode, can still see/report every service and keep retrying
-/// instead of aborting on the first failure.
 struct HealthResult {
     service: String,
     status: String,
@@ -67,9 +53,6 @@ impl HealthResult {
     }
 }
 
-/// The set of services to probe: `--service` repeated, or a single
-/// empty-string entry (the overall server check) when none were given —
-/// preserves the original single-check default behavior exactly.
 fn target_services(args: &HealthArgs) -> Vec<String> {
     if args.service.is_empty() {
         vec![String::new()]
@@ -78,11 +61,6 @@ fn target_services(args: &HealthArgs) -> Vec<String> {
     }
 }
 
-/// Probe every target service once, reusing a single connection. A
-/// connection failure (server not listening yet) is captured as
-/// `UNREACHABLE` on every service rather than propagated — the caller
-/// decides whether that's fatal (single check) or just "not ready yet"
-/// (`--watch`).
 async fn probe_once(args: &HealthArgs, services: &[String]) -> Vec<HealthResult> {
     let config = client_config(args);
     let mut client = match GrpcClient::new(config).await {

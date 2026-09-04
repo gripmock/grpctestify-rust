@@ -1,8 +1,3 @@
-//! Inlay hints for GCTF documents.
-//!
-//! Shows type information for variables in EXTRACT sections, section types,
-//! optimizer hints, and unused variable warnings.
-
 use crate::lsp::handlers;
 use crate::optimizer;
 use crate::parser;
@@ -38,14 +33,10 @@ pub fn build_inlay_hints(content: &str, range: Range) -> Vec<InlayHint> {
     let Ok(head) = parser::parse_gctf_from_str(content, "temp.gctf") else {
         return hints;
     };
-    // Built once per call (not per EXTRACT variable) — it scans the
-    // convention plugin directories and compiles every `.rhai` script found,
-    // too expensive to repeat per hint.
     let plugin_manager = crate::execution::plugin_dir::build_plugin_manager();
     let total_docs = head.document_count();
     for (doc_idx, d) in head.iter_chain().enumerate() {
         for section in &d.sections {
-            // start_line is already 0-based (the section header line).
             let section_line = section.start_line as u32;
             if section_line < range.start.line || section_line > range.end.line {
                 continue;
@@ -129,7 +120,6 @@ pub fn build_inlay_hints(content: &str, range: Range) -> Vec<InlayHint> {
                 }
             }
         }
-        // detached: collect_assertion_optimizations is chain-aware internally too
         let single = d.detached();
         for opt in
             optimizer::collect_assertion_optimizations(&single, optimizer::OptimizeLevel::Advisory)
@@ -157,7 +147,6 @@ pub fn build_inlay_hints(content: &str, range: Range) -> Vec<InlayHint> {
         }
     }
     for unused_var in handlers::collect_unused_variables(&head) {
-        // unused_var.line is already 0-based.
         let line_num = unused_var.line as u32;
         if line_num < range.start.line || line_num > range.end.line {
             continue;
@@ -170,10 +159,9 @@ pub fn build_inlay_hints(content: &str, range: Range) -> Vec<InlayHint> {
             label: InlayHintLabel::String("unused".to_string()),
             kind: Some(InlayHintKind::TYPE),
             text_edits: None,
-            tooltip: Some(InlayHintTooltip::String(format!(
-                "'{}' is extracted but never used in subsequent documents",
-                unused_var.name
-            ))),
+            tooltip: Some(InlayHintTooltip::String(
+                crate::lsp::handlers::unused_variable_message(&unused_var),
+            )),
             padding_left: Some(true),
             padding_right: None,
             data: None,

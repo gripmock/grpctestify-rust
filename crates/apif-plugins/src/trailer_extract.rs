@@ -1,6 +1,3 @@
-// Trailer plugin for EXTRACT section
-// Extracts values from gRPC metadata trailers
-
 use anyhow::Result;
 use serde_json::Value;
 
@@ -9,7 +6,6 @@ use crate::{
 };
 use apif_assert::engine::AssertionResult;
 
-/// Trailer plugin - extracts trailer values
 #[derive(Debug, Clone, Default)]
 pub struct TrailerExtractPlugin;
 
@@ -68,7 +64,6 @@ impl Plugin for TrailerExtractPlugin {
             }
         };
 
-        // Case-insensitive trailer lookup
         let value = trailers
             .iter()
             .find(|(k, _)| k.to_lowercase() == trailer_name)
@@ -81,7 +76,6 @@ impl Plugin for TrailerExtractPlugin {
     }
 }
 
-/// HasTrailer plugin - checks if trailer exists (returns boolean for assertions)
 #[derive(Debug, Clone, Default)]
 pub struct HasTrailerPlugin;
 

@@ -94,6 +94,7 @@ fn junit_reporter_skipped_test() {
     let mut results = grpctestify::state::TestResults::new();
     let skip_result = grpctestify::state::TestResult {
         name: "test_skip.gctf".to_string(),
+        family: "gctf".to_string(),
         status: grpctestify::state::TestStatus::Skip,
         duration_ms: 0,
         call_duration_ms: None,
@@ -128,6 +129,7 @@ fn json_reporter_on_suite_end() {
     let mut results = TestResults::new();
     let pass_result = TestResult {
         name: "test_pass.gctf".to_string(),
+        family: "gctf".to_string(),
         status: TestStatus::Pass,
         duration_ms: 50,
         call_duration_ms: Some(30),
@@ -157,7 +159,9 @@ fn json_reporter_on_suite_end() {
     assert!(json.get("total").is_some());
     assert!(json.get("passed").is_some());
     assert!(json.get("report_context").is_some());
-    assert_eq!(json["report_context"]["tool"], "apif");
+    /* A report names the tool someone installed, not the crate that formats
+    it: `apif` is a crate in this workspace and not a thing anyone can run. */
+    assert_eq!(json["report_context"]["tool"], "grpctestify");
     assert_eq!(json["total"], 1);
     assert_eq!(json["passed"], 1);
 }
@@ -199,6 +203,7 @@ fn json_reporter_round_trip() {
     let mut results = TestResults::new();
     results.add(TestResult {
         name: "test_a.gctf".to_string(),
+        family: "gctf".to_string(),
         status: TestStatus::Pass,
         duration_ms: 10,
         call_duration_ms: Some(5),
@@ -214,6 +219,7 @@ fn json_reporter_round_trip() {
     });
     results.add(TestResult {
         name: "test_b.gctf".to_string(),
+        family: "gctf".to_string(),
         status: TestStatus::Fail,
         duration_ms: 200,
         call_duration_ms: Some(150),
@@ -246,6 +252,7 @@ fn console_reporter_verbose_mode() {
         parallel_jobs: 1,
         sort_mode: "name".to_string(),
         dry_run: false,
+        warnings: Vec::new(),
     };
     let reporter = ConsoleReporter::new(ConsoleMode::Verbose, 1, env_info);
 
@@ -253,6 +260,7 @@ fn console_reporter_verbose_mode() {
     reporter.on_test_start("test_verbose.gctf");
     let result = TestResult {
         name: "test_verbose.gctf".to_string(),
+        family: "gctf".to_string(),
         status: TestStatus::Pass,
         duration_ms: 10,
         call_duration_ms: None,
@@ -277,12 +285,14 @@ fn console_reporter_dots_mode() {
         parallel_jobs: 2,
         sort_mode: "name".to_string(),
         dry_run: false,
+        warnings: Vec::new(),
     };
     let reporter = ConsoleReporter::new(ConsoleMode::Dots, 2, env_info);
 
     // Act: Emit dots
     let pass1 = TestResult {
         name: "test1.gctf".to_string(),
+        family: "gctf".to_string(),
         status: TestStatus::Pass,
         duration_ms: 10,
         call_duration_ms: None,
@@ -309,6 +319,7 @@ fn console_reporter_print_summary() {
         parallel_jobs: 1,
         sort_mode: "name".to_string(),
         dry_run: true,
+        warnings: Vec::new(),
     };
     let reporter = ConsoleReporter::new(ConsoleMode::Verbose, 3, env_info);
 
@@ -333,12 +344,14 @@ fn console_reporter_print_slowest_tests() {
         parallel_jobs: 1,
         sort_mode: "name".to_string(),
         dry_run: false,
+        warnings: Vec::new(),
     };
     let reporter = ConsoleReporter::new(ConsoleMode::Verbose, 3, env_info);
 
     let results = vec![
         TestResult {
             name: "fast.gctf".to_string(),
+            family: "gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 5,
             call_duration_ms: None,
@@ -354,6 +367,7 @@ fn console_reporter_print_slowest_tests() {
         },
         TestResult {
             name: "slow.gctf".to_string(),
+            family: "gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 500,
             call_duration_ms: None,
@@ -473,6 +487,7 @@ fn junit_reporter_tags_in_properties() {
     };
     results.add(TestResult {
         name: "test_tagged.gctf".to_string(),
+        family: "gctf".to_string(),
         status: TestStatus::Pass,
         duration_ms: 10,
         call_duration_ms: Some(5),
@@ -511,6 +526,7 @@ fn json_reporter_includes_meta() {
     };
     results.add(TestResult {
         name: "test.gctf".to_string(),
+        family: "gctf".to_string(),
         status: TestStatus::Pass,
         duration_ms: 10,
         call_duration_ms: Some(5),

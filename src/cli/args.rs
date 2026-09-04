@@ -2,16 +2,12 @@ use clap::builder::styling::{AnsiColor, Styles};
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Help styling that matches the console design language: bold-green section
-/// headers, bold-cyan flags/commands, plain placeholders. anstream strips these
-/// automatically when output is piped or `NO_COLOR` is set.
 const HELP_STYLES: Styles = Styles::styled()
     .header(AnsiColor::Green.on_default().bold())
     .usage(AnsiColor::Green.on_default().bold())
     .literal(AnsiColor::Cyan.on_default().bold())
     .placeholder(AnsiColor::White.on_default());
 
-/// Progress indicator modes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProgressMode {
     Dots,
@@ -32,7 +28,6 @@ impl std::str::FromStr for ProgressMode {
     }
 }
 
-/// Log format types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LogFormat {
     Console,
@@ -43,18 +38,15 @@ pub enum LogFormat {
     Html,
 }
 
-/// gRPC testing utility written in Rust
 #[derive(Parser, Debug)]
 #[command(name = "grpctestify")]
 #[command(author = "grpctestify team")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(styles = HELP_STYLES)]
-// The snail logo is attached at runtime in `main.rs` so it renders through the
-// same colour-aware path as the welcome screen (green on TTY, plain otherwise).
 #[command(
-    about = "Native, zero-dependency gRPC testing with .gctf files",
-    long_about = "Native, zero-dependency gRPC testing with .gctf files.\n\n\
-        Run declarative .gctf tests against gRPC / gRPC-Web / Connect endpoints,\n\
+    about = "Native, zero-dependency gRPC and HTTP testing with .gctf, .httf and .apif files",
+    long_about = "Native, zero-dependency gRPC and HTTP testing with .gctf, .httf and .apif files.\n\n\
+        Run declarative tests against gRPC / gRPC-Web / Connect and plain HTTP endpoints,\n\
         benchmark them, scaffold new tests from reflection, and explore APIs in a\n\
         web playground — all from a single self-contained binary.\n\n\
         Run `grpctestify` with no arguments for a quick tour.",
@@ -69,84 +61,90 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
-    // Flatten RunArgs to support implicit run command at top-level.
-    // This allows `grpctestify tests/` to work as expected.
     #[command(flatten)]
     pub run_args: RunArgs,
 
-    /// Enable verbose debug output
-    #[arg(short = 'v', long, global = true, default_value_t = false)]
+    #[arg(
+        short = 'v',
+        long,
+        global = true,
+        default_value_t = false,
+        help = "Enable verbose debug output"
+    )]
     pub verbose: bool,
 
-    /// Optimizer level (0=none, 1=safe, 2=advisory, 3=aggressive)
-    #[arg(long = "optimize", short = 'O', value_name = "LEVEL", global = true, default_value_t = String::new())]
+    #[arg(
+        long = "optimize",
+        short = 'O',
+        value_name = "LEVEL",
+        global = true,
+        default_value_t = String::new(),
+        help = "Optimizer level (0=none, layout, 1=safe, 2=advisory, 3=aggressive)"
+    )]
     pub optimize: String,
 
-    /// Install shell completion (bash, zsh, fish, elvish, powershell)
-    #[arg(long, value_name = "SHELL_TYPE", value_parser = ["bash", "zsh", "fish", "elvish", "powershell"])]
+    #[arg(
+        long,
+        value_name = "SHELL_TYPE",
+        value_parser = ["bash", "zsh", "fish", "elvish", "powershell"],
+        help = "Install shell completion (bash, zsh, fish, elvish, powershell)"
+    )]
     pub completion: Option<String>,
 }
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    // Authoring loop — write, validate, format.
-    /// Run .gctf tests (default)
+    #[command(about = "Run .gctf / .httf / .apif tests (default)")]
     Run(Box<RunArgs>),
-    /// Validate .gctf syntax & semantics
+    #[command(about = "Validate test file syntax & semantics")]
     Check(CheckArgs),
-    /// Format .gctf files in place
+    #[command(about = "Format test files in place")]
     Fmt(FmtArgs),
 
-    // Create tests from an existing API.
-    /// Generate a .gctf from proto/descriptor/reflection
+    #[command(about = "Generate a .gctf from proto/descriptor/reflection")]
     Scaffold(ScaffoldArgs),
-    /// Generate a .gctf from a captured invocation
+    #[command(about = "Generate a .gctf from a captured invocation")]
     Gen(GenArgs),
 
-    // Explore & understand.
-    /// List services & methods via server reflection
+    #[command(about = "List services & methods via server reflection")]
     Reflect(ReflectArgs),
-    /// Show a test's structure & metadata
+    #[command(about = "Show a test's structure & metadata")]
     Inspect(InspectArgs),
-    /// Explain a test's execution flow
+    #[command(about = "Explain a test's execution flow")]
     Explain(ExplainArgs),
-    /// Print the equivalent grpcurl command
+    #[command(about = "Print the equivalent grpcurl command")]
     Grpcurl(GrpcurlArgs),
-    /// List discovered .gctf test files
+    #[command(about = "List discovered test files")]
     List(ListArgs),
-    /// Generate Markdown API docs from .gctf test files
+    #[command(about = "Generate Markdown API docs from test files")]
     Docs(DocsArgs),
-    /// Visualize fixture setup/teardown topology and multi-document chains
+    #[command(about = "Visualize fixture setup/teardown topology and multi-document chains")]
     Graph(GraphArgs),
 
-    // Probe a running server.
-    /// Call a gRPC method without assertions
+    #[command(about = "Call a gRPC method or HTTP endpoint without assertions")]
     Call(CallArgs),
-    /// Check a server's gRPC health
+    #[command(about = "Check a server's gRPC health")]
     Health(HealthArgs),
 
-    // Performance.
-    /// Load-test endpoints
+    #[command(about = "Load-test endpoints")]
     Bench(BenchArgs),
-    /// Compare two bench reports & gate regressions
+    #[command(about = "Compare two bench reports & gate regressions")]
     BenchCompare(BenchCompareArgs),
-    /// Fold many bench reports into one matrix document
+    #[command(about = "Fold many bench reports into one matrix document")]
     BenchAggregate(BenchAggregateArgs),
 
-    // Data sources.
-    /// Build & manage data-source indexes
+    #[command(about = "Build & manage data-source indexes")]
     Index(IndexArgs),
-    /// Query a data source (CSV/TSV/NDJSON)
+    #[command(about = "Query a data source (CSV/TSV/NDJSON)")]
     Query(QueryArgs),
 
-    // Servers & tooling.
-    /// Launch the web playground
+    #[command(about = "Launch the web playground")]
     Play(PlayArgs),
-    /// Run the .gctf language server (LSP)
+    #[command(about = "Run the .gctf language server (LSP)")]
     Lsp(LspArgs),
 
-    /// Install/manage .rhai plugins from a git host
+    #[command(about = "Install/manage .rhai plugins from a git host")]
     Plugins(PluginsArgs),
 }
 
@@ -158,908 +156,1420 @@ pub struct PluginsArgs {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum PluginsAction {
-    /// Install a plugin from host/owner/repo[/subpath][@spec]
+    #[command(about = "Install a plugin from host/owner/repo[/subpath][@spec]")]
     Install(PluginsInstallArgs),
-    /// List installed plugins
+    #[command(about = "List installed plugins")]
     List(PluginsListArgs),
-    /// Remove an installed plugin
+    #[command(about = "Remove an installed plugin")]
     Remove(PluginsRemoveArgs),
-    /// Re-resolve and re-fetch installed plugins
+    #[command(about = "Re-resolve and re-fetch installed plugins")]
     Update(PluginsUpdateArgs),
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct PluginsInstallArgs {
-    /// host/owner/repo[/subpath][@spec] — spec is a tag/branch (exact) or
-    /// a semver range like ^1.2.0 (omit for the highest semver tag, or HEAD
-    /// if the repo has none)
+    #[arg(
+        help = "host/owner/repo[/subpath][@spec] — spec is a tag/branch (exact) or a semver range like ^1.2.0",
+        long_help = "host/owner/repo[/subpath][@spec] — spec is a tag/branch (exact) or a semver range like ^1.2.0 (omit for the highest semver tag, or HEAD if the repo has none)"
+    )]
     pub source: String,
 
-    /// Install to $HOME/.grpctestify instead of the project-local
-    /// ./.grpctestify
-    #[arg(short = 'g', long, default_value_t = false)]
+    #[arg(
+        short = 'g',
+        long,
+        default_value_t = false,
+        help = "Install to $HOME/.grpctestify instead of the project-local ./.grpctestify"
+    )]
     pub global: bool,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct PluginsListArgs {
-    #[arg(short = 'g', long, default_value_t = false)]
+    #[arg(
+        short = 'g',
+        long,
+        default_value_t = false,
+        help = "List the user-global tier ($HOME/.grpctestify) instead of the project-local one"
+    )]
     pub global: bool,
 
-    /// List both the project-local and user-global tiers
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "List both the project-local and user-global tiers"
+    )]
     pub all: bool,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct PluginsRemoveArgs {
-    /// host/owner/repo, as shown by `plugins list`
+    #[arg(help = "host/owner/repo, as shown by `plugins list`")]
     pub name: String,
 
-    #[arg(short = 'g', long, default_value_t = false)]
+    #[arg(
+        short = 'g',
+        long,
+        default_value_t = false,
+        help = "Remove from $HOME/.grpctestify instead of the project-local ./.grpctestify"
+    )]
     pub global: bool,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct PluginsUpdateArgs {
-    /// host/owner/repo to update (omit to update every installed plugin in the tier)
+    #[arg(help = "host/owner/repo to update (omit to update every installed plugin in the tier)")]
     pub name: Option<String>,
 
-    #[arg(short = 'g', long, default_value_t = false)]
+    #[arg(
+        short = 'g',
+        long,
+        default_value_t = false,
+        help = "Update the user-global tier ($HOME/.grpctestify) instead of the project-local one"
+    )]
     pub global: bool,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct ScaffoldArgs {
-    /// Fully-qualified method to scaffold (package.Service/Method)
-    #[arg(long, value_name = "SERVICE/METHOD", required = true)]
+    #[arg(
+        long,
+        value_name = "SERVICE/METHOD",
+        required = true,
+        help = "Fully-qualified method to scaffold (package.Service/Method)"
+    )]
     pub endpoint: String,
 
-    /// Proto file or directory to compile (pure-Rust protox, no protoc)
-    #[arg(long, value_name = "FILE_OR_DIR")]
+    #[arg(
+        long,
+        value_name = "FILE_OR_DIR",
+        help = "Proto file or directory to compile (pure-Rust protox, no protoc)"
+    )]
     pub proto: Option<PathBuf>,
 
-    /// Pre-compiled FileDescriptorSet (.protoset/.pb)
-    #[arg(long, value_name = "FILE")]
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "Pre-compiled FileDescriptorSet (.protoset/.pb)"
+    )]
     pub descriptor: Option<PathBuf>,
 
-    /// Load descriptors from server reflection at --address
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Load descriptors from server reflection at --address"
+    )]
     pub reflect: bool,
 
-    /// Server address (host:port)
-    #[arg(long, value_name = "ADDRESS")]
+    #[arg(long, value_name = "ADDRESS", help = "Server address (host:port)")]
     pub address: Option<String>,
 
-    /// Output file (stdout if omitted)
-    #[arg(short = 'o', long, value_name = "FILE")]
+    #[arg(
+        short = 'o',
+        long,
+        value_name = "FILE",
+        help = "Output file (stdout if omitted)"
+    )]
     pub output: Option<PathBuf>,
 
-    /// Overwrite the output file if it already exists
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Overwrite the output file if it already exists"
+    )]
     pub force: bool,
 
-    /// Use TLS with certificate verification
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Use TLS with certificate verification"
+    )]
     pub tls: bool,
 
-    /// Skip TLS certificate verification
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Skip TLS certificate verification"
+    )]
     pub insecure: bool,
 
-    /// Plaintext connection (no TLS)
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Plaintext connection (no TLS)")]
     pub plaintext: bool,
 
-    /// Wire protocol: grpc, grpc-web, connectrpc
-    #[arg(long, default_value = "grpc", value_name = "PROTOCOL")]
+    #[arg(
+        long,
+        default_value = "grpc",
+        value_name = "PROTOCOL",
+        help = "Wire protocol: grpc, grpc-web, connectrpc"
+    )]
     pub protocol: String,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct HealthArgs {
-    /// Server address (host:port)
-    #[arg(required = true, value_name = "ADDRESS")]
+    #[arg(
+        required = true,
+        value_name = "ADDRESS",
+        help = "Server address (host:port)"
+    )]
     pub address: String,
 
-    /// Wire protocol: grpc, grpc-web, connectrpc
-    #[arg(long, default_value = "grpc", value_name = "PROTOCOL")]
+    #[arg(
+        long,
+        default_value = "grpc",
+        value_name = "PROTOCOL",
+        help = "Wire protocol: grpc, grpc-web, connectrpc"
+    )]
     pub protocol: String,
 
-    /// Service name to check (repeatable; default: none — checks overall server health)
-    #[arg(long, value_name = "NAME")]
+    #[arg(
+        long,
+        value_name = "NAME",
+        help = "Service name to check (repeatable; default: none — checks overall server health)"
+    )]
     pub service: Vec<String>,
 
-    /// Output format: text, json
-    #[arg(long, default_value = "text", value_name = "FORMAT")]
+    #[arg(
+        long,
+        default_value = "text",
+        value_name = "FORMAT",
+        help = "Output format: text, json"
+    )]
     pub format: String,
 
-    /// Use TLS with certificate verification
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Use TLS with certificate verification"
+    )]
     pub tls: bool,
 
-    /// Skip TLS certificate verification
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Skip TLS certificate verification"
+    )]
     pub insecure: bool,
 
-    /// Timeout in seconds (per health-check RPC)
-    #[arg(long, default_value_t = 10, value_name = "SECS")]
+    #[arg(
+        long,
+        default_value_t = 10,
+        value_name = "SECS",
+        help = "Timeout in seconds (per health-check RPC)"
+    )]
     pub timeout: u64,
 
-    /// Poll until healthy instead of checking once (for CI readiness gating)
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Poll until healthy instead of checking once (for CI readiness gating)"
+    )]
     pub watch: bool,
 
-    /// Poll interval in seconds for --watch
-    #[arg(long, default_value_t = 1.0, value_name = "SECS")]
+    #[arg(
+        long,
+        default_value_t = 1.0,
+        value_name = "SECS",
+        help = "Poll interval in seconds for --watch"
+    )]
     pub interval: f64,
 
-    /// Give up waiting after this many seconds in --watch mode
-    #[arg(long, default_value_t = 60.0, value_name = "SECS")]
+    #[arg(
+        long,
+        default_value_t = 60.0,
+        value_name = "SECS",
+        help = "Give up waiting after this many seconds in --watch mode"
+    )]
     pub watch_timeout: f64,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct GrpcurlArgs {
-    /// File to convert
-    #[arg(required = true, value_name = "FILE")]
+    #[arg(required = true, value_name = "FILE", help = "File to convert")]
     pub file: PathBuf,
 
-    /// Document index for multi-document .gctf files (1-based)
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "N",
+        help = "Document index for multi-document files (1-based)"
+    )]
     pub doc_index: Option<usize>,
 
-    /// Output format: text, json
-    #[arg(long, default_value = "text", value_name = "FORMAT")]
+    #[arg(
+        long,
+        default_value = "text",
+        value_name = "FORMAT",
+        help = "Output format: text, json"
+    )]
     pub format: String,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct LspArgs {
-    /// Use stdio for communication (default)
-    #[arg(long, default_value_t = true)]
+    #[arg(
+        long,
+        default_value_t = true,
+        help = "Use stdio for communication (default)"
+    )]
     pub stdio: bool,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct BenchArgs {
-    /// Wire protocol: grpc, grpc-web, connectrpc
-    #[arg(long, default_value = "grpc", value_name = "PROTOCOL")]
+    #[arg(
+        long,
+        value_name = "ADDRESS",
+        conflicts_with = "calibrate",
+        help = "Server address (host:port) to load, overriding the files' ADDRESS and $GRPCTESTIFY_ADDRESS"
+    )]
+    pub address: Option<String>,
+
+    #[arg(
+        long,
+        default_value = "grpc",
+        value_name = "PROTOCOL",
+        help = "Wire protocol: grpc, grpc-web, connectrpc"
+    )]
     pub protocol: String,
 
-    /// Test files or directories to benchmark
-    #[arg(required = true, value_name = "PATH")]
+    #[arg(
+        required = true,
+        value_name = "PATH",
+        help = "Test files or directories to benchmark"
+    )]
     pub test_paths: Vec<PathBuf>,
 
-    /// Benchmark profile (functional, load, stress, spike, soak)
-    #[arg(long, value_name = "PROFILE")]
+    #[arg(
+        long,
+        value_name = "PROFILE",
+        help = "Benchmark profile (functional, load, stress, spike, soak)"
+    )]
     pub profile: Option<String>,
 
-    /// Benchmark mode (fixed, stepping, adaptive)
-    #[arg(long, value_name = "MODE")]
+    #[arg(
+        long,
+        value_name = "MODE",
+        help = "Benchmark mode (fixed, stepping, adaptive)"
+    )]
     pub mode: Option<String>,
 
-    /// Number of concurrent workers
-    #[arg(short = 'c', long, value_name = "N")]
+    #[arg(
+        short = 'c',
+        long,
+        value_name = "N",
+        help = "Number of concurrent workers"
+    )]
     pub concurrency: Option<u32>,
 
-    /// Total number of requests to send
-    #[arg(short = 'n', long, value_name = "N")]
+    #[arg(
+        short = 'n',
+        long,
+        value_name = "N",
+        help = "Total number of requests to send"
+    )]
     pub requests: Option<u64>,
 
-    /// Duration of benchmark (e.g., 30s, 5m)
-    #[arg(short = 'd', long, value_name = "DURATION")]
+    #[arg(
+        short = 'd',
+        long,
+        value_name = "DURATION",
+        help = "Duration of benchmark (e.g., 30s, 5m)"
+    )]
     pub duration: Option<String>,
 
-    /// Ramp-up duration before steady-state load (e.g., 10s)
-    #[arg(long = "ramp-up", alias = "ramp_up", value_name = "DURATION")]
+    #[arg(
+        long = "ramp-up",
+        alias = "ramp_up",
+        value_name = "DURATION",
+        help = "Ramp-up duration before steady-state load (e.g., 10s)"
+    )]
     pub ramp_up: Option<String>,
 
-    /// Warmup period excluded from final metrics (e.g., 5s)
-    #[arg(long, value_name = "DURATION")]
+    #[arg(
+        long,
+        value_name = "DURATION",
+        help = "Warmup period excluded from final metrics (e.g., 5s)"
+    )]
     pub warmup: Option<String>,
 
-    /// Maximum runtime with request-count mode (e.g., 30s, 5m)
-    #[arg(long, value_name = "DURATION")]
+    #[arg(
+        long,
+        value_name = "DURATION",
+        help = "Maximum runtime with request-count mode (e.g., 30s, 5m)"
+    )]
     pub max_duration: Option<String>,
 
-    /// Maximum requests per second (rate limit)
-    #[arg(long, value_name = "RPS")]
+    #[arg(
+        long,
+        value_name = "RPS",
+        help = "Maximum requests per second (rate limit)"
+    )]
     pub max_rps: Option<f64>,
 
-    /// Load schedule strategy (const, step, line)
-    #[arg(long = "load-schedule", value_name = "SCHEDULE")]
+    #[arg(
+        long = "load-schedule",
+        value_name = "SCHEDULE",
+        help = "Load schedule strategy (const, step, line)"
+    )]
     pub load_schedule: Option<String>,
 
-    /// Starting RPS for step/line load schedules
-    #[arg(long = "load-start", value_name = "RPS")]
+    #[arg(
+        long = "load-start",
+        value_name = "RPS",
+        help = "Starting RPS for step/line load schedules"
+    )]
     pub load_start: Option<f64>,
 
-    /// Step/slope RPS delta for step/line schedules
-    #[arg(long = "load-step", value_name = "RPS_DELTA")]
+    #[arg(
+        long = "load-step",
+        value_name = "RPS_DELTA",
+        help = "Step/slope RPS delta for step/line schedules"
+    )]
     pub load_step: Option<f64>,
 
-    /// Optional ending RPS for step/line schedules
-    #[arg(long = "load-end", value_name = "RPS")]
+    #[arg(
+        long = "load-end",
+        value_name = "RPS",
+        help = "Optional ending RPS for step/line schedules"
+    )]
     pub load_end: Option<f64>,
 
-    /// Duration of each step for step schedule
-    #[arg(long = "load-step-duration", value_name = "DURATION")]
+    #[arg(
+        long = "load-step-duration",
+        value_name = "DURATION",
+        help = "Duration of each step for step schedule"
+    )]
     pub load_step_duration: Option<String>,
 
-    /// Maximum duration of load adjustments
-    #[arg(long = "load-max-duration", value_name = "DURATION")]
+    #[arg(
+        long = "load-max-duration",
+        value_name = "DURATION",
+        help = "Maximum duration of load adjustments"
+    )]
     pub load_max_duration: Option<String>,
 
-    /// Concurrency schedule: const, step, line — a second axis alongside the
-    /// --load-* (RPS) schedule. Each level is measured in full and reported
-    /// separately.
-    #[arg(long = "concurrency-schedule", value_name = "SCHEDULE")]
+    #[arg(
+        long = "concurrency-schedule",
+        value_name = "SCHEDULE",
+        help = "Concurrency schedule: const, step, line — a second axis alongside the --load-* (RPS) schedule",
+        long_help = "Concurrency schedule: const, step, line — a second axis alongside the --load-* (RPS) schedule. Each level is measured in full and reported separately."
+    )]
     pub concurrency_schedule: Option<String>,
 
-    /// First concurrency level for a step/line schedule
-    #[arg(long = "concurrency-start", value_name = "N")]
+    #[arg(
+        long = "concurrency-start",
+        value_name = "N",
+        help = "First concurrency level for a step/line schedule"
+    )]
     pub concurrency_start: Option<u32>,
 
-    /// Last concurrency level for a step/line schedule (inclusive)
-    #[arg(long = "concurrency-end", value_name = "N")]
+    #[arg(
+        long = "concurrency-end",
+        value_name = "N",
+        help = "Last concurrency level for a step/line schedule (inclusive)"
+    )]
     pub concurrency_end: Option<u32>,
 
-    /// Worker delta between concurrency levels (default 1 for line, 0 = auto)
-    #[arg(long = "concurrency-step", value_name = "N")]
+    #[arg(
+        long = "concurrency-step",
+        value_name = "N",
+        help = "Worker delta between concurrency levels (default 1 for line, 0 = auto)"
+    )]
     pub concurrency_step: Option<u32>,
 
-    /// Per-level run duration, overriding the run's own stop condition
-    #[arg(long = "concurrency-step-duration", value_name = "DURATION")]
+    #[arg(
+        long = "concurrency-step-duration",
+        value_name = "DURATION",
+        help = "Per-level run duration, overriding the run's own stop condition"
+    )]
     pub concurrency_step_duration: Option<String>,
 
-    /// Number of gRPC connections to use (<= concurrency)
-    #[arg(long, value_name = "N")]
+    #[arg(
+        long,
+        value_name = "N",
+        help = "Number of gRPC connections to use (<= concurrency)"
+    )]
     pub connections: Option<u32>,
 
-    /// Connection timeout (e.g., 10s)
-    #[arg(long, value_name = "DURATION")]
+    #[arg(long, value_name = "DURATION", help = "Connection timeout (e.g., 10s)")]
     pub connect_timeout: Option<String>,
 
-    /// Per-request timeout (e.g., 120s); defaults to the benchmark duration
-    #[arg(long, value_name = "DURATION")]
+    #[arg(
+        long,
+        value_name = "DURATION",
+        help = "Per-request timeout (e.g., 120s); defaults to the benchmark duration"
+    )]
     pub request_timeout: Option<String>,
 
-    /// Keepalive interval (e.g., 30s)
-    #[arg(long, value_name = "DURATION")]
+    #[arg(long, value_name = "DURATION", help = "Keepalive interval (e.g., 30s)")]
     pub keepalive: Option<String>,
 
-    /// Tokio worker threads for the run. Defaults to min(cores, 4) for `bench`;
-    /// more threads cost CPU and instructions per request without adding
-    /// throughput. Also honours TOKIO_WORKER_THREADS.
-    #[arg(long, value_name = "N")]
+    #[arg(
+        long,
+        value_name = "N",
+        help = "Tokio worker threads for the run (default: min(cores, 4); also honours TOKIO_WORKER_THREADS)",
+        long_help = "Tokio worker threads for the run. Defaults to min(cores, 4) for `bench`; more threads cost CPU and instructions per request without adding throughput. Also honours TOKIO_WORKER_THREADS."
+    )]
     pub cpus: Option<usize>,
 
-    /// User-defined benchmark run name
-    #[arg(long, value_name = "NAME")]
+    #[arg(long, value_name = "NAME", help = "User-defined benchmark run name")]
     pub name: Option<String>,
 
-    /// Assertion mode (fail_fast, collect_all, skip)
-    #[arg(long, visible_alias = "bench-assert-mode", value_name = "MODE")]
+    #[arg(
+        long,
+        visible_alias = "bench-assert-mode",
+        value_name = "MODE",
+        help = "Assertion mode (fail_fast, collect_all, skip)"
+    )]
     pub assert_mode: Option<String>,
 
-    /// Disable ASSERTS evaluation to measure transport baseline
-    #[arg(long, visible_alias = "bench-no-assert", default_value_t = false)]
+    #[arg(
+        long,
+        visible_alias = "bench-no-assert",
+        default_value_t = false,
+        help = "Disable ASSERTS evaluation to measure transport baseline"
+    )]
     pub no_assert: bool,
 
-    /// Measure this client's own floor: run against a built-in no-op target
-    /// instead of the configured address
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Measure this client's own floor: run against a built-in no-op target instead of the configured address"
+    )]
     pub calibrate: bool,
 
-    /// Sample rate for detailed logging (0.0-1.0)
-    #[arg(long, value_name = "RATE")]
+    #[arg(
+        long,
+        value_name = "RATE",
+        help = "Sample rate for detailed logging (0.0-1.0)"
+    )]
     pub sample_rate: Option<f64>,
 
-    /// Enable reflection/proto caching
-    #[arg(long)]
+    #[arg(long, value_name = "BOOL", help = "Enable reflection/proto caching")]
     pub cache: Option<bool>,
 
-    /// Skip first N requests in latency metrics
-    #[arg(long, value_name = "N")]
+    #[arg(
+        long,
+        value_name = "N",
+        help = "Skip first N requests in latency metrics"
+    )]
     pub skip_first: Option<u32>,
 
-    /// Include errors in latency calculation
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "BOOL",
+        help = "Include errors in latency calculation"
+    )]
     pub count_errors_in_latency: Option<bool>,
 
-    /// In-flight handling when duration limit is reached (close, wait, ignore)
-    #[arg(long, value_name = "MODE")]
+    #[arg(
+        long,
+        value_name = "MODE",
+        help = "In-flight handling when duration limit is reached (close, wait, ignore)"
+    )]
     pub duration_stop: Option<String>,
 
-    /// Latency percentiles to report (comma-separated, e.g. p50,p90,p95,p99)
-    #[arg(long, value_name = "LIST")]
+    #[arg(
+        long,
+        value_name = "LIST",
+        help = "Latency percentiles to report (comma-separated, e.g. p50,p90,p95,p99)"
+    )]
     pub latency_percentiles: Option<String>,
 
-    /// Progress heartbeat interval (e.g. 5s)
-    #[arg(long = "progress-interval", value_name = "DURATION")]
+    #[arg(
+        long = "progress-interval",
+        value_name = "DURATION",
+        help = "Progress heartbeat interval (e.g. 5s)"
+    )]
     pub progress_interval: Option<String>,
 
-    /// Report format: console, json, csv, ndjson, prometheus
     #[arg(
         long = "log-format",
         visible_alias = "bench-format",
         default_value = "console",
-        value_name = "FORMAT"
+        value_name = "FORMAT",
+        help = "Report format: console, json, csv, ndjson, prometheus"
     )]
     pub format: String,
 
-    /// Output file for the report
     #[arg(
         short = 'o',
         long = "log-output",
         visible_alias = "bench-output",
-        value_name = "FILE"
+        value_name = "FILE",
+        help = "Output file for the report"
     )]
     pub output: Option<PathBuf>,
 
-    /// Custom MiniJinja template file for benchmark report
-    #[arg(long, value_name = "TEMPLATE_FILE")]
+    #[arg(
+        long,
+        value_name = "TEMPLATE_FILE",
+        help = "Custom MiniJinja template file for benchmark report"
+    )]
     pub report_template: Option<PathBuf>,
 
-    /// Allure output directory for benchmark attachments
-    #[arg(long, value_name = "DIR")]
+    #[arg(
+        long,
+        value_name = "DIR",
+        help = "Allure output directory for benchmark attachments"
+    )]
     pub allure_output_dir: Option<PathBuf>,
 
-    /// Compact console output (omit histogram)
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Compact console output (omit histogram)"
+    )]
     pub compact: bool,
 
-    /// Only run tests carrying ALL of these tags (repeatable)
-    #[arg(long = "tags", value_name = "TAG")]
+    #[arg(
+        long = "tags",
+        value_name = "TAG",
+        help = "Only run tests carrying ALL of these tags (repeatable)"
+    )]
     pub tags: Vec<String>,
 
-    /// Skip tests carrying ANY of these tags (repeatable)
-    #[arg(long = "skip-tags", value_name = "TAG")]
+    #[arg(
+        long = "skip-tags",
+        value_name = "TAG",
+        help = "Skip tests carrying ANY of these tags (repeatable)"
+    )]
     pub skip_tags: Vec<String>,
 
-    /// Exclude paths matching this glob (repeatable)
-    #[arg(long, value_name = "GLOB")]
+    #[arg(
+        long,
+        value_name = "GLOB",
+        help = "Exclude paths matching this glob (repeatable)"
+    )]
     pub exclude: Vec<String>,
 
-    /// List available benchmark profiles and exit
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "List available benchmark profiles and exit"
+    )]
     pub list_profiles: bool,
 
-    /// Path to custom profile YAML file
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", help = "Path to custom profile YAML file")]
     pub profile_file: Option<PathBuf>,
 
-    /// Direct gRPC method call (service/method) — no .gctf file needed
-    #[arg(long, value_name = "SERVICE/METHOD")]
+    #[arg(
+        long,
+        value_name = "SERVICE/METHOD",
+        help = "Direct gRPC method call (service/method) — no test file needed"
+    )]
     pub call: Option<String>,
 
-    /// Inline JSON request body (used with --call)
-    #[arg(long, value_name = "JSON")]
+    #[arg(
+        long,
+        value_name = "JSON",
+        help = "Inline JSON request body (used with --call)"
+    )]
     pub data: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct BenchAggregateArgs {
-    /// Bench reports to fold together (JSON produced by `bench --log-format json`)
-    #[arg(required = true, value_name = "FILE")]
+    #[arg(
+        required = true,
+        value_name = "FILE",
+        help = "Bench reports to fold together (JSON produced by `bench --log-format json`)"
+    )]
     pub reports: Vec<PathBuf>,
 
-    /// Output format: json (one matrix document) or csv (one row per level)
-    #[arg(long, default_value = "json", value_name = "FORMAT")]
+    #[arg(
+        long,
+        default_value = "json",
+        value_name = "FORMAT",
+        help = "Output format: json (one matrix document) or csv (one row per level)"
+    )]
     pub format: String,
 
-    /// Write to this path instead of stdout
-    #[arg(short = 'o', long, value_name = "FILE")]
+    #[arg(
+        short = 'o',
+        long,
+        value_name = "FILE",
+        help = "Write to this path instead of stdout"
+    )]
     pub output: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct BenchCompareArgs {
-    /// Baseline bench report (JSON produced by `bench --log-format json`)
-    #[arg(required = true, value_name = "FILE")]
+    #[arg(
+        required = true,
+        value_name = "FILE",
+        help = "Baseline bench report (JSON produced by `bench --log-format json`)"
+    )]
     pub baseline: PathBuf,
 
-    /// Current bench report to compare against the baseline
-    #[arg(required = true, value_name = "FILE")]
+    #[arg(
+        required = true,
+        value_name = "FILE",
+        help = "Current bench report to compare against the baseline"
+    )]
     pub current: PathBuf,
 
-    /// Max tolerated latency rise (percent) for mean and each percentile
-    #[arg(long, value_name = "PCT", default_value_t = 10.0)]
+    #[arg(
+        long,
+        value_name = "PCT",
+        default_value_t = 10.0,
+        help = "Max tolerated latency rise (percent) for mean and each percentile"
+    )]
     pub max_latency_regression: f64,
 
-    /// Max tolerated error-rate rise, in percentage points
-    #[arg(long, value_name = "POINTS", default_value_t = 1.0)]
+    #[arg(
+        long,
+        value_name = "POINTS",
+        default_value_t = 1.0,
+        help = "Max tolerated error-rate rise, in percentage points"
+    )]
     pub max_error_rate_regression: f64,
 
-    /// Max tolerated throughput (rps) drop (percent) before failing
-    #[arg(long, value_name = "PCT", default_value_t = 5.0)]
+    #[arg(
+        long,
+        value_name = "PCT",
+        default_value_t = 5.0,
+        help = "Max tolerated throughput (rps) drop (percent) before failing"
+    )]
     pub min_throughput: f64,
 
-    /// Report format: console, json
-    #[arg(long, default_value = "console", value_name = "FORMAT")]
+    #[arg(
+        long,
+        default_value = "console",
+        value_name = "FORMAT",
+        help = "Report format: console, json"
+    )]
     pub format: String,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct IndexArgs {
-    /// .gctf file(s) or directory with BENCH.sources definitions
-    #[arg(required = true, value_name = "PATH")]
+    #[arg(
+        required = true,
+        value_name = "PATH",
+        help = "Test file(s) or directory with BENCH.sources definitions"
+    )]
     pub sources: Vec<PathBuf>,
 
-    /// Force rebuild of all required indexes
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Force rebuild of all required indexes"
+    )]
     pub force: bool,
 
-    /// Show index file statistics
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Show index file statistics")]
     pub stats: bool,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct QueryArgs {
-    /// Files or directories to query (default: interactive shell)
-    #[arg(required = false, value_name = "PATH")]
+    #[arg(
+        required = false,
+        value_name = "PATH",
+        help = "Files or directories to query (default: interactive shell)"
+    )]
     pub files: Vec<PathBuf>,
 
-    /// Query expression to execute
-    #[arg(short = 'q', long, value_name = "EXPR")]
+    #[arg(
+        short = 'q',
+        long,
+        value_name = "EXPR",
+        help = "Query expression to execute"
+    )]
     pub query: Option<String>,
 
-    /// Run in interactive shell mode
-    #[arg(short = 's', long, default_value_t = false)]
+    #[arg(
+        short = 's',
+        long,
+        default_value_t = false,
+        help = "Run in interactive shell mode"
+    )]
     pub shell: bool,
 
-    /// Index column for direct file mode
-    #[arg(short = 'i', long, value_name = "COLUMN")]
+    #[arg(
+        short = 'i',
+        long,
+        value_name = "COLUMN",
+        help = "Index column for direct file mode"
+    )]
     pub indexed_by: Option<String>,
 
-    /// Output format: json, csv, table, line, tsv
-    #[arg(short = 'f', long, default_value = "table", value_name = "FORMAT")]
+    #[arg(
+        short = 'f',
+        long,
+        default_value = "table",
+        value_name = "FORMAT",
+        help = "Output format: json, csv, table, line, tsv"
+    )]
     pub format: String,
 
-    /// Maximum number of rows to return
-    #[arg(short = 'n', long, value_name = "N")]
+    #[arg(
+        short = 'n',
+        long,
+        value_name = "N",
+        help = "Maximum number of rows to return"
+    )]
     pub limit: Option<usize>,
 
-    /// Skip N rows
-    #[arg(short = 'o', long, value_name = "N")]
+    #[arg(short = 'o', long, value_name = "N", help = "Skip N rows")]
     pub offset: Option<usize>,
 
-    /// Output columns (comma-separated)
-    #[arg(short = 'c', long, value_name = "COLS")]
+    #[arg(
+        short = 'c',
+        long,
+        value_name = "COLS",
+        help = "Output columns (comma-separated)"
+    )]
     pub columns: Option<String>,
 
-    /// Sort by column (prefix with - for DESC)
-    #[arg(long, value_name = "COLUMN")]
+    #[arg(
+        long,
+        value_name = "COLUMN",
+        help = "Sort by column (prefix with - for DESC)"
+    )]
     pub order_by: Option<String>,
 
-    /// Output file (stdout if omitted)
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", help = "Output file (stdout if omitted)")]
     pub output: Option<PathBuf>,
 
-    /// Skip header row in output
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Skip header row in output")]
     pub no_header: bool,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct ListArgs {
-    /// Test file or directory to list
-    #[arg(required = false, value_name = "PATH")]
+    #[arg(
+        required = false,
+        value_name = "PATH",
+        help = "Test file or directory to list"
+    )]
     pub path: Option<PathBuf>,
 
-    /// Output format: text, json
-    #[arg(long, default_value = "json", value_name = "FORMAT")]
+    #[arg(
+        long,
+        default_value = "json",
+        value_name = "FORMAT",
+        help = "Output format: text, json"
+    )]
     pub format: String,
 
-    /// Include test range information
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Include test range information")]
     pub with_range: bool,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct DocsArgs {
-    /// Test files or directories to document (defaults to the current directory)
-    #[arg(value_name = "PATH")]
+    #[arg(
+        value_name = "PATH",
+        help = "Test files or directories to document (defaults to the current directory)"
+    )]
     pub paths: Vec<PathBuf>,
 
-    /// Directory to write the generated Markdown into
-    #[arg(long, short = 'o', default_value = "docs/api", value_name = "DIR")]
+    #[arg(
+        long,
+        short = 'o',
+        default_value = "docs/api",
+        value_name = "DIR",
+        help = "Directory to write the generated Markdown into"
+    )]
     pub output: PathBuf,
 
-    /// Embed method/field coverage from a prior `run --coverage --coverage-format json` report
-    #[arg(long, value_name = "PATH")]
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Embed method/field coverage from a prior `run --coverage --coverage-format json` report"
+    )]
     pub coverage: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct GraphArgs {
-    /// Test files or directories to visualize (defaults to the current directory)
-    #[arg(value_name = "PATH")]
+    #[arg(
+        value_name = "PATH",
+        help = "Test files or directories to visualize (defaults to the current directory)"
+    )]
     pub paths: Vec<PathBuf>,
 
-    /// Output format: text, mermaid
-    #[arg(long, default_value = "text", value_name = "FORMAT")]
+    #[arg(
+        long,
+        default_value = "text",
+        value_name = "FORMAT",
+        help = "Output format: text, mermaid"
+    )]
     pub format: String,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct InspectArgs {
-    /// File to inspect
-    #[arg(required = true, value_name = "FILE")]
+    #[arg(required = true, value_name = "FILE", help = "File to inspect")]
     pub file: PathBuf,
 
-    /// Output format: text, json
-    #[arg(long, default_value = "text", value_name = "FORMAT")]
+    #[arg(
+        long,
+        default_value = "text",
+        value_name = "FORMAT",
+        help = "Output format: text, json"
+    )]
     pub format: String,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct ExplainArgs {
-    /// File to explain
-    #[arg(required = true, value_name = "FILE")]
+    #[arg(required = true, value_name = "FILE", help = "File to explain")]
     pub file: PathBuf,
 
-    /// Output format: text, json
-    #[arg(long, default_value = "text", value_name = "FORMAT")]
+    #[arg(
+        long,
+        default_value = "text",
+        value_name = "FORMAT",
+        help = "Output format: text, json"
+    )]
     pub format: String,
 
-    /// Post-hoc mode: JSON report from a prior `run --log-format json` to
-    /// correlate against this file's plan (actual per-assertion pass/fail +
-    /// timing, instead of just the static/optimized plan).
-    #[arg(long, value_name = "REPORT_JSON")]
+    #[arg(
+        long,
+        value_name = "REPORT_JSON",
+        help = "Post-hoc mode: JSON report from a prior `run --log-format json` to correlate against this file's plan",
+        long_help = "Post-hoc mode: JSON report from a prior `run --log-format json` to correlate against this file's plan (actual per-assertion pass/fail + timing, instead of just the static/optimized plan)."
+    )]
     pub against: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct CheckArgs {
-    /// Files to validate
-    #[arg(required = true, value_name = "FILES")]
+    #[arg(required = true, value_name = "FILES", help = "Files to validate")]
     pub files: Vec<PathBuf>,
 
-    /// Output format: text, json
-    #[arg(long, default_value = "text", value_name = "FORMAT")]
+    #[arg(
+        long,
+        default_value = "text",
+        value_name = "FORMAT",
+        help = "Output format: text, json"
+    )]
     pub format: String,
 
-    /// Validate BENCH section configuration
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Validate BENCH section configuration"
+    )]
     pub bench: bool,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct RunArgs {
-    /// Test files or directories to run (defaults to the current directory)
-    // Optional so it doesn't clash with subcommand names when parsed at the top
-    // level; emptiness is enforced manually where a path is required.
-    #[arg(required = false, value_name = "PATH")]
+    #[arg(
+        required = false,
+        value_name = "PATH",
+        help = "Test files or directories to run (defaults to the current directory)"
+    )]
     pub test_paths: Vec<PathBuf>,
 
-    /// Exclude paths matching this glob (repeatable)
-    #[arg(long = "exclude", value_name = "GLOB", help_heading = "Test Selection")]
+    #[arg(
+        long = "exclude",
+        value_name = "GLOB",
+        help_heading = "Test Selection",
+        help = "Exclude paths matching this glob (repeatable)"
+    )]
     pub exclude: Vec<String>,
 
-    /// Only run tests carrying ALL of these tags (repeatable)
-    #[arg(long = "tags", value_name = "TAG", help_heading = "Test Selection")]
+    #[arg(
+        long = "tags",
+        value_name = "TAG",
+        help_heading = "Test Selection",
+        help = "Only run tests carrying ALL of these tags (repeatable)"
+    )]
     pub tags: Vec<String>,
 
-    /// Skip tests carrying ANY of these tags (repeatable)
     #[arg(
         long = "skip-tags",
         value_name = "TAG",
-        help_heading = "Test Selection"
+        help_heading = "Test Selection",
+        help = "Skip tests carrying ANY of these tags (repeatable)"
     )]
     pub skip_tags: Vec<String>,
 
-    /// Order tests before running: path, size, name
     #[arg(
         short = 's',
         long,
         default_value = "path",
         value_name = "MODE",
-        help_heading = "Test Selection"
+        help_heading = "Test Selection",
+        help = "Order tests before running: path, size, name"
     )]
     pub sort: String,
 
-    /// Data source (CSV/TSV/NDJSON) driving each .gctf as a template — one case
-    /// per row (`{{source.column}}` substitution)
-    #[arg(long, value_name = "PATH", help_heading = "Test Selection")]
+    #[arg(
+        long,
+        value_name = "PATH",
+        help_heading = "Test Selection",
+        help = "Data source (CSV/TSV/NDJSON) driving each test file as a template — one case per row ({{source.column}} substitution)"
+    )]
     pub data: Option<PathBuf>,
 
-    /// Override the --data format (csv, tsv, ndjson); inferred from the extension otherwise
     #[arg(
         long,
         value_name = "FORMAT",
         requires = "data",
-        help_heading = "Test Selection"
+        help_heading = "Test Selection",
+        help = "Override the --data format (csv, tsv, ndjson); inferred from the extension otherwise"
     )]
     pub data_format: Option<String>,
 
-    /// Only run tests whose file content differs from --since (git, no shell-out)
-    #[arg(long, default_value_t = false, help_heading = "Test Selection")]
+    #[arg(
+        long,
+        default_value_t = false,
+        help_heading = "Test Selection",
+        help = "Only run tests whose file content differs from --since (git, no shell-out)"
+    )]
     pub only_changed: bool,
 
-    /// Git ref --only-changed compares against (default: HEAD, i.e. uncommitted changes)
     #[arg(
         long,
         default_value = "HEAD",
         value_name = "REF",
         requires = "only_changed",
-        help_heading = "Test Selection"
+        help_heading = "Test Selection",
+        help = "Git ref --only-changed compares against (default: HEAD, i.e. uncommitted changes)"
     )]
     pub since: String,
 
-    /// Wire protocol: grpc, grpc-web, connectrpc
     #[arg(
         long,
         default_value = "grpc",
         value_name = "PROTOCOL",
-        help_heading = "Execution"
+        help_heading = "Execution",
+        help = "Wire protocol: grpc, grpc-web, connectrpc"
     )]
     pub protocol: String,
 
-    /// Worker count for parallel runs, or `auto`
     #[arg(
         short = 'p',
         long,
         default_value = "auto",
         value_name = "N",
-        help_heading = "Execution"
+        help_heading = "Execution",
+        help = "Worker count for parallel runs, or `auto`"
     )]
     pub parallel: String,
 
-    /// Per-test timeout in seconds
     #[arg(
         short = 't',
         long,
         default_value_t = 30,
         value_name = "SECS",
-        help_heading = "Execution"
+        help_heading = "Execution",
+        help = "Per-test timeout in seconds"
     )]
     pub timeout: u64,
 
-    /// Retry failed network calls up to N times
     #[arg(
         short = 'r',
         long,
         default_value_t = 0,
         value_name = "N",
-        help_heading = "Execution"
+        help_heading = "Execution",
+        help = "Retry failed network calls up to N times"
     )]
     pub retry: u32,
 
-    /// Initial delay between retries in seconds
     #[arg(
         long,
         default_value_t = 1.0,
         value_name = "SECS",
-        help_heading = "Execution"
+        help_heading = "Execution",
+        help = "Initial delay between retries in seconds"
     )]
     pub retry_delay: f64,
 
-    /// Disable retries entirely
-    #[arg(long, default_value_t = false, help_heading = "Execution")]
+    #[arg(
+        long,
+        default_value_t = false,
+        help_heading = "Execution",
+        help = "Disable retries entirely"
+    )]
     pub no_retry: bool,
 
-    /// Skip assertions and print raw server responses
-    #[arg(long, default_value_t = false, help_heading = "Execution")]
+    #[arg(
+        long,
+        default_value_t = false,
+        help_heading = "Execution",
+        help = "Skip assertions and print raw server responses"
+    )]
     pub no_assert: bool,
 
-    /// Snapshot mode: write actual server responses back into the test files
-    #[arg(short = 'w', long, default_value_t = false, help_heading = "Execution")]
+    #[arg(
+        short = 'w',
+        long,
+        default_value_t = false,
+        help_heading = "Execution",
+        help = "Snapshot mode: write actual server responses back into the test files"
+    )]
     pub write: bool,
 
-    /// Show what would run without executing anything
-    #[arg(short = 'd', long, default_value_t = false, help_heading = "Execution")]
+    #[arg(
+        short = 'd',
+        long,
+        default_value_t = false,
+        help_heading = "Execution",
+        help = "Show what would run without executing anything"
+    )]
     pub dry_run: bool,
 
-    /// Report format: junit, json, yaml, allure, html (comma-separated for several, e.g. junit,html)
-    #[arg(long, value_name = "FORMAT", help_heading = "Output & Reports")]
+    #[arg(
+        long,
+        value_name = "FORMAT",
+        help_heading = "Output & Reports",
+        help = "Report format: junit, json, yaml, allure, html (comma-separated for several, e.g. junit,html)"
+    )]
     pub log_format: Option<String>,
 
-    /// Destination for --log-format: exact file (or directory, for allure) for
-    /// one format; a directory holding one file per format for several
-    #[arg(long, value_name = "PATH", help_heading = "Output & Reports")]
+    #[arg(
+        long,
+        value_name = "PATH",
+        help_heading = "Output & Reports",
+        help = "Destination for --log-format: exact file (or directory, for allure) for one format; a directory holding one file per format for several"
+    )]
     pub log_output: Option<PathBuf>,
 
-    /// Emit streaming NDJSON events (for IDE/CI integration)
-    #[arg(long, default_value_t = false, help_heading = "Output & Reports")]
+    #[arg(
+        long,
+        default_value_t = false,
+        help_heading = "Output & Reports",
+        help = "Emit streaming NDJSON events (for IDE/CI integration)"
+    )]
     pub stream: bool,
 
-    /// Progress style: auto, dots, verbose, none
     #[arg(
         long,
         default_value = "auto",
         value_name = "STYLE",
-        help_heading = "Output & Reports"
+        help_heading = "Output & Reports",
+        help = "Progress style: auto, dots, verbose, none"
     )]
     pub progress: String,
 
-    /// Report proto API coverage after the run
-    #[arg(long, default_value_t = false, help_heading = "Output & Reports")]
+    #[arg(
+        long,
+        default_value_t = false,
+        help_heading = "Output & Reports",
+        help = "Report proto API coverage after the run"
+    )]
     pub coverage: bool,
 
-    /// Coverage format: text, json, html
     #[arg(
         long,
         default_value = "text",
         value_name = "FORMAT",
-        help_heading = "Output & Reports"
+        help_heading = "Output & Reports",
+        help = "Coverage format: text, json, html"
     )]
     pub coverage_format: String,
 
-    /// Force-capture the request/response exchange even when the active
-    /// reporter wouldn't otherwise need it (e.g. plain console, or a report
-    /// format that doesn't render it)
-    #[arg(long, default_value_t = false, help_heading = "Output & Reports")]
+    #[arg(
+        long,
+        default_value_t = false,
+        help_heading = "Output & Reports",
+        help = "Force-capture the request/response exchange even when the active reporter wouldn't otherwise need it",
+        long_help = "Force-capture the request/response exchange even when the active reporter wouldn't otherwise need it (e.g. plain console, or a report format that doesn't render it)"
+    )]
     pub capture_exchange: bool,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct ReflectArgs {
-    /// Wire protocol: grpc, grpc-web, connectrpc
-    #[arg(long, default_value = "grpc", value_name = "PROTOCOL")]
+    #[arg(
+        long,
+        default_value = "grpc",
+        value_name = "PROTOCOL",
+        help = "Wire protocol: grpc, grpc-web, connectrpc"
+    )]
     pub protocol: String,
 
-    /// Service symbol, or service/method symbol (e.g. `pkg.Service/Method`)
+    #[arg(help = "Service symbol, or service/method symbol (e.g. `pkg.Service/Method`)")]
     pub symbol: Option<String>,
 
-    /// Server address (host:port); overrides $GRPCTESTIFY_ADDRESS
-    #[arg(long, value_name = "ADDRESS")]
+    #[arg(
+        long,
+        value_name = "ADDRESS",
+        help = "Server address (host:port); overrides $GRPCTESTIFY_ADDRESS"
+    )]
     pub address: Option<String>,
 
-    /// Plaintext connection (no TLS)
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Plaintext connection (no TLS)")]
     pub plaintext: bool,
 
-    /// Skip TLS certificate verification
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Skip TLS certificate verification"
+    )]
     pub insecure: bool,
 
-    /// Output format: text, json
-    #[arg(long, default_value = "text", value_name = "FORMAT")]
+    #[arg(
+        long,
+        default_value = "text",
+        value_name = "FORMAT",
+        help = "Output format: text, json"
+    )]
     pub format: String,
 
-    /// List all methods with full signatures
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "List all methods with full signatures"
+    )]
     pub list_methods: bool,
 
-    /// Only show services/methods whose name contains this substring
-    /// (case-insensitive)
-    #[arg(long, value_name = "SUBSTRING")]
+    #[arg(
+        long,
+        value_name = "SUBSTRING",
+        help = "Only show services/methods whose name contains this substring (case-insensitive)"
+    )]
     pub filter: Option<String>,
 
-    /// Describe a method's request and response message fields
-    #[arg(long, value_name = "SERVICE/METHOD")]
+    #[arg(
+        long,
+        value_name = "SERVICE/METHOD",
+        help = "Describe a method's request and response message fields"
+    )]
     pub describe: Option<String>,
 
-    /// CA certificate path for TLS
-    #[arg(long)]
+    #[arg(long, value_name = "FILE", help = "CA certificate path for TLS")]
     pub tls_ca: Option<String>,
 
-    /// Client certificate path for TLS
-    #[arg(long)]
+    #[arg(long, value_name = "FILE", help = "Client certificate path for TLS")]
     pub tls_cert: Option<String>,
 
-    /// Client key path for TLS
-    #[arg(long)]
+    #[arg(long, value_name = "FILE", help = "Client key path for TLS")]
     pub tls_key: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct FmtArgs {
-    /// Files to format
-    #[arg(required = true, value_name = "FILES")]
+    #[arg(required = true, value_name = "FILES", help = "Files to format")]
     pub files: Vec<PathBuf>,
 
-    /// Write changes to file instead of stdout
-    #[arg(short = 'w', long, default_value_t = false)]
+    #[arg(
+        short = 'w',
+        long,
+        default_value_t = false,
+        help = "Write changes to file instead of stdout"
+    )]
     pub write: bool,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct CallArgs {
-    /// Wire protocol: grpc, grpc-web, connectrpc
-    #[arg(long, default_value = "grpc", value_name = "PROTOCOL")]
+    #[arg(
+        long,
+        default_value = "grpc",
+        value_name = "PROTOCOL",
+        help = "Wire protocol: grpc, grpc-web, connectrpc (gRPC calls only)"
+    )]
     pub protocol: String,
 
-    /// File to call (omit if using -e)
+    #[arg(
+        long,
+        value_name = "ADDRESS",
+        help = "Where to dial: host:port for gRPC, or an origin like https://api.example.com for HTTP; overrides the file's ADDRESS and $GRPCTESTIFY_ADDRESS"
+    )]
+    pub address: Option<String>,
+
+    #[arg(help = "File to call (omit if using -e)")]
     pub file: Option<PathBuf>,
 
-    /// Inline endpoint (package.Service/Method), skips file
     #[arg(
         short = 'e',
         long,
         value_name = "SERVICE/METHOD",
-        conflicts_with = "file"
+        conflicts_with = "file",
+        help = "Inline endpoint, skips file: package.Service/Method for gRPC, or `GET /path` for HTTP"
     )]
     pub endpoint: Option<String>,
 
-    /// Inline JSON request body (used with -e)
-    #[arg(short = 'd', long, value_name = "JSON", requires = "endpoint")]
+    #[arg(
+        short = 'd',
+        long,
+        value_name = "JSON",
+        requires = "endpoint",
+        help = "Inline request body (used with -e); JSON for gRPC, any text for HTTP"
+    )]
     pub data: Option<String>,
 
-    /// Document index for multi-document .gctf files (1-based)
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "N",
+        help = "Document index for multi-document files (1-based)"
+    )]
     pub doc_index: Option<usize>,
 
-    /// Include response headers in output, printed before body (-i)
-    #[arg(short = 'i', long, default_value_t = false)]
+    #[arg(
+        short = 'H',
+        long = "header",
+        value_name = "NAME: VALUE",
+        help = "Request header or gRPC metadata entry, like curl -H (repeatable)"
+    )]
+    pub header: Vec<String>,
+
+    #[arg(
+        short = 'i',
+        long,
+        default_value_t = false,
+        help = "Include response headers in output, printed before body (-i)"
+    )]
     pub include: bool,
 
-    /// Verbose mode: show request/response metadata (-v)
-    #[arg(short = 'v', long, default_value_t = false)]
+    #[arg(
+        short = 'v',
+        long,
+        default_value_t = false,
+        help = "Verbose mode: show request/response metadata (-v)"
+    )]
     pub verbose: bool,
 
-    /// Extra verbose mode: verbose output plus timing (-vv)
-    #[arg(long = "vv", default_value_t = false)]
+    #[arg(
+        long = "vv",
+        default_value_t = false,
+        help = "Extra verbose mode: verbose output plus timing (-vv)"
+    )]
     pub very_verbose: bool,
 
-    /// Output file (stdout if omitted)
-    #[arg(short = 'o', long, value_name = "FILE")]
+    #[arg(
+        short = 'o',
+        long,
+        value_name = "FILE",
+        help = "Output file (stdout if omitted)"
+    )]
     pub output: Option<PathBuf>,
 
-    /// Dump response headers to file (-D)
-    #[arg(short = 'D', long)]
+    #[arg(
+        short = 'D',
+        long,
+        value_name = "FILE",
+        help = "Dump response headers (and, for HTTP, the status) to a file (-D)"
+    )]
     pub dump_header: Option<PathBuf>,
 
-    /// Silent mode (-s)
-    #[arg(short = 's', long, default_value_t = false)]
+    #[arg(short = 's', long, default_value_t = false, help = "Silent mode (-s)")]
     pub silent: bool,
 
-    /// Show errors (-S)
-    #[arg(short = 'S', long, default_value_t = false)]
+    #[arg(
+        short = 'S',
+        long,
+        default_value_t = false,
+        help = "Show errors even in silent mode (-S)"
+    )]
     pub show_error: bool,
 
-    /// Connection timeout in seconds
-    #[arg(long, default_value_t = 30, value_name = "SECS")]
+    #[arg(
+        short = 'f',
+        long,
+        default_value_t = false,
+        help = "Exit non-zero when an HTTP answer is 4xx or 5xx, like curl -f"
+    )]
+    pub fail: bool,
+
+    #[arg(
+        short = 'L',
+        long,
+        default_value_t = false,
+        help = "Follow HTTP redirects, like curl -L (HTTP calls only)"
+    )]
+    pub location: bool,
+
+    #[arg(
+        long,
+        default_value_t = 30,
+        value_name = "SECS",
+        help = "Connection timeout in seconds"
+    )]
     pub connect_timeout: u64,
 
-    /// Skip TLS certificate verification
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Skip TLS certificate verification (gRPC calls only)"
+    )]
     pub insecure: bool,
 
-    /// Plaintext connection (no TLS) — overrides any TLS from the file
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Plaintext connection (no TLS) — overrides any TLS from the file (gRPC calls only)"
+    )]
     pub plaintext: bool,
 
-    /// CA certificate path for TLS (overrides the file's TLS section)
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "CA certificate path for TLS (overrides the file's TLS section; gRPC calls only)"
+    )]
     pub tls_ca: Option<String>,
 
-    /// Client certificate path for TLS (overrides the file's TLS section)
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "Client certificate path for TLS (overrides the file's TLS section; gRPC calls only)"
+    )]
     pub tls_cert: Option<String>,
 
-    /// Client key path for TLS (overrides the file's TLS section)
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "Client key path for TLS (overrides the file's TLS section; gRPC calls only)"
+    )]
     pub tls_key: Option<String>,
 
-    /// Request timeout in seconds
-    #[arg(long, default_value_t = 60, value_name = "SECS")]
+    #[arg(
+        long,
+        default_value_t = 60,
+        value_name = "SECS",
+        help = "Request timeout in seconds"
+    )]
     pub max_time: u64,
 
-    /// Run as benchmark instead of single call
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Run as benchmark instead of single call"
+    )]
     pub bench: bool,
 
-    /// Benchmark concurrency (with --bench)
-    #[arg(long, requires = "bench")]
+    #[arg(
+        long,
+        requires = "bench",
+        value_name = "N",
+        help = "Benchmark concurrency (with --bench)"
+    )]
     pub concurrency: Option<u32>,
 
-    /// Benchmark requests (with --bench)
-    #[arg(long, requires = "bench")]
+    #[arg(
+        long,
+        requires = "bench",
+        value_name = "N",
+        help = "Benchmark requests (with --bench)"
+    )]
     pub requests: Option<u64>,
 
-    /// Benchmark duration (with --bench), e.g. "30s"
-    #[arg(long, requires = "bench")]
+    #[arg(
+        long,
+        requires = "bench",
+        value_name = "DURATION",
+        help = "Benchmark duration (with --bench), e.g. \"30s\""
+    )]
     pub duration: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct GenArgs {
-    /// Output file (stdout if omitted)
-    #[arg(short = 'o', long, value_name = "FILE")]
+    #[arg(
+        short = 'o',
+        long,
+        value_name = "FILE",
+        help = "Output file (stdout if omitted)"
+    )]
     pub output: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -1068,24 +1578,30 @@ pub struct GenArgs {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum GenSource {
-    /// Generate from grpcurl invocation
+    #[command(about = "Generate from grpcurl invocation")]
     Grpcurl(GenGrpcurlArgs),
 }
 
 #[derive(Args, Debug, Clone)]
 #[command(trailing_var_arg = true)]
 pub struct GenGrpcurlArgs {
-    /// Execute invocation and append RESPONSE/ERROR
-    #[arg(short = 'e', long, default_value_t = false)]
+    #[arg(
+        short = 'e',
+        long,
+        default_value_t = false,
+        help = "Execute invocation and append RESPONSE/ERROR"
+    )]
     pub execute: bool,
 
-    /// grpcurl command arguments after `gen grpcurl`
-    #[arg(required = true, allow_hyphen_values = true)]
+    #[arg(
+        required = true,
+        allow_hyphen_values = true,
+        help = "grpcurl command arguments after `gen grpcurl`"
+    )]
     pub grpcurl_args: Vec<String>,
 }
 
 impl Cli {
-    /// Get parallel job count (auto-detect if set to "auto")
     pub fn parallel_jobs(&self) -> usize {
         let parallel = match &self.command {
             Some(Commands::Run(args)) => &args.parallel,
@@ -1098,12 +1614,10 @@ impl Cli {
                 .map(|n| n.get())
                 .unwrap_or(4)
         } else {
-            // Clamp to at least 1: buffer_unordered(0) never polls (deadlock).
             parallel.parse().unwrap_or(1).max(1)
         }
     }
 
-    /// Get progress mode
     pub fn progress_mode(&self) -> ProgressMode {
         let progress = match &self.command {
             Some(Commands::Run(args)) => &args.progress,
@@ -1125,13 +1639,10 @@ impl Cli {
         }
     }
 
-    /// Get log format (first one, when several were requested)
     pub fn log_format_mode(&self) -> Option<LogFormat> {
         self.log_format_modes().into_iter().next()
     }
 
-    /// Get every requested log format, in order, de-duplicated. `--log-format
-    /// junit,html` produces both file reports from a single run.
     pub fn log_format_modes(&self) -> Vec<LogFormat> {
         let log_format = match &self.command {
             Some(Commands::Run(args)) => &args.log_format,
@@ -1158,7 +1669,6 @@ impl Cli {
             .collect()
     }
 
-    /// Get optimizer level from CLI flag or default for command
     pub fn optimize_level(
         &self,
         default: crate::optimizer::OptimizeLevel,
@@ -1166,6 +1676,7 @@ impl Cli {
         use crate::optimizer::OptimizeLevel;
         match self.optimize.as_str() {
             "0" | "none" => OptimizeLevel::None,
+            "layout" => OptimizeLevel::Layout,
             "1" | "safe" => OptimizeLevel::Safe,
             "2" | "advisory" => OptimizeLevel::Advisory,
             "3" | "aggressive" => OptimizeLevel::Aggressive,
@@ -1173,7 +1684,6 @@ impl Cli {
         }
     }
 
-    /// Helper to get effective RunArgs
     pub fn get_run_args(&self) -> &RunArgs {
         match &self.command {
             Some(Commands::Run(args)) => args,
@@ -1186,7 +1696,6 @@ fn is_json_format(value: &str) -> bool {
     value.eq_ignore_ascii_case("json")
 }
 
-/// Trait for CLI argument types that have a `--format` option.
 pub trait HasFormat {
     fn format(&self) -> &str;
 
@@ -1233,25 +1742,39 @@ impl HasFormat for BenchArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct PlayArgs {
-    /// Host/interface to bind. Defaults to loopback only; pass e.g. 0.0.0.0
-    /// to expose the playground on the network (no auth — trusted networks only)
-    #[arg(long, default_value = "127.0.0.1")]
+    #[arg(
+        long,
+        default_value = "127.0.0.1",
+        value_name = "HOST",
+        help = "Host/interface to bind; loopback only by default",
+        long_help = "Host/interface to bind. Defaults to loopback only; pass e.g. 0.0.0.0 to expose the playground on the network — every request then needs the token printed at startup (or GRPCTESTIFY_PLAY_TOKEN)"
+    )]
     pub host: String,
 
-    /// Port to listen on (default: 4755)
-    #[arg(long, default_value = "4755")]
+    #[arg(
+        long,
+        default_value = "4755",
+        value_name = "PORT",
+        help = "Port to listen on (default: 4755)"
+    )]
     pub port: u16,
 
-    /// Directory with .gctf collections (default: current dir)
-    #[arg(long, default_value = ".")]
+    #[arg(
+        long,
+        default_value = ".",
+        value_name = "DIR",
+        help = "Directory with .gctf / .httf / .apif collections (default: current dir)"
+    )]
     pub dir: std::path::PathBuf,
 
-    /// Open browser automatically
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, help = "Open browser automatically")]
     pub open: bool,
 
-    /// Initialize .grpctestify project directory
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Initialize the .grpctestify project directory and exit"
+    )]
     pub init: bool,
 }
 
@@ -1271,6 +1794,79 @@ impl RunArgs {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn every_subcommand_and_flag_carries_help_text() {
+        use clap::CommandFactory;
+
+        fn walk(command: &clap::Command, path: &str, missing: &mut Vec<String>) {
+            for arg in command.get_arguments() {
+                let id = arg.get_id().as_str();
+                if id == "help" || id == "version" {
+                    continue;
+                }
+                if arg
+                    .get_help()
+                    .is_none_or(|help| help.to_string().trim().is_empty())
+                {
+                    missing.push(format!("{path} <{id}>"));
+                }
+            }
+            for sub in command.get_subcommands() {
+                if sub.get_name() == "help" {
+                    continue;
+                }
+                let name = format!("{path} {}", sub.get_name());
+                if sub
+                    .get_about()
+                    .is_none_or(|about| about.to_string().trim().is_empty())
+                {
+                    missing.push(name.clone());
+                }
+                walk(sub, &name, missing);
+            }
+        }
+
+        let command = Cli::command();
+        let mut missing = Vec::new();
+        walk(&command, "grpctestify", &mut missing);
+        assert!(missing.is_empty(), "no help text for: {missing:#?}");
+    }
+
+    #[test]
+    fn call_fail_flag_is_off_by_default_and_parses() {
+        let cli = Cli::parse_from(["grpctestify", "call", "-e", "GET /x"]);
+        let Some(Commands::Call(call)) = cli.command else {
+            panic!("expected call command");
+        };
+        assert!(!call.fail);
+
+        let cli = Cli::parse_from(["grpctestify", "call", "-f", "-e", "GET /x"]);
+        let Some(Commands::Call(call)) = cli.command else {
+            panic!("expected call command");
+        };
+        assert!(call.fail);
+
+        let cli = Cli::parse_from(["grpctestify", "call", "--fail", "-S", "-e", "GET /x"]);
+        let Some(Commands::Call(call)) = cli.command else {
+            panic!("expected call command");
+        };
+        assert!(call.fail && call.show_error);
+    }
+
+    #[test]
+    fn optimize_layout_level_parses() {
+        let cli = Cli::parse_from(["grpctestify", "fmt", "-O", "layout", "t.gctf"]);
+        assert_eq!(
+            cli.optimize_level(crate::optimizer::OptimizeLevel::Safe),
+            crate::optimizer::OptimizeLevel::Layout
+        );
+        let cli = Cli::parse_from(["grpctestify", "fmt", "t.gctf"]);
+        assert_eq!(
+            cli.optimize_level(crate::optimizer::OptimizeLevel::Layout),
+            crate::optimizer::OptimizeLevel::Layout
+        );
+    }
 
     #[test]
     fn parallel_jobs_clamps_zero_to_one() {
@@ -1355,6 +1951,55 @@ mod tests {
         assert!(!call.show_error);
         assert_eq!(call.connect_timeout, 30);
         assert_eq!(call.max_time, 60);
+    }
+
+    #[test]
+    fn parse_call_address() {
+        let cli = Cli::parse_from(["grpctestify", "call", "test.gctf"]);
+        let Some(Commands::Call(call)) = cli.command else {
+            panic!("expected call command");
+        };
+        assert_eq!(call.address, None);
+
+        let cli = Cli::parse_from([
+            "grpctestify",
+            "call",
+            "--address",
+            "staging:4770",
+            "-e",
+            "svc.Method/Call",
+        ]);
+        let Some(Commands::Call(call)) = cli.command else {
+            panic!("expected call command");
+        };
+        assert_eq!(call.address.as_deref(), Some("staging:4770"));
+    }
+
+    #[test]
+    fn parse_bench_address() {
+        let cli = Cli::parse_from([
+            "grpctestify",
+            "bench",
+            "--address",
+            "staging:4770",
+            "t.gctf",
+        ]);
+        let Some(Commands::Bench(bench)) = cli.command else {
+            panic!("expected bench command");
+        };
+        assert_eq!(bench.address.as_deref(), Some("staging:4770"));
+
+        assert!(
+            Cli::try_parse_from([
+                "grpctestify",
+                "bench",
+                "--address",
+                "staging:4770",
+                "--calibrate",
+                "t.gctf",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

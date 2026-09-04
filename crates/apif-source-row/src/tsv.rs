@@ -4,9 +4,6 @@ use anyhow::Result;
 use apif_source_error::SourceError;
 use std::io::{BufReader, Read, Seek};
 
-/// Rewinds a `csv::Reader` back to the first data row. Boxed so the rewind
-/// capability (which needs `R: Seek`) can be captured at construction time and
-/// invoked later through the non-`Seek` `SourceReader` trait object.
 type TsvRewind<R> = Box<dyn Fn(&mut csv::Reader<BufReader<R>>) -> Result<()> + Send>;
 
 pub struct TsvReader<R> {
@@ -63,10 +60,6 @@ impl<R: Read> TsvReader<R> {
 }
 
 impl<R: Read + Seek + Send> TsvReader<R> {
-    /// Like [`TsvReader::new`], but over a seekable reader so that [`reset`]
-    /// can rewind to the first data row (the record after the header).
-    ///
-    /// [`reset`]: SourceReader::reset
     pub fn new_seekable(reader: BufReader<R>) -> Result<Self> {
         let mut this = Self::new(reader)?;
         let start = this.reader.position().clone();

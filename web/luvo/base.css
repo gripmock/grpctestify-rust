@@ -1,0 +1,52 @@
+/* luvo — base
+   The document itself: the reset, the viewport the app owns,
+   the scrollbars and the focus ring.
+   Every rule reads a token from `tokens.css`; none names a colour, radius,
+   shadow, duration or font of its own. */
+
+/* ============================================================
+   app.css — base
+   ============================================================ */
+* { box-sizing: border-box; }
+
+/* The app owns the viewport: it never scrolls at the document level, its panes
+   scroll inside it. #root is in the chain, so it needs the height too. */
+html, body, #root { height: 100%; }
+/* A workbench is not a document: a hard two-finger swipe used to leave the
+   page, and everything open on it, for the browser's previous URL. */
+html, body { overscroll-behavior: none; }
+
+body {
+  overflow: hidden;
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--ui-base);
+  line-height: var(--line-text);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+/* Tailwind's preflight sets line-height 1.5 on the root; a control that
+   inherits it grows by a quarter of its font size, and every control grows by a
+   different amount. Controls own their line-height. */
+.btn, .badge, .chip, .seg > button, .field, .tab, .brand, .field-label, .kbd,
+.row, .menu-item, .step, .problem, .event, .assert, .toast, .statusbar,
+.topbar, .legend, .panel > legend, .problems-head, .row-name,
+.row-note, .took, .method, .msg-index, .picker-value, .mode-label, .mode-desc {
+  line-height: var(--line-control);
+}
+
+::selection { background: var(--accent-soft); color: var(--ink); }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+input, textarea, select { caret-color: var(--accent); accent-color: var(--accent); }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: var(--radius-pill); }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-muted); }

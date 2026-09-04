@@ -15,8 +15,6 @@ pub struct FilterCondition {
     pub lt: Option<String>,
     #[serde(default, rename = "in")]
     pub in_values: Option<Vec<String>>,
-    /// Built on first use. `optimize()` was the only thing that populated it and
-    /// nothing ever called `optimize()`, so every `in` filter was a linear scan.
     #[serde(skip)]
     in_set: std::sync::OnceLock<HashSet<String>>,
 }
@@ -62,8 +60,6 @@ impl FilterCondition {
     }
 }
 
-/// Numeric when both sides are numbers, bytewise otherwise — so `qty gte 100`
-/// excludes `99` while ISO dates still order as strings.
 fn compare(actual: &str, expected: &str) -> std::cmp::Ordering {
     if let (Ok(a), Ok(b)) = (actual.trim().parse::<f64>(), expected.trim().parse::<f64>())
         && let Some(ordering) = a.partial_cmp(&b)
@@ -109,7 +105,6 @@ mod tests {
         }
     }
 
-    // `'9'` sorts after `'1'`, so a bytewise `gte "100"` kept `"99"`.
     #[test]
     fn numeric_fields_compare_as_numbers() {
         let mut cond = condition("qty");
@@ -129,7 +124,6 @@ mod tests {
         assert!(!cond.matches(&numeric_row()), "9.5 is not >= 10");
     }
 
-    // ISO dates and identifiers must keep comparing as strings.
     #[test]
     fn non_numeric_fields_still_compare_bytewise() {
         let mut cond = condition("created_at");
@@ -142,7 +136,6 @@ mod tests {
         assert!(!cond.matches(&row()));
     }
 
-    // `optimize()` was the only thing that built the set and nothing called it.
     #[test]
     fn an_in_filter_builds_its_set_without_an_explicit_optimize_call() {
         let mut cond = condition("status");

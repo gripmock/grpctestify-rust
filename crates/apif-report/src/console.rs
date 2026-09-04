@@ -1,5 +1,3 @@
-// Console reporter — renders to Strings (testable) then prints in on_suite_end.
-
 use std::cmp::Reverse;
 use std::fmt::Write as _;
 use std::sync::Mutex;
@@ -24,6 +22,7 @@ pub struct EnvironmentInfo {
     pub parallel_jobs: usize,
     pub sort_mode: String,
     pub dry_run: bool,
+    pub warnings: Vec<String>,
 }
 
 pub struct ConsoleReporter {
@@ -45,7 +44,26 @@ impl ConsoleReporter {
         }
     }
 
-    /// Render the end-of-run statistics block as a String.
+    fn call_word(&self) -> &'static str {
+        let Ok(results) = self.results.lock() else {
+            return "Calls";
+        };
+        let mut grpc = false;
+        let mut http = false;
+        for result in results.iter() {
+            if result.family == "httf" {
+                http = true;
+            } else {
+                grpc = true;
+            }
+        }
+        match (grpc, http) {
+            (true, false) => "gRPC",
+            (false, true) => "HTTP",
+            _ => "Calls",
+        }
+    }
+
     #[expect(clippy::too_many_arguments)]
     pub fn render_summary(
         &self,
@@ -58,15 +76,10 @@ impl ConsoleReporter {
         metrics: &apif_state::ExecutionMetrics,
     ) -> String {
         let dim = style::dim_style();
-        // Signature brand header: the name leads the top rule so the summary
-        // block reads as grpctestify's at a glance.
         let brand = format!("{} ", style::bold_style().apply_to("grpctestify"));
         let heavy = format!("{brand}{}", dim.apply_to("═".repeat(68)));
         let light = dim.apply_to("─".repeat(80)).to_string();
 
-        // Average must divide the SUM of per-test wall-clocks by the test
-        // count — dividing the parallel `duration_ms` understates per-test
-        // cost when jobs run concurrently.
         let avg = if total > 0 {
             metrics.sum_test_ms as f64 / total as f64
         } else {
@@ -120,11 +133,12 @@ impl ConsoleReporter {
             let avg_rpc = metrics.total_rpc_ms as f64 / metrics.rpc_calls as f64;
             let _ = writeln!(
                 o,
-                "   • gRPC: total {}ms, avg {:.0}ms per call",
-                metrics.total_rpc_ms, avg_rpc
+                "   • {}: total {}ms, avg {:.0}ms per call",
+                self.call_word(),
+                metrics.total_rpc_ms,
+                avg_rpc
             );
         }
-        // Non-gRPC time (parse + asserts + IO). Both operands are per-test sums.
         let overhead = metrics.sum_test_ms.saturating_sub(metrics.total_rpc_ms);
         let avg_overhead = if total > 0 {
             overhead as f64 / total as f64
@@ -170,7 +184,7 @@ impl ConsoleReporter {
         }
 
         let _ = writeln!(o, "🔧 Environment:");
-        let _ = writeln!(o, "   • gRPC Address: {}", self.env_info.address);
+        let _ = writeln!(o, "   • Address: {}", self.env_info.address);
         let _ = writeln!(o, "   • Sort Mode: {}", self.env_info.sort_mode);
         let _ = writeln!(
             o,
@@ -178,20 +192,30 @@ impl ConsoleReporter {
             if self.env_info.dry_run {
                 "Enabled"
             } else {
-                "Disabled (real gRPC calls)"
+                "Disabled (real calls)"
             }
         );
-        let _ = writeln!(o, "✨ No warnings detected");
+        if self.env_info.warnings.is_empty() {
+            let _ = writeln!(o, "✨ No warnings detected");
+        } else {
+            let _ = writeln!(
+                o,
+                "⚠️  {} warning{}:",
+                self.env_info.warnings.len(),
+                if self.env_info.warnings.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            );
+            for warning in &self.env_info.warnings {
+                let _ = writeln!(o, "   • {warning}");
+            }
+        }
         let _ = writeln!(o, "{}", dim.apply_to("═".repeat(80)));
         o
     }
 
-    /// Pest-style per-file detail with failure diagnostics. Per file: a
-    /// `PASS/FAIL` suite header, then one `✓`/`✗` line per recorded assertion
-    /// (grouped by endpoint for multi-doc chains) with the duration
-    /// right-aligned. A FAILED assertion additionally shows `expected` vs
-    /// `actual` and, once per failing file, the actual server response — so a
-    /// tester sees WHERE it broke and a developer sees WHAT the server returned.
     pub fn render_verbose(&self, results: &[TestResult]) -> String {
         const NAME_WIDTH: usize = 52;
         let dim = style::dim_style();
@@ -225,8 +249,6 @@ impl ConsoleReporter {
                         r.error_message.as_deref().unwrap_or("failed").to_string(),
                     ),
                 };
-                // Full error text (indented), not truncated — a transport/setup
-                // failure message is the whole diagnostic here.
                 let mut lines = text.lines();
                 if let Some(first) = lines.next() {
                     let _ = writeln!(o, "  {icon} {first}");
@@ -264,7 +286,6 @@ impl ConsoleReporter {
                 if a.passed {
                     continue;
                 }
-                // Diagnostic block for the failing assertion.
                 match (&a.expected, &a.actual) {
                     (Some(exp), Some(act)) => {
                         let _ = writeln!(
@@ -288,8 +309,6 @@ impl ConsoleReporter {
                         }
                     }
                 }
-                // Show the real server response once per failing file — the
-                // key artifact a developer needs to fix the assertion.
                 if !showed_response
                     && let Some(ex) = &r.exchange
                     && !ex.response.is_empty()
@@ -313,8 +332,6 @@ impl ConsoleReporter {
         o
     }
 
-    /// Slowest whole-test lines (verbose only). Empty String when not verbose
-    /// or nothing to show.
     pub fn render_slowest_tests(
         &self,
         test_results: &[apif_state::TestResult],
@@ -341,7 +358,6 @@ impl ConsoleReporter {
         o
     }
 
-    /// Slowest individual assertions across the run (verbose only).
     pub fn render_slowest_assertions(
         &self,
         test_results: &[apif_state::TestResult],
@@ -384,8 +400,6 @@ impl super::Reporter for ConsoleReporter {
             results.push(result.clone());
         }
 
-        // Dots mode prints a live glyph as each test finishes. Verbose defers
-        // all detail to the grouped block in on_suite_end.
         if matches!(self.mode, ConsoleMode::Dots) {
             let ch = match result.status {
                 TestStatus::Pass => ".",
@@ -405,7 +419,6 @@ impl super::Reporter for ConsoleReporter {
     }
 
     fn on_suite_end(&self, results: &apif_state::TestResults) -> anyhow::Result<()> {
-        // Newline after any in-progress dots line.
         if matches!(self.mode, ConsoleMode::Dots) && self.dots_count.load(Ordering::Relaxed) > 0 {
             println!();
         }
@@ -475,6 +488,7 @@ mod tests {
             parallel_jobs: 4,
             sort_mode: "name".into(),
             dry_run: false,
+            warnings: Vec::new(),
         }
     }
 
@@ -492,6 +506,7 @@ mod tests {
             endpoint: None,
             expected: (!passed).then(|| "\"active\"".into()),
             actual: (!passed).then(|| "\"pending\"".into()),
+            hint: None,
         }
     }
 
@@ -518,6 +533,36 @@ mod tests {
         assert!(out.contains("3 passed"));
         assert!(out.contains("Total tests: 3"));
         assert!(out.contains("Mode: Parallel (4 workers)"));
+    }
+
+    #[test]
+    fn the_call_line_names_the_wire_the_run_dialled() {
+        let metrics = apif_state::ExecutionMetrics {
+            rpc_calls: 2,
+            total_rpc_ms: 8,
+            sum_test_ms: 20,
+            ..Default::default()
+        };
+        let ended = |reporter: &ConsoleReporter, families: &[&str]| {
+            for (i, family) in families.iter().enumerate() {
+                let mut result = TestResult::pass(format!("t{i}"), 4, Some(4));
+                result.family = (*family).to_string();
+                reporter.on_test_end("t", &result);
+            }
+            reporter.render_summary(families.len(), families.len(), 0, 0, 10, &[], &metrics)
+        };
+
+        let http = ConsoleReporter::new(ConsoleMode::Silent, 0, env_info());
+        let said = ended(&http, &["httf", "httf"]);
+        assert!(said.contains("• HTTP: total"), "{said}");
+
+        let grpc = ConsoleReporter::new(ConsoleMode::Silent, 0, env_info());
+        let said = ended(&grpc, &["gctf", "gctf"]);
+        assert!(said.contains("• gRPC: total"), "{said}");
+
+        let both = ConsoleReporter::new(ConsoleMode::Silent, 0, env_info());
+        let said = ended(&both, &["gctf", "httf"]);
+        assert!(said.contains("• Calls: total"), "{said}");
     }
 
     #[test]
@@ -557,7 +602,6 @@ mod tests {
         assert!(out.contains("@uuid(.x)"));
         assert!(out.contains("FAIL"));
         assert!(out.contains(".status == \"ok\""));
-        // Failure diagnostics: expected/actual diff + source line.
         assert!(out.contains("expected"));
         assert!(out.contains("\"active\""));
         assert!(out.contains("actual"));
@@ -585,7 +629,6 @@ mod tests {
     #[test]
     fn render_verbose_transport_error_shows_full_message() {
         let reporter = ConsoleReporter::new(ConsoleMode::Verbose, 0, env_info());
-        // No assertions recorded (transport/setup failure) — full error shown.
         let result = TestResult::fail(
             "tests/down.gctf",
             "gRPC error code=14 message=connection refused".into(),

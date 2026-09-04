@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use anyhow::{Context, Result, bail};
 use apif_plugins::marketplace::{
@@ -18,8 +18,6 @@ fn target_plugins_dir(global: bool) -> Result<PathBuf> {
     }
 }
 
-/// Tag names on a remote, no checkout — resolves `Latest`/`Range` before
-/// the real fetch.
 fn list_remote_tags(url: &str) -> Result<Vec<String>> {
     let tmp = tempfile::tempdir()?;
     let (repo, _outcome) = gix::prepare_clone(url, tmp.path())?
@@ -55,7 +53,6 @@ fn clone_shallow(url: &str, dest: &Path, ref_name: Option<&str>) -> Result<gix::
     Ok(repo)
 }
 
-/// Ref name to fetch (`None` = default branch) plus the matched tag, if any.
 fn resolve_ref(source: &InstallSource) -> Result<(Option<String>, Option<String>)> {
     match &source.version {
         VersionSpec::Exact(r) => Ok((Some(r.clone()), None)),
@@ -115,10 +112,6 @@ fn install_source(source: &InstallSource, plugins_dir: &Path) -> Result<Installe
     let mut seen_names = std::collections::HashSet::new();
     for path in &rhai_files {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        // Installed layout is flat (matches the default scan's own
-        // behavior) — an explicit `files:` list naming two same-named
-        // scripts from different subdirectories would silently overwrite
-        // one with the other, so that's a hard error instead.
         if !seen_names.insert(name.clone()) {
             bail!(
                 "{}: two listed files both install as {name:?} — installed plugins land in one flat directory, rename one",
@@ -131,8 +124,6 @@ fn install_source(source: &InstallSource, plugins_dir: &Path) -> Result<Installe
         files.push(LockedFile { path: name, sha256 });
     }
 
-    // Keep the manifest itself alongside the installed scripts so `list`
-    // can show the description later without re-cloning the source.
     if manifest.is_some() {
         let manifest_src = source_dir.join(marketplace::MANIFEST_FILE_NAME);
         if let Ok(bytes) = std::fs::read(&manifest_src) {
@@ -148,9 +139,6 @@ fn install_source(source: &InstallSource, plugins_dir: &Path) -> Result<Installe
     })
 }
 
-/// Whether reading `path` would leave `root`. A symlink is rejected outright
-/// rather than resolved: a plugin repo has no legitimate reason to ship one,
-/// and `fs::read` follows it.
 fn escapes_source(path: &Path, root: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
         || !path
@@ -158,10 +146,6 @@ fn escapes_source(path: &Path, root: &Path) -> bool {
             .is_ok_and(|resolved| resolved.starts_with(root))
 }
 
-/// Which `.rhai` files to install from a resolved `source_dir`, and the
-/// optional manifest that drove the decision. Pure filesystem logic, no git
-/// — kept separate from `install_source` so it's unit-testable with a plain
-/// tempdir instead of a real clone.
 fn resolve_install_files(
     source_dir: &Path,
     source_key: &str,
@@ -170,8 +154,6 @@ fn resolve_install_files(
         .canonicalize()
         .with_context(|| format!("resolving {}", source_dir.display()))?;
 
-    // Before the manifest is even read: it too is a repo-controlled path, and
-    // a parse failure echoes part of the file back in the warning.
     let manifest_path = source_dir.join(marketplace::MANIFEST_FILE_NAME);
     if manifest_path.exists() && escapes_source(&manifest_path, &root) {
         bail!(
@@ -180,9 +162,6 @@ fn resolve_install_files(
         );
     }
 
-    // Optional repo-side `grpctestify-plugin.yaml`: opt-in, so a present but
-    // malformed manifest warns and falls back rather than blocking install —
-    // the installing user can't fix another repo's mistake.
     let manifest = match marketplace::read_manifest(source_dir) {
         Ok(m) => m,
         Err(warning) => {
@@ -206,7 +185,6 @@ fn resolve_install_files(
                         marketplace::MANIFEST_FILE_NAME
                     );
                 }
-                // Repo-controlled manifest: reject absolute/`..` entries that escape the source.
                 let rel_path = Path::new(rel);
                 if rel_path.is_absolute()
                     || rel_path
@@ -242,8 +220,6 @@ fn resolve_install_files(
         }
     };
 
-    // Past both arms on purpose: a repo can commit `checks.rhai` as a symlink
-    // to `~/.ssh/id_rsa`, and the read below would follow it out of the clone.
     for path in &rhai_files {
         if escapes_source(path, &root) {
             bail!(
@@ -337,9 +313,6 @@ pub fn handle_plugins_list(args: &PluginsListArgs) -> Result<()> {
                 &p.resolved_commit[..12.min(p.resolved_commit.len())],
                 p.files.len()
             );
-            // The manifest (if the source had one) was copied alongside the
-            // installed scripts at install time specifically so `list` can
-            // show its description without re-cloning the source.
             let install_dir = dir
                 .join("installed")
                 .join(&p.host)
@@ -365,8 +338,6 @@ pub fn handle_plugins_remove(args: &PluginsRemoveArgs) -> Result<()> {
     let Some(entry) = lock.get(&args.name).cloned() else {
         bail!("{} is not installed", args.name);
     };
-    // The lockfile ships with the repo: a `host: "../../../victim"` entry
-    // turned this into `rm -rf` on an arbitrary directory.
     let installed_root = plugins_dir.join("installed");
     let source =
         marketplace::parse_source(&format!("{}/{}/{}", entry.host, entry.owner, entry.repo))
@@ -455,8 +426,6 @@ pub fn handle_plugins_update(args: &PluginsUpdateArgs) -> Result<()> {
 mod tests {
     use super::*;
 
-    // Regression: the guard sat inside the manifest arm only, so the default
-    // no-manifest scan read straight through a symlink.
     #[cfg_attr(miri, ignore)]
     #[cfg(unix)]
     #[test]
@@ -468,14 +437,12 @@ mod tests {
         std::fs::create_dir_all(&source).unwrap();
         std::os::unix::fs::symlink(&secret, source.join("checks.rhai")).unwrap();
 
-        // No manifest: the default directory-scan arm.
         let err = resolve_install_files(&source, "test/repo").unwrap_err();
         assert!(
             err.to_string().contains("escapes the source directory"),
             "unexpected error: {err}"
         );
 
-        // And with a manifest listing it explicitly.
         std::fs::write(
             source.join(marketplace::MANIFEST_FILE_NAME),
             "name: t\nfiles:\n  - checks.rhai\n",
@@ -488,8 +455,6 @@ mod tests {
         );
     }
 
-    // The manifest is a repo-controlled path too, and a parse failure echoes
-    // part of the file back in the warning.
     #[cfg_attr(miri, ignore)]
     #[cfg(unix)]
     #[test]
@@ -587,12 +552,9 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     #[test]
     fn resolve_install_files_manifest_escaping_path_is_rejected() {
-        // A repo-controlled `files:` entry with `..` must not read/install a
-        // file from outside the cloned source directory.
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("pkg");
         std::fs::create_dir(&sub).unwrap();
-        // A real .rhai sitting outside the source dir — the target of the escape.
         std::fs::write(dir.path().join("outside.rhai"), "").unwrap();
         std::fs::write(
             sub.join(marketplace::MANIFEST_FILE_NAME),
@@ -618,8 +580,6 @@ mod tests {
         )
         .unwrap();
 
-        // Malformed manifest must not block install — falls back to the
-        // default scan, same as if no manifest existed at all.
         let (files, manifest) = resolve_install_files(dir.path(), "test/repo").unwrap();
         assert!(manifest.is_none());
         assert_eq!(files.len(), 1);

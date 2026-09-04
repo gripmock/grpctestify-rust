@@ -26,7 +26,6 @@ pub trait GrpcClient: Send {
     fn list_services(&self) -> Vec<String>;
     fn list_methods(&self, service_name: &str) -> Vec<MethodInfo>;
     fn resolve_endpoint(&self, endpoint: &str) -> Result<EndpointMeta, GrpcError>;
-    fn generate_schema(&self, endpoint: &str) -> Result<Value, GrpcError>;
 }
 
 #[async_trait]

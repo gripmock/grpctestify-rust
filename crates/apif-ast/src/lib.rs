@@ -8,9 +8,10 @@ pub use assertion_ast::{
     remove_redundant_parens,
 };
 pub use ast::{
-    DEPRECATED_KEBAB_CASE_KEYS, DocumentChainIter, DocumentMetadata, FileMeta, GctfAttribute,
-    GctfDocument, InlineOptions, OrderedStringMap, Section, SectionContent, SectionHeader,
-    SectionSpan, SectionType, canonical_key_spelling, line_start_byte_offsets,
+    Call, DEPRECATED_KEBAB_CASE_KEYS, DocumentChainIter, DocumentMetadata, Family, FileMeta,
+    GctfAttribute, GctfDocument, InlineOptions, OrderedStringMap, Section, SectionContent,
+    SectionHeader, SectionSpan, SectionType, Transport, canonical_key_spelling, is_http_method,
+    line_start_byte_offsets,
 };
 pub use gctf_tokenizer::{
     GctfToken, GctfTokenKind, scan_miscased_section_header_name, strip_gctf_comment_lines,

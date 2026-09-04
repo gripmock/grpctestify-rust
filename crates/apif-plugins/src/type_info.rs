@@ -1,18 +1,11 @@
-//! Compact type system for plugin arguments and return values.
-
 use serde::{Deserialize, Serialize};
 
-/// Type information for plugin return values and assertion expressions.
-/// Only 7 core types. Constrained strings (uuid, email, url, ip) are aliases
-/// resolved to `String` by `parse_type_name`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TypeInfo {
     Bool,
     UInt,
     Number,
     String,
-    /// Time/duration value (unix timestamp, ISO 8601, protobuf Timestamp/Duration).
-    /// Supports ordering operators: `>`, `<`, `>=`, `<=`.
     Time,
     Json,
     Yaml,
@@ -72,7 +65,6 @@ impl TypeInfo {
     }
 
     pub fn supports_operator(&self, op: &str) -> (bool, Option<&'static str>) {
-        // Any supports all operators — runtime will validate the actual value.
         if self == &TypeInfo::Any {
             return (true, None);
         }

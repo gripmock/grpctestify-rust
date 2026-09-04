@@ -1,15 +1,10 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
-//! gRPC method and protobuf message field coverage collector.
-//!
-//! Tracks which gRPC service/method calls were made during test execution
-//! and which protobuf message fields were covered by assertions.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use prost_reflect::{DescriptorPool, MessageDescriptor};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-/// Coverage data for a single file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoverageFile {
     pub uri: String,
@@ -24,21 +19,18 @@ pub struct CoverageFile {
     pub methods: Vec<MethodCoverage>,
 }
 
-/// Per-method call coverage within a service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MethodCoverage {
     pub name: String,
     pub calls: u64,
 }
 
-/// Coverage statistics (covered vs total).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoverageStats {
     pub covered: usize,
     pub total: usize,
 }
 
-/// Coverage data for a protobuf message type's fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageFieldCoverage {
     pub message_type: String,
@@ -48,7 +40,6 @@ pub struct MessageFieldCoverage {
     pub missing_fields: Vec<String>,
 }
 
-/// Full coverage report with file and message-level statistics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoverageReport {
     pub files: Vec<CoverageFile>,
@@ -57,7 +48,6 @@ pub struct CoverageReport {
     pub field_summary: CoverageStats,
 }
 
-/// Collects gRPC method call and protobuf field coverage during test execution.
 #[derive(Debug, Clone)]
 pub struct CoverageCollector {
     calls: Arc<Mutex<HashMap<String, HashMap<String, u64>>>>,
@@ -126,23 +116,14 @@ impl CoverageCollector {
         }
     }
 
-    /// Count fields the way `extract_fields_from_json` records covered ones:
-    /// every field contributes its own dotted path, and message-typed fields
-    /// additionally contribute the nested paths of their sub-message. Without
-    /// this the denominator only counted top-level fields while the numerator
-    /// counted nested `parent.child` paths, understating the total.
     fn count_fields_recursive(msg: &MessageDescriptor) -> usize {
         fn count(msg: &MessageDescriptor, visited: &mut HashSet<String>) -> usize {
-            // Guard against recursive message types (e.g. a tree node whose
-            // field points back at its own type) to avoid unbounded recursion.
             if !visited.insert(msg.full_name().to_string()) {
                 return 0;
             }
             let mut total = 0;
             for field in msg.fields() {
                 total += 1;
-                // Recurse into nested messages, but not map entries: a map's
-                // keys are dynamic and can't be enumerated from the schema.
                 if !field.is_map()
                     && let prost_reflect::Kind::Message(sub) = field.kind()
                 {
@@ -155,10 +136,6 @@ impl CoverageCollector {
         count(msg, &mut HashSet::new())
     }
 
-    /// Enumerate every dotted field path the schema defines for `message_type`,
-    /// the same walk `count_fields_recursive` does but collecting names instead
-    /// of a count — lets the report show which specific fields are missing,
-    /// not just how many.
     fn field_paths_recursive(pool: &DescriptorPool, message_type: &str) -> Vec<String> {
         fn walk(
             msg: &MessageDescriptor,
@@ -207,7 +184,6 @@ impl CoverageCollector {
         let mut total_fields_covered = 0;
         let mut total_fields = 0;
 
-        // Method coverage - deduplicated iteration pattern
         let mut services: Vec<_> = pool.services().collect();
         services.sort_by(|a, b| a.name().cmp(b.name()));
 
@@ -218,9 +194,6 @@ impl CoverageCollector {
             }
 
             let methods: Vec<_> = service.methods().collect();
-            // Calls are recorded under the fully-qualified service name
-            // ("package.Service", see runner.rs). Look up with the same
-            // FQN so services inside a proto `package` aren't reported 0%.
             let called_methods = calls.get(service.full_name()).cloned().unwrap_or_default();
 
             let covered = methods
@@ -243,7 +216,7 @@ impl CoverageCollector {
                 method_rows.sort_by(|a, b| a.name.cmp(&b.name));
 
                 files.push(CoverageFile {
-                    uri: format!("grpc://{}", service_name),
+                    uri: format!("grpc://{}", service.full_name()),
                     statements: CoverageStats { covered, total },
                     branches: None,
                     functions: Some(CoverageStats { covered, total }),
@@ -253,7 +226,6 @@ impl CoverageCollector {
             }
         }
 
-        // Message field coverage
         let mut all_message_types: HashSet<String> = HashSet::new();
         for message_type in fields_covered.keys() {
             all_message_types.insert(message_type.clone());
@@ -322,7 +294,6 @@ impl CoverageCollector {
         let mut report = String::new();
         report.push_str("--- gRPC API Coverage Report ---\n\n");
 
-        // Method coverage
         let mut services: Vec<_> = pool.services().collect();
         services.sort_by(|a, b| a.name().cmp(b.name()));
 
@@ -341,7 +312,6 @@ impl CoverageCollector {
 
             report.push_str(&format!("Service: {}\n", service_name));
 
-            // Match the fully-qualified name used when recording calls.
             let called_methods = calls.get(service.full_name()).cloned().unwrap_or_default();
 
             let mut methods: Vec<_> = service.methods().collect();
@@ -376,7 +346,6 @@ impl CoverageCollector {
             ));
         }
 
-        // Message field coverage
         if !fields_covered.is_empty() {
             report.push_str("--- Message Field Coverage ---\n\n");
 
@@ -544,8 +513,6 @@ mod tests {
         DescriptorProto, FileDescriptorProto, MethodDescriptorProto, ServiceDescriptorProto,
     };
 
-    /// Build a pool with a service inside a proto `package`, so its
-    /// fully-qualified name ("my.pkg.Greeter") differs from its short name.
     fn pool_with_packaged_service() -> DescriptorPool {
         let mut pool = DescriptorPool::new();
         let file = FileDescriptorProto {
@@ -571,13 +538,10 @@ mod tests {
         pool
     }
 
-    // Bug 6: calls are recorded under the fully-qualified service name, so
-    // coverage lookup must use the same FQN or packaged services report 0%.
     #[test]
     fn coverage_matches_fully_qualified_service_name() {
         let collector = CoverageCollector::new();
         collector.register_pool(&pool_with_packaged_service());
-        // Recorded exactly as runner.rs does: "package.Service".
         collector.record_call("my.pkg.Greeter", "SayHello");
 
         let report = collector.generate_json_report();
@@ -591,10 +555,6 @@ mod tests {
         assert!(text.contains("100.0%"), "text report: {text}");
     }
 
-    /// Build a pool with a message that nests two levels of sub-messages:
-    /// `Outer { id, inner: Inner }`, `Inner { name, addr: Addr }`,
-    /// `Addr { city }`. Recursively that is 5 fields (id, inner, inner.name,
-    /// inner.addr, inner.addr.city).
     fn pool_with_nested_message() -> DescriptorPool {
         use prost_reflect::prost_types::FieldDescriptorProto;
         use prost_reflect::prost_types::field_descriptor_proto::{Label, Type};
@@ -641,13 +601,10 @@ mod tests {
         pool
     }
 
-    // Bug 2: the field-count denominator must recurse into nested messages so
-    // it matches the nested dotted paths counted as covered.
     #[test]
     fn nested_message_field_count_is_recursive() {
         let pool = pool_with_nested_message();
         let outer = pool.get_message_by_name("Outer").unwrap();
-        // Before the fix this returned 2 (only id, inner).
         assert_eq!(CoverageCollector::count_fields_recursive(&outer), 5);
     }
 
@@ -679,7 +636,6 @@ mod tests {
     fn nested_message_partial_coverage_uses_recursive_total() {
         let collector = CoverageCollector::new();
         collector.register_pool(&pool_with_nested_message());
-        // Only 3 of the 5 recursive paths are exercised (id, inner, inner.name).
         collector.record_fields_from_json(
             "Outer",
             &serde_json::json!({ "id": "x", "inner": { "name": "y" } }),
@@ -697,7 +653,6 @@ mod tests {
         collector.record_call("my.pkg.Greeter", "SayHello");
 
         let html = collector.generate_html_report();
-        // No JS charting library or CDN fetch — renders fully offline.
         assert!(!html.contains("<script"), "no script tag: {html}");
         assert!(!html.contains("cdn.jsdelivr.net"));
         assert!(html.contains("bar-fill"), "CSS bar chart present");

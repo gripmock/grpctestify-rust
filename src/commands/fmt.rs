@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use anyhow::Result;
 use tracing::{debug, error, warn};
@@ -10,13 +10,71 @@ use crate::parser;
 use crate::semantics;
 use crate::utils::FileUtils;
 
-/// Normalize assertion lines:
-/// - convert `#` comments to `//`
-/// - normalize `:TypeName` spacing to stuck-together form (`.x:number` not `.x : number`)
 fn normalize_assertion_lines(raw: &str) -> Vec<String> {
     raw.lines()
         .map(|line| normalize_numeric_literals(&normalize_assertion_line(line), true))
         .collect()
+}
+
+fn collapse_layout_whitespace(expr: &str) -> String {
+    let mut out = String::with_capacity(expr.len());
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut pending_space = false;
+    for c in expr.chars() {
+        if let Some(open) = quote {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == open {
+                quote = None;
+            }
+            continue;
+        }
+        if c.is_whitespace() {
+            pending_space = !out.is_empty() && !out.ends_with('(');
+            continue;
+        }
+        if c == ')' {
+            pending_space = false;
+        }
+        if pending_space {
+            out.push(' ');
+            pending_space = false;
+        }
+        if c == '"' || c == '\'' {
+            quote = Some(c);
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn canonical_assertion_spelling(trimmed: &str) -> Option<String> {
+    use crate::parser::assertion_ast::{
+        AssertionExpr, NegationStyle, assertion_to_string_with, parse_assertion,
+    };
+
+    let expr = parse_assertion(trimmed);
+    if matches!(&expr, AssertionExpr::Raw(_)) {
+        return None;
+    }
+    for style in [
+        NegationStyle::Canonical,
+        NegationStyle::Keyword,
+        NegationStyle::Bang,
+    ] {
+        let serialized = assertion_to_string_with(&expr, style);
+        let reparsed = parse_assertion(&serialized);
+        let stable = !matches!(&reparsed, AssertionExpr::Raw(_))
+            && assertion_to_string_with(&reparsed, style) == serialized;
+        if stable && apif_optimizer::only_layout_differs(trimmed, &serialized) {
+            return Some(serialized);
+        }
+    }
+    None
 }
 
 fn normalize_assertion_line(line: &str) -> String {
@@ -25,32 +83,17 @@ fn normalize_assertion_line(line: &str) -> String {
     if trimmed.starts_with("//") || trimmed.is_empty() {
         return line;
     }
-    // The tokenizer drops escape backslashes, so canonicalising an assertion
-    // that carries one would rewrite the literal into a different string.
-    // Try to parse as assertion expression for canonical formatting
-    let expr = crate::parser::assertion_ast::parse_assertion(trimmed);
-    if matches!(&expr, crate::parser::assertion_ast::AssertionExpr::Raw(_)) {
-        return line;
-    }
-    let serialized = crate::parser::assertion_ast::assertion_to_string(&expr);
-    // Round-trip guard: only rewrite to the canonical form when that form
-    // parses back to itself. Otherwise the parser can't re-read what we
-    // emit and a second format pass would change the output. This is the
-    // case for `if..then..else..end`, which serializes to a `? :` ternary
-    // the parser does not accept back (root cause: apif-ast
-    // assertion_to_string/parse_assertion asymmetry).
-    let reparsed = crate::parser::assertion_ast::parse_assertion(&serialized);
-    let stable = !matches!(
-        &reparsed,
+    if matches!(
+        crate::parser::assertion_ast::parse_assertion(trimmed),
         crate::parser::assertion_ast::AssertionExpr::Raw(_)
-    ) && crate::parser::assertion_ast::assertion_to_string(&reparsed) == serialized;
-    if !stable {
+    ) {
         return line;
     }
-    // Preserve original indentation
+    let settled = canonical_assertion_spelling(trimmed)
+        .unwrap_or_else(|| collapse_layout_whitespace(trimmed));
     let indent_len = line.len() - trimmed.len();
     let indent = &line[..indent_len];
-    format!("{}{}", indent, serialized)
+    format!("{}{}", indent, settled)
 }
 
 fn normalize_hash_comment_line(line: &str) -> Option<String> {
@@ -70,13 +113,6 @@ fn normalize_hash_comment_line(line: &str) -> Option<String> {
     }
 }
 
-/// `1000000` -> `1_000_000`, `1_00` -> `100`, `1.000000` -> `1.0`. Only a run
-/// that is a number on both ends, so identifiers, UUIDs, hex, exponents,
-/// string contents and comment prose are left as authored.
-/// Canonicalise numeric literals. `group_integers` is false inside JSON
-/// payloads: `1_000_000` is neither valid JSON nor JSON5, and a body is read by
-/// other tools too. Fraction trimming (`1.000000` -> `1.0`) applies either way —
-/// it keeps the value and the type.
 fn normalize_numeric_literals(text: &str, group_integers: bool) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -98,7 +134,6 @@ fn normalize_numeric_literals(text: &str, group_integers: bool) -> String {
             continue;
         }
 
-        // `// 1000` must stay `// 1000`.
         if c == '#' || (c == '/' && chars.peek() == Some(&'/')) {
             out.push(c);
             for next in chars.by_ref() {
@@ -159,8 +194,6 @@ fn normalize_numeric_literals(text: &str, group_integers: bool) -> String {
                 }
             }
 
-            // Glued to a letter, `_` or `-` means it's part of a larger token:
-            // a UUID, hex, an exponent tail. Not ours to regroup.
             let is_number_end = chars
                 .peek()
                 .is_none_or(|n| !(n.is_alphanumeric() || *n == '_' || *n == '-'));
@@ -176,9 +209,6 @@ fn normalize_numeric_literals(text: &str, group_integers: bool) -> String {
             if group_integers {
                 out.push_str(&group_digits(&int_part));
             } else {
-                // Strip separators rather than pass them through: a payload
-                // written by an older release carries `1_000_000`, which no
-                // JSON parser outside this tool accepts.
                 out.extend(int_part.chars().filter(|c| *c != '_'));
             }
             if let Some(frac) = frac_part {
@@ -194,7 +224,6 @@ fn normalize_numeric_literals(text: &str, group_integers: bool) -> String {
     out
 }
 
-/// `1.000000` -> `1.0`, never `1` — losing the `.0` retypes a float as an int.
 fn trim_fraction(raw: &str) -> String {
     let digits: String = raw.chars().filter(char::is_ascii_digit).collect();
     let trimmed = digits.trim_end_matches('0');
@@ -228,9 +257,6 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
         }
     }
 
-    // Move to a fresh, correctly-indented line. Any pending indentation on an
-    // otherwise-empty line is stripped first, so we never emit a blank line
-    // (which would also make a second format pass non-idempotent).
     fn newline_indent(buf: &mut String, indent: usize) {
         while buf.ends_with(' ') {
             buf.pop();
@@ -244,24 +270,14 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
     let mut out = String::new();
     let mut chars = raw.chars().peekable();
     let mut indent = 0usize;
-    // JSON5, so `'…'` is a string too — otherwise a `#`, `//` or `:` inside one
-    // reads as syntax and the value gets rewritten.
     let mut string_quote: Option<char> = None;
     let mut escaped = false;
     let mut in_line_comment = false;
     let mut in_block_comment = false;
     let mut saw_newline_gap = false;
-    // Break owed after `{`/`[`/`,`, emitted by the next token. Emitting it
-    // eagerly moved `"a": 1, // note` onto the next line and split `{}` in two.
     let mut pending_break = false;
-    // A `/* … */` ended mid-line; without a space the next value fuses onto it.
     let mut need_space = false;
-    // Offset of a `,` with no value after it yet. JSON5 allows it before the
-    // bracket, canonical JSON doesn't, and a comment may sit in between.
     let mut dangling_comma: Option<usize> = None;
-    // A commented-out member sitting after that comma. The comma is then load
-    // bearing: it is what lets the line be uncommented without also having to
-    // put a comma back, so it must survive.
     let mut comma_holds_a_commented_out_member = false;
 
     macro_rules! open_value {
@@ -282,8 +298,6 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
         if in_line_comment {
             if ch == '\n' {
                 in_line_comment = false;
-                // The next token starts a fresh line — including a following
-                // comment, which must not fold up onto this one.
                 saw_newline_gap = true;
                 pending_break = false;
             } else if ch != '\r' {
@@ -306,7 +320,6 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
             saw_newline_gap = false;
             if escaped {
                 escaped = false;
-                // `\'` means nothing once the quotes are doubled.
                 if !(quote == '\'' && ch == '\'') {
                     out.push('\\');
                 }
@@ -329,7 +342,6 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
             continue;
         }
 
-        // Quoting style carries no meaning; the contents do, and are untouched.
         if ch == '"' || ch == '\'' {
             open_value!();
             pending_break = false;
@@ -348,11 +360,7 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
         };
 
         if ch == '#' || slash_comment_kind.is_some() {
-            // Only a newline in the *source* moves a comment to its own line;
-            // a break merely owed by `{`/`[`/`,` must not.
             if saw_newline_gap {
-                // A comment on its own line after a comma is a commented-out
-                // member, not a note about the value before it.
                 if dangling_comma.is_some() {
                     comma_holds_a_commented_out_member = true;
                 }
@@ -386,7 +394,6 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
                 pending_break = true;
             }
             '}' | ']' => {
-                // By offset, not `ends_with`: a comment may sit in between.
                 if let Some(pos) = dangling_comma.take()
                     && !comma_holds_a_commented_out_member
                 {
@@ -435,8 +442,6 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
                 open_value!();
                 pending_break = false;
 
-                // JSON5 identifiers are Unicode, not ASCII: `имя: 4` is as
-                // valid an unquoted key as `name: 4` and must be quoted too.
                 if ch.is_alphabetic() || ch == '_' || ch == '$' {
                     let mut word = String::from(ch);
                     while let Some(&next) = chars.peek() {
@@ -447,8 +452,6 @@ fn format_json_with_comments(raw: &str) -> Vec<String> {
                             break;
                         }
                     }
-                    // In key position it's JSON5's unquoted key. Anywhere else
-                    // it's a literal (`true`, `NaN`, an exponent tail).
                     let mut lookahead = chars.clone();
                     while lookahead.peek().is_some_and(|c| c.is_whitespace()) {
                         lookahead.next();
@@ -508,8 +511,6 @@ fn format_non_json_section_lines(raw: &str) -> Vec<String> {
     normalize_lines(raw)
 }
 
-/// Special formatter for EXTRACT sections.
-/// Preserves `name:Type = .jq.path` syntax without breaking the `:Type` annotation.
 fn format_extract_section(raw: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in normalize_lines(raw) {
@@ -519,7 +520,6 @@ fn format_extract_section(raw: &str) -> Vec<String> {
             continue;
         }
 
-        // Try to parse as extract line with full type info
         if let Some((name, type_opt, value)) =
             crate::parser::gctf_tokenizer::tokenize_extract_line_full(trimmed)
         {
@@ -528,7 +528,6 @@ fn format_extract_section(raw: &str) -> Vec<String> {
             } else {
                 format!("{} = {}", name, value)
             };
-            // Preserve original indentation
             let indent_len = line.len() - trimmed.len();
             out.push(format!("{}{}", &line[..indent_len], formatted));
         } else {
@@ -538,15 +537,11 @@ fn format_extract_section(raw: &str) -> Vec<String> {
     out
 }
 
-/// A key line plus whatever was written above it, so sorting moves a comment
-/// with the key it documents instead of stranding or deleting it.
 struct KeyBlock {
     sort_key: String,
     lines: Vec<String>,
 }
 
-/// Comments and unparsable lines ride onto the next key; the remainder comes
-/// back as the section's tail. Nothing is dropped.
 fn collect_key_blocks(
     lines: &[String],
     mut render: impl FnMut(&str, &str) -> (String, String),
@@ -602,9 +597,6 @@ fn format_key_values_section(raw: &str, sort_keys: bool) -> Vec<String> {
     flatten_key_blocks(blocks, tail)
 }
 
-/// Like `format_key_values_section`, but indented lines stay glued to the
-/// preceding key instead of being sorted as their own entries — needed for
-/// `sources:`'s nested YAML list.
 fn format_bench_section(raw: &str) -> Vec<String> {
     let lines = normalize_lines(raw);
 
@@ -648,9 +640,6 @@ fn format_bench_section(raw: &str) -> Vec<String> {
         }
     }
 
-    // Canonical order (mode → profile → ... → sources), matching `check`'s
-    // reference order and the other BENCH serializer in apif-parser — not
-    // alphabetical, so e.g. `mode` sorts before `duration`.
     items.sort_by(|a, b| a.rank.cmp(&b.rank).then_with(|| a.key.cmp(&b.key)));
     items
         .into_iter()
@@ -681,9 +670,6 @@ fn trim_trailing_blank_lines(lines: &mut Vec<String>) {
 
 fn format_section_lines(section: &crate::parser::ast::Section) -> Vec<String> {
     let mut lines = match (&section.section_type, &section.content) {
-        // Re-indented from source text, never re-serialized: a `serde_json`
-        // round-trip rewrote `0xFF` -> `255`, `1e3` -> `1000.0`,
-        // `Infinity`/`NaN` -> `null`, and dropped a duplicate key.
         (
             crate::parser::ast::SectionType::Request
             | crate::parser::ast::SectionType::Error
@@ -691,12 +677,9 @@ fn format_section_lines(section: &crate::parser::ast::Section) -> Vec<String> {
             crate::parser::ast::SectionContent::Json(_)
             | crate::parser::ast::SectionContent::JsonLines(_),
         ) => format_json_with_comments(&section.raw_content),
-        // ASSERTS section — normalize type annotation spacing and comments
         (crate::parser::ast::SectionType::Asserts, _) => {
             return normalize_assertion_lines(&section.raw_content);
         }
-        // META/DATASET are YAML — `#` is its comment marker, so preserve
-        // lines verbatim (rewriting `#` to `//` would corrupt the YAML).
         (crate::parser::ast::SectionType::Meta | crate::parser::ast::SectionType::Dataset, _) => {
             section.raw_content.lines().map(str::to_string).collect()
         }
@@ -721,19 +704,11 @@ fn format_section_lines(section: &crate::parser::ast::Section) -> Vec<String> {
     lines
 }
 
-/// One section's rendered lines (leading comments + attributes + header +
-/// body), kept together as a unit so reordering preamble sections below
-/// carries each section's comments/attributes along with it.
 struct SectionBlock {
     preamble_rank: Option<usize>,
     lines: Vec<String>,
 }
 
-/// Move a trailing run of blank/`//`-comment lines off the end of each block
-/// onto the front of the next one — see the call site for why.
-/// Only re-homes comments up to `last_movable`, i.e. within the preamble
-/// (plus its boundary with the first body section) — reordering never
-/// touches body sections, so their existing comment placement is untouched.
 fn rehome_trailing_comments(blocks: &mut [SectionBlock], last_movable: usize) {
     for i in 0..last_movable.min(blocks.len().saturating_sub(1)) {
         let split_at = {
@@ -751,9 +726,6 @@ fn rehome_trailing_comments(blocks: &mut [SectionBlock], last_movable: usize) {
         };
         if split_at < blocks[i].lines.len() {
             let mut tail = blocks[i].lines.split_off(split_at);
-            // Only the comment text itself needs to travel —
-            // `ensure_single_section_separator` supplies the blank line
-            // between blocks at assembly time.
             while tail.first().is_some_and(|l| l.trim().is_empty()) {
                 tail.remove(0);
             }
@@ -766,14 +738,12 @@ fn rehome_trailing_comments(blocks: &mut [SectionBlock], last_movable: usize) {
     }
 }
 
-/// Format a GCTF document chain via AST. Walks all sections in order.
 fn format_gctf_chain(head: &crate::parser::GctfDocument, source: &str) -> String {
     let eol = canonical_line_ending();
     let lines: Vec<&str> = source.lines().collect();
     let mut blocks: Vec<SectionBlock> = Vec::new();
     let mut current_line = 0usize;
 
-    // Walk every section across all documents in the chain, in source order.
     for doc in head.iter_chain() {
         for section in &doc.sections {
             let attr_count = section.attributes.len();
@@ -781,13 +751,6 @@ fn format_gctf_chain(head: &crate::parser::GctfDocument, source: &str) -> String
 
             let mut block_lines = Vec::new();
 
-            // Interleave comments between previous section end and attribute
-            // lines. Blank lines are deliberately dropped, not copied —
-            // inter-block spacing is always synthesized at assembly time by
-            // `ensure_single_section_separator`, and every section's own
-            // rendered content is already blank-trimmed
-            // (`format_section_lines`'s `trim_trailing_blank_lines`), so a
-            // raw blank line here would just double up with that separator.
             while current_line < attr_line_start && current_line < lines.len() {
                 if !lines[current_line].trim().is_empty() {
                     block_lines.push(
@@ -798,12 +761,10 @@ fn format_gctf_chain(head: &crate::parser::GctfDocument, source: &str) -> String
                 current_line += 1;
             }
 
-            // Emit attributes before section header
             for attr in &section.attributes {
                 block_lines.push(attr.format_directive());
             }
 
-            // Normal section
             block_lines.push(section.format_header());
             block_lines.extend(format_section_lines(section));
 
@@ -821,20 +782,8 @@ fn format_gctf_chain(head: &crate::parser::GctfDocument, source: &str) -> String
         .position(|b| b.preamble_rank.is_none())
         .unwrap_or(blocks.len());
 
-    // The parser attributes a comment sitting between two sections to the
-    // PRECEDING section's content (`extract_section_content` in
-    // apif-parser), not the section it visually precedes. Reordering
-    // preamble sections would otherwise drag such a comment along with the
-    // wrong neighbor, so move a trailing run of blank/comment lines off the
-    // end of each preamble block onto the front of the next one first.
-    // Bounded to the preamble (+ its boundary with the first body section) —
-    // body-to-body comment placement is untouched.
     rehome_trailing_comments(&mut blocks, first_body_idx);
 
-    // Reorder only the leading run of preamble sections (META→BENCH→DATASET→
-    // ADDRESS→ENDPOINT→TLS→PROTO→OPTIONS) into canonical order; body sections
-    // keep their original order and position. A stable sort keeps each
-    // block's comments/attributes glued to its section.
     blocks[..first_body_idx].sort_by_key(|b| b.preamble_rank.unwrap());
 
     let mut output: Vec<String> = Vec::new();
@@ -843,7 +792,6 @@ fn format_gctf_chain(head: &crate::parser::GctfDocument, source: &str) -> String
         ensure_single_section_separator(&mut output, true);
     }
 
-    // Trailing file lines
     while current_line < lines.len() {
         output.push(
             normalize_hash_comment_line(lines[current_line])
@@ -859,12 +807,10 @@ fn format_gctf_chain(head: &crate::parser::GctfDocument, source: &str) -> String
     rendered
 }
 
-/// Format GCTF content with Safe optimizer level (default).
 pub fn format_gctf_content(source: &str, file_name: &str) -> Result<String> {
-    format_gctf_content_with_level(source, file_name, optimizer::OptimizeLevel::Safe)
+    format_gctf_content_with_level(source, file_name, optimizer::OptimizeLevel::Layout)
 }
 
-/// Format GCTF content with explicit optimizer level.
 pub fn format_gctf_content_with_level(
     source: &str,
     file_name: &str,
@@ -872,16 +818,13 @@ pub fn format_gctf_content_with_level(
 ) -> Result<String> {
     let doc = parser::parse_gctf_from_str(source, file_name)?;
 
-    // Apply optimizer rewrites before formatting
     let eol = canonical_line_ending();
     let source_after_optimizer = apply_optimizer_rewrites(&doc, source, eol, level);
 
-    // Re-parse after optimizer to get updated raw_content
     let doc_after = parser::parse_gctf_from_str(&source_after_optimizer, file_name)?;
     Ok(format_gctf_chain(&doc_after, &source_after_optimizer))
 }
 
-/// Apply optimizer rewrites to source lines
 fn apply_optimizer_rewrites(
     doc: &crate::parser::GctfDocument,
     source: &str,
@@ -902,7 +845,9 @@ fn apply_optimizer_rewrites(
         let line = &mut lines[line_idx];
         if let Some(start) = line.find(&hint.before) {
             let end = start + hint.before.len();
-            line.replace_range(start..end, &hint.after);
+            let settled =
+                optimizer::rewrite_assertion_expression_fixed_point_with_level(&hint.before, level);
+            line.replace_range(start..end, &settled);
         }
     }
 
@@ -914,15 +859,11 @@ fn apply_optimizer_rewrites(
 }
 
 pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
-    let level = cli.optimize_level(optimizer::OptimizeLevel::Safe);
+    let level = cli.optimize_level(optimizer::OptimizeLevel::Layout);
     let mut files = Vec::new();
     let mut has_error = false;
     let mut files_needing_format = 0usize;
     let mut files_written = 0usize;
-    // See `check.rs::rhai_plugin_names` — `PLUGIN_SIGNATURES` has no way to
-    // know about a script from the convention directories, so without this
-    // every valid `.rhai`-backed assertion would hard-fail `fmt` as an
-    // unknown plugin.
     let rhai_plugin_names = crate::commands::check::rhai_plugin_names();
     apif_optimizer::register_extra_boolean_plugins(
         crate::commands::check::rhai_boolean_plugin_names(),
@@ -944,7 +885,7 @@ pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
 
     if files.is_empty() {
         if !has_error {
-            warn!("No .gctf files found to format");
+            warn!("No .gctf or .httf files found to format");
         }
         return Ok(());
     }
@@ -970,14 +911,12 @@ pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
             }
         };
 
-        // Validate each document in the chain
         let mut chain_has_error = false;
         for d in doc.iter_chain() {
             if let Err(e) = parser::validate_document(d) {
                 error!("{}:1: [VALIDATION_ERROR] {}", file.display(), e);
                 chain_has_error = true;
             }
-            // detached: the semantic passes below are chain-aware internally too
             let single = d.detached();
             for mismatch in semantics::collect_assertion_type_mismatches(&single) {
                 error!(
@@ -1001,7 +940,6 @@ pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
                 );
                 chain_has_error = true;
             }
-            // Suppress SEM_D001 in fmt — Safe-level optimizer auto-fixes them
             for dep in semantics::collect_deprecated_plugin_calls(&single) {
                 debug!(
                     "{}:{}: [{}] {}",
@@ -1047,7 +985,6 @@ pub async fn handle_fmt(args: &FmtArgs, cli: &Cli) -> Result<()> {
             continue;
         }
 
-        // Use the format function which handles multi-document automatically
         let formatted = match format_gctf_content_with_level(&original, &file_name, level) {
             Ok(f) => f,
             Err(e) => {
@@ -1137,7 +1074,7 @@ fn print_fmt_summary(write: bool, total: usize, written: usize, needing: usize) 
 
 #[cfg(test)]
 mod tests {
-    use super::format_gctf_content;
+    use super::{OptimizeLevel, format_gctf_content, format_gctf_content_with_level};
     use crate::utils::file::write_atomic;
 
     fn to_crlf(input: &str) -> String {
@@ -1146,7 +1083,6 @@ mod tests {
 
     const HDR: &str = "--- ENDPOINT ---\ntest.Service/Method\n\n--- REQUEST ---\n{}\n\n";
 
-    /// Assert `fmt(fmt(x)) == fmt(x)` — the core formatter idempotency property.
     fn assert_idempotent(src: &str) -> String {
         let once = format_gctf_content(src, "t.gctf").unwrap();
         let twice = format_gctf_content(&once, "t.gctf").unwrap();
@@ -1158,9 +1094,104 @@ mod tests {
         once
     }
 
-    // JSON5 means the whole JSON5 grammar, not its ASCII subset: a Unicode
-    // unquoted key is as valid as an ASCII one, and the numeric forms JSON5
-    // adds are the author's notation, not ours to re-mint.
+    #[test]
+    fn the_safe_level_settles_an_assertion_in_one_pass() {
+        let src = format!("{HDR}--- ASSERTS ---\n!!@has_header(\"x\")\n@is_empty(.a) == false\n");
+        let once = format_gctf_content_with_level(&src, "t.gctf", OptimizeLevel::Safe).unwrap();
+        let twice = format_gctf_content_with_level(&once, "t.gctf", OptimizeLevel::Safe).unwrap();
+        assert_eq!(once, twice, "not idempotent at Safe");
+        assert!(
+            once.contains("@has_header(\"x\")") && !once.contains("not not"),
+            "a single pass must reach the settled form: {once}"
+        );
+        assert!(once.contains("@has_value(.a)"), "{once}");
+    }
+
+    #[test]
+    fn fmt_leaves_what_an_assertion_means_alone() {
+        let src = format!(
+            "{HDR}--- ASSERTS ---\nif true then .a else .b end\nnot (.x == 1 or .y == 2)\n!(.plain == \"abc\")\n@is_uuid(.id) == true\n!!@has_header(\"x\")\n@is_empty(.a) == false\n.a | endswith(\"x\")\n.s == \"a  b\"\n"
+        );
+        let out = assert_idempotent(&src);
+        for kept in [
+            "if true then .a else .b end",
+            "not (.x == 1 or .y == 2)",
+            "!(.plain == \"abc\")",
+            "@is_uuid(.id) == true",
+            "!!@has_header(\"x\")",
+            "@is_empty(.a) == false",
+            ".a | endswith(\"x\")",
+            ".s == \"a  b\"",
+        ] {
+            assert!(
+                out.contains(kept),
+                "fmt rewrote the meaning of {kept}:\n{out}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_line_fmt_will_not_respell_is_still_laid_out_canonically() {
+        let src = format!(
+            "{HDR}--- ASSERTS ---\nnot (.x==1 or .y==2)   \nnot(.b==2)\n.b==2\n!!@has_header(  \"x\" )\n"
+        );
+        let out = assert_idempotent(&src);
+        for canonical in [
+            "\nnot (.x == 1 or .y == 2)\n",
+            "\nnot (.b == 2)\n",
+            "\n.b == 2\n",
+            "\n!!@has_header(\"x\")\n",
+        ] {
+            assert!(
+                out.contains(canonical),
+                "a line fmt may not respell still gets its layout: missing {canonical:?}\n{out}"
+            );
+        }
+        assert!(
+            !out.contains("   \n") && !out.contains("not(."),
+            "no trailing whitespace, no un-spaced operators left:\n{out}"
+        );
+    }
+
+    #[test]
+    fn a_line_with_mixed_negation_spellings_keeps_both_and_only_loses_whitespace() {
+        let src = format!("{HDR}--- ASSERTS ---\n!(.a)   and   not (.b)\n");
+        let out = assert_idempotent(&src);
+        assert!(out.contains("\n!(.a) and not (.b)\n"), "{out}");
+    }
+
+    #[test]
+    fn fmt_normalises_layout_and_canonical_spelling() {
+        let src = format!(
+            "{HDR}--- ASSERTS ---\n.a==1\n(.x == 5)\n.name startswith \"a\"\n.b   ==   2\n"
+        );
+        let out = assert_idempotent(&src);
+        for canonical in [
+            "\n.a == 1\n",
+            "\n.x == 5\n",
+            "\n.name startsWith \"a\"\n",
+            "\n.b == 2\n",
+        ] {
+            assert!(out.contains(canonical), "missing {canonical:?}:\n{out}");
+        }
+    }
+
+    #[test]
+    fn a_conditional_assertion_survives_formatting() {
+        let src = format!(
+            "{HDR}--- ASSERTS ---\nif .a then .b else .c end\nif .flag then true else false end\nif .a then .b\n"
+        );
+        let out = assert_idempotent(&src);
+        for line in [
+            "if .a then .b else .c end",
+            "if .flag then true else false end",
+            "if .a then .b",
+        ] {
+            assert!(out.contains(line), "missing {line}: {out}");
+        }
+        assert!(!out.contains("missing\n"), "no placeholder text: {out}");
+    }
+
     #[test]
     fn fmt_json5_grammar_round_trip() {
         let body = concat!(
@@ -1193,9 +1224,6 @@ mod tests {
         assert!(!out.contains(",\n  ]"), "trailing comma must go: {out}");
     }
 
-    // Regression: an empty EXTRACT section was deleted outright as a "no-op".
-    // It is not one — `inspect`, `explain` and `Workflow::extractions` all
-    // report the section, so dropping it changed what those commands saw.
     #[test]
     fn fmt_keeps_an_empty_extract_section() {
         let src = format!("{HDR}--- EXTRACT ---\n\n--- ASSERTS ---\n.a == 1\n");
@@ -1206,9 +1234,6 @@ mod tests {
         );
     }
 
-    // Regression: a `//` comment on the same line as an opening brace used to
-    // gain a spurious blank line on the SECOND format pass, then be relocated
-    // onto its own line. It belongs where the author put it.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn fmt_json_comment_after_brace_idempotent() {
@@ -1221,8 +1246,6 @@ mod tests {
         assert!(!out.contains("{\n  \n"), "no spurious blank line: {out}");
     }
 
-    // Regression: a comment trailing a comma was pushed onto the following
-    // line, re-attaching it to the *next* array element.
     #[test]
     fn fmt_json_trailing_comment_stays_on_its_line() {
         let src = format!(
@@ -1236,7 +1259,6 @@ mod tests {
         assert!(out.contains("\"b\" // second"), "{out}");
     }
 
-    // Regression: consecutive comment lines were folded onto one physical line.
     #[test]
     fn fmt_json_consecutive_comments_stay_separate() {
         let src = format!("{HDR}--- RESPONSE ---\n{{\n  // first\n  // second\n  \"a\": 1\n}}\n");
@@ -1247,7 +1269,6 @@ mod tests {
         );
     }
 
-    // Regression: an empty object/array was blown open across two lines.
     #[test]
     fn fmt_json_empty_containers_stay_compact() {
         let src = format!(
@@ -1261,8 +1282,6 @@ mod tests {
         assert!(out.contains("\"a\": [], // none"), "{out}");
     }
 
-    // Regression: digit grouping ran over comment prose, rewriting `// 1000`
-    // to `// 1_000`.
     #[test]
     fn fmt_does_not_group_digits_inside_comments() {
         let src = format!("{HDR}--- RESPONSE ---\n{{\n  \"a\": 1000000 // limit is 1000000\n}}\n");
@@ -1270,8 +1289,6 @@ mod tests {
         assert!(out.contains("\"a\": 1000000 // limit is 1000000"), "{out}");
     }
 
-    // Regression: a UUID's digit runs were regrouped (`00000000-0000-...` ->
-    // `00_000_000-0000-...`). Only a run that is a number end to end is one.
     #[test]
     fn fmt_does_not_group_digits_inside_uuids_or_literals() {
         let src = format!(
@@ -1289,8 +1306,6 @@ mod tests {
         assert!(out.contains("\"exp\": 1e3"), "exponent untouched: {out}");
     }
 
-    // A redundant fraction normalizes to `1.0`, never to `1` — dropping the
-    // fraction would retype a float as an integer.
     #[test]
     fn fmt_trailing_zero_fraction_keeps_one_digit() {
         let src = format!(
@@ -1302,8 +1317,6 @@ mod tests {
         assert!(out.contains("\"c\": 3.0"), "{out}");
     }
 
-    // Regression: `'…'` wasn't recognized, so a `:` or `#` inside one read as
-    // syntax and rewrote the value. Quotes canonicalize; contents don't.
     #[test]
     fn fmt_single_quoted_string_contents_survive() {
         let src = format!("{HDR}--- RESPONSE ---\n{{\n  'url': 'http://x/y#z' // note\n}}\n");
@@ -1314,8 +1327,6 @@ mod tests {
         );
     }
 
-    // JSON5 escapes re-target when the quotes are doubled: `\'` loses its
-    // backslash, a bare `"` gains one.
     #[test]
     fn fmt_single_quoted_string_requoting_escapes() {
         let src =
@@ -1324,8 +1335,6 @@ mod tests {
         assert!(out.contains(r#""a": "it's \"x\"", // note"#), "{out}");
     }
 
-    // JSON5 trailing commas and unquoted keys canonicalize; the numbers next to
-    // them do not.
     #[test]
     fn fmt_json5_canonicalizes_syntax_not_literals() {
         let src = format!(
@@ -1338,9 +1347,6 @@ mod tests {
         assert!(!out.contains(",\n}"), "no trailing comma left: {out}");
     }
 
-    // Regression: `serde_json` round-tripping rewrote authored literals —
-    // `0xFF` -> `255`, `1e3` -> `1000.0`, `Infinity`/`NaN` -> `null` — and
-    // dropped the first of two duplicate keys, all silently.
     #[test]
     fn fmt_does_not_remint_json_literals() {
         let src = format!(
@@ -1359,8 +1365,6 @@ mod tests {
         }
     }
 
-    // Regression: an inline `/* … */` fused onto the following key
-    // (`/* has */"a"`).
     #[test]
     fn fmt_inline_block_comment_keeps_a_space() {
         let src = format!("{HDR}--- RESPONSE ---\n{{\n  /* has */ \"a\": 1\n}}\n");
@@ -1368,8 +1372,6 @@ mod tests {
         assert!(out.contains("/* has */ \"a\": 1"), "{out}");
     }
 
-    // Regression: a trailing comma was only dropped when it was the last
-    // character — a comment after it hid it from the check.
     #[test]
     fn fmt_drops_trailing_comma_behind_a_comment() {
         let src = format!(
@@ -1381,7 +1383,6 @@ mod tests {
         assert!(!out.contains(",\n}"), "{out}");
     }
 
-    // Strings are opaque: a digit run inside one is data, not a literal.
     #[test]
     fn fmt_does_not_group_digits_inside_strings() {
         let src = format!(
@@ -1392,7 +1393,6 @@ mod tests {
         assert!(out.contains("1000000 end"), "{out}");
     }
 
-    // Regression: key-value sections deleted every comment line outright.
     #[test]
     fn fmt_key_value_section_keeps_comments() {
         let src = "--- ENDPOINT ---\ntest.Service/Method\n\n--- REQUEST_HEADERS ---\n// staging only\nauthorization: Bearer x\nx-trace: 1\n\n--- REQUEST ---\n{}\n";
@@ -1403,8 +1403,6 @@ mod tests {
         );
     }
 
-    // Regression: OPTIONS sorts its keys, and a comment must travel with the
-    // key it was written above rather than being dropped or stranded.
     #[test]
     fn fmt_options_comment_travels_with_its_key() {
         let src = format!(
@@ -1415,9 +1413,6 @@ mod tests {
         assert!(out.contains("// why we wait\ntimeout: 30"), "{out}");
     }
 
-    // Regression: a standalone `/* block */` comment used to be glued directly
-    // onto the following key (`/* block */"a"`) because the value token did not
-    // honor the pending newline.
     #[test]
     fn fmt_json_block_comment_not_glued() {
         let src = format!(
@@ -1431,8 +1426,6 @@ mod tests {
         );
     }
 
-    // Regression: a `#` hash comment inside JSON re-indents onto its own line
-    // as `//` without a spurious leading blank line.
     #[test]
     fn fmt_json_hash_comment_idempotent() {
         let src = format!("{}--- RESPONSE ---\n{{\n  # note\n  \"a\": 1\n}}\n", HDR);
@@ -1440,14 +1433,11 @@ mod tests {
         assert!(out.contains("{\n  // note\n  \"a\": 1\n}"), "{out}");
     }
 
-    // Regression: META is YAML, whose comment marker is `#`. The formatter used
-    // to rewrite `#` to `//`, corrupting the YAML. It must be preserved verbatim.
     #[test]
     fn group_digits_groups_in_threes_from_the_right() {
         assert_eq!(super::group_digits("100"), "100");
         assert_eq!(super::group_digits("1000"), "1_000");
         assert_eq!(super::group_digits("1234567"), "1_234_567");
-        // Malformed grouping normalizes to the canonical form.
         assert_eq!(super::group_digits("1_00"), "100");
     }
 
@@ -1461,8 +1451,6 @@ mod tests {
         );
     }
 
-    /// A payload is JSON that other tools also read, and `1_000_000` parses as
-    /// neither JSON nor JSON5, so grouping stops at the section boundary.
     #[test]
     fn fmt_leaves_json_payload_numbers_ungrouped() {
         let src =
@@ -1500,9 +1488,6 @@ mod tests {
         );
     }
 
-    // Regression: `if..then..else..end` serializes to a `? :` ternary the parser
-    // cannot read back, so rewriting to it broke idempotency. The formatter now
-    // keeps the original form when the canonical form does not round-trip.
     #[test]
     fn fmt_asserts_ternary_idempotent() {
         let src = format!(
@@ -1525,7 +1510,6 @@ mod tests {
         std::fs::write(&path, "old contents\n").unwrap();
         write_atomic(&path, "new contents\n").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "new contents\n");
-        // No leftover temp files in the directory.
         let leftovers: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok())
@@ -1673,7 +1657,6 @@ grpc.health.v1.Health/Check
   "status": "SERVING"
 }
 
-
 --- ASSERTS ---
 @scope.message_count() == 2
 "#;
@@ -1718,7 +1701,7 @@ grpc.health.v1.Health/Check
 {
   "status": "SERVING"
 }
---- ASSERTS --- 
+--- ASSERTS ---
 @scope.message_count() == 2
 "#;
 
@@ -2618,9 +2601,6 @@ test.Service/Method
 {}
 "#;
         let formatted = format_gctf_content(source, "test.gctf").unwrap();
-        // Preamble/body boundary (ENDPOINT → REQUEST) is re-homed for
-        // reorder safety, so that comment now attaches directly to REQUEST;
-        // body-to-body (REQUEST → RESPONSE) is untouched.
         let expected = r#"// This is a detached comment before the endpoint
 --- ENDPOINT ---
 test.Service/Method
@@ -2638,11 +2618,6 @@ test.Service/Method
 
     #[test]
     fn fmt_attribute_between_sections_no_duplicated_or_phantom_lines() {
-        // Regression: a `#[attr]` line between two sections used to make the
-        // *preceding* section's parsed `end_line` overshoot past it, which
-        // made `format_gctf_chain`'s block-reassembly re-copy a stray raw
-        // line (extra blank line, or in the worst case a duplicated content
-        // line) around the attribute boundary.
         let source = r#"--- ENDPOINT ---
 grpc.health.v1.Health/Check
 
@@ -2783,11 +2758,6 @@ name: my test
         assert_eq!(once, twice);
     }
 
-    // Regression: a comment documenting a specific preamble section must
-    // travel with that section when reordering moves it, not stay behind
-    // with whatever section now precedes it (the parser attributes a
-    // trailing comment to the preceding section's raw content, not the one
-    // it visually precedes).
     #[test]
     fn fmt_reorder_carries_comment_with_its_section() {
         let source = r#"--- META ---
@@ -2823,8 +2793,6 @@ mode: fixed
         );
     }
 
-    // Regression: BENCH.sources: is a nested YAML list — formatting must not
-    // scatter it into sorted, unindented top-level keys.
     #[test]
     fn fmt_bench_sources_nested_yaml_survives() {
         let source = r#"--- BENCH ---
@@ -2854,9 +2822,6 @@ pkg.Svc/Method
         assert_eq!(formatted, twice, "must be idempotent");
     }
 
-    // Regression: BENCH keys must sort by the canonical `bench_key_rank`
-    // order (matching `check` and the other BENCH serializer in
-    // apif-parser), not alphabetically — `mode` before `duration`, etc.
     #[test]
     fn fmt_bench_keys_sort_canonically_not_alphabetically() {
         let source = r#"--- BENCH ---

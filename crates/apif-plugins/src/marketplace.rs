@@ -1,13 +1,7 @@
-//! `plugins install` parsing, lockfile, checksums. No network here — the
-//! main crate drives the `gix` clone and calls back into this module.
-
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-/// A bare version (`v1.2.3`) is `Exact`, matched literally — only an
-/// explicit range operator (`^`/`~`/...) is `Range`. Not npm's
-/// bare-means-caret: there's no registry here to make that assumption safe.
 #[derive(Debug, Clone, PartialEq)]
 pub enum VersionSpec {
     Latest,
@@ -48,8 +42,6 @@ impl InstallSource {
     }
 }
 
-/// `host/owner/repo[/subpath...][@spec]`, e.g. `github.com/owner/repo`,
-/// `gitlab.com/owner/repo@v1.2.0`, `github.com/owner/repo@^1.2.0`.
 pub fn parse_source(input: &str) -> Result<InstallSource, String> {
     let s = input
         .trim()
@@ -79,7 +71,6 @@ pub fn parse_source(input: &str) -> Result<InstallSource, String> {
         return Err("expected host/owner/repo".to_string());
     }
 
-    // Reject `..`/`.`/backslash: each segment is later joined onto a local dir.
     for segment in [host, owner, repo].into_iter().chain(rest.iter().copied()) {
         if segment == ".." || segment == "." || segment.contains('\\') {
             return Err(format!("invalid path segment {segment:?} in plugin source"));
@@ -95,12 +86,10 @@ pub fn parse_source(input: &str) -> Result<InstallSource, String> {
     })
 }
 
-/// `None` for a non-version tag name.
 pub fn parse_semver_tag(tag: &str) -> Option<semver::Version> {
     semver::Version::parse(tag.strip_prefix('v').unwrap_or(tag)).ok()
 }
 
-/// Highest tag matching `req` (or highest overall if `req` is `None`).
 pub fn pick_highest_tag<'a>(
     tags: impl IntoIterator<Item = &'a str>,
     req: Option<&semver::VersionReq>,
@@ -122,9 +111,6 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// `<plugins_dir>/installed/<host>/<owner>/<repo>` — where an installed
-/// source's `.rhai` files land, kept apart from hand-authored scripts
-/// directly under `<plugins_dir>`.
 pub fn install_dir(plugins_dir: &Path, source: &InstallSource) -> PathBuf {
     plugins_dir
         .join("installed")
@@ -133,8 +119,6 @@ pub fn install_dir(plugins_dir: &Path, source: &InstallSource) -> PathBuf {
         .join(&source.repo)
 }
 
-/// `<plugins_dir>/../plugins.lock.yaml` — a sibling of `plugins/` itself,
-/// not under it (so it's never mistaken for a `.rhai` script).
 pub fn lockfile_path(plugins_dir: &Path) -> PathBuf {
     plugins_dir
         .parent()
@@ -156,10 +140,8 @@ pub struct LockedPlugin {
     pub repo: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subpath: Option<String>,
-    /// The raw `@spec` the user typed (`None` if omitted — a `Latest` install).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requested: Option<String>,
-    /// The concrete tag matched, if `requested` was a range or absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved_version: Option<String>,
     pub resolved_commit: String,
@@ -167,33 +149,18 @@ pub struct LockedPlugin {
     pub files: Vec<LockedFile>,
 }
 
-/// Optional repo-side enrichment, same trust posture as the `@pure` doc-tags
-/// convention: additive/opt-in, authored by the plugin repo (not the
-/// installing user), never hard-required. No `version:` field — the git
-/// tag/commit already is the version (see the proposal's "the tag IS the
-/// version", adopted from Go modules).
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct PluginManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// `grpctestify` compat range (`semver::VersionReq` syntax, e.g. `">=1.8"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grpctestify: Option<String>,
-    /// Explicit `.rhai` file list (paths relative to the resolved subpath),
-    /// overriding the default non-recursive same-directory `.rhai` scan —
-    /// lets a repo point at nested files or exclude ones that shouldn't ship.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files: Option<Vec<String>>,
 }
 
 pub const MANIFEST_FILE_NAME: &str = "grpctestify-plugin.yaml";
 
-/// Read `grpctestify-plugin.yaml` from `source_dir`, if present. `Ok(None)`
-/// means no manifest file exists — not an error, the whole thing is opt-in.
-/// `Err` is a *present but unparseable* manifest; the caller should warn and
-/// fall back to the default scan rather than hard-fail the install — a repo
-/// author's mistake in this optional file shouldn't block the installing
-/// user, who can't fix someone else's manifest anyway.
 pub fn read_manifest(source_dir: &Path) -> Result<Option<PluginManifest>, String> {
     let path = source_dir.join(MANIFEST_FILE_NAME);
     let Ok(content) = std::fs::read_to_string(&path) else {
@@ -204,9 +171,6 @@ pub fn read_manifest(source_dir: &Path) -> Result<Option<PluginManifest>, String
         .map_err(|e| format!("{MANIFEST_FILE_NAME} is present but malformed, ignoring it: {e}"))
 }
 
-/// `None` when there's nothing to warn about: no `grpctestify:` constraint
-/// declared, or the constraint/running version don't even parse as semver
-/// (never blocks — the manifest is informational, not enforced).
 pub fn manifest_compat_warning(manifest: &PluginManifest, running_version: &str) -> Option<String> {
     let range = manifest.grpctestify.as_deref()?;
     let req = semver::VersionReq::parse(range).ok()?;
@@ -324,13 +288,10 @@ mod tests {
 
     #[test]
     fn rejects_path_traversal_segments() {
-        // `..` in any position would let a crafted source escape the local
-        // install dir / clone working tree once joined.
         assert!(parse_source("github.com/owner/repo/../../etc/passwd").is_err());
         assert!(parse_source("github.com/../repo/x").is_err());
         assert!(parse_source("github.com/owner/repo/sub/..@v1").is_err());
         assert!(parse_source("github.com/owner/repo/a\\b").is_err());
-        // A legitimate nested subpath still parses.
         assert!(parse_source("github.com/owner/repo/plugins/dir").is_ok());
     }
 
@@ -533,7 +494,6 @@ mod tests {
 
     #[test]
     fn compat_warning_none_when_constraint_is_unparseable() {
-        // Informational only — never blocks, even on the plugin author's own mistake.
         let manifest = PluginManifest {
             grpctestify: Some("not-a-range".to_string()),
             ..Default::default()

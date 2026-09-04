@@ -36,33 +36,23 @@ pub trait SourceReader: Send {
     fn next_row(&mut self) -> Result<Option<SourceRow>>;
     fn headers(&self) -> &[String];
 
-    /// Attempt to reset the reader to the beginning.
-    /// Returns `Ok(())` even if unsupported — check `supports_reset()` first.
     fn reset(&mut self) -> Result<()>;
 
-    /// Whether `reset()` is actually supported by this reader.
-    /// Readers wrapping non-seekable streams (stdin, network) return false.
     fn supports_reset(&self) -> bool {
         false
     }
 
-    /// Byte span `(offset, length)` of the row `next_row` last returned,
-    /// including its terminator. Index building needs a true file position, not
-    /// one reconstructed from decoded field lengths.
     fn last_row_span(&self) -> Option<(u64, u32)> {
         None
     }
 }
 
-/// A BOM'd file otherwise names its first column `\u{feff}id`.
 pub(crate) fn strip_bom(header: &mut String) {
     if let Some(rest) = header.strip_prefix('\u{feff}') {
         *header = rest.to_string();
     }
 }
 
-/// Byte span from a record's start position to the reader's position after it,
-/// i.e. the raw bytes of that record including its terminator.
 pub(crate) fn span_of(
     start: Option<&::csv::Position>,
     end: &::csv::Position,
@@ -154,10 +144,6 @@ mod tests {
 
 #[derive(Debug, Clone)]
 pub struct SourceRow {
-    /// Shared with every row from the same source. Storing a private
-    /// `Vec<String>` per row re-cloned every column name for every row — for a
-    /// 3-column CSV that is three allocations per row for strings identical
-    /// across the whole file, and a large part of the in-memory footprint.
     columns: Arc<[String]>,
     values: Vec<String>,
 }
@@ -170,9 +156,6 @@ impl SourceRow {
         }
     }
 
-    /// Build a row sharing an already-allocated column list — a refcount bump
-    /// rather than one `String` allocation per column. Readers hold the list
-    /// once and hand the same handle to every row.
     pub fn with_columns(columns: Arc<[String]>, values: Vec<String>) -> Self {
         Self { columns, values }
     }
@@ -259,7 +242,6 @@ mod source_row_tests {
     #[test]
     fn row_from_csv_empty_line() {
         let row = SourceRow::from_csv_line("");
-        // split("") on empty string produces [""]
         assert_eq!(row.len(), 1);
         assert_eq!(row.get("col_0"), Some(""));
     }

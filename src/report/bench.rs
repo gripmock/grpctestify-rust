@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Write as FmtWrite;
@@ -23,13 +23,8 @@ pub struct BenchOptionValue {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BenchSummary {
     pub count: u64,
-    /// Transport outcome: requests whose gRPC status was `OK`, and those whose
-    /// was not.
     pub ok: u64,
     pub errors: u64,
-    /// Document verdict: requests whose RESPONSE/ERROR/ASSERTS held, and those
-    /// whose did not. A document asserting an expected error passes here while
-    /// counting as an `error` above.
     pub passed: u64,
     pub failed: u64,
     pub total_ns: u64,
@@ -84,23 +79,14 @@ pub struct SourcesRuntime {
     pub source_stats: BTreeMap<String, SourceRuntimeStats>,
 }
 
-/// What the generator itself cost, so a reader can tell whether the numbers
-/// describe the server or this process.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientCost {
-    /// CPU seconds this process burned across the run.
     pub cpu_seconds: f64,
-    /// CPU microseconds per request — the figure to watch across releases.
     pub cpu_us_per_request: f64,
-    /// Requests per second per core of client CPU.
     pub rps_per_core: f64,
-    /// Cores the client used on average, against the host's core count.
     pub cores_used: f64,
     pub host_cores: usize,
-    /// Set when the client was busy enough that the measured throughput is
-    /// likely its own ceiling rather than the target's.
     pub generator_limited: bool,
-    /// Why, when it is.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub limits: Vec<String>,
 }
@@ -120,18 +106,14 @@ pub struct BenchReport {
     pub tags: BTreeMap<String, String>,
     pub sources_runtime: Option<SourcesRuntime>,
     pub per_endpoint: Vec<PerEndpointSummary>,
-    /// Absent when the platform could not account for the process's own CPU.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_cost: Option<ClientCost>,
-    /// One entry per concurrency level when a sweep was requested. Empty for a
-    /// single-level run, so a `const` schedule reports exactly as before.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub levels: Vec<BenchLevelSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchLevelSummary {
-    /// Worker count this level ran with.
     pub concurrency: u32,
     pub summary: BenchSummary,
     pub latency_distribution: Vec<BenchPercentile>,
@@ -172,6 +154,19 @@ impl BenchReport {
 
     pub fn thresholds_passed(&self) -> bool {
         self.threshold_evaluation.iter().all(|t| t.passed)
+    }
+
+    pub fn failure_reason(&self) -> Option<String> {
+        if self.summary.count > 0 && self.summary.passed == 0 {
+            return Some(format!(
+                "Benchmark measured nothing — all {} request(s) failed (target likely misconfigured or unreachable)",
+                self.summary.count
+            ));
+        }
+        if !self.thresholds_passed() {
+            return Some("Benchmark thresholds failed".to_string());
+        }
+        None
     }
 }
 
@@ -325,9 +320,6 @@ impl BenchReport {
 
 const BENCH_HTML_TEMPLATE: &str = include_str!("templates/bench.html");
 
-/// Serialize `v` as JSON safe to embed verbatim inside a `<script>` block —
-/// Percentage (0-100, rounded) of `value` relative to `max`. `0` when `max` is
-/// `0` so an all-zero dataset renders empty bars instead of dividing by zero.
 fn pct_of(value: u64, max: u64) -> u32 {
     if max == 0 {
         0
@@ -340,7 +332,6 @@ fn pct_of(value: u64, max: u64) -> u32 {
 struct BenchLatRow {
     percentile_label: String,
     latency_ms: String,
-    /// Bar width as a percentage of the slowest percentile, for the CSS bar chart.
     pct_of_max: u32,
 }
 
@@ -370,9 +361,6 @@ struct BenchHtmlContext<'a> {
 }
 
 impl BenchReport {
-    /// Generate an HTML report with a CSS latency-distribution bar chart (no
-    /// JS charting library or CDN fetch — renders fully offline) plus
-    /// summary/per-endpoint tables.
     pub fn to_html(&self) -> String {
         let max_latency_ns = self
             .latency_distribution
@@ -537,6 +525,55 @@ mod tests {
     }
 
     #[test]
+    fn a_fully_failed_run_is_a_failure() {
+        let mut report = sample_report();
+        report.summary.count = 100;
+        report.summary.passed = 0;
+        report.threshold_evaluation.clear();
+        assert!(
+            report
+                .failure_reason()
+                .is_some_and(|why| why.contains("measured nothing")),
+            "a run where nothing passed is not a measurement"
+        );
+    }
+
+    #[test]
+    fn a_run_that_expects_an_error_measured_something() {
+        let mut report = sample_report();
+        report.summary.count = 100;
+        report.summary.passed = 100;
+        report.threshold_evaluation.clear();
+        assert!(report.failure_reason().is_none());
+    }
+
+    #[test]
+    fn a_failed_threshold_is_a_failure() {
+        let mut report = sample_report();
+        report.threshold_evaluation.clear();
+        report.threshold_evaluation.push(BenchThresholdResult {
+            metric: "error_rate_pct".to_string(),
+            expr: "<1.0".to_string(),
+            passed: false,
+            actual: "100.0".to_string(),
+            reason: None,
+        });
+        assert_eq!(
+            report.failure_reason().as_deref(),
+            Some("Benchmark thresholds failed")
+        );
+    }
+
+    #[test]
+    fn an_empty_run_is_not_a_failure() {
+        let mut report = sample_report();
+        report.summary.count = 0;
+        report.summary.passed = 0;
+        report.threshold_evaluation.clear();
+        assert!(report.failure_reason().is_none());
+    }
+
+    #[test]
     fn thresholds_passed_true() {
         let report = sample_report();
         assert!(report.thresholds_passed());
@@ -560,13 +597,11 @@ mod tests {
         });
 
         let html = report.to_html();
-        // No JS charting library or CDN fetch — renders fully offline.
         assert!(!html.contains("<script"), "no script tag: {html}");
         assert!(!html.contains("cdn.jsdelivr.net"));
         assert!(html.contains("bar-fill"), "CSS bar chart present");
         assert!(html.contains("p95"));
         assert!(html.contains("12.000"));
-        // The endpoint name must be escaped, not injected verbatim.
         assert!(!html.contains("<script>evil</script>"));
         assert!(html.contains("&lt;script&gt;evil&lt;&#x2f;script&gt;"));
     }

@@ -1,12 +1,8 @@
-// Diagnostic builder and common diagnostic helpers
-
 use super::types::*;
 
 pub struct GctfDiagnostics;
 
 impl GctfDiagnostics {
-    // Parse errors
-
     pub fn json_parse_error(line: usize, column: usize, error: &str) -> Diagnostic {
         Diagnostic::error(
             DiagnosticCode::JsonParseError,
@@ -65,8 +61,6 @@ impl GctfDiagnostics {
         )
     }
 
-    // Section errors
-
     pub fn missing_section(section_name: &str) -> Diagnostic {
         Diagnostic::error(
             DiagnosticCode::MissingSection,
@@ -111,8 +105,6 @@ impl GctfDiagnostics {
         .with_suggestion("Valid sections: ADDRESS, ENDPOINT, REQUEST, RESPONSE, ERROR, EXTRACT, ASSERTS, REQUEST_HEADERS, TLS, PROTO, OPTIONS")
     }
 
-    // Semantic errors
-
     pub fn undefined_variable(var_name: &str, line: usize, column: usize) -> Diagnostic {
         Diagnostic::error(
             DiagnosticCode::UndefinedVariable,
@@ -145,8 +137,6 @@ impl GctfDiagnostics {
         )
         .with_suggestion("Available functions: @uuid, @email, @ip, @phone, @url, @header, @trailer")
     }
-
-    // Validation errors
 
     pub fn with_asserts_without_asserts(line: usize) -> Diagnostic {
         Diagnostic::warning(
@@ -205,9 +195,7 @@ mod tests {
     use super::*;
     #[test]
     fn undefined_variable_caret_uses_char_count() {
-        // Regression: end column must use char count, not byte length, so
-        // non-ASCII identifiers get a correctly sized caret range.
-        let name = "café"; // 4 chars, 5 bytes
+        let name = "café";
         let diag = GctfDiagnostics::undefined_variable(name, 1, 3);
         assert_eq!(diag.range.start.column, 3);
         assert_eq!(diag.range.end.column, 3 + name.chars().count());
@@ -216,7 +204,7 @@ mod tests {
 
     #[test]
     fn unknown_function_caret_uses_char_count() {
-        let name = "@naïve"; // 6 chars, 7 bytes
+        let name = "@naïve";
         let diag = GctfDiagnostics::unknown_function(name, 1, 0);
         assert_eq!(diag.range.end.column, name.chars().count());
         assert_eq!(diag.range.end.column, 6);
