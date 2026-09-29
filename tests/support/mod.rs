@@ -172,6 +172,16 @@ pub fn assert_golden(rel: &str, actual: &str) {
 /// checking different properties of these snippets provably look at the same
 /// set: the two callers previously walked different trees.
 pub fn markdown_gctf_blocks() -> Vec<(std::path::PathBuf, usize, String)> {
+    markdown_blocks("gctf")
+}
+
+/// The same, for the HTTP family: a ```httf block is a document of the other
+/// family and parses by its own rules, so the docs for it are checked too.
+pub fn markdown_httf_blocks() -> Vec<(std::path::PathBuf, usize, String)> {
+    markdown_blocks("httf")
+}
+
+fn markdown_blocks(family: &str) -> Vec<(std::path::PathBuf, usize, String)> {
     fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -203,8 +213,9 @@ pub fn markdown_gctf_blocks() -> Vec<(std::path::PathBuf, usize, String)> {
         let text = std::fs::read_to_string(&path).expect("read markdown");
         let mut rest = text.as_str();
         let mut consumed = 0usize;
-        while let Some(start) = rest.find("```gctf\n") {
-            let body_at = start + "```gctf\n".len();
+        let fence = format!("```{family}\n");
+        while let Some(start) = rest.find(&fence) {
+            let body_at = start + fence.len();
             let Some(end_rel) = rest[body_at..].find("```") else {
                 break;
             };

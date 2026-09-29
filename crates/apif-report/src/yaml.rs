@@ -1,4 +1,5 @@
 use super::Reporter;
+use crate::{tool_name, tool_version};
 use anyhow::{Context, Result};
 use apif_state::TestResults;
 use serde::Serialize;
@@ -41,8 +42,8 @@ impl Reporter for YamlReporter {
         let report = YamlReport {
             results,
             report_context: YamlReportContext {
-                tool: "apif".to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
+                tool: tool_name().to_string(),
+                version: tool_version().to_string(),
                 generated_at: apif_cfg_runtime::now_timestamp(),
             },
         };

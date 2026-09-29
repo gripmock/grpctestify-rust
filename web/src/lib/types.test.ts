@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { defaultAddressFor, isAddressAtDefault } from './types';
+import { defaultAddressFor, dialledAddress } from './types';
 
 describe('defaultAddressFor', () => {
   it('grpc → 4770', () => {
@@ -15,22 +15,15 @@ describe('defaultAddressFor', () => {
   });
 });
 
-// Covers transport-architecture §9.7/§9.8: switching protocol updates the
-// address to the new protocol's default only when the current address is
-// still the old protocol's untouched default; a manually-entered address
-// must survive a protocol switch unchanged.
-describe('isAddressAtDefault', () => {
-  it('true when address matches the protocol default', () => {
-    expect(isAddressAtDefault('localhost:4770', 'grpc')).toBe(true);
-    expect(isAddressAtDefault('localhost:4769', 'grpc-web')).toBe(true);
+describe('dialledAddress', () => {
+  it('is what was typed', () => {
+    expect(dialledAddress('example.com:9000', 'grpc')).toBe('example.com:9000');
+    expect(dialledAddress('  example.com:9000  ', 'grpc-web')).toBe('example.com:9000');
   });
 
-  it('false for a manually overridden address', () => {
-    expect(isAddressAtDefault('example.com:9000', 'grpc')).toBe(false);
-  });
-
-  it('false when address matches a different protocol\'s default', () => {
-    // Still on grpc's default (4770) but checking against grpc-web's (4769).
-    expect(isAddressAtDefault('localhost:4770', 'grpc-web')).toBe(false);
+  it('is the transport default when the field is empty', () => {
+    expect(dialledAddress('', 'grpc')).toBe('localhost:4770');
+    expect(dialledAddress('   ', 'grpc-web')).toBe('localhost:4769');
+    expect(dialledAddress('', 'connectrpc')).toBe('localhost:4769');
   });
 });

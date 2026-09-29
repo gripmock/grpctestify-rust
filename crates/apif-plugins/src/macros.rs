@@ -1,10 +1,5 @@
-/// Macro to define a simple validation plugin that validates a single string argument
-/// using a closure-based validation function.
 #[macro_export]
 macro_rules! define_validation_plugin {
-    // Labels default to the plugin name; give them explicitly when the
-    // human-readable form differs, so converting a hand-written plugin does not
-    // silently reword the assertion output users read.
     (
         $(#[$attr:meta])*
         struct $name:ident {
@@ -93,8 +88,6 @@ macro_rules! define_validation_plugin {
     };
 }
 
-/// Macro to define a metadata extraction plugin (header/trailer)
-/// Extracts values from gRPC metadata using a accessor function.
 #[macro_export]
 macro_rules! define_metadata_extract_plugin {
     (
@@ -168,8 +161,6 @@ macro_rules! define_metadata_extract_plugin {
 
 #[cfg(test)]
 mod tests {
-    // Bring every identifier the macros expand to into scope so the generated
-    // code compiles at the macro call site.
     use crate::{
         ArgTypeInfo, Plugin, PluginContext, PluginPurity, PluginResult, PluginSignature, TypeInfo,
     };
@@ -178,18 +169,10 @@ mod tests {
     use serde_json::Value;
     use std::collections::HashMap;
 
-    // A free function (rather than a closure) so the returned reference can be
-    // tied to the context's lifetime parameter.
     fn header_accessor<'a>(ctx: &PluginContext<'a>) -> Option<&'a HashMap<String, String>> {
         ctx.headers
     }
 
-    // Instantiate the exported macros to prove they compile and behave.
-
-    /// The failure text is what a user reads when an assertion fails, so it is
-    /// pinned here. Nothing pinned it before, which is how converting these
-    /// plugins to the macro could have silently reworded every message
-    /// (`Expected valid UUID` -> `Expected valid uuid`).
     #[test]
     fn validation_plugin_failure_messages_are_exact() {
         let ctx = PluginContext::new(&Value::Null);

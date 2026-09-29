@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use crate::SourceRow;
 use crate::filter::{FilterCondition, matches_all as matches_filter_all};
 use crate::index::SourceIndex;
@@ -14,9 +14,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tracing::warn;
 
-/// Default capacities for the dimension row cache.
-/// The hot queue holds frequently-referenced rows; the cold queue absorbs
-/// one-time lookups to prevent cache pollution.
 const DIMENSION_CACHE_HOT: usize = 2048;
 const DIMENSION_CACHE_COLD: usize = 8192;
 
@@ -24,8 +21,6 @@ const ENV_DIMENSION_MEMORY_BUDGET: &str = "GRPCTESTIFY_DIMENSION_MEMORY_BUDGET";
 const MAX_DIMENSION_MEMORY_BUDGET: u64 = 512 * 1024 * 1024;
 const MIN_DIMENSION_MEMORY_BUDGET: u64 = 32 * 1024 * 1024;
 
-/// RAM per byte of dimension file once loaded; measured 12.02x on a 5-column
-/// CSV. The budget is a RAM budget, so the file size must be scaled by it.
 pub(crate) const DIMENSION_MEMORY_EXPANSION: u64 = 12;
 
 fn resolve_dimension_budget() -> u64 {
@@ -47,7 +42,6 @@ fn resolve_dimension_budget() -> u64 {
     (available / 2).clamp(MIN_DIMENSION_MEMORY_BUDGET, MAX_DIMENSION_MEMORY_BUDGET)
 }
 
-/// A source's own `memory_budget`, else the run-wide one.
 fn task_budget(def: &SourceDefinition, default_budget: u64) -> u64 {
     def.memory_budget
         .as_deref()
@@ -55,7 +49,6 @@ fn task_budget(def: &SourceDefinition, default_budget: u64) -> u64 {
         .unwrap_or(default_budget)
 }
 
-/// Whether a dimension of this file size can be held in memory within `budget`.
 fn fits_in_memory(file_size: u64, budget: u64) -> bool {
     file_size
         .checked_mul(DIMENSION_MEMORY_EXPANSION)
@@ -89,7 +82,6 @@ pub enum DimensionSource {
     Indexed(Box<IndexedDimension>),
 }
 
-/// How to turn one raw line of an indexed dimension back into fields.
 #[derive(Debug, Clone, Copy)]
 pub enum RowDecoder {
     Delimited(u8),
@@ -100,12 +92,8 @@ pub struct IndexedDimension {
     pub index: Arc<SourceIndex>,
     pub mmap: memmap2::Mmap,
     pub cache: Mutex<TwoQCache<String, SourceRow>>,
-    /// Column names of the source, so rows read from the mmap carry the same
-    /// field names an in-memory dimension would (`dim.name`, not `dim.col_0`).
     pub headers: Vec<String>,
     pub decoder: RowDecoder,
-    /// Applied on lookup. An in-memory dimension filters at load; without this
-    /// the same YAML filtered or not depending on free RAM.
     pub filter: Vec<FilterCondition>,
 }
 
@@ -180,7 +168,6 @@ impl DimensionSource {
         }
     }
 
-    /// Look up ALL rows matching the given key.
     fn lookup_all(&self, key: &str) -> Vec<SourceRow> {
         match self {
             DimensionSource::Memory(mem) => mem
@@ -216,8 +203,6 @@ struct DimensionJoin {
     join_type: super::definition::JoinType,
 }
 
-/// Tracks cross-product iteration state for a single primary row.
-/// Stores the row and pre-computed dimension lookup results.
 struct CrossProductState {
     row: SourceRow,
     cross_matches: Vec<Vec<SourceRow>>,
@@ -242,7 +227,6 @@ fn load_dimension_source(
     let mut reader = open_source_reader(def, document_path)
         .with_context(|| format!("failed to open dimension source '{}'", def.file))?;
     if reader.headers().is_empty() {
-        // NDJSON has no header line: its columns come from the first record.
         reader.next_row()?;
     }
     let headers = reader.headers().to_vec();
@@ -262,7 +246,6 @@ fn load_dimension_source(
         })?;
     let file = std::fs::File::open(resolved_path)
         .with_context(|| format!("failed to open dimension file: {}", resolved_path.display()))?;
-    // SAFETY: no safe std mmap API; sound while the read-only, run-owned dimension file isn't truncated/mutated concurrently.
     let mmap = unsafe { memmap2::Mmap::map(&file) }
         .with_context(|| format!("failed to mmap dimension file: {}", resolved_path.display()))?;
     Ok(DimensionSource::Indexed(Box::new(IndexedDimension {
@@ -275,7 +258,6 @@ fn load_dimension_source(
     })))
 }
 
-/// The line decoder a dimension's format implies.
 fn row_decoder_for(def: &SourceDefinition, resolved_path: &Path) -> RowDecoder {
     let format = def
         .format
@@ -312,23 +294,14 @@ fn load_dimension_in_memory(
     Ok(DimensionSource::Memory(mem))
 }
 
-/// The dimension key a primary row carries for a join, composite or not.
 fn join_key(row: &SourceRow, spec: &str) -> Option<String> {
     crate::index::composite_value(spec, |c| row.get(c).map(str::to_string))
 }
 
-/// Rows read from the primary source per refill. Large enough that the reader
-/// lock and the CSV parse amortise across many requests, small enough that a
-/// short run does not read far past what it uses.
 const PRIMARY_BATCH_ROWS: usize = 256;
 
 pub struct SourceDrivenConfig {
     pub primary: Arc<Mutex<Box<dyn SourceReader>>>,
-    /// Rows pulled from `primary` ahead of demand. Parsing a CSV record is far
-    /// more expensive than handing one out, and every bench worker pulls from
-    /// the same reader — doing the parse under the reader lock serialised all
-    /// of them behind it. Refilling in batches keeps the parse off the
-    /// per-request critical section.
     primary_batch: Mutex<std::collections::VecDeque<SourceRow>>,
     pub primary_name: String,
     pub dimensions: HashMap<String, DimensionSource>,
@@ -337,14 +310,7 @@ pub struct SourceDrivenConfig {
     primary_filter: Vec<FilterCondition>,
     pub load_stats: DimLoadStats,
     pub runtime_stats: SourceRuntimeStats,
-    /// Cross-products awaiting emission, one per primary row that produced
-    /// them. A single `Option` slot let two workers that each pulled a
-    /// distinct row both install state, the second silently discarding the
-    /// first row's entire product.
     cross_product_state: std::sync::Mutex<std::collections::VecDeque<CrossProductState>>,
-    /// Whether any join is a CROSS. Without it the cross-product mutex was
-    /// acquired on every single request even when no join could ever populate
-    /// it.
     has_cross_join: bool,
     pub loaded_at: std::time::Instant,
     pub current_row: std::sync::atomic::AtomicU64,
@@ -358,9 +324,6 @@ pub struct DimLoadStats {
     pub index_build_ms: u64,
 }
 
-/// Runtime statistics for dimension source lookups.
-/// All counters use `Relaxed` atomic ordering — values are approximate
-/// and intended for observability only, not for decision-making.
 #[derive(Debug)]
 pub struct SourceRuntimeStats {
     pub dimension_lookups: std::sync::atomic::AtomicU64,
@@ -370,7 +333,6 @@ pub struct SourceRuntimeStats {
     pub indexed_lookups: std::sync::atomic::AtomicU64,
 }
 
-/// Consistent snapshot of runtime stats at a point in time.
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeStatsSnapshot {
     pub dimension_lookups: u64,
@@ -381,7 +343,6 @@ pub struct RuntimeStatsSnapshot {
 }
 
 impl SourceRuntimeStats {
-    /// Take a consistent snapshot of all counters.
     pub fn snapshot(&self) -> RuntimeStatsSnapshot {
         use std::sync::atomic::Ordering::Relaxed;
         RuntimeStatsSnapshot {
@@ -475,8 +436,6 @@ impl SourceDrivenConfig {
             let dim_name = def.name.clone().unwrap_or_else(|| "dim".to_string());
 
             let resolved = FileUtils::resolve_relative_path(document_path, &def.file);
-            // A file we cannot stat is treated as too large: indexing it is
-            // slower but bounded, while assuming zero loads it whole.
             let file_size = std::fs::metadata(&resolved)
                 .map(|m| m.len())
                 .unwrap_or(u64::MAX);
@@ -630,14 +589,7 @@ impl SourceDrivenConfig {
         }))
     }
 
-    /// Rewind the primary source to the top, for a duration run that outlives
-    /// its data. Clears the read-ahead batch and any half-emitted cross-product
-    /// so the first row after the wrap is the first row of the file — replaying
-    /// the leftover cross-product of the pre-rewind row was a real defect.
     pub fn rewind(&self) -> Result<()> {
-        // Lock order is reader -> batch everywhere, including here. Taking the
-        // batch first deadlocked against `next_primary_row`, which holds the
-        // reader across its refill.
         let mut reader = self.primary.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         self.primary_batch
             .lock()
@@ -649,8 +601,6 @@ impl SourceDrivenConfig {
         reader.reset()
     }
 
-    /// Next filtered row from the primary source, refilling from the reader in
-    /// batches.
     fn next_primary_row(&self) -> Result<Option<SourceRow>> {
         if let Some(row) = self
             .primary_batch
@@ -661,11 +611,6 @@ impl SourceDrivenConfig {
             return Ok(Some(row));
         }
 
-        // Refill into a local buffer with only the reader lock held. Holding
-        // the batch lock across the parse too made every other worker wait out
-        // a whole 256-row parse rather than just a pop. Lock order is
-        // reader -> batch, and the fast path above takes batch alone, so there
-        // is no cycle.
         let mut reader = self.primary.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         if let Some(row) = self
             .primary_batch
@@ -673,7 +618,6 @@ impl SourceDrivenConfig {
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .pop_front()
         {
-            // Someone refilled while we waited for the reader.
             return Ok(Some(row));
         }
 
@@ -701,26 +645,18 @@ impl SourceDrivenConfig {
     }
 
     pub fn next_row_variables(&self) -> Result<Option<HashMap<String, Value>>> {
-        // An in-flight cross-product is observed and consumed under one lock
-        // acquisition. Checking `is_some()`, dropping the guard and re-locking
-        // let two workers both see the state, the first drain the last
-        // combination, and the second unwrap `None`.
         if self.has_cross_join
             && let Some(vars) = self.next_cross_product_combination()?
         {
             return Ok(Some(vars));
         }
 
-        // Loop (rather than recurse) so a long run of INNER-join misses can't
-        // blow the stack.
         let row = loop {
             let candidate = match self.next_primary_row()? {
                 Some(r) => r,
                 None => return Ok(None),
             };
 
-            // Check INNER join constraints — skip row if the FK column is
-            // absent or its value has no match in the dimension.
             let inner_missing = self.dim_joins.iter().any(|j| {
                 j.join_type == super::definition::JoinType::Inner
                     && join_key(&candidate, &j.foreign_key)
@@ -734,10 +670,6 @@ impl SourceDrivenConfig {
 
         let mut vars = self.build_primary_vars(&row);
 
-        // LEFT and INNER both contribute the dimension's fields; INNER only
-        // differs in dropping the primary row when there is no match, which the
-        // loop above has already done. Restricting this to LEFT meant an INNER
-        // join filtered rows and then injected nothing.
         for join in &self.dim_joins {
             if !matches!(
                 join.join_type,
@@ -759,7 +691,6 @@ impl SourceDrivenConfig {
             }
         }
 
-        // Check for CROSS joins — build cross-product state
         let has_cross = self
             .dim_joins
             .iter()
@@ -803,20 +734,16 @@ impl SourceDrivenConfig {
         Ok(Some(vars))
     }
 
-    /// Yield the next combination from a cross-product state.
     fn next_cross_product_combination(&self) -> Result<Option<HashMap<String, Value>>> {
         let mut state_guard = self
             .cross_product_state
             .lock()
             .map_err(|e| anyhow::anyhow!("cross_product_state mutex poisoned: {e}"))?;
-        // `None` means "no cross-product in flight", not "source exhausted" —
-        // the caller falls through to pulling a fresh primary row.
         let Some(state) = state_guard.front_mut() else {
             return Ok(None);
         };
         let mut vars = self.build_primary_vars(&state.row);
 
-        // Inject dimension fields for each cross join at the current index
         let mut cross_idx = 0;
         for join in &self.dim_joins {
             if join.join_type != super::definition::JoinType::Cross {
@@ -839,14 +766,11 @@ impl SourceDrivenConfig {
             cross_idx += 1;
         }
 
-        // Advance the cross-product indices (lexicographic order)
         let cross_count = self
             .dim_joins
             .iter()
             .filter(|j| j.join_type == super::definition::JoinType::Cross)
             .count();
-        // Advance in place. Rebuilding the state cloned the whole match set on
-        // every emitted combination — O(M^2) row clones for one primary row.
         let mut advanced = false;
         for i in (0..cross_count).rev() {
             let max = state.cross_matches[i].len();
@@ -871,9 +795,6 @@ impl SourceDrivenConfig {
     }
 
     fn build_primary_vars(&self, row: &SourceRow) -> HashMap<String, Value> {
-        // `zip`, not `row.get(col)` per column: `get` is a linear scan with a
-        // string compare, so building an already index-aligned row cost O(C^2)
-        // comparisons.
         let mut vars = HashMap::with_capacity(row.columns().len());
         for (col, val) in row.columns().iter().zip(row.values()) {
             let mut key = String::with_capacity(self.primary_name.len() + 1 + col.len());
@@ -947,7 +868,6 @@ fn load_or_build_index_with_key(
 
     let mut index = SourceIndex::new(key_col);
     let header_line = read_first_line(&source_path)?;
-    // Fallback only; see `SourceReader::last_row_span`.
     let mut byte_offset = header_line.len() as u64;
     let mut row_count = 0u64;
 
@@ -995,10 +915,6 @@ fn read_first_line(path: &Path) -> Result<String> {
     Ok(line)
 }
 
-/// Byte length of the CSV row as it appears in the source file: the field
-/// values joined by commas. This must match how the row was serialized on
-/// disk so that mmap offsets computed during indexing stay in sync — counting
-/// header/column names here would over-count and corrupt every offset.
 fn estimate_row_size(row: &SourceRow) -> u32 {
     let mut size = 0u32;
     for val in row.values() {
@@ -1021,8 +937,6 @@ mod tests {
         path
     }
 
-    /// A filter used to apply only when the dimension fit in memory, so the
-    /// same YAML filtered or not depending on free RAM.
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
@@ -1053,8 +967,6 @@ mod tests {
         }
     }
 
-    /// The mmap line was split on `,` whatever the format, so an over-budget
-    /// TSV decoded into one garbage column.
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
@@ -1079,7 +991,6 @@ mod tests {
         );
     }
 
-    /// Same for NDJSON: a JSON object split on commas yields nothing usable.
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
@@ -1104,8 +1015,6 @@ mod tests {
         assert_eq!(row.get("pop"), Some("13"));
     }
 
-    /// The indexed path must build the same composite key the in-memory one
-    /// does, or the two disagree above the memory budget.
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
@@ -1143,7 +1052,6 @@ mod tests {
             assert!(dim.lookup_row(&format!("O1{sep}P9")).unwrap().is_none());
         }
 
-        // The unit separator must never reach a file name.
         let idx = crate::index_builder::index_path_for_source(&resolved, &key);
         let name = idx.file_name().unwrap().to_string_lossy();
         assert!(!name.contains('\u{1f}'), "index file named {name}");
@@ -1153,7 +1061,6 @@ mod tests {
         );
     }
 
-    /// A quoted delimiter inside a CSV field is data.
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
@@ -1172,13 +1079,6 @@ mod tests {
         assert_eq!(row.get("name"), Some("Moscow, RU"));
     }
 
-    /// Regression (BUG 1): index-backed dimensions must yield the same rows —
-    /// including real column names and values — that a full-scan in-memory
-    /// dimension does. Before the fix, `lookup_all` returned nothing for indexed
-    /// dimensions and the mmap offset/length math read out-of-bounds garbage for
-    /// `lookup_row`. (Unique keys only: the in-memory path is a map keyed by the
-    /// join key and cannot hold multiple rows per key, so the two paths are only
-    /// comparable when keys are unique.)
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
@@ -1211,13 +1111,11 @@ mod tests {
         };
 
         for key in ["R01", "R02"] {
-            // Single-row lookup: identical column names AND values across paths.
             let idx_row = indexed.lookup_row(key).unwrap().unwrap();
             let mem_row = memory.lookup_row(key).unwrap().unwrap();
             assert_eq!(idx_row.columns(), mem_row.columns());
             assert_eq!(fingerprint(&idx_row), fingerprint(&mem_row));
 
-            // `lookup_all` on the indexed path must no longer come back empty.
             let idx_all = indexed.lookup_all(key);
             let mem_all = memory.lookup_all(key);
             assert_eq!(idx_all.len(), 1);
@@ -1232,16 +1130,11 @@ mod tests {
             Some("Moscow")
         );
 
-        // Missing key: both paths yield an empty set.
         assert!(indexed.lookup_all("NOPE").is_empty());
         assert!(memory.lookup_all("NOPE").is_empty());
         assert!(indexed.lookup_row("NOPE").unwrap().is_none());
     }
 
-    /// Regression (BUG 1): a CROSS join over an indexed dimension must expand
-    /// the primary row across all matching dimension rows, injecting real field
-    /// names. Previously `dimension_lookup_all` returned `None` for indexed
-    /// dimensions, so the cross product collapsed to the primary row alone.
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
@@ -1257,8 +1150,6 @@ mod tests {
         let doc_path = dir.join("test.gctf");
         std::fs::write(&doc_path, "").unwrap();
 
-        // Force the dimension onto the indexed (mmap) path regardless of the
-        // machine's memory budget.
         let dim_def: SourceDefinition =
             serde_yaml_ng::from_str("file: regions.csv\nname: regions\nindexed_by: [region_id]\n")
                 .unwrap();
@@ -1310,19 +1201,12 @@ mod tests {
         );
     }
 
-    /// Regression: `next_primary_row` refills with the reader lock held and
-    /// then takes the batch lock, while `rewind` took the batch lock first and
-    /// the reader second — an order inversion that deadlocked a duration run
-    /// the moment one worker wrapped the source while another was refilling.
-    /// Compilation cannot catch this, so the test bounds itself in wall time.
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
     fn concurrent_rewind_and_refill_do_not_deadlock() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
-        // Deliberately fewer rows than the refill batch, so the source is
-        // exhausted and rewound constantly while workers pull.
         let mut rows = String::from("id,name\n");
         for i in 0..50 {
             rows.push_str(&format!("{i},user-{i}\n"));
@@ -1356,8 +1240,6 @@ mod tests {
                                     Ok(Some(_)) => {
                                         served.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                     }
-                                    // Exhausted: wrap, exactly as the duration
-                                    // executor does.
                                     Ok(None) => {
                                         let _ = config.rewind();
                                     }
@@ -1385,16 +1267,6 @@ mod tests {
         );
     }
 
-    /// Regression: `next_row_variables` checked `cross_product_state` under the
-    /// lock, dropped the guard, then re-locked inside
-    /// `next_cross_product_combination` and unwrapped. Two workers could both
-    /// observe `Some`, the first drain the last combination and clear the slot,
-    /// and the second unwrap `None` — a panic on any CROSS join driven by more
-    /// than one worker. A second race let two workers each installing a
-    /// different row's product clobber one another, silently dropping a row.
-    ///
-    /// Every emitted combination is collected here and checked for completeness,
-    /// so a lost product fails the assertion rather than passing quietly.
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
@@ -1402,7 +1274,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
 
-        // 40 primary rows, each matching 3 dimension rows -> 120 combinations.
         let mut orders = String::from("order_id,region_id\n");
         for i in 0..40 {
             orders.push_str(&format!("O{i},R{}\n", i % 4));
@@ -1486,12 +1357,6 @@ mod tests {
         );
     }
 
-    /// Regression (BUG 1): an INNER join must skip a primary row whose FK
-    /// column is entirely absent, not just present-but-unmatched. The prior
-    /// `is_some_and` check treated an absent FK column as "no constraint" and
-    /// wrongly emitted the row; `is_none_or` skips it. The primary here is
-    /// NDJSON with no `region_id` field at all, so an INNER join on it must
-    /// yield zero rows.
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
@@ -1516,13 +1381,9 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        // No primary row carries the FK column, so the INNER join drops them all.
         assert!(config.next_row_variables().unwrap().is_none());
     }
 
-    /// Regression (BUG 1): a run of INNER-join misses is drained iteratively
-    /// (not by recursion), and the first matching row after the misses is
-    /// still returned correctly.
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
@@ -1547,8 +1408,6 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        // O1 and O2 have unmatched FKs and are skipped; O3's FK matches, so it
-        // is the only row that survives the INNER join.
         let vars = config.next_row_variables().unwrap().unwrap();
         assert_eq!(
             vars.get("orders.order_id"),
@@ -1557,8 +1416,6 @@ mod tests {
         assert!(config.next_row_variables().unwrap().is_none());
     }
 
-    /// An INNER join used to filter the primary rows and then contribute
-    /// nothing: only LEFT injected the dimension's fields.
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
@@ -1590,9 +1447,6 @@ mod tests {
         );
     }
 
-    /// `indexed_by: [a, b]` was passed around as the literal column name
-    /// `"a\x1Fb"`, which no row has: the in-memory path failed the lookup
-    /// outright and the CLI builder quietly indexed on `a` alone.
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
@@ -1621,8 +1475,6 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        // Both rows share `order_id`, so indexing on the first column alone
-        // would give them the same price.
         let first = config.next_row_variables().unwrap().unwrap();
         assert_eq!(first.get("lines.qty"), Some(&Value::String("2".into())));
         assert_eq!(
@@ -1640,9 +1492,6 @@ mod tests {
         );
     }
 
-    // The gate compared a raw file size with a RAM budget, so a dimension
-    // needing 12x its file size was loaded whole whenever the file alone fit.
-    // `memory_budget` was parsed and never read.
     #[test]
     fn a_source_may_override_the_run_wide_memory_budget() {
         let mut def: SourceDefinition =
@@ -1652,8 +1501,6 @@ mod tests {
         def.memory_budget = Some("1kb".into());
         assert_eq!(task_budget(&def, 4096), 1024);
 
-        // An unparseable value falls back rather than dropping to zero and
-        // pushing every dimension onto the index path.
         def.memory_budget = Some("not a size".into());
         assert_eq!(task_budget(&def, 4096), 4096);
     }
@@ -1669,7 +1516,6 @@ mod tests {
         assert!(fits_in_memory(0, budget));
     }
 
-    // A file we cannot stat must not be treated as empty.
     #[test]
     fn an_unmeasurable_file_never_counts_as_fitting() {
         assert!(!fits_in_memory(u64::MAX, u64::MAX));
@@ -1713,12 +1559,6 @@ mod tests {
         assert!(vars3.is_none());
     }
 
-    /// Regression: in duration/soak bench mode, once the primary source is
-    /// exhausted the engine calls `reset()` on the primary reader to keep
-    /// feeding parameterized rows. Before the fix `reset()` was a no-op while
-    /// `supports_reset()` claimed success, so every row after exhaustion came
-    /// back with empty variables — silently destroying the parameterization.
-    /// After the fix, resetting rewinds the reader so the same rows repeat.
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
@@ -1746,22 +1586,18 @@ mod tests {
             names
         };
 
-        // First pass drains the source.
         assert_eq!(collect_pass(&config), vec!["Alice", "Bob"]);
 
-        // The bench duration loop rewinds the exhausted primary source.
         {
             let mut reader = config.primary.lock().unwrap();
             assert!(reader.supports_reset());
             reader.reset().unwrap();
         }
 
-        // The next read must yield the original first row, not empty vars.
         let vars = config.next_row_variables().unwrap().unwrap();
         assert_eq!(vars.get("users.id"), Some(&Value::String("1".into())));
         assert_eq!(vars.get("users.name"), Some(&Value::String("Alice".into())));
 
-        // And the whole pass replays identically.
         let vars2 = config.next_row_variables().unwrap().unwrap();
         assert_eq!(vars2.get("users.name"), Some(&Value::String("Bob".into())));
         assert!(config.next_row_variables().unwrap().is_none());

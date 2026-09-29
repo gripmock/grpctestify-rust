@@ -6,6 +6,7 @@ pub mod bench;
 pub mod bench_aggregate;
 pub mod bench_compare;
 pub mod call;
+pub mod call_line;
 pub mod check;
 pub mod docs;
 pub mod explain;
@@ -48,10 +49,6 @@ pub use run::run_tests;
 pub use scaffold::handle_scaffold;
 pub use serve::handle_play;
 
-/// Build a `TlsConfig` from resolved CLI cert paths — the field-construction
-/// step shared by every command's own `resolve_tls_config`, which otherwise
-/// each decide independently whether TLS applies at all (that decision's
-/// default/flag surface genuinely differs per command, so it stays local).
 pub fn tls_config_from_flags(
     ca_cert_path: Option<String>,
     client_cert_path: Option<String>,
@@ -67,7 +64,6 @@ pub fn tls_config_from_flags(
     }
 }
 
-/// Print diagnostic to stderr
 pub fn print_diagnostic(diagnostic: &Diagnostic) {
     let severity_str = match diagnostic.severity {
         DiagnosticSeverity::Error => "ERROR",
@@ -96,7 +92,6 @@ pub fn print_diagnostic(diagnostic: &Diagnostic) {
     }
 }
 
-/// Handle shell completion
 pub fn handle_completion(shell_type: &str) -> Result<()> {
     use clap::CommandFactory;
     use clap_complete::{Shell, generate};
@@ -124,8 +119,6 @@ pub fn handle_completion(shell_type: &str) -> Result<()> {
     Ok(())
 }
 
-/// Truncate string to max length with ellipsis.
-/// `max_len` must be >= 3; if the string fits, it is returned as-is.
 pub fn truncate_str(s: &str, max_len: usize) -> String {
     if max_len < 3 || s.len() <= max_len {
         s.to_string()
@@ -155,7 +148,6 @@ mod tests {
 
     #[test]
     fn truncate_str_max_len_less_than_3_returns_original() {
-        // Must not panic; returns original string when max_len < 3.
         assert_eq!(truncate_str("hello", 2), "hello");
         assert_eq!(truncate_str("hello", 0), "hello");
     }

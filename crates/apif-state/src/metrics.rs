@@ -2,15 +2,11 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ExecutionMetrics {
-    /// Wall-clock of the whole run (parallel). NOT the sum of per-test times.
     pub total_duration_ms: u64,
     pub start_time: i64,
     pub end_time: i64,
     pub rpc_calls: u64,
     pub total_rpc_ms: u64,
-    /// Sum of every test's own wall-clock. Divided by test count gives the true
-    /// average test time (unlike `total_duration_ms`, which is the parallel
-    /// wall-clock and would understate per-test cost when jobs run concurrently).
     pub sum_test_ms: u64,
     pub parallel_jobs: usize,
 }

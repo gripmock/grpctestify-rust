@@ -27,8 +27,7 @@ export default defineConfig({
       { text: 'Get Started', link: '/guides/getting-started/installation' },
       { text: 'Features', link: '/guides/query' },
       { text: 'CLI', link: '/guides/reference/api/command-line' },
-      { text: 'Dev Guide', link: '/dev/architecture' },
-      { text: 'Changelog', link: '/changelog/' }
+      { text: 'Playground', link: '/guides/playground' }
     ],
 
     sidebar: {
@@ -74,7 +73,9 @@ export default defineConfig({
             { text: 'Command Line', link: '/guides/reference/api/command-line' },
             { text: 'Output Forms', link: '/guides/reference/api/output-forms' },
             { text: 'Report Formats', link: '/guides/reference/api/report-formats' },
-            { text: 'Coverage', link: '/guides/reference/api/coverage' }
+            { text: 'Coverage', link: '/guides/reference/api/coverage' },
+            { text: 'HTTP files (.httf)', link: '/guides/reference/http-files' },
+            { text: 'Mixed files (.apif)', link: '/guides/reference/apif-files' }
           ]
         },
         {
@@ -100,17 +101,6 @@ export default defineConfig({
           ]
         }
       ],
-      '/dev/': [
-        {
-          text: 'Developer Guide',
-          items: [
-            { text: 'Architecture', link: '/dev/architecture' },
-            { text: 'Building', link: '/dev/building' },
-            { text: 'Testing', link: '/dev/testing' },
-            { text: 'Contributing', link: '/dev/contributing' }
-          ]
-        }
-      ]
     },
 
     socialLinks: [
@@ -148,7 +138,7 @@ export default defineConfig({
     },
 
     editLink: {
-      pattern: 'https://github.com/gripmock/grpctestify-rust/edit/main/docs/:path',
+      pattern: 'https://github.com/gripmock/grpctestify-rust/edit/master/docs/:path',
       text: 'Edit this page on GitHub'
     },
 

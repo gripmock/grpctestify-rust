@@ -34,11 +34,8 @@ mod tests {
     #[test]
     fn trailing_blank_line_count_edge_cases() {
         let lines = &["hello", ""];
-        // start >= end
         assert_eq!(trailing_blank_line_count(lines, 3, 2), 0);
-        // start >= len
         assert_eq!(trailing_blank_line_count(lines, 5, 10), 0);
-        // end clamped
         assert_eq!(trailing_blank_line_count(lines, 0, 10), 1);
     }
 }

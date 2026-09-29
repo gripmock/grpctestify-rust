@@ -4,17 +4,12 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Context passed to plugins during assertion evaluation.
 #[derive(Debug, Clone)]
 pub struct PluginContext<'a> {
     pub response: &'a Value,
     pub headers: Option<&'a HashMap<String, String>>,
     pub trailers: Option<&'a HashMap<String, String>>,
     pub timing: Option<&'a AssertionTiming>,
-    /// Wire protocol that produced this response — `"grpc"`, `"grpc-web"`, or
-    /// `"connectrpc"` (the same canonical strings `OPTIONS.protocol:`
-    /// accepts). `None` when the caller didn't have protocol information to
-    /// give (e.g. a standalone/test evaluation with no real call behind it).
     pub protocol: Option<&'a str>,
 }
 
@@ -46,7 +41,6 @@ impl<'a> PluginContext<'a> {
     }
 }
 
-/// Timing context for assertion plugins.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssertionTiming {
     pub elapsed_ms: u64,
@@ -55,24 +49,20 @@ pub struct AssertionTiming {
     pub scope_index: usize,
 }
 
-/// Result of a plugin execution.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PluginResult {
     Assertion(AssertionResult),
     Value(Value),
 }
 
-/// Minimal plugin API — just what the assertion engine needs.
 pub trait PluginApi: Send + Sync {
     fn execute(&self, args: &[Value], context: &PluginContext) -> Result<PluginResult>;
 }
 
-/// Registry of plugins for the assertion engine.
 pub trait PluginRegistry: Send + Sync {
     fn get_plugin(&self, name: &str) -> Option<Arc<dyn PluginApi>>;
 }
 
-/// A plugin registry that has no plugins. Used as default when no plugins are configured.
 pub struct NoopPluginRegistry;
 
 impl PluginRegistry for NoopPluginRegistry {

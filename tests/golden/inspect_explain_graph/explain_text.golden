@@ -24,6 +24,7 @@ sequenceDiagram
 
 SCENARIO 1: grpc.health.v1.Health/Check
   ────────────────────────────────────────────────────────────
+  → Over: grpc
   -> Effective runtime:
     timeout=30s (CliDefaults), retry=0 (CliDefaults), retry_delay=1s (CliDefaults), no_retry=false (CliDefaults), compression=none (CliDefaults)
   → Send:
@@ -38,6 +39,7 @@ SCENARIO 1: grpc.health.v1.Health/Check
 
 SCENARIO 2: grpc.health.v1.Health/Watch
   ────────────────────────────────────────────────────────────
+  → Over: grpc
   -> Effective runtime:
     timeout=30s (CliDefaults), retry=0 (CliDefaults), retry_delay=1s (CliDefaults), no_retry=false (CliDefaults), compression=none (CliDefaults)
   → Send:

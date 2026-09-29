@@ -169,9 +169,6 @@ impl Lexer<'_> {
                 let s = self.read_string(ch);
                 TokenKind::StringLit(s)
             }
-            // Lex numbers (incl. decimals and leading-digit values) before the
-            // identifier branch; digits are alphanumeric, so the ident branch
-            // would otherwise shadow this and drop the fractional part.
             c if c.is_ascii_digit() => {
                 let mut num = String::from(c);
                 while let Some(c) = self.peek() {
@@ -209,8 +206,6 @@ impl Lexer<'_> {
 pub struct Parser<'a> {
     lexer: Lexer<'a>,
     current: Option<Token>,
-    /// End position (char index) of the most recently consumed token. Used for
-    /// spans, since `lexer.pos` is already past the one-token lookahead.
     last_end: usize,
 }
 
@@ -257,7 +252,6 @@ impl<'a> Parser<'a> {
         let column_token = self
             .advance()
             .ok_or_else(|| anyhow::anyhow!("unexpected EOF in filter"))?;
-        // Span starts at the column token (captured before lookahead advances).
         let span_start = column_token.span.start;
         let column = match column_token.kind {
             TokenKind::Ident(s) => s,
@@ -276,10 +270,6 @@ impl<'a> Parser<'a> {
 
         let op = match op_token.kind {
             TokenKind::Eq => {
-                // Do not split on commas inside a single value token: quoted
-                // strings may legitimately contain commas (e.g. "Doe, John").
-                // Unquoted comma-separated lists become an In-list via the
-                // comma-token loop in `parse_query`.
                 let value = self.parse_value()?;
                 FilterOp::Eq(value)
             }
@@ -356,8 +346,6 @@ impl<'a> Parser<'a> {
         let source_token = self
             .advance()
             .ok_or_else(|| anyhow::anyhow!("empty source name"))?;
-        // Char-based span of the source token (covers quotes for string
-        // literals); consistent with the char-indexed lexer.
         let source_span = source_token.span;
         let source = match source_token.kind {
             TokenKind::Ident(s) => s,
@@ -370,7 +358,6 @@ impl<'a> Parser<'a> {
         while let Some(token) = self.peek() {
             if matches!(token.kind, TokenKind::Ident(_) | TokenKind::StringLit(_)) {
                 let mut filter = self.parse_filter()?;
-                // Check for IN operator: if Eq with value followed by comma
                 if let FilterOp::Eq(first_val) = &filter.op {
                     let mut values = vec![first_val.clone()];
                     while matches!(
@@ -470,35 +457,28 @@ fn like_match(pattern: &str, value: &str) -> bool {
     let has_end_star = pattern.ends_with('*');
 
     if has_start_star && has_end_star {
-        // *literal* — contains check
         let mid = &pattern[1..pattern.len() - 1];
         if !mid.contains('*') && !mid.contains('?') {
             return value.contains(mid);
         }
     } else if has_start_star {
-        // *literal — ends_with check
         let suffix = &pattern[1..];
         if !suffix.contains('*') && !suffix.contains('?') {
             return value.ends_with(suffix);
         }
     } else if has_end_star {
-        // literal* — starts_with check
         let prefix = &pattern[..pattern.len() - 1];
         if !prefix.contains('*') && !prefix.contains('?') {
             return value.starts_with(prefix);
         }
     }
 
-    // body has wildcards inside (e.g. "te*t") — needs regex
     match cached_regex(&glob_to_regex(pattern)) {
         Ok(re) => re.is_match(value),
         Err(_) => false,
     }
 }
 
-/// Translate a glob pattern to an anchored regex. Only `*` (→ `.*`) and `?`
-/// (→ `.`) are treated as wildcards; every other character is escaped so that
-/// regex metacharacters in the glob (`.`, `(`, `)`, `[`, ...) match literally.
 fn glob_to_regex(pattern: &str) -> String {
     let mut re = String::from("^(?:");
     let mut literal = String::new();
@@ -661,7 +641,6 @@ mod tests {
         assert!(!glob_match("*Jane*", "Hello John Doe"));
         assert!(glob_match("hello", "hello"));
         assert!(!glob_match("hello", "world"));
-        // Invalid pattern should return false
         assert!(!glob_match("[invalid", "test"));
     }
 
@@ -669,7 +648,6 @@ mod tests {
     fn test_regex_match() {
         assert!(regex_match(r"^\d{3}-\d{4}$", "123-4567"));
         assert!(!regex_match(r"^\d{3}-\d{4}$", "12-34567"));
-        // Invalid regex should return false
         assert!(!regex_match(r"[invalid", "test"));
     }
 
@@ -707,7 +685,6 @@ mod tests {
         let query = parse_query("users age>=18 age<=30").unwrap();
         assert!(query.filters[0].matches(&row));
         assert!(query.filters[1].matches(&row));
-        // Numeric comparison: 100.0 > 30.0, so 100 <= 30 is false
         let row2: std::collections::HashMap<String, String> =
             std::collections::HashMap::from([("age".into(), "100".into())]);
         assert!(
@@ -715,7 +692,6 @@ mod tests {
             "numeric 100 <= 30 should be false"
         );
 
-        // Non-numeric strings still use lexicographic comparison
         let row3: std::collections::HashMap<String, String> =
             std::collections::HashMap::from([("name".into(), "xyz".into())]);
         let q3 = parse_query("users name>=abc").unwrap();
@@ -767,12 +743,9 @@ mod tests {
 
     #[test]
     fn like_match_regex_fallback() {
-        // Patterns with wildcards in the middle need regex
         assert!(like_match("te*t", "test"));
         assert!(like_match("te*t", "tent"), "te*t matches tent (te+n+t)");
-        // But does not match if prefix/suffix don't match
         assert!(!like_match("te*t", "xyz"));
-        // Complex pattern
         assert!(like_match("a*b*c", "axbyc"));
         assert!(!like_match("a*b*c", "axbyz"));
     }
@@ -801,10 +774,8 @@ mod tests {
     fn test_cached_regex() {
         let r1 = cached_regex(r"^\d+$").unwrap();
         assert!(r1.is_match("123"));
-        // Same pattern should use cache
         let r2 = cached_regex(r"^\d+$").unwrap();
         assert!(r2.is_match("456"));
-        // Invalid regex
         assert!(cached_regex(r"[").is_err());
     }
 
@@ -836,7 +807,6 @@ mod tests {
         assert_eq!(q.filters[1].column, "status");
         assert_eq!(q.filters[2].column, "age");
         q.optimize();
-        // Eq should come first, then range, then Like
         assert_eq!(q.filters[0].column, "status", "eq should be first");
         assert_eq!(q.filters[1].column, "age", "range should be second");
         assert_eq!(q.filters[2].column, "name", "like should be last");
@@ -874,8 +844,6 @@ mod tests {
         assert_eq!(q.source, "my source");
     }
 
-    // Bug 1: decimal / leading-digit values must lex as a single NumberLit,
-    // not be truncated by the identifier branch.
     #[test]
     fn decimal_value_not_truncated() {
         let q = parse_query("users age>=1.5").unwrap();
@@ -898,7 +866,6 @@ mod tests {
         assert!(lexer.next_token().is_none());
     }
 
-    // Bug 2: a comma inside a quoted value must not be split into an In-list.
     #[test]
     fn quoted_value_with_comma_not_split() {
         let q = parse_query(r#"users name="Doe, John""#).unwrap();
@@ -907,21 +874,16 @@ mod tests {
             FilterOp::Eq(v) => assert_eq!(v, "Doe, John"),
             other => panic!("expected Eq(\"Doe, John\"), got {:?}", other),
         }
-        // Unquoted comma-separated lists still become In-lists.
         let q2 = parse_query("users status=active,pending").unwrap();
         assert!(matches!(q2.filters[0].op, FilterOp::In(_)));
     }
 
-    // Bug 3: glob-to-regex fallback must escape regex metacharacters.
     #[test]
     fn glob_escapes_regex_metacharacters() {
-        // '.' is literal in a glob; must not match an arbitrary character.
         assert!(like_match("a.c*e", "a.cZe"));
         assert!(!like_match("a.c*e", "axcZe"));
-        // Parentheses must be treated literally, not as a regex group.
         assert!(like_match("(x*y)", "(xABCy)"));
         assert!(!like_match("(x*y)", "xABCy"));
-        // '?' still acts as a single-char wildcard.
         assert!(like_match("a?c*", "abcde"));
     }
 
@@ -931,21 +893,17 @@ mod tests {
         assert_eq!(glob_to_regex("(x*y)"), r"^(?:\(x.*y\))$");
     }
 
-    // Bug 4: spans use the token start (not the post-lookahead lexer position).
     #[test]
     fn filter_span_starts_at_column() {
         let q = parse_query("users age>=1.5").unwrap();
-        // "users age>=1.5" — 'a' of age is at char index 6.
         assert_eq!(q.filters[0].span.start, 6, "span starts at column token");
         assert_eq!(q.filters[0].span.end, 14, "span ends after the value");
-        // source span covers "users" (chars 0..5).
         assert_eq!(q.source_span, Span::new(0, 5));
     }
 
     #[test]
     fn source_span_string_literal_covers_quotes() {
         let q = parse_query(r#""my source" status=active"#).unwrap();
-        // Char-based span covering the quoted source token, quotes included.
         assert_eq!(q.source_span, Span::new(0, 11));
     }
 }

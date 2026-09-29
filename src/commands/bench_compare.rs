@@ -1,16 +1,8 @@
-//
-// The reports are parsed as schema-tolerant `serde_json::Value` so this command
-// stays decoupled from the exact `BenchReport` struct. It reads the stable,
-// versioned `bench_report_schema_v1` fields: `summary.{count,errors,rps_observed,
-// average_ns}`, the `latency_distribution` array of `{percentile, latency_ns}`,
-// and the `per_endpoint` array of `{endpoint, latency_p99}`.
-
 use crate::cli::args::BenchCompareArgs;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-/// Whether a metric is better when it goes up (throughput) or down (latency, errors).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     LowerIsBetter,
@@ -34,21 +26,16 @@ impl Verdict {
     }
 }
 
-/// Normalized metrics extracted from a bench report, in comparable units.
 #[derive(Debug, Clone)]
-struct Metrics {
+pub(crate) struct Metrics {
     total: f64,
     errors: f64,
     rps: f64,
     mean_ns: f64,
-    /// percentile label ("p50", "p90", ...) -> latency in ns
     percentiles: BTreeMap<String, f64>,
-    /// endpoint name -> p99 latency in ns
     endpoint_p99: BTreeMap<String, f64>,
 }
 
-/// Percentage change from baseline to current: (current - baseline) / baseline * 100.
-/// A baseline of zero yields 0 when unchanged and +inf when the value grew.
 pub fn pct_change(baseline: f64, current: f64) -> f64 {
     if baseline == 0.0 {
         if current == 0.0 { 0.0 } else { f64::INFINITY }
@@ -57,9 +44,6 @@ pub fn pct_change(baseline: f64, current: f64) -> f64 {
     }
 }
 
-/// Verdict for a metric given its direction and the max tolerated regression (percent).
-/// For LowerIsBetter, a rise beyond `threshold_pct` regresses; any drop improves.
-/// For HigherIsBetter, a drop beyond `threshold_pct` regresses; any rise improves.
 pub fn verdict_for_metric(
     baseline: f64,
     current: f64,
@@ -78,7 +62,6 @@ pub fn verdict_for_metric(
             }
         }
         Direction::HigherIsBetter => {
-            // drop percentage is the negative of the change
             if -change > threshold_pct {
                 Verdict::Regressed
             } else if current > baseline {
@@ -90,8 +73,6 @@ pub fn verdict_for_metric(
     }
 }
 
-/// Verdict for error rate, compared in percentage points (not relative percent).
-/// `max_points` is the max tolerated rise in the error-rate fraction, in points.
 pub fn verdict_for_error_rate(baseline_rate: f64, current_rate: f64, max_points: f64) -> Verdict {
     let delta_points = (current_rate - baseline_rate) * 100.0;
     if delta_points > max_points {
@@ -103,7 +84,6 @@ pub fn verdict_for_error_rate(baseline_rate: f64, current_rate: f64, max_points:
     }
 }
 
-/// Overall gate: pass only when no metric regressed.
 pub fn overall_pass(rows: &[MetricRow]) -> bool {
     rows.iter().all(|r| r.verdict != Verdict::Regressed)
 }
@@ -119,14 +99,10 @@ pub struct MetricRow {
     pub verdict: Verdict,
 }
 
-/// Thresholds controlling which deltas count as regressions.
 #[derive(Debug, Clone, Copy)]
 pub struct Thresholds {
-    /// Max tolerated latency rise (percent) for mean and each percentile.
     pub max_latency_regression: f64,
-    /// Max tolerated error-rate rise, in percentage points.
     pub max_error_rate_regression: f64,
-    /// Max tolerated throughput drop (percent) before failing.
     pub min_throughput: f64,
 }
 
@@ -137,18 +113,15 @@ fn require_f64(v: &Value, obj: &str, key: &str) -> Result<f64> {
         .with_context(|| format!("bench report missing numeric field `{obj}.{key}`"))
 }
 
-/// Canonical key for a percentile: `50.0` -> `p50`, `99.9` -> `p99.9`.
 fn percentile_key(p: f64) -> String {
     format!("p{p}")
 }
 
-/// Inverse of [`percentile_key`], for ordering shared keys numerically —
-/// lexicographic order would put `p100` before `p50`.
 fn percentile_of_key(key: &str) -> Option<f64> {
     key.strip_prefix('p')?.parse().ok()
 }
 
-fn extract_metrics(v: &Value) -> Result<Metrics> {
+pub(crate) fn extract_metrics(v: &Value) -> Result<Metrics> {
     if !v.is_object() || v.get("summary").is_none() {
         bail!("input is not a bench report (no `summary` object)");
     }
@@ -167,10 +140,6 @@ fn extract_metrics(v: &Value) -> Result<Metrics> {
             ) else {
                 continue;
             };
-            // Keyed by the exact percentile. Rounding to an integer collapsed
-            // `p99.5` and `p99.9` onto the same `p100` key — the last one
-            // parsed won, and the tail percentiles a run was configured to
-            // measure were never compared at all.
             percentiles.insert(percentile_key(p), ns);
         }
     }
@@ -206,11 +175,9 @@ fn error_rate(m: &Metrics) -> f64 {
     }
 }
 
-/// Build the aggregate metric comparison rows (throughput, error rate, mean, percentiles).
-fn compare_aggregate(base: &Metrics, cur: &Metrics, th: &Thresholds) -> Vec<MetricRow> {
+pub(crate) fn compare_aggregate(base: &Metrics, cur: &Metrics, th: &Thresholds) -> Vec<MetricRow> {
     let mut rows = Vec::new();
 
-    // Throughput (rps) — higher is better, gated by --min-throughput drop percent.
     rows.push(MetricRow {
         name: "throughput_rps".to_string(),
         baseline: base.rps,
@@ -226,7 +193,6 @@ fn compare_aggregate(base: &Metrics, cur: &Metrics, th: &Thresholds) -> Vec<Metr
         ),
     });
 
-    // Error rate — compared in percentage points.
     let base_rate = error_rate(base);
     let cur_rate = error_rate(cur);
     rows.push(MetricRow {
@@ -239,7 +205,6 @@ fn compare_aggregate(base: &Metrics, cur: &Metrics, th: &Thresholds) -> Vec<Metr
         verdict: verdict_for_error_rate(base_rate, cur_rate, th.max_error_rate_regression),
     });
 
-    // Mean latency — lower is better.
     rows.push(MetricRow {
         name: "latency_mean".to_string(),
         baseline: base.mean_ns,
@@ -255,9 +220,6 @@ fn compare_aggregate(base: &Metrics, cur: &Metrics, th: &Thresholds) -> Vec<Metr
         ),
     });
 
-    // Percentiles — lower is better; every one present in BOTH reports, in
-    // ascending order. A hardcoded `[p50, p90, p95, p99]` list silently skipped
-    // whatever else `latency_percentiles` was configured to produce.
     let mut shared: Vec<(f64, &String)> = base
         .percentiles
         .keys()
@@ -288,8 +250,7 @@ fn compare_aggregate(base: &Metrics, cur: &Metrics, th: &Thresholds) -> Vec<Metr
     rows
 }
 
-/// Per-endpoint p99 comparison for endpoints present in both reports.
-fn compare_endpoints(base: &Metrics, cur: &Metrics, th: &Thresholds) -> Vec<MetricRow> {
+pub(crate) fn compare_endpoints(base: &Metrics, cur: &Metrics, th: &Thresholds) -> Vec<MetricRow> {
     let mut rows = Vec::new();
     for (name, &b) in &base.endpoint_p99 {
         if let Some(&c) = cur.endpoint_p99.get(name) {
@@ -336,11 +297,6 @@ fn fmt_pct(row: &MetricRow) -> String {
     }
 }
 
-/// The verdict cell: an icon + label, colored (green improved, red regressed,
-/// dim neutral pass) and right-padded to a fixed *visible* width. Padding is
-/// applied to the plain text before styling so the ANSI escapes don't skew the
-/// column alignment; color/TTY/NO_COLOR gating comes from `console` via the
-/// `apif-report::style` helpers.
 fn styled_verdict(verdict: Verdict) -> String {
     use crate::report::style::{PASS_ICON, dim_style, fail_style, pass_style};
     let (cell, style) = match verdict {
@@ -355,7 +311,6 @@ fn render_console(agg: &[MetricRow], endpoints: &[MetricRow], pass: bool) -> Str
     use crate::report::style::{fail_style, header, pass_style, rule};
     use std::fmt::Write;
 
-    // Total visible width of the "{:<20} {:>16} {:>16} {:>14} {:>12}" layout.
     const WIDTH: usize = 82;
     let mut out = String::new();
     let _ = writeln!(
@@ -370,8 +325,6 @@ fn render_console(agg: &[MetricRow], endpoints: &[MetricRow], pass: bool) -> Str
     );
     let _ = writeln!(out, "{}", rule('─', WIDTH));
     let render = |out: &mut String, r: &MetricRow| {
-        // The verdict cell is styled+pre-padded, so it's appended after the
-        // width-formatted numeric columns rather than through `{:>12}`.
         let _ = writeln!(
             out,
             "{:<20} {:>16} {:>16} {:>14} {}",
@@ -405,7 +358,7 @@ fn render_console(agg: &[MetricRow], endpoints: &[MetricRow], pass: bool) -> Str
     out
 }
 
-fn row_to_json(r: &MetricRow) -> Value {
+pub(crate) fn row_to_json(r: &MetricRow) -> Value {
     json!({
         "name": r.name,
         "baseline": r.baseline,
@@ -494,9 +447,6 @@ mod tests {
 
     #[test]
     fn render_console_shows_verdict_icons_and_styled_summary() {
-        // Tests run non-TTY, so `console` emits no ANSI — assert on the plain
-        // text the design-language rendering produces (icons + labels + a
-        // header/rule frame + the pass/fail summary line).
         let rows = vec![
             MetricRow {
                 name: "throughput_rps".to_string(),
@@ -535,14 +485,12 @@ mod tests {
 
     #[test]
     fn latency_regression_beyond_threshold_fails() {
-        // p99 up 20% with a 10% threshold -> regression.
         let v = verdict_for_metric(100.0, 120.0, Direction::LowerIsBetter, 10.0);
         assert_eq!(v, Verdict::Regressed);
     }
 
     #[test]
     fn latency_within_threshold_passes() {
-        // p99 up 5% with a 10% threshold -> pass.
         let v = verdict_for_metric(100.0, 105.0, Direction::LowerIsBetter, 10.0);
         assert_eq!(v, Verdict::Pass);
     }
@@ -555,7 +503,6 @@ mod tests {
 
     #[test]
     fn throughput_drop_beyond_min_fails() {
-        // rps drops 20% with a 5% tolerance -> regression.
         let v = verdict_for_metric(1000.0, 800.0, Direction::HigherIsBetter, 5.0);
         assert_eq!(v, Verdict::Regressed);
     }
@@ -568,11 +515,8 @@ mod tests {
 
     #[test]
     fn error_rate_points_regression() {
-        // 0% -> 2% is 2 points, over a 1-point tolerance -> regression.
         assert_eq!(verdict_for_error_rate(0.0, 0.02, 1.0), Verdict::Regressed);
-        // 0% -> 0.5% is within tolerance -> pass.
         assert_eq!(verdict_for_error_rate(0.0, 0.005, 1.0), Verdict::Pass);
-        // fewer errors -> improved.
         assert_eq!(verdict_for_error_rate(0.02, 0.0, 1.0), Verdict::Improved);
     }
 
@@ -592,7 +536,7 @@ mod tests {
     #[test]
     fn overall_pass_when_all_within_thresholds() {
         let base = metrics(1000.0, 1000.0, 0.0, 100.0, 200.0);
-        let cur = metrics(980.0, 1000.0, 0.0, 105.0, 208.0); // rps -2%, latency +4/5%
+        let cur = metrics(980.0, 1000.0, 0.0, 105.0, 208.0);
         let rows = compare_aggregate(&base, &cur, &thresholds());
         assert!(overall_pass(&rows));
     }
@@ -600,7 +544,7 @@ mod tests {
     #[test]
     fn overall_fail_on_p99_regression() {
         let base = metrics(1000.0, 1000.0, 0.0, 100.0, 200.0);
-        let cur = metrics(1000.0, 1000.0, 0.0, 100.0, 260.0); // p99 +30%
+        let cur = metrics(1000.0, 1000.0, 0.0, 100.0, 260.0);
         let rows = compare_aggregate(&base, &cur, &thresholds());
         assert!(!overall_pass(&rows));
     }
@@ -630,7 +574,6 @@ mod tests {
 
     #[test]
     fn extract_metrics_errors_on_missing_metric() {
-        // missing rps_observed -> clear error, no panic.
         let v = json!({"summary": {"count": 10, "errors": 0, "average_ns": 5}});
         let err = extract_metrics(&v).unwrap_err();
         assert!(err.to_string().contains("rps_observed"));

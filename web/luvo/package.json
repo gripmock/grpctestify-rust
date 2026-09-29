@@ -1,0 +1,7 @@
+{
+  "name": "luvo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The workbench's design system and primitives — everything that does not know what a .gctf file is."
+}

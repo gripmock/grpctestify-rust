@@ -4,9 +4,6 @@ use anyhow::Result;
 use apif_source_error::SourceError;
 use std::io::{BufReader, Read, Seek};
 
-/// Rewinds a `csv::Reader` back to the first data row. Boxed so the rewind
-/// capability (which needs `R: Seek`) can be captured at construction time and
-/// invoked later through the non-`Seek` `SourceReader` trait object.
 type CsvRewind<R> = Box<dyn Fn(&mut csv::Reader<BufReader<R>>) -> Result<()> + Send>;
 
 pub struct CsvReader<R> {
@@ -16,9 +13,6 @@ pub struct CsvReader<R> {
     row_number: usize,
     finished: bool,
     rewind: Option<CsvRewind<R>>,
-    /// Reused across rows. `Reader::records()` allocates a fresh
-    /// `StringRecord` per row; the crate's own tutorial measures amortising it
-    /// at 0.308 s against 0.645 s for the same file.
     record: csv::StringRecord,
     last_span: Option<(u64, u32)>,
 }
@@ -68,12 +62,6 @@ impl<R: Read> CsvReader<R> {
 }
 
 impl<R: Read + Seek + Send> CsvReader<R> {
-    /// Like [`CsvReader::new`], but over a seekable reader so that [`reset`]
-    /// can rewind to the first data row. The position captured here is the
-    /// start of the first record after the header, so a reset restarts
-    /// iteration at the first data row (not the header).
-    ///
-    /// [`reset`]: SourceReader::reset
     pub fn new_seekable(reader: BufReader<R>, delimiter: u8) -> Result<Self> {
         let mut this = Self::new(reader, delimiter)?;
         let start = this.reader.position().clone();
@@ -229,10 +217,6 @@ mod tests {
         assert!(!reader.supports_reset());
     }
 
-    /// Regression: in duration/soak bench mode the engine `reset()`s the
-    /// exhausted primary source to keep feeding rows. A no-op reset silently
-    /// yielded empty rows forever; after the fix, reset rewinds to the first
-    /// data row so the original rows repeat.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn csv_reset_rewinds_to_first_data_row() {
@@ -256,12 +240,10 @@ mod tests {
 
         reader.reset().unwrap();
 
-        // The next read after reset must return the FIRST data row, not empty.
         let after = reader.next_row().unwrap().unwrap();
         assert_eq!(after.get("id"), Some("1"));
         assert_eq!(after.get("name"), Some("Alice"));
 
-        // And the rest of the pass repeats the original rows.
         let row2 = reader.next_row().unwrap().unwrap();
         assert_eq!(row2.get("name"), Some("Bob"));
         assert!(reader.next_row().unwrap().is_none());

@@ -1,13 +1,3 @@
-//! Server reflection over the HTTP transports.
-//!
-//! Connect picks the content type and the framing from whether a method
-//! streams (`application/connect+{codec}` and envelopes for streaming, the bare
-//! `application/{codec}` and a plain body for unary), and a server is entitled
-//! to answer 415 when a client gets that wrong. The section shape of a `.gctf`
-//! is not enough to tell: a server-streaming method with one `RESPONSE` looks
-//! exactly like a unary one. So when no local descriptor is configured, ask the
-//! server -- `ServerReflectionInfo` is reachable over the very same port.
-
 use crate::grpc::{GrpcClientConfig, RpcMode, WireProtocol};
 use prost::Message;
 use std::collections::HashMap;
@@ -26,10 +16,11 @@ type ServiceModes = HashMap<String, RpcMode>;
 static MODE_CACHE: LazyLock<RwLock<HashMap<String, Option<ServiceModes>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-/// Resolve a method's RPC mode from server reflection, `None` when the server
-/// serves no reflection or does not know the method. Cached per address and
-/// service; a failed lookup is cached too, so an unreflective server costs one
-/// round trip per service rather than one per test.
+type CachedPool = Option<prost_reflect::DescriptorPool>;
+
+static POOL_CACHE: LazyLock<RwLock<HashMap<String, CachedPool>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
 pub(crate) async fn resolve_rpc_mode(
     config: &GrpcClientConfig,
     service_name: &str,
@@ -47,15 +38,25 @@ pub(crate) async fn resolve_rpc_mode(
     modes?.get(method_name).copied()
 }
 
-async fn fetch_service_modes(
-    config: &GrpcClientConfig,
-    service_name: &str,
-) -> Option<ServiceModes> {
+pub async fn clear_mode_cache() {
+    MODE_CACHE.write().await.clear();
+    POOL_CACHE.write().await.clear();
+}
+
+pub(crate) async fn pool_for(config: &GrpcClientConfig) -> CachedPool {
+    let key = format!("{}|{:?}", config.address, config.protocol);
+    if let Some(cached) = POOL_CACHE.read().await.get(&key) {
+        return cached.clone();
+    }
+    let pool = load_pool(config).await;
+    POOL_CACHE.write().await.insert(key, pool.clone());
+    pool
+}
+
+async fn ask(config: &GrpcClientConfig, message_request: MessageRequest) -> Option<Vec<u8>> {
     let request = ServerReflectionRequest {
         host: String::new(),
-        message_request: Some(MessageRequest::FileContainingSymbol(
-            service_name.to_string(),
-        )),
+        message_request: Some(message_request),
     };
 
     let (content_type, body) = match config.protocol {
@@ -82,9 +83,108 @@ async fn fetch_service_modes(
     if !status.is_success() {
         return None;
     }
+    Some(response_bytes)
+}
+
+async fn fetch_service_modes(
+    config: &GrpcClientConfig,
+    service_name: &str,
+) -> Option<ServiceModes> {
+    let response_bytes = ask(
+        config,
+        MessageRequest::FileContainingSymbol(service_name.to_string()),
+    )
+    .await?;
 
     let modes = collect_modes(&response_bytes, service_name);
     if modes.is_empty() { None } else { Some(modes) }
+}
+
+pub(crate) fn services_in(response_bytes: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    for payload in crate::grpc::web::data_frame_payloads(response_bytes) {
+        let Ok(response) = ServerReflectionResponse::decode(payload.as_slice()) else {
+            continue;
+        };
+        let Some(MessageResponse::ListServicesResponse(list)) = response.message_response else {
+            continue;
+        };
+        for service in list.service {
+            if service.name != "grpc.reflection.v1.ServerReflection"
+                && service.name != "grpc.reflection.v1alpha.ServerReflection"
+            {
+                out.push(service.name);
+            }
+        }
+    }
+    out
+}
+
+pub(crate) fn files_in(response_bytes: &[u8]) -> Vec<prost_types::FileDescriptorProto> {
+    let mut out = Vec::new();
+    for payload in crate::grpc::web::data_frame_payloads(response_bytes) {
+        let Ok(response) = ServerReflectionResponse::decode(payload.as_slice()) else {
+            continue;
+        };
+        let Some(MessageResponse::FileDescriptorResponse(files)) = response.message_response else {
+            continue;
+        };
+        for file in files.file_descriptor_proto {
+            if let Ok(file) = prost_types::FileDescriptorProto::decode(file.as_slice()) {
+                out.push(file);
+            }
+        }
+    }
+    out
+}
+
+pub(crate) async fn load_pool(config: &GrpcClientConfig) -> Option<prost_reflect::DescriptorPool> {
+    let listed = ask(config, MessageRequest::ListServices(String::new())).await?;
+    let seed = services_in(&listed);
+    if seed.is_empty() {
+        return None;
+    }
+
+    let mut pending = seed;
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut files: HashMap<String, prost_types::FileDescriptorProto> = HashMap::new();
+
+    while let Some(symbol) = pending.pop() {
+        if !seen.insert(symbol.clone()) {
+            continue;
+        }
+        let request = if symbol.ends_with(".proto") {
+            MessageRequest::FileByFilename(symbol.clone())
+        } else {
+            MessageRequest::FileContainingSymbol(symbol.clone())
+        };
+        let Some(bytes) = ask(config, request).await else {
+            continue;
+        };
+        for mut file in files_in(&bytes) {
+            let Some(name) = file.name.clone() else {
+                continue;
+            };
+            if files.contains_key(&name) {
+                continue;
+            }
+            for dependency in &file.dependency {
+                if !seen.contains(dependency) {
+                    pending.push(dependency.clone());
+                }
+            }
+            file.source_code_info = None;
+            if file.syntax.as_deref() == Some("editions") {
+                file.syntax = Some("proto3".to_string());
+            }
+            files.insert(name, file);
+        }
+    }
+
+    let mut file: Vec<_> = files.into_values().collect();
+    file.sort_by(|a, b| a.name.cmp(&b.name));
+    prost_reflect::DescriptorPool::from_file_descriptor_set(prost_types::FileDescriptorSet { file })
+        .ok()
 }
 
 fn collect_modes(response_bytes: &[u8], service_name: &str) -> ServiceModes {
@@ -188,8 +288,6 @@ mod tests {
         assert_eq!(modes.get("Chat"), Some(&RpcMode::Bidi));
     }
 
-    // The response carries every file the symbol needs, so services other than
-    // the requested one must not leak into the result.
     #[test]
     fn collect_modes_ignores_other_services() {
         assert!(collect_modes(&response_bytes(), "other.v1.OtherService").is_empty());

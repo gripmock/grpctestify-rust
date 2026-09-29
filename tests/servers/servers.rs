@@ -1,4 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // test/bench code
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+// test/bench code
+/* Shared test servers: each test binary starts the ones it needs, so the
+others are dead code in that binary and in no other. */
+#![allow(dead_code)]
 // Test gRPC servers for integration testing
 
 #[path = "auth.rs"]

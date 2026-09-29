@@ -5,9 +5,6 @@ use apif_source_error::SourceError;
 use std::collections::HashMap;
 
 pub struct InMemorySource {
-    /// Rows are stored per key so duplicate join keys are all retained; a
-    /// plain `HashMap<String, SourceRow>` would collapse them (last wins) and
-    /// make `lookup_all`/CROSS joins silently drop matches.
     data: HashMap<String, Vec<SourceRow>>,
     key_column: String,
     headers: Vec<String>,
@@ -37,12 +34,10 @@ impl InMemorySource {
         })
     }
 
-    /// Returns the first row stored under `key` (insertion order).
     pub fn lookup(&self, key: &str) -> Option<&SourceRow> {
         self.data.get(key).and_then(|rows| rows.first())
     }
 
-    /// Returns every row stored under `key`, in insertion order.
     pub fn lookup_all(&self, key: &str) -> &[SourceRow] {
         self.data.get(key).map(Vec::as_slice).unwrap_or(&[])
     }
@@ -79,7 +74,6 @@ impl InMemorySource {
             .flat_map(|(key, rows)| rows.iter().map(move |row| (key, row)))
     }
 
-    /// Filter the in-memory source, keeping only rows that match ALL filter conditions.
     pub fn filter(&self, conditions: &[super::filter::FilterCondition]) -> Self {
         use crate::filter::matches_all;
         let mut filtered_data: HashMap<String, Vec<SourceRow>> = HashMap::new();
@@ -118,8 +112,6 @@ mod tests {
         }
     }
 
-    /// `DIMENSION_MEMORY_EXPANSION` must stay near the real expansion. Bounds
-    /// are loose because RSS sampling is noisy: catch a change of shape.
     #[cfg_attr(miri, ignore)]
     #[test]
     #[cfg(not(miri))]
@@ -204,25 +196,19 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Regression (BUG 2): rows sharing a join key must all be retained.
-    /// The old `HashMap<String, SourceRow>` collapsed them (last wins), so
-    /// `lookup_all` and CROSS joins silently dropped every row but the last.
     #[test]
     fn duplicate_keys_retained_via_lookup_all() {
         let data = "id,val\n1,first\n1,second\n";
         let mut reader = CsvFixtures::make_reader(data);
         let mem = InMemorySource::load(&mut reader, "id").unwrap();
 
-        // Both rows survive rather than collapsing to the last one.
         let all = mem.lookup_all("1");
         let vals: Vec<Option<&str>> = all.iter().map(|r| r.get("val")).collect();
         assert_eq!(vals, vec![Some("first"), Some("second")]);
         assert_eq!(mem.row_count(), 2);
 
-        // Single-row lookup returns the first match.
         assert_eq!(mem.lookup("1").unwrap().get("val"), Some("first"));
 
-        // iter() exposes every row, not just one per key.
         let iter_count = mem.iter().filter(|(k, _)| k.as_str() == "1").count();
         assert_eq!(iter_count, 2);
     }

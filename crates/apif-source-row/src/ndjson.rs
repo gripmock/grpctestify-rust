@@ -4,21 +4,15 @@ use anyhow::Result;
 use apif_source_error::SourceError;
 use std::io::{BufRead, BufReader, Read, Seek};
 
-/// Rewinds the underlying reader back to the start of the stream. Boxed so the
-/// rewind capability (which needs `R: Seek`) can be captured at construction
-/// time and invoked later through the non-`Seek` `SourceReader` trait object.
 type NdjsonRewind<R> = Box<dyn Fn(&mut BufReader<R>) -> Result<()> + Send>;
 
 pub struct NdjsonReader<R> {
     reader: BufReader<R>,
     headers: std::sync::Arc<[String]>,
-    /// First row is buffered during header discovery
     pending_first: Option<SourceRow>,
     row_number: usize,
     finished: bool,
     rewind: Option<NdjsonRewind<R>>,
-    /// Bytes consumed from the stream so far, and the span of the line the last
-    /// `next_row` came from.
     bytes_read: u64,
     last_span: Option<(u64, u32)>,
     pending_first_span: Option<(u64, u32)>,
@@ -188,10 +182,6 @@ impl<R: Read + Send> SourceReader for NdjsonReader<R> {
 }
 
 impl<R: Read + Seek + Send> NdjsonReader<R> {
-    /// Like [`NdjsonReader::new`], but over a seekable reader so that [`reset`]
-    /// can rewind to the start of the stream and restart header discovery.
-    ///
-    /// [`reset`]: SourceReader::reset
     pub fn new_seekable(reader: BufReader<R>) -> Self {
         let mut this = Self::new(reader);
         this.rewind = Some(Box::new(|rdr: &mut BufReader<R>| {
@@ -288,10 +278,6 @@ mod tests {
         assert!(!reader.supports_reset());
     }
 
-    /// Regression: in duration/soak bench mode the engine `reset()`s the
-    /// exhausted primary source to keep feeding rows. A no-op reset silently
-    /// yielded empty rows forever; after the fix, reset rewinds to the start so
-    /// the original rows repeat.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn ndjson_reset_rewinds_to_first_data_row() {
@@ -299,7 +285,6 @@ mod tests {
         let mut reader = NdjsonReader::new_seekable(cursor(data));
         assert!(reader.supports_reset());
 
-        // Exhaust the stream.
         let row1 = reader.next_row().unwrap().unwrap();
         assert_eq!(row1.get("name"), Some("Alice"));
         let _row2 = reader.next_row().unwrap().unwrap();
@@ -307,7 +292,6 @@ mod tests {
 
         reader.reset().unwrap();
 
-        // The next read after reset must return the FIRST data row, not empty.
         let after = reader.next_row().unwrap().unwrap();
         assert_eq!(after.get("id"), Some("1"));
         assert_eq!(after.get("name"), Some("Alice"));

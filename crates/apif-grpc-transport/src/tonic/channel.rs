@@ -15,8 +15,6 @@ struct ChannelCacheKey {
     connection_id: u64,
 }
 
-/// Bounded channel cache with insertion-order eviction. Clearing on overflow
-/// would wipe channels other workers are still using.
 struct BoundedChannelCache {
     map: HashMap<ChannelCacheKey, Channel>,
     order: VecDeque<ChannelCacheKey>,
@@ -53,9 +51,6 @@ static CHANNEL_CACHE: LazyLock<RwLock<BoundedChannelCache>> =
     LazyLock::new(|| RwLock::new(BoundedChannelCache::new(CHANNEL_CACHE_MAX_ENTRIES)));
 static PROXY_WARNED: OnceLock<()> = OnceLock::new();
 
-/// Upper bound on cached channels. Sized so a large `--connections` pool fits
-/// without evicting live members; channels connect lazily, so an idle entry is
-/// little more than its configuration.
 const CHANNEL_CACHE_MAX_ENTRIES: usize = 512;
 
 pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
@@ -107,8 +102,6 @@ pub async fn create_channel(config: &GrpcClientConfig) -> Result<Channel> {
     Ok(channel)
 }
 
-/// Endpoint settings shared by both transports. HTTP/2 window sizes are left at
-/// their defaults: tuning them measured as a null result on loopback.
 fn tune(
     endpoint: tonic::transport::Endpoint,
     config: &GrpcClientConfig,
@@ -118,7 +111,6 @@ fn tune(
         .connect_timeout(Duration::from_secs(5))
 }
 
-/// `host:port` with the scheme the transport needs, left alone if it has one.
 fn endpoint_uri(address: &str, scheme: &str) -> String {
     if address.contains("://") {
         address.to_string()
@@ -147,9 +139,6 @@ async fn create_tls_channel(config: &GrpcClientConfig, tls_config: &TlsConfig) -
         tracing::warn!(
             "SECURITY WARNING: TLS certificate verification is disabled (insecure_skip_verify=true)."
         );
-        // A custom verifier replaces the default one entirely, so CA
-        // certificates/trust anchors must not be set alongside it (tonic
-        // rejects that combination). Client identity and SNI still apply.
         return Ok(endpoint
             .tls_config_with_verifier(tls, insecure::danger_accept_any_server_cert())
             .context("Failed to configure TLS (insecure)")?
@@ -166,10 +155,6 @@ async fn create_tls_channel(config: &GrpcClientConfig, tls_config: &TlsConfig) -
         .connect_lazy())
 }
 
-/// Support for `insecure_skip_verify` (explicit user opt-in, equivalent to
-/// `grpcurl -insecure`): a rustls server-certificate verifier that accepts
-/// any certificate. Signature verification is also skipped, matching the
-/// semantics of "do not verify the peer".
 mod insecure {
     use rustls::DigitallySignedStruct;
     use rustls::SignatureScheme;
@@ -241,16 +226,10 @@ mod tests {
         }
     }
 
-    // `connection_id` used to be folded into the address only when non-zero, so
-    // slot 0 shared a channel with every other caller reaching the same address
-    // — including `call`, `health` and `reflect`, which all pass 0.
     fn dummy_channel() -> Channel {
         Channel::from_static("http://127.0.0.1:1").connect_lazy()
     }
 
-    // Overflow used to `clear()` the whole map: with a connection pool larger
-    // than the cap, every insert wiped the channels the other workers were
-    // still using, so the pool never converged.
     #[tokio::test]
     async fn overflowing_the_cache_evicts_only_the_oldest() {
         let mut cache = BoundedChannelCache::new(3);
@@ -266,8 +245,6 @@ mod tests {
         assert_eq!(cache.map.len(), 3);
     }
 
-    // Re-inserting a live key must not queue it twice, or the eviction order
-    // drifts and the map shrinks below its capacity.
     #[tokio::test]
     async fn reinserting_a_key_does_not_double_count_it() {
         let mut cache = BoundedChannelCache::new(2);
@@ -290,8 +267,6 @@ mod tests {
 
     #[tokio::test]
     async fn insecure_skip_verify_builds_channel() {
-        // Regression test: insecure_skip_verify must actually configure a
-        // skip-verify TLS channel (previously it only logged a warning).
         let config = GrpcClientConfig {
             address: "localhost:50051".to_string(),
             tls_config: Some(TlsConfig {
@@ -310,8 +285,6 @@ mod tests {
 
     #[tokio::test]
     async fn insecure_skip_verify_ignores_ca_path() {
-        // With verification disabled, a CA path (even an unreadable one) must
-        // not be loaded — the custom verifier replaces the default verifier.
         let config = GrpcClientConfig {
             address: "localhost:50051".to_string(),
             tls_config: Some(TlsConfig {

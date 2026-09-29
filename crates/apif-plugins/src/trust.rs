@@ -1,24 +1,31 @@
-//! Trust gate for `.rhai` scripts.
-//!
-//! Rhai runs a script's top-level statements, not just the hook bodies it
-//! defines, so cloning someone else's repository used to be enough to execute
-//! their code. Approval is per script *content*: an edit is a new decision.
-//!
-//! The store lives under the user's home, never in the repository — a trust
-//! file a repository could ship would defeat the point. It is the one thing
-//! this crate creates in `~/.grpctestify`, and only on an explicit `y`.
-
 use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
-/// Opt-in for CI, where the checkout is already trusted.
 const TRUST_ALL_ENV: &str = "GRPCTESTIFY_TRUST_PLUGINS";
-/// Kill switch, wins over everything else.
 const NO_PLUGINS_ENV: &str = "GRPCTESTIFY_NO_PLUGINS";
 
-/// From the home directory, not from `plugins/` — a project-only user has no
-/// `~/.grpctestify/plugins` and still needs their approvals remembered.
+static NON_INTERACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_non_interactive() {
+    NON_INTERACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn is_non_interactive() -> bool {
+    NON_INTERACTIVE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn may_prompt(non_interactive: bool, stdin_tty: bool, stderr_tty: bool) -> bool {
+    !non_interactive && stdin_tty && stderr_tty
+}
+
+pub fn untrusted_message(name: &str, path: &Path) -> String {
+    format!(
+        "@{name}: refusing to execute untrusted plugin script {} — run a test that uses it with `grpctestify run` once in a terminal to approve it, or set {TRUST_ALL_ENV}=1",
+        path.display()
+    )
+}
+
 fn store_path() -> Option<PathBuf> {
     Some(store_path_in(&crate::rhai_plugin::user_state_dir()?))
 }
@@ -64,9 +71,12 @@ fn key(path: &Path) -> String {
         .to_string()
 }
 
-/// Terminal only — a non-interactive run must never block, so it denies.
 fn confirm(path: &Path, digest: &str) -> bool {
-    if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
+    if !may_prompt(
+        is_non_interactive(),
+        std::io::stdin().is_terminal(),
+        std::io::stderr().is_terminal(),
+    ) {
         tracing::warn!(
             "refusing to execute untrusted plugin script {} (sha256 {}); \
              run it once interactively to trust it, or set {TRUST_ALL_ENV}=1",
@@ -82,7 +92,6 @@ fn confirm(path: &Path, digest: &str) -> bool {
     eprintln!("  sha256 {}", digest);
     eprintln!("It runs with your privileges. Only allow scripts you have read.");
     if store_path().is_none() {
-        // Otherwise the prompt silently reappears every run.
         eprintln!("(No home directory resolved, so this answer cannot be remembered.)");
     }
     eprint!("Execute it? [y/N] ");
@@ -96,7 +105,6 @@ fn confirm(path: &Path, digest: &str) -> bool {
     matches!(answer.trim(), "y" | "Y" | "yes" | "YES")
 }
 
-/// The part of the decision that needs no prompt. `None` means "ask".
 fn settled(
     no_plugins: bool,
     trust_all: bool,
@@ -115,8 +123,6 @@ fn settled(
     None
 }
 
-/// `digest` must hash the bytes that were compiled, not a fresh read —
-/// otherwise the user approves contents that are not the ones about to run.
 pub fn is_trusted(path: &Path, digest: &str) -> bool {
     let entry = key(path);
     let mut store = read_store();
@@ -158,8 +164,6 @@ mod tests {
         assert_eq!(settled(false, false, None, "d"), None);
     }
 
-    // Not driven through `GRPCTESTIFY_HOME`: `cargo test` runs these on threads
-    // of one process, so mutating a var production code reads is a data race.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn an_approval_creates_the_state_dir_and_round_trips() {
@@ -175,7 +179,6 @@ mod tests {
         assert_eq!(read_store_at(&path).get("k").map(String::as_str), Some("d"));
     }
 
-    // A hand-mangled store must not wedge the gate; it reads as empty.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn a_corrupt_store_reads_as_empty_rather_than_failing() {
@@ -183,5 +186,35 @@ mod tests {
         let path = store_path_in(dir.path());
         std::fs::write(&path, "{not json").unwrap();
         assert_eq!(read_store_at(&path), BTreeMap::new());
+    }
+
+    #[test]
+    fn a_server_never_prompts_even_on_a_terminal() {
+        assert!(may_prompt(false, true, true));
+        assert!(!may_prompt(false, false, true));
+        assert!(!may_prompt(false, true, false));
+        assert!(!may_prompt(true, true, true));
+    }
+
+    #[test]
+    fn the_refusal_says_how_to_approve_the_script() {
+        let said = untrusted_message("len", Path::new("/plugins/len.rhai"));
+        assert!(
+            said.starts_with("@len: refusing to execute untrusted plugin script /plugins/len.rhai"),
+            "{said}"
+        );
+        assert!(
+            said.contains("`grpctestify run`"),
+            "the approval path has to be a command that actually executes the plugin: {said}"
+        );
+        assert!(!said.contains("grpctestify check"), "{said}");
+        assert!(said.contains(TRUST_ALL_ENV), "{said}");
+    }
+
+    #[test]
+    fn the_flag_is_process_wide_and_sticks() {
+        set_non_interactive();
+        assert!(is_non_interactive());
+        assert!(!may_prompt(is_non_interactive(), true, true));
     }
 }

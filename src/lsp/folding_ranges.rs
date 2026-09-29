@@ -1,20 +1,12 @@
-//! Folding ranges for GCTF documents.
-//!
-//! Provides folding ranges for documents and sections in `.gctf` files.
-
 use crate::parser;
 use tower_lsp::lsp_types::{FoldingRange, FoldingRangeKind};
 
-/// Build folding ranges for the document content.
-/// Returns region-level folding ranges for documents and sections.
 pub fn build_folding_ranges(content: &str) -> Vec<FoldingRange> {
     let mut ranges: Vec<FoldingRange> = Vec::new();
 
     if let Ok(head) = parser::parse_gctf_from_str(content, "temp.gctf") {
         for (doc_idx, d) in head.iter_chain().enumerate() {
             if let (Some(first), Some(last)) = (d.sections.first(), d.sections.last()) {
-                // start_line is the 0-based header line; end_line is a line
-                // count, so the last 0-based line is end_line - 1.
                 let start = first.start_line as u32;
                 let end = (last.end_line as u32).saturating_sub(1);
                 if end > start {

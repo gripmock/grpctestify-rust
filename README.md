@@ -119,6 +119,11 @@ grpctestify play
 
 Issues and PRs are welcome: [GitHub Issues](https://github.com/gripmock/grpctestify-rust/issues)
 
+Building from source: the playground's front end lives in `web/` and its build output, `web/dist`,
+is compiled into the binary by `rust-embed` with the `debug-embed` feature — so a debug build embeds
+it too, and there is no dev-server fallback that reads from disk. After changing anything under
+`web/`, run `npm run build` in `web/` and then rebuild with `cargo` for the binary to pick it up.
+
 ## License
 
 [MIT](LICENSE)

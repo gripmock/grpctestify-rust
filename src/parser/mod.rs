@@ -1,6 +1,3 @@
-// Thin shim — all implementation lives in crates/apif-parser.
-// Paths like `crate::parser::ast::GctfDocument` still work.
-
 pub use apif_parser::{
     AssertionExpr, BinaryOp, DEPRECATED_KEBAB_CASE_KEYS, ErrorRecoveryResult, ErrorSeverity, Expr,
     ExtractValue, ExtractVar, FileMeta, GctfAttribute, GctfDocument, GctfDocumentBuilder,
@@ -10,16 +7,14 @@ pub use apif_parser::{
     line_start_byte_offsets, parse_assertion, parse_content_with_recovery, parse_gctf,
     parse_gctf_from_str, parse_gctf_with_diagnostics, parse_inline_options, parse_section_content,
     parse_with_recovery, process_extract_value, register_extra_inline_option_keys,
-    remove_redundant_parens, serialize_gctf, split_sections_by_boundary, ternary_to_jq,
-    tokenize_assertion, tokenize_gctf, tokenize_inline_options, tokenize_kv_line,
+    remove_redundant_parens, serialize_gctf, serialize_gctf_as_written, split_sections_by_boundary,
+    ternary_to_jq, tokenize_assertion, tokenize_gctf, tokenize_inline_options, tokenize_kv_line,
     validate_document, validate_document_chain, validate_document_chain_diagnostics,
     validate_document_diagnostics,
 };
 
-// Re-export sub-modules for paths like `crate::parser::ast::*`
 pub use apif_parser::{assertion_ast, ast, gctf_tokenizer, tokenizer};
 
-// query_ast backward compat — resolves to `crate::parser::query_ast::*`
 pub mod query_ast {
     pub use crate::parser::{FilterExpr, parse_query};
 }

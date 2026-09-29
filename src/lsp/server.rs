@@ -575,11 +575,6 @@ impl GrpctestifyLsp {
             .unwrap_or(-1)
     }
 
-    /// Store a document's content and version atomically.
-    ///
-    /// Both write locks are held together (consistent ordering: `documents`
-    /// before `doc_versions`) so a concurrent reader never observes a content
-    /// and version from different edits.
     async fn set_document(&self, uri: &Url, content: String, version: i32) {
         let mut docs = self.documents.write().await;
         let mut vers = self.doc_versions.write().await;
@@ -587,12 +582,6 @@ impl GrpctestifyLsp {
         vers.insert(uri.to_string(), version);
     }
 
-    /// Read a document's content and version atomically.
-    ///
-    /// Both read locks are held together, matching the write ordering in
-    /// [`set_document`], so the returned `(content, version)` pair always
-    /// belongs to the same edit. This prevents caching a parse of one revision
-    /// under the version number of another.
     async fn document_snapshot(&self, uri: &Url) -> Option<(String, i32)> {
         let docs = self.documents.read().await;
         let vers = self.doc_versions.read().await;
@@ -657,9 +646,6 @@ impl GrpctestifyLsp {
             .and_then(|p| p.to_str().map(ToOwned::to_owned))
             .unwrap_or_else(|| uri.to_string());
 
-        // Cache the parse under the version that matches `content` (passed in
-        // atomically with it), never a re-read that a concurrent edit may
-        // have already bumped.
         if let Ok(document) = parser::parse_gctf_from_str(content, &file_name) {
             self.parsed_docs
                 .write()
@@ -681,14 +667,6 @@ impl GrpctestifyLsp {
 #[tower_lsp::async_trait]
 impl LanguageServer for GrpctestifyLsp {
     async fn initialize(&self, _: InitializeParams) -> LspResult<InitializeResult> {
-        // Same convention-directory plugin sources `check`/`fmt`/`explain`/
-        // `inspect` register — without this, a valid `.rhai` custom plugin
-        // is flagged as an "unknown plugin" diagnostic in the editor even
-        // though `run` executes it fine. `OnceLock`-backed (see
-        // `apif_semantics`/`apif_optimizer`), so this only ever takes effect
-        // once per server process — a plugin added mid-session needs a
-        // server restart to be picked up, the same limitation the doc-tag
-        // optimizer wiring has for a one-shot CLI invocation.
         apif_semantics::register_extra_plugin_names(crate::commands::check::rhai_plugin_names());
         apif_optimizer::register_extra_boolean_plugins(
             crate::commands::check::rhai_boolean_plugin_names(),
@@ -798,8 +776,6 @@ impl LanguageServer for GrpctestifyLsp {
         let uri = params.text_document.uri;
         if let Ok(content) = tokio::fs::read_to_string(uri.to_file_path().unwrap_or_default()).await
         {
-            // did_save carries no version; reuse the current one and store
-            // content+version together so the cache stays consistent.
             let version = self.current_doc_version(&uri).await;
             self.set_document(&uri, content.clone(), version).await;
             self.invalidate_analysis_cache(&uri).await;
@@ -829,6 +805,7 @@ impl LanguageServer for GrpctestifyLsp {
     async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
+        let family = family_of(&uri);
 
         let (content, doc_version) = match self.document_snapshot(&uri).await {
             Some(snapshot) => snapshot,
@@ -849,10 +826,9 @@ impl LanguageServer for GrpctestifyLsp {
             current_line.starts_with("---") && current_line.ends_with("---");
 
         if typing_section_header_prefix {
-            items.extend(handlers::get_section_completions());
+            items.extend(handlers::section_completions_for(family));
         }
 
-        // Use AST for context-aware completions
         if let Some(doc) = self
             .get_or_parse_document(&uri, &content, doc_version)
             .await
@@ -861,10 +837,9 @@ impl LanguageServer for GrpctestifyLsp {
 
             let in_any_section = handlers::section_index_at_line(&doc.sections, line0).is_some();
             if current_line.is_empty() && !in_any_section {
-                items.extend(handlers::get_section_completions());
+                items.extend(handlers::section_completions_for(family));
             }
 
-            // Context-aware completions based on section type
             for section in &doc.sections {
                 if section.start_line <= line0 && line0 < section.end_line {
                     let on_section_header = line0 == section.start_line || on_section_header_line;
@@ -876,7 +851,7 @@ impl LanguageServer for GrpctestifyLsp {
 
                     match section.section_type {
                         SectionType::Address if !on_section_header => {
-                            items.extend(handlers::get_address_completions())
+                            items.extend(handlers::address_completions_for(family))
                         }
                         SectionType::Endpoint if !on_section_header => {
                             items.push(CompletionItem {
@@ -903,7 +878,6 @@ impl LanguageServer for GrpctestifyLsp {
                             );
                         }
                         SectionType::Request if !on_section_header => {
-                            // Variable completions for {{var}} in JSON
                             items.extend(get_variable_completions(&doc, position.line as usize));
                             items.extend(
                                 self.schema_message_field_completions(
@@ -931,11 +905,10 @@ impl LanguageServer for GrpctestifyLsp {
                             );
                         }
                         SectionType::RequestHeaders if !on_section_header => {
-                            // Variable completions for {{var}} in header values
                             items.extend(get_variable_completions(&doc, position.line as usize));
                         }
                         SectionType::Asserts if !on_section_header => {
-                            items.extend(handlers::get_assertion_completions());
+                            items.extend(handlers::assertion_completions_for(family));
                             items.extend(self.schema_assert_path_completions(&doc, &uri).await);
                         }
                         SectionType::Extract if !on_section_header => {
@@ -947,7 +920,8 @@ impl LanguageServer for GrpctestifyLsp {
                         | SectionType::Bench
                             if !on_section_header =>
                         {
-                            items.extend(handlers::get_section_key_completions(
+                            items.extend(handlers::section_key_completions_for(
+                                family,
                                 &section.section_type,
                             ));
                         }
@@ -984,24 +958,22 @@ impl LanguageServer for GrpctestifyLsp {
         {
             let line0 = position.line as usize;
 
-            // First check if cursor is on a {{var}} reference
             if let Some(var_hover) = get_var_hover(&doc, position.line as usize, position.character)
             {
                 return Ok(Some(var_hover));
             }
 
-            // Check for plugin hover (cursor on @plugin or @type.method)
             if let Some(plugin_hover) =
                 handlers::get_plugin_hover(&doc, position.line as usize, position.character)
             {
                 return Ok(Some(plugin_hover));
             }
 
-            // Fall back to section hover
             for section in &doc.sections {
                 if section.start_line <= line0
                     && line0 < section.end_line
-                    && let Some(content) = handlers::get_section_hover(&section.section_type)
+                    && let Some(content) =
+                        handlers::section_hover_for(family_of(&uri), &section.section_type)
                 {
                     return Ok(Some(Hover {
                         contents: HoverContents::Scalar(MarkedString::String(content)),
@@ -1064,7 +1036,6 @@ impl LanguageServer for GrpctestifyLsp {
                         .and_then(|sym| sym.children)
                 };
 
-            // Multi-document: documents as top-level nodes
             if !doc.is_single_document() {
                 let mut doc_symbols: Vec<DocumentSymbol> = Vec::new();
                 for (doc_idx, d) in doc.iter_chain().enumerate() {
@@ -1096,7 +1067,6 @@ impl LanguageServer for GrpctestifyLsp {
                 return Ok(Some(DocumentSymbolResponse::Nested(doc_symbols)));
             }
 
-            // Single document: flat sections
             let symbols = doc
                 .sections
                 .iter()
@@ -1218,10 +1188,6 @@ impl LanguageServer for GrpctestifyLsp {
                 .map(GotoDefinitionResponse::Scalar));
         }
 
-        // Proto goto-definition: only meaningful on the ENDPOINT line, and
-        // only resolvable when the schema comes from local `.proto` files
-        // (`PROTO.files=` + `import_paths=`) — that's the only source that
-        // retains `SourceCodeInfo` to jump to (see `proto_definition`).
         let Some(doc) = self
             .get_or_parse_document(&uri, &content, doc_version)
             .await
@@ -1282,7 +1248,6 @@ impl LanguageServer for GrpctestifyLsp {
             None => return Ok(None),
         };
 
-        // First find the variable name at the position
         let lines: Vec<&str> = content.lines().collect();
         let line_idx = position.line as usize;
         if line_idx >= lines.len() {
@@ -1290,15 +1255,12 @@ impl LanguageServer for GrpctestifyLsp {
         }
 
         let line = lines[line_idx];
-        // LSP `character` is a UTF-16 code-unit offset; convert to a byte index.
         let char_idx = crate::lsp::position::utf16_col_to_byte(line, position.character as usize);
         if char_idx >= line.len() {
             return Ok(None);
         }
 
-        // Get variable name at position
         if let Some(var_name) = variable_definition::extract_variable_at_position(line, char_idx) {
-            // Find all references to this variable
             let locations =
                 variable_definition::find_variable_references(content, &var_name, uri.as_str());
             Ok(if locations.is_empty() {
@@ -1324,7 +1286,6 @@ impl LanguageServer for GrpctestifyLsp {
             None => return Ok(None),
         };
 
-        // Check if position is on a variable reference
         let lines: Vec<&str> = content.lines().collect();
         let line_idx = position.line as usize;
         if line_idx >= lines.len() {
@@ -1332,15 +1293,12 @@ impl LanguageServer for GrpctestifyLsp {
         }
 
         let line = lines[line_idx];
-        // LSP `character` is a UTF-16 code-unit offset; convert to a byte index.
         let char_idx = crate::lsp::position::utf16_col_to_byte(line, position.character as usize);
         if char_idx >= line.len() {
             return Ok(None);
         }
 
-        // Look for {{ var_name }} pattern
         if let Some(_var_name) = variable_definition::extract_variable_at_position(line, char_idx) {
-            // Find the range of the variable reference
             if let Some(start) = line[..char_idx].rfind("{{") {
                 if let Some(end) = line[char_idx..].find("}}") {
                     let end_byte = char_idx + end + 2;
@@ -1354,7 +1312,6 @@ impl LanguageServer for GrpctestifyLsp {
                             crate::lsp::position::byte_to_utf16_col(line, end_byte) as u32,
                         ),
                     );
-                    // Return Range variant of PrepareRenameResponse
                     Ok(Some(PrepareRenameResponse::Range(range)))
                 } else {
                     Ok(None)
@@ -1378,7 +1335,6 @@ impl LanguageServer for GrpctestifyLsp {
             None => return Ok(None),
         };
 
-        // First find the variable name at the position
         let lines: Vec<&str> = content.lines().collect();
         let line_idx = position.line as usize;
         if line_idx >= lines.len() {
@@ -1386,17 +1342,12 @@ impl LanguageServer for GrpctestifyLsp {
         }
 
         let line = lines[line_idx];
-        // LSP `character` is a UTF-16 code-unit offset; convert to a byte index.
         let char_idx = crate::lsp::position::utf16_col_to_byte(line, position.character as usize);
         if char_idx >= line.len() {
             return Ok(None);
         }
 
-        // Get variable name at position
         if let Some(var_name) = variable_definition::extract_variable_at_position(line, char_idx) {
-            // Build edits that preserve each reference's sigil form (`{{ }}`
-            // vs `$`), match whole identifiers only, and also rename the
-            // EXTRACT definition site.
             match variable_definition::build_rename_edits(
                 content,
                 &var_name,
@@ -1427,7 +1378,6 @@ impl LanguageServer for GrpctestifyLsp {
             None => return Ok(None),
         };
 
-        // Check if we're typing a plugin function (@uuid, @email, etc.)
         let lines: Vec<&str> = content.lines().collect();
         let line_idx = position.line as usize;
         if line_idx >= lines.len() {
@@ -1435,13 +1385,11 @@ impl LanguageServer for GrpctestifyLsp {
         }
 
         let line = lines[line_idx];
-        // LSP `character` is a UTF-16 code-unit offset; convert to a byte index.
         let char_idx = crate::lsp::position::utf16_col_to_byte(line, position.character as usize);
         if char_idx >= line.len() {
             return Ok(None);
         }
 
-        // Look for @plugin( pattern
         if let Some(at_pos) = line[..char_idx].rfind('@')
             && let Some(paren_pos) = line[at_pos..].find('(')
         {
@@ -1449,7 +1397,6 @@ impl LanguageServer for GrpctestifyLsp {
             let open_paren_abs = at_pos + paren_pos;
             let active_param = infer_active_parameter(line, open_paren_abs, char_idx);
 
-            // Get signature info for known plugins
             let signatures = get_plugin_signatures();
             if let Some(sig) = signatures.get(plugin_name) {
                 return Ok(Some(SignatureHelp {
@@ -1473,8 +1420,6 @@ impl LanguageServer for GrpctestifyLsp {
         params: SemanticTokensParams,
     ) -> LspResult<Option<SemanticTokensResult>> {
         let uri = params.text_document.uri;
-        // Read content and version atomically so tokens are never cached under
-        // a version that a concurrent edit already advanced past.
         let (content, version) = match self.document_snapshot(&uri).await {
             Some(snapshot) => snapshot,
             None => return Ok(None),
@@ -1518,7 +1463,6 @@ impl LanguageServer for GrpctestifyLsp {
     async fn inlay_hint(&self, params: InlayHintParams) -> LspResult<Option<Vec<InlayHint>>> {
         let uri = params.text_document.uri;
         let range = params.range;
-        // Read content and version atomically to keep cached hints consistent.
         let (content, version) = match self.document_snapshot(&uri).await {
             Some(snapshot) => snapshot,
             None => return Ok(None),
@@ -1541,17 +1485,21 @@ impl LanguageServer for GrpctestifyLsp {
     }
 }
 
-/// Plugin signature information
 struct LspPluginSignature {
     label: String,
     documentation: String,
     parameters: Vec<ParameterInformation>,
 }
 
-/// Get plugin signatures for signature help.
-/// Builds from every loaded plugin (built-ins plus convention-directory
-/// `.rhai` scripts) so a custom plugin gets the same signature help as a
-/// built-in one, including its `@param`/`@returns` doc-tags when present.
+fn family_of(uri: &Url) -> crate::parser::ast::Family {
+    let name = uri
+        .to_file_path()
+        .ok()
+        .and_then(|p| p.to_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| uri.to_string());
+    crate::parser::ast::Family::of(&name)
+}
+
 fn get_plugin_signatures() -> std::collections::HashMap<String, LspPluginSignature> {
     use std::collections::HashMap;
 

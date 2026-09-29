@@ -14,31 +14,24 @@ pub struct Config {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneralConfig {
-    /// Default gRPC server address
     #[serde(default = "default_address")]
     pub address: String,
 
-    /// Number of parallel workers
     #[serde(default = "default_parallel")]
     pub parallel: String,
 
-    /// Test timeout in seconds
     #[serde(default = "default_timeout")]
     pub timeout: u64,
 
-    /// Number of retries for failed network calls
     #[serde(default = "default_retry")]
     pub retry: u32,
 
-    /// Initial delay between retries (seconds)
     #[serde(default = "default_retry_delay")]
     pub retry_delay: f64,
 
-    /// Report format
     #[serde(default)]
     pub log_format: Option<String>,
 
-    /// Output file for reports
     #[serde(default)]
     pub log_output: Option<String>,
 }
@@ -59,11 +52,9 @@ impl Default for GeneralConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgressConfig {
-    /// Progress indicator mode
     #[serde(default = "default_progress")]
     pub mode: String,
 
-    /// Enable colored output
     #[serde(default = "default_color")]
     pub color: bool,
 }
@@ -79,16 +70,13 @@ impl Default for ProgressConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CoverageConfig {
-    /// Enable coverage collection
     #[serde(default)]
     pub enabled: bool,
 
-    /// Output file for coverage report
     #[serde(default)]
     pub output: Option<String>,
 }
 
-// Environment variable names
 pub const ENV_GRPCTESTIFY_ADDRESS: &str = "GRPCTESTIFY_ADDRESS";
 pub const ENV_GRPCTESTIFY_COMPRESSION: &str = "GRPCTESTIFY_COMPRESSION";
 
@@ -98,7 +86,6 @@ pub fn compression_from_env() -> apif_grpc_transport::CompressionMode {
     *CACHE.get_or_init(read_compression_from_env)
 }
 
-/// Uncached read, for callers that must observe an environment change.
 pub fn read_compression_from_env() -> apif_grpc_transport::CompressionMode {
     match std::env::var("GRPCTESTIFY_COMPRESSION")
         .unwrap_or_default()

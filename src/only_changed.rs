@@ -1,16 +1,7 @@
-// Git-diff based file selection for `run --only-changed`. Pure-Rust (gix),
-// no shell-out — see memory [[native-zero-dependency]].
-
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-/// Absolute paths (from `candidates`) whose content differs from their blob
-/// in `since`'s tree (default `"HEAD"`), or that aren't present in that tree
-/// at all (new/untracked files). Comparison is by content bytes, not commit
-/// history — this covers both "what changed since a base branch"
-/// (`--since main`) and "what I haven't committed yet" (`--since HEAD`, the
-/// default) with one code path.
 pub fn changed_files(
     repo_root: &Path,
     since: &str,
@@ -34,24 +25,19 @@ pub fn changed_files(
 
     let mut changed = HashSet::new();
     for path in candidates {
-        // Candidates may be relative (e.g. `./tests/x.gctf`) while `work_dir`
-        // is always absolute — canonicalize before stripping the prefix, but
-        // keep inserting the original `path` so callers can match it back
-        // against their own (possibly relative) file list unchanged.
         let Ok(canonical) = path.canonicalize() else {
-            continue; // file gone; nothing to run
+            continue;
         };
         let rel = match canonical.strip_prefix(&work_dir) {
             Ok(rel) => rel,
             Err(_) => {
-                // Outside the repo worktree entirely — can't be diffed, treat as changed.
                 changed.insert(path.clone());
                 continue;
             }
         };
         let current = match std::fs::read(path) {
             Ok(bytes) => bytes,
-            Err(_) => continue, // file gone; nothing to run
+            Err(_) => continue,
         };
 
         match lookup_blob(&tree, rel) {
@@ -61,7 +47,7 @@ pub fn changed_files(
                 }
             }
             None => {
-                changed.insert(path.clone()); // untracked / new since `since`
+                changed.insert(path.clone());
             }
         }
     }

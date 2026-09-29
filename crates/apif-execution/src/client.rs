@@ -4,7 +4,6 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::pin::Pin;
 
-/// How the client communicates with the server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RpcMode {
     Unary,
@@ -13,7 +12,6 @@ pub enum RpcMode {
     Bidi,
 }
 
-/// Endpoint metadata resolved by the client.
 #[derive(Debug, Clone)]
 pub struct EndpointMeta {
     pub rpc_mode: RpcMode,
@@ -21,36 +19,27 @@ pub struct EndpointMeta {
     pub output_type: Option<String>,
 }
 
-/// A single item from the response stream.
 #[derive(Debug, Clone)]
 pub enum CallStreamItem {
     Message(Value),
     Trailers(HashMap<String, String>),
 }
 
-/// Protocol-agnostic call error.
 #[derive(Debug, Clone)]
 pub struct CallError {
     pub code: i32,
     pub message: String,
 }
 
-/// How requests are sent to the server.
 pub enum CallRequest {
     Unary(Value),
     Streaming(Pin<Box<dyn futures::Stream<Item = Value> + Send>>),
 }
 
-/// Protocol-agnostic call client trait.
-///
-/// Each protocol (gRPC, HTTP) implements this trait.
-/// The runner uses this trait instead of directly creating a gRPC client.
 #[async_trait]
 pub trait CallClient: Send {
-    /// Resolve endpoint metadata (RPC mode, input/output types).
     async fn resolve_endpoint(&self, endpoint: &str) -> Result<EndpointMeta>;
 
-    /// Make a call and return a stream of response items.
     async fn call(
         &mut self,
         endpoint: &str,
@@ -58,7 +47,6 @@ pub trait CallClient: Send {
     ) -> Result<Pin<Box<dyn futures::Stream<Item = Result<CallStreamItem, CallError>> + Send>>>;
 }
 
-/// Factory that creates call clients for specific documents/configs.
 #[async_trait]
 pub trait CallClientFactory: Send + Sync {
     async fn create_client(

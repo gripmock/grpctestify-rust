@@ -175,7 +175,8 @@ sequenceDiagram
     Server--xClient: error
 ```
 
-`graph` visualizes directory-fixture topology (`_setup.gctf` → sibling tests → `_teardown.gctf`) across a whole directory:
+`graph` visualizes directory-fixture topology (`_setup` → sibling tests → `_teardown`,
+in either file family) across a whole directory:
 
 ```bash
 grpctestify graph tests/ --format mermaid
@@ -207,15 +208,24 @@ grpctestify health localhost:50051 --insecure
 grpctestify health localhost:50051 --tls
 ```
 
-## Call with --bench
+## Call
 
 ```bash
+# One call from a file
+grpctestify call test.gctf
+
+# One call without a file
+grpctestify call -e pkg.Service/Method -d '{"id":1}' --address localhost:4770
+
 # Run a test file as benchmark
 grpctestify call test.gctf --bench --concurrency 10 --requests 1000
 
 # Skip TLS verification
 grpctestify call test.gctf --insecure
 ```
+
+`--address` overrides the file's `ADDRESS` section and `$GRPCTESTIFY_ADDRESS`; `bench` takes the same
+flag.
 
 ## Reflect
 

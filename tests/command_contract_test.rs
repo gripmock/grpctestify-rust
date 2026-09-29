@@ -836,6 +836,9 @@ fn explain_json_golden_contract() {
             "error_expected": false,
             "assertion_blocks": 0,
             "variable_extractions": 0,
+            /* §780: the totals are what the file holds; this is what a run
+               walks past. */
+            "skipped_sections": 0,
             "rpc_mode_name": "Unary"
         },
         "plan_target": {
@@ -1489,6 +1492,35 @@ test.Service/Method
     assert!(
         has_no_error_coverage,
         "check should flag a suite with zero ERROR-case tests\ngot: {}",
+        serde_json::to_string_pretty(&diagnostics).unwrap()
+    );
+}
+
+/// An HTTP suite has no ERROR section to have — a 404 is a response that
+/// arrived — so the advice to add one could never be taken.
+#[test]
+fn check_does_not_ask_an_http_suite_for_an_error_case() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    std::fs::write(
+        dir.path().join("api.httf"),
+        "--- ADDRESS ---\nhttps://api.example.com\n\n--- ENDPOINT ---\nGET /v1/users\n\n--- ASSERTS ---\n@status() == 200\n",
+    )
+    .expect("failed to write temp httf file");
+
+    let path = dir.path().to_string_lossy().into_owned();
+    let output = run_cli(&["check", &path, "--format", "json"]);
+    let json = parse_json_stdout_any_status(&output);
+    let diagnostics = json
+        .get("diagnostics")
+        .expect("diagnostics field must exist");
+
+    assert!(
+        !diagnostics
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["code"].as_str() == Some("NO_ERROR_CASE_COVERAGE")),
+        "got: {}",
         serde_json::to_string_pretty(&diagnostics).unwrap()
     );
 }

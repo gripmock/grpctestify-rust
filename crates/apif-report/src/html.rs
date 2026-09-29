@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::Reporter;
 use anyhow::{Context, Result};
 use apif_state::{TestResults, TestStatus};
@@ -23,12 +23,9 @@ impl HtmlReporter {
 struct TestRow<'a> {
     name: &'a str,
     duration_ms: u64,
-    /// Bar width as a percentage of the slowest test, for the CSS bar chart.
     pct_of_max: u32,
 }
 
-/// Percentage (0-100, rounded) of `value` relative to `max`. `0` when `max` is
-/// `0` so an all-zero dataset renders empty bars instead of dividing by zero.
 fn pct_of(value: u64, max: u64) -> u32 {
     if max == 0 {
         0
@@ -37,9 +34,6 @@ fn pct_of(value: u64, max: u64) -> u32 {
     }
 }
 
-/// `"2026-07-22T14:03:11.123456+00:00"` (chrono's UTC RFC3339) rendered as
-/// `"2026-07-22 14:03:11 UTC"` — sub-second precision and the numeric offset
-/// don't help a reader eyeballing when this report was generated.
 fn format_generated_at(rfc3339: &str) -> String {
     let date_time = rfc3339
         .split('.')
@@ -58,9 +52,6 @@ struct AssertionRow<'a> {
     pct_of_max: u32,
 }
 
-/// One assertion line inside a test detail card — every assertion the test
-/// evaluated (not only the failed ones), so the reader sees the full picture
-/// of what was checked and can spot which line actually broke.
 #[derive(Serialize)]
 struct AssertionDetail<'a> {
     line: usize,
@@ -73,9 +64,6 @@ struct AssertionDetail<'a> {
     endpoint: Option<&'a str>,
 }
 
-/// The captured request/response exchange, rendered inside a native
-/// `<details>` disclosure so it's available without cluttering the default
-/// view — no JS needed for expand/collapse.
 #[derive(Serialize)]
 struct ExchangeDetail {
     headers: Vec<(String, String)>,
@@ -84,38 +72,22 @@ struct ExchangeDetail {
     truncated: bool,
 }
 
-/// One test as a self-contained detail card: identity, META, every
-/// assertion, and (if captured) the exchange — everything needed to diagnose
-/// a failure without cross-referencing another table.
 #[derive(Serialize)]
 struct TestCard<'a> {
     status_icon: &'a str,
     status_class: &'a str,
     name: &'a str,
     duration_ms: u64,
-    /// gRPC call time alone, when the runner recorded it separately from
-    /// `duration_ms` (which also includes parse/assert overhead).
     call_duration_ms: Option<u64>,
     tags: &'a [String],
     owner: Option<&'a str>,
     error: Option<&'a str>,
     assertions: Vec<AssertionDetail<'a>>,
     exchange: Option<ExchangeDetail>,
-    /// `true` when at least one request needed a retry to succeed.
     retried: bool,
-    /// Per-document wall-clock time for a multi-document `.gctf` chain, in
-    /// source order. Empty for a single-document test.
     document_durations_ms: &'a [u64],
-    /// This case's `--data`/`DATASET` row values, when the test was expanded
-    /// from a data source.
     row_params: &'a [(String, String)],
-    /// Expanded by default when the test failed — diagnosing a failure is why
-    /// this report gets opened, so that card shouldn't need an extra click.
     open: bool,
-    /// `false` when there is nothing to show below the summary line (a passed
-    /// test with no assertions/owner/exchange/etc.) — such a card renders as
-    /// a plain row instead of a `<details>` with a misleading expand arrow
-    /// that opens onto an empty body.
     has_detail: bool,
 }
 
@@ -126,25 +98,13 @@ struct ReportContext<'a> {
     failed: usize,
     skipped: usize,
     duration_ms: u64,
-    /// Human-friendly duration for the hero's big number: `"842ms"` below one
-    /// second, `"4.30s"` at or above it — a raw millisecond count reads as
-    /// noise once a suite takes multiple seconds.
     duration_display: String,
-    /// Share of the hero ratio bar each status occupies — a slim CSS bar
-    /// instead of a full donut chart, so the verdict banner stays one glance
-    /// instead of competing with a separate chart section for attention.
     pass_pct: u32,
     fail_pct: u32,
     skip_pct: u32,
-    /// Every test, once — failed first (expanded), then the rest (collapsed).
-    /// A single list instead of separate "Failed"/"All" sections, so no test
-    /// is ever rendered twice.
     tests: Vec<TestCard<'a>>,
     slowest_tests: Vec<TestRow<'a>>,
     slowest_assertions: Vec<AssertionRow<'a>>,
-    /// When this report was rendered, e.g. `"2026-07-22 14:03:11 UTC"` — the
-    /// suite's own duration/timing is about the *run*, this is about the
-    /// *report file* itself (stale-report detection at a glance).
     generated_at: String,
 }
 
@@ -263,11 +223,6 @@ impl Reporter for HtmlReporter {
             a.pct_of_max = pct_of(a.elapsed_ms, assertion_elapsed_max);
         }
 
-        // One self-contained card per test (error + every assertion +
-        // tags/owner + captured exchange) instead of scattering a failure
-        // across separate tables. Failed tests sort first (and start
-        // expanded) since diagnosing them is the primary reason to open this
-        // report; a stable sort keeps everything else in its original order.
         let mut tests: Vec<TestCard> = all.iter().map(build_test_card).collect();
         tests.sort_by_key(|t| !t.open);
 
@@ -372,8 +327,6 @@ mod tests {
             !content.contains(r##"href="#tests""##),
             "no jump link on a clean pass: {content}"
         );
-        // A fully green run collapses the tests list by default so the page
-        // stays short — only the count is visible until expanded.
         assert!(
             content.contains(r#"<summary class="section-toggle">Tests (2)</summary>"#),
             "tests collapsed under a summary: {content}"
@@ -401,13 +354,10 @@ mod tests {
         reporter.on_suite_end(&results).unwrap();
 
         let content = fs::read_to_string(&path).unwrap();
-        // A native <details> disclosure — no JS needed to expand/collapse.
         assert!(
             content.contains(r#"<details class="exchange">"#),
             "collapsible exchange: {content}"
         );
-        // minijinja's HTML autoescaper escapes `/` and `"` even inside these
-        // otherwise-safe contexts, matching the escaping used everywhere else.
         assert!(content.contains("content-type: application&#x2f;grpc"));
         assert!(content.contains("&quot;id&quot;: 42"));
     }
@@ -435,7 +385,6 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap();
 
         assert!(content.contains("Tests (2)"));
-        // Both tests appear even though neither is "slowest" or failed.
         assert!(content.contains("users.Get.gctf"));
         assert!(content.contains("users.List.gctf"));
         assert!(
@@ -453,8 +402,6 @@ mod tests {
         let reporter = HtmlReporter::new(path.clone());
 
         let mut results = TestResults::new();
-        // A name containing a double quote and an angle bracket must not break
-        // out of the `title="..."` attribute or the enclosing `<div>` tag.
         results.add(TestResult::pass(
             r#"evil" onmouseover="alert(1)<b>.gctf"#,
             5,
@@ -488,6 +435,7 @@ mod tests {
                 endpoint: None,
                 expected: None,
                 actual: None,
+                hint: None,
             }]),
         );
         results.add(TestResult::fail(
@@ -500,14 +448,10 @@ mod tests {
         reporter.on_suite_end(&results).unwrap();
 
         let content = fs::read_to_string(&path).unwrap();
-        // No JS charting library or CDN fetch — the report is a single
-        // self-contained file that renders fully offline, and there is no
-        // `<script>` block left for an injected name/error to break out of.
         assert!(!content.contains("<script"), "no script tag: {content}");
         assert!(!content.contains("cdn.jsdelivr.net"));
         assert!(content.contains("bar-fill"), "CSS bar chart present");
         assert!(content.contains("safe.gctf"));
-        // The malicious name/error must be escaped, not injected verbatim.
         assert!(!content.contains("<script>evil.gctf</script>"));
         assert!(content.contains("&lt;script&gt;evil.gctf&lt;&#x2f;script&gt;"));
         assert!(content.contains("boom &amp; &lt;bang&gt;"));
@@ -534,6 +478,7 @@ mod tests {
                         endpoint: None,
                         expected: Some("active".to_string()),
                         actual: Some("pending".to_string()),
+                        hint: None,
                     },
                     AssertionRecord {
                         line: 6,
@@ -544,6 +489,7 @@ mod tests {
                         endpoint: None,
                         expected: None,
                         actual: None,
+                        hint: None,
                     },
                 ],
             ),
@@ -552,7 +498,6 @@ mod tests {
 
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("<h2>Tests"), "section present: {content}");
-        // The failed test's card must be open (visible) by default.
         assert!(
             content.contains(r#"<details class="test-card status-fail" open>"#),
             "failed card starts expanded: {content}"
@@ -560,9 +505,6 @@ mod tests {
         assert!(content.contains(".status == active"));
         assert!(content.contains("active"));
         assert!(content.contains("pending"));
-        // The failed test's card shows every assertion (not only the failed
-        // one) so the reader sees the full picture — the passed assertion
-        // legitimately appears too, marked distinctly (a-pass vs a-fail).
         assert!(
             content.contains(".id != null"),
             "passed assertion shown too: {content}"
@@ -575,12 +517,6 @@ mod tests {
             content.contains("tr class=\"a-pass\""),
             "passed row marked: {content}"
         );
-        // Regression: a passed assertion has no expected/actual (both None on
-        // AssertionRecord). Rust's None serializes to JSON null, and
-        // minijinja's `default` filter only substitutes for *undefined*, not
-        // null — so a naive `{{ x|default('') }}` would literally print the
-        // word "none" into the Expected/Actual cells instead of leaving them
-        // blank. Assert the empty cell, not the leaked literal.
         assert!(
             !content.contains(">none<"),
             "must not leak the literal word 'none' into an empty cell: {content}"
@@ -601,9 +537,6 @@ mod tests {
 
         let content = fs::read_to_string(&path).unwrap();
 
-        // Zero-JS light/dark toggle: a checkbox whose `:checked` state flips
-        // the theme via a CSS sibling selector — no separate "Failed"/"All"
-        // sections to keep in sync with a light/dark class list either.
         assert!(
             content.contains(r#"<input type="checkbox" id="theme-toggle""#),
             "theme toggle checkbox present: {content}"
@@ -613,12 +546,6 @@ mod tests {
             "checked state overrides theme variables: {content}"
         );
 
-        // Regression: a failed test's full detail card must render exactly
-        // once — there used to be a separate "Failed Tests" + "All Tests"
-        // section, so the same card (error box, assertions, etc.) rendered
-        // twice. (Its name legitimately also appears in "Slowest Tests" — a
-        // different, top-N-by-duration view — so we count the error box, not
-        // the bare name, to isolate the full-card duplication specifically.)
         let card_occurrences = content
             .matches(r#"<div class="error-box">boom</div>"#)
             .count();
@@ -636,7 +563,6 @@ mod tests {
         let reporter = HtmlReporter::new(path.clone());
 
         let mut results = TestResults::new();
-        // No assertions, no owner, no error, no exchange — nothing to expand.
         results.add(TestResult::pass("bare.gctf", 5, None));
         reporter.on_suite_end(&results).unwrap();
 
@@ -722,6 +648,7 @@ mod tests {
                 endpoint: Some("pkg.Svc/Method".to_string()),
                 expected: None,
                 actual: None,
+                hint: None,
             }]),
         );
         reporter.on_suite_end(&results).unwrap();

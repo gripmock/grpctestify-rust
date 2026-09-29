@@ -21,13 +21,6 @@ where
         let level = metadata.level();
         let timestamp = Local::now().format("%H:%M:%S");
 
-        // Legacy format mappings
-        // debug) formatted_message="🐛 DEBUG [$timestamp]: $message"
-        // trace) formatted_message="🔬 TRACE [$timestamp]: $message"
-        // info)  formatted_message="ℹ️  INFO [$timestamp]: $message"
-        // warn)  formatted_message="⚠️  WARN [$timestamp]: $message"
-        // error) formatted_message="❌ ERROR [$timestamp]: $message"
-
         let (emoji, level_str) = match *level {
             tracing::Level::TRACE => ("🔬", "TRACE"),
             tracing::Level::DEBUG => ("🐛", "DEBUG"),

@@ -1,6 +1,7 @@
 # Section Reference
 
-Use this section when you need exact behavior for one `.gctf` section.
+Use this section when you need exact behavior for one section. The same sections make up both
+families — a `.gctf` calling a gRPC method and a [`.httf`](../http-files) making an HTTP request.
 
 Tip: start with `ENDPOINT`, `REQUEST`, and one validation section (`RESPONSE`, `ERROR`, or `ASSERTS`).
 

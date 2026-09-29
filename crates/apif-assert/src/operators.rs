@@ -1,6 +1,3 @@
-// AST-based assertion engine
-// All evaluation goes through the AssertionExpr AST — no string-based parsing.
-
 use anyhow::Result;
 use regex::Regex;
 use serde_json::Value;
@@ -16,14 +13,9 @@ fn normalize_plugin_name(name: &str) -> &str {
     trimmed.strip_prefix('@').unwrap_or(trimmed)
 }
 
-/// Result of evaluating an expression as a value.
-/// `Err` carries a plugin error message that must surface as
-/// `AssertionResult::Error` instead of participating in comparisons.
 type ValueResult = std::result::Result<Value, String>;
 
-/// Prefix a regex pattern with the inline flags supported by the `regex` crate
-/// (`i`, `m`, `s`, `x`, `u`, `U`), so `/foo/i` matches case-insensitively.
-fn regex_with_flags(pattern: &str, flags: &str) -> String {
+pub fn regex_with_flags(pattern: &str, flags: &str) -> String {
     let supported: String = flags
         .chars()
         .filter(|c| matches!(c, 'i' | 'm' | 's' | 'x' | 'u' | 'U'))
@@ -58,18 +50,12 @@ pub fn cached_regex(pattern: &str) -> std::result::Result<Rc<Regex>, String> {
     compiled
 }
 
-/// Everything the recursive AST walk needs, bundled so adding a field (like
-/// `protocol`) doesn't mean touching every one of the ~25 recursive call
-/// sites across `evaluate_ast`/`eval_value`/`eval_atom`/
-/// `eval_plugin_as_assertion` — they all just pass `ctx` through unchanged.
 pub(crate) struct EvalCtx<'a> {
     pub response: &'a Value,
     pub headers: Option<&'a HashMap<String, String>>,
     pub trailers: Option<&'a HashMap<String, String>>,
     pub timing: Option<&'a AssertionTiming>,
     pub variables: &'a HashMap<String, Value>,
-    /// Wire protocol that produced `response` (`"grpc"`/`"grpc-web"`/
-    /// `"connectrpc"`) — forwarded to `PluginContext` for plugins that care.
     pub protocol: Option<&'a str>,
 }
 
@@ -102,9 +88,6 @@ impl<'a> EvalCtx<'a> {
     }
 }
 
-/// Evaluate an assertion expression.
-/// Returns `Ok(Some(result))` when the AST engine handled the expression,
-/// `Ok(None)` when the expression should fall through to the JQ evaluator.
 pub(crate) fn evaluate_assertion(
     registry: &dyn PluginRegistry,
     assertion: &str,
@@ -215,7 +198,7 @@ fn evaluate_ast(
                     Ok(AssertionResult::Pass)
                 } else {
                     Ok(AssertionResult::fail(format!(
-                        "Expression evaluated to falsy: {:?}",
+                        "Expression evaluated to falsy: {}",
                         val
                     )))
                 }
@@ -225,14 +208,6 @@ fn evaluate_ast(
     }
 }
 
-/// Validate (and for `number`/`uint`, coerce) a value against a type
-/// annotation. Returns `Value::Null` if the value doesn't match, otherwise
-/// the value to use for the rest of the assertion.
-///
-/// `number`/`uint` parse a numeric-looking JSON *string* into a real
-/// `Value::Number` — protobuf's own JSON mapping encodes `int64`/`uint64`
-/// fields as strings (avoids precision loss), so `.big_id:number > 100`
-/// would otherwise silently compare a string to a number and always fail.
 fn validate_type_cast(val: &Value, type_name: &str) -> Value {
     match type_name {
         "bool" => bool_or_null(val),
@@ -335,7 +310,7 @@ fn eval_plugin_as_assertion(
                     Ok(AssertionResult::Pass)
                 } else {
                     Ok(AssertionResult::fail(format!(
-                        "Plugin {} returned falsy value: {:?}",
+                        "Plugin {} returned falsy value: {}",
                         resolved_name, val
                     )))
                 }
@@ -420,8 +395,6 @@ fn eval_atom(pm: &dyn PluginRegistry, atom: &Expr, ctx: &EvalCtx) -> ValueResult
                     Ok(PluginResult::Assertion(AssertionResult::Fail { .. })) => {
                         Ok(Value::Bool(false))
                     }
-                    // Plugin errors must never become comparable values —
-                    // propagate so the assertion surfaces as Error.
                     Ok(PluginResult::Assertion(AssertionResult::Error(e))) => {
                         Err(format!("Plugin {} error: {}", resolved_name, e))
                     }
@@ -447,7 +420,6 @@ fn eval_atom(pm: &dyn PluginRegistry, atom: &Expr, ctx: &EvalCtx) -> ValueResult
             Literal::Null => Value::Null,
         }),
         Expr::Variable(name) => match ctx.variables.get(name.as_str()) {
-            // `$name` resolves to the JSON value bound by a prior EXTRACT.
             Some(v) => Ok(v.clone()),
             None => Err(format!("Undefined variable: ${}", name)),
         },
@@ -460,9 +432,6 @@ fn eval_atom(pm: &dyn PluginRegistry, atom: &Expr, ctx: &EvalCtx) -> ValueResult
     }
 }
 
-/// Equality that compares integers exactly (no lossy `as_f64`), so large
-/// `i64`/`u64` values like `9223372036854775807` don't collapse onto a
-/// neighbouring float. Mixed int/float (`3 == 3.0`) still compares by value.
 fn values_numerically_equal(lhs: &Value, rhs: &Value) -> bool {
     if let (Value::Number(l), Value::Number(r)) = (lhs, rhs) {
         if let (Some(li), Some(ri)) = (l.as_i64(), r.as_i64()) {
@@ -471,8 +440,6 @@ fn values_numerically_equal(lhs: &Value, rhs: &Value) -> bool {
         if let (Some(lu), Some(ru)) = (l.as_u64(), r.as_u64()) {
             return lu == ru;
         }
-        // A float is involved (or one u64 sits outside i64 range): fall back to
-        // f64 so `3 == 3.0` holds.
         if let (Some(lf), Some(rf)) = (l.as_f64(), r.as_f64()) {
             return lf == rf;
         }
@@ -511,6 +478,39 @@ fn eval_binary_value(lhs: Value, op: &BinaryOp, rhs: Value) -> Value {
     Value::Bool(pass)
 }
 
+fn is_path(written: &str) -> bool {
+    written.starts_with('.')
+        && written
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '[' | ']' | '"'))
+}
+
+fn number_as_string_hint(
+    lhs: &Value,
+    rhs: &Value,
+    left_expr: &AssertionExpr,
+    right_expr: &AssertionExpr,
+) -> Option<String> {
+    let numeric = |v: &Value| matches!(v, Value::Number(_));
+    let numeric_text = |v: &Value| match v {
+        Value::String(s) => s.trim().parse::<f64>().is_ok() && !s.trim().is_empty(),
+        _ => false,
+    };
+    let path = if numeric_text(lhs) && numeric(rhs) {
+        left_expr.to_string()
+    } else if numeric(lhs) && numeric_text(rhs) {
+        right_expr.to_string()
+    } else {
+        return None;
+    };
+    is_path(&path).then(|| {
+        format!(
+            "the answer holds it as a string; compare with `{}:number` (protobuf sends 64-bit integers that way)",
+            path
+        )
+    })
+}
+
 fn compare(
     lhs: Value,
     op: &BinaryOp,
@@ -528,17 +528,22 @@ fn compare(
     if pass == Value::Bool(true) {
         Ok(AssertionResult::Pass)
     } else {
+        let hint = number_as_string_hint(&lhs, &rhs, left_expr, right_expr);
         Ok(AssertionResult::Fail {
             message: format!(
-                "Assertion failed: {} {} {} (Values: {:?} vs {:?})",
+                "Assertion failed: {} {} {} (Values: {} vs {}){}",
                 left_expr,
                 op.as_str(),
                 right_expr,
                 lhs,
-                rhs
+                rhs,
+                hint.as_deref()
+                    .map(|h| format!(" — {h}"))
+                    .unwrap_or_default()
             ),
-            expected: Some(format!("{} {:?}", op.as_str(), rhs)),
-            actual: Some(format!("{:?}", lhs)),
+            expected: Some(format!("{} {}", op.as_str(), rhs)),
+            actual: Some(lhs.to_string()),
+            hint,
         })
     }
 }
@@ -652,8 +657,6 @@ mod tests {
 
     #[test]
     fn number_type_annotation_coerces_int64_string_field() {
-        // int64 protobuf fields serialize as JSON strings; `:number` must
-        // still let numeric comparisons work against them.
         let r = eval(
             &pm(),
             ".big_id:number > 100",
@@ -831,7 +834,6 @@ mod tests {
 
     #[test]
     fn validate_type_cast_coerces_numeric_strings() {
-        // int64/uint64 protobuf fields are JSON-encoded as strings.
         assert_eq!(
             validate_type_cast(&json!("123456789012345"), "number"),
             json!(123456789012345i64)
@@ -902,7 +904,6 @@ mod tests {
         assert_eq!(regex_with_flags("^te.*t$", ""), "^te.*t$");
         assert_eq!(regex_with_flags("^te.*t$", "i"), "(?i)^te.*t$");
         assert_eq!(regex_with_flags("^te.*t$", "im"), "(?im)^te.*t$");
-        // Unsupported flags (e.g. JS "g") are dropped instead of breaking the pattern
         assert_eq!(regex_with_flags("^te.*t$", "gi"), "(?i)^te.*t$");
         assert_eq!(regex_with_flags("^te.*t$", "g"), "^te.*t$");
     }
@@ -923,7 +924,6 @@ mod tests {
         let r = evaluate_ast(&pm(), &expr, &EvalCtx::new(&response, &empty)).unwrap();
         assert!(matches!(r, AssertionResult::Pass), "got: {:?}", r);
 
-        // Without the flag the same pattern must fail
         let expr = AssertionExpr::Binary {
             op: BinaryOp::Matches,
             left: Box::new(AssertionExpr::Atom(Expr::JqPath(".name".into()))),
@@ -962,8 +962,6 @@ mod tests {
 
     #[test]
     fn plugin_error_in_value_position_propagates() {
-        // Regression: a plugin Error used as a value became the truthy string
-        // "error: ..." and could flip a comparison to PASS.
         let r = eval(
             &ErrorPluginRegistry,
             "@err(.x) == \"error: boom\"",
@@ -971,7 +969,6 @@ mod tests {
         );
         assert!(matches!(r, AssertionResult::Error(_)), "got: {:?}", r);
 
-        // A plugin error must not be silently comparable to anything either
         let r = eval(&ErrorPluginRegistry, "@err(.x) != 1", &json!({"x": 1}));
         assert!(matches!(r, AssertionResult::Error(_)), "got: {:?}", r);
     }
@@ -991,8 +988,6 @@ mod tests {
 
     #[test]
     fn eq_is_exact_on_large_integers() {
-        // Regression: `as_f64` collapsed neighbouring i64 values onto the same
-        // float, so `...807 == ...806` false-passed.
         let r = eval(
             &pm(),
             ".id == 9223372036854775807",
@@ -1000,7 +995,6 @@ mod tests {
         );
         assert!(matches!(r, AssertionResult::Fail { .. }), "got: {:?}", r);
 
-        // Exact match still passes.
         let r = eval(
             &pm(),
             ".id == 9223372036854775807",
@@ -1008,7 +1002,6 @@ mod tests {
         );
         assert!(matches!(r, AssertionResult::Pass), "got: {:?}", r);
 
-        // `!=` mirrors the exact comparison.
         let r = eval(
             &pm(),
             ".id != 9223372036854775807",
@@ -1019,8 +1012,6 @@ mod tests {
 
     #[test]
     fn extract_variable_resolves_in_assertion() {
-        // Regression: `$price >= 0` must resolve `$price` to the EXTRACT-bound
-        // value, not compare the literal string "$price" to 0.
         let mut vars = HashMap::new();
         vars.insert("price".to_string(), json!(42));
         let r = eval_with_vars(&pm(), "$price >= 0", &json!({}), &vars);
@@ -1046,6 +1037,68 @@ mod tests {
         match r {
             AssertionResult::Error(msg) => assert!(msg.contains("missing"), "msg: {}", msg),
             other => panic!("expected Error for unbound variable, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn a_number_that_came_back_as_a_string_names_the_cast() {
+        let r = eval(&pm(), ".expires_in == 3600", &json!({"expires_in": "3600"}));
+        match r {
+            AssertionResult::Fail { message, .. } => {
+                assert!(
+                    message.contains("`.expires_in:number`"),
+                    "message: {message}"
+                );
+                assert!(
+                    message.contains("holds it as a string"),
+                    "message: {message}"
+                );
+            }
+            other => panic!("expected Fail, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_cast_it_names_is_the_one_that_passes() {
+        let r = eval(
+            &pm(),
+            ".expires_in:number == 3600",
+            &json!({"expires_in": "3600"}),
+        );
+        assert!(matches!(r, AssertionResult::Pass), "got: {r:?}");
+    }
+
+    #[test]
+    fn an_ordinary_mismatch_says_nothing_about_casts() {
+        let r = eval(
+            &pm(),
+            ".status == \"NOT_SERVING\"",
+            &json!({"status": "SERVING"}),
+        );
+        match r {
+            AssertionResult::Fail { message, .. } => {
+                assert!(!message.contains("number"), "message: {message}");
+            }
+            other => panic!("expected Fail, got: {other:?}"),
+        }
+        let r = eval(&pm(), ".name == 3", &json!({"name": "ada"}));
+        match r {
+            AssertionResult::Fail { message, .. } => {
+                assert!(!message.contains(":number"), "message: {message}");
+            }
+            other => panic!("expected Fail, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_computed_side_is_offered_no_cast() {
+        let r = eval(&pm(), "@len(.items) == 3", &json!({"items": "3"}));
+        match r {
+            AssertionResult::Fail { message, .. } => {
+                assert!(!message.contains(":number"), "message: {message}");
+            }
+            AssertionResult::Error(_) => {}
+            other => panic!("expected Fail or Error, got: {other:?}"),
         }
     }
 

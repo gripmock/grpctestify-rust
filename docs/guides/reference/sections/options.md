@@ -16,6 +16,7 @@ retry: 2
 retry_delay: 1.5
 no_retry: false
 compression: gzip
+protocol: grpc-web
 ```
 
 ## Supported keys
@@ -25,6 +26,28 @@ compression: gzip
 - `retry_delay` - non-negative number
 - `no_retry` - boolean
 - `compression` - `none` or `gzip`
+- `protocol` - `grpc` (default), `grpc-web` or `connectrpc`
+
+## Wire protocol
+
+`protocol` is what makes a test reproducible off the machine that wrote it. A document built against
+`grpc-web` that records nothing about it runs over plain gRPC in CI, silently, and the failure looks
+like a server problem rather than a transport mismatch.
+
+```gctf
+--- OPTIONS ---
+protocol: grpc-web
+```
+
+- `--protocol` on the command line still wins, so a suite can be swept across transports without
+  editing files.
+- An unknown value is an error, not a fall back to `grpc` — a typo like `grpcweb` is exactly the
+  mistaken run this key exists to prevent.
+- When `ADDRESS` is absent, the default target follows the protocol
+  (`localhost:4770` for gRPC, the protocol's own default otherwise).
+- `grpc-web` and `connectrpc` read the whole answer into memory, so a single response is capped at
+  32 MiB and a larger one fails with that message rather than growing the process. There is no knob:
+  a response that big belongs on plain `grpc`, which streams.
 
 ## Rules
 

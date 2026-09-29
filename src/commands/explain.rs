@@ -45,6 +45,14 @@ fn validation_passed_from_workflow(workflow: &Workflow) -> bool {
     true
 }
 
+fn skip_mark(section: &parser::ast::Section) -> &'static str {
+    if section.get_skip() {
+        " (skipped — a run walks past it)"
+    } else {
+        ""
+    }
+}
+
 fn sorted_key_values(map: &crate::parser::OrderedStringMap) -> Vec<(&str, &str)> {
     let mut pairs: Vec<(&str, &str)> = map.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     pairs.sort_by_key(|(ka, _)| *ka);
@@ -67,8 +75,6 @@ struct ExplainJsonOutput {
     optimization_trace: Vec<optimizer::OptimizationHint>,
     #[serde(skip_serializing_if = "Option::is_none")]
     bench_resolved: Option<Vec<crate::report::BenchResolvedOption>>,
-    /// Post-hoc data from `--against`: the matching entry from a prior
-    /// `run --log-format json` report, verbatim.
     #[serde(skip_serializing_if = "Option::is_none")]
     actual: Option<serde_json::Value>,
 }
@@ -81,10 +87,6 @@ struct MultiDocExplainJson {
     actual: Option<serde_json::Value>,
 }
 
-/// Load a `run --log-format json` report and pull out the entry matching
-/// `file_path`, for `explain --against`. Matches by exact name first, falling
-/// back to file-name suffix so a report generated from a different working
-/// directory (or a `--data` row's derived name) still resolves.
 fn load_actual_result(report_path: &Path, file_path: &Path) -> Result<Option<serde_json::Value>> {
     let content = std::fs::read_to_string(report_path)
         .with_context(|| format!("Failed to read --against report: {}", report_path.display()))?;
@@ -235,7 +237,6 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
     }
 
     if args.is_json() {
-        // Backward compatible: single doc uses original format
         if doc.is_single_document() {
             let workflow = Workflow::from_document_with_analysis(&doc);
             let plan = ExecutionPlan::from_document(&doc);
@@ -248,12 +249,10 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
             };
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
-            // Multi-doc: extended format
             let mut documents = Vec::new();
             let mut all_optimizations: Vec<optimizer::OptimizationHint> = Vec::new();
 
             for (doc_idx, d) in doc.iter_chain().enumerate() {
-                // detached: from_document_with_analysis is chain-aware internally too
                 let single = d.detached();
                 let workflow = Workflow::from_document_with_analysis(&single);
                 let plan = ExecutionPlan::from_document(d);
@@ -292,7 +291,6 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&output)?);
         }
     } else {
-        // Text output
         let total_docs = doc.document_count();
 
         if total_docs > 1 {
@@ -325,7 +323,6 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
             println!();
         }
 
-        // Print META once at file level (before documents)
         if total_docs > 1 {
             for section in &doc.sections {
                 if section.section_type == SectionType::Meta
@@ -342,7 +339,6 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
             }
         }
 
-        // Print each document via workflow
         for (doc_idx, d) in doc.iter_chain().enumerate() {
             if total_docs > 1 {
                 print_doc_scenario(doc_idx + 1, d);
@@ -351,7 +347,6 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
             }
         }
 
-        // Collect all optimizer hints
         let mut all_optimizations: Vec<optimizer::OptimizationHint> = Vec::new();
         for d in doc.iter_chain() {
             let workflow = Workflow::from_document_with_analysis(&d.detached());
@@ -371,7 +366,6 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
         }
         println!();
 
-        // Validation summary
         println!("VALIDATION:");
         let mut all_valid = true;
         for d in doc.iter_chain() {
@@ -407,9 +401,6 @@ pub async fn handle_explain(args: &ExplainArgs) -> Result<()> {
     Ok(())
 }
 
-/// Print the `--against` post-hoc section: what actually happened on the last
-/// matching `run --log-format json` entry, per-assertion pass/fail + timing,
-/// with the slowest assertion flagged.
 fn print_actual_execution(
     actual: &Option<serde_json::Value>,
     report_path: &Path,
@@ -494,46 +485,86 @@ fn print_actual_execution(
     println!();
 }
 
-/// Short expectation-kind label for the multi-document FLOW summary — same
-/// distinction `print_doc_scenario`'s detailed dump makes (RESPONSE vs
-/// ERROR vs bare ASSERTS vs nothing), just condensed to one word.
 fn doc_expectation_kind(doc: &parser::GctfDocument) -> &'static str {
-    if doc.first_section(SectionType::Error).is_some() {
+    let verifies = |kind| {
+        doc.sections_by_type(kind)
+            .iter()
+            .any(|section| !section.get_skip())
+    };
+    if verifies(SectionType::Error) {
         "error"
-    } else if doc.first_section(SectionType::Response).is_some() {
+    } else if verifies(SectionType::Response) {
         "response"
-    } else if doc.first_section(SectionType::Asserts).is_some() {
+    } else if verifies(SectionType::Asserts) {
         "asserts"
     } else {
         "none"
     }
 }
 
-/// Emit a fenced ```mermaid sequenceDiagram``` block for a multi-document
-/// chain — plain text, no rendering dependency; GitHub/VitePress render it
-/// natively when this output is pasted into a markdown file.
 fn print_mermaid_sequence(doc: &parser::GctfDocument) {
     println!("```mermaid");
-    println!("sequenceDiagram");
-    println!("    participant Client");
-    println!("    participant Server");
-    for (doc_idx, d) in doc.iter_chain().enumerate() {
-        let endpoint = d.get_endpoint().unwrap_or_else(|| "unknown".to_string());
-        println!("    Client->>Server: {}. {}", doc_idx + 1, endpoint);
-        match doc_expectation_kind(d) {
-            "error" => println!("    Server--xClient: error"),
-            "response" => println!("    Server-->>Client: response"),
-            "asserts" => println!("    Server-->>Client: response (ASSERTS)"),
-            _ => {}
-        }
-    }
+    println!("{}", mermaid_sequence(doc));
     println!("```");
+}
+
+pub fn mermaid_sequence(doc: &parser::GctfDocument) -> String {
+    let mut out = String::from("sequenceDiagram\n    participant Client\n    participant Server");
+    let steps: Vec<&parser::GctfDocument> = doc.iter_chain().collect();
+    let mut index = 0;
+
+    while index < steps.len() {
+        let mut end = index;
+        while end < steps.len() && steps[end].runs_in_parallel() {
+            end += 1;
+        }
+        let group = end - index > 1;
+        if group {
+            out.push_str("\n    par at the same time");
+        }
+        for (offset, d) in steps[index..end.max(index + 1)].iter().enumerate() {
+            if group && offset > 0 {
+                out.push_str("\n    and");
+            }
+            let endpoint = d.get_endpoint().unwrap_or_else(|| "unknown".to_string());
+            out.push_str(&format!(
+                "\n    Client->>Server: {}. {}",
+                index + offset + 1,
+                endpoint
+            ));
+            match doc_expectation_kind(d) {
+                "error" => out.push_str("\n    Server--xClient: error"),
+                "response" => out.push_str("\n    Server-->>Client: response"),
+                "asserts" => out.push_str("\n    Server-->>Client: response (ASSERTS)"),
+                _ => {}
+            }
+        }
+        if group {
+            out.push_str("\n    end");
+        }
+        index = end.max(index + 1);
+    }
+    out
 }
 
 fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
     let endpoint = doc.get_endpoint().unwrap_or_else(|| "unknown".to_string());
     println!("SCENARIO {}: {}", doc_idx, endpoint);
     println!("  {}", "─".repeat(60));
+
+    println!(
+        "  → Over: {}",
+        match doc.transport() {
+            parser::ast::Transport::Http => "http",
+            parser::ast::Transport::Grpc => "grpc",
+        }
+    );
+
+    if doc.runs_in_parallel() {
+        println!(
+            "  → With the steps beside it: this one goes out with them, and the chain waits for all of them"
+        );
+    }
 
     if let Some(addr) = doc.get_address(None) {
         println!("  → Connect: {}", addr);
@@ -598,21 +629,35 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
         }
     }
 
-    let requests = doc.get_requests();
+    let request_sections = doc.sections_by_type(SectionType::Request);
+    let requests: Vec<(serde_json::Value, &'static str)> = request_sections
+        .iter()
+        .flat_map(|section| {
+            let mark = skip_mark(section);
+            match &section.content {
+                SectionContent::Json(json) => vec![(json.clone(), mark)],
+                SectionContent::JsonLines(values) => {
+                    values.iter().map(|v| (v.clone(), mark)).collect()
+                }
+                _ => Vec::new(),
+            }
+        })
+        .collect();
     if !requests.is_empty() {
         if requests.len() == 1 {
-            let json_str = serde_json::to_string_pretty(&requests[0])
-                .unwrap_or_else(|_| requests[0].to_string());
-            println!("  → Send:");
+            let (value, mark) = &requests[0];
+            let json_str =
+                serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
+            println!("  → Send:{}", mark);
             for line in json_str.lines() {
                 println!("    {}", line);
             }
         } else {
             println!("  → Send {} request(s) (client streaming):", requests.len());
-            for (i, req) in requests.iter().enumerate() {
+            for (i, (req, mark)) in requests.iter().enumerate() {
                 let json_str =
                     serde_json::to_string_pretty(req).unwrap_or_else(|_| req.to_string());
-                println!("    Request #{}:", i + 1);
+                println!("    Request #{}:{}", i + 1, mark);
                 for line in json_str.lines() {
                     println!("      {}", line);
                 }
@@ -627,15 +672,16 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
                     SectionContent::Json(value) => {
                         let json_str = serde_json::to_string_pretty(value)
                             .unwrap_or_else(|_| value.to_string());
-                        println!("  ← Expect response:");
+                        println!("  ← Expect response:{}", skip_mark(section));
                         for line in json_str.lines() {
                             println!("    {}", line);
                         }
                     }
                     SectionContent::JsonLines(values) => {
                         println!(
-                            "  ← Expect {} response(s) (server streaming):",
-                            values.len()
+                            "  ← Expect {} response(s) (server streaming):{}",
+                            values.len(),
+                            skip_mark(section)
                         );
                         for (i, v) in values.iter().enumerate() {
                             let json_str =
@@ -659,7 +705,7 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
                 if let SectionContent::Json(value) = &section.content {
                     let json_str =
                         serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
-                    println!("  ← Expect error:");
+                    println!("  ← Expect error:{}", skip_mark(section));
                     for line in json_str.lines() {
                         println!("    {}", line);
                     }
@@ -679,20 +725,23 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
         .sections
         .iter()
         .filter(|s| s.section_type == SectionType::Extract)
-        .flat_map(|s| match &s.content {
-            SectionContent::Extract(map) => map
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect::<Vec<_>>(),
-            _ => Vec::new(),
+        .flat_map(|s| {
+            let mark = skip_mark(s);
+            match &s.content {
+                SectionContent::Extract(map) => map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone(), mark))
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            }
         })
         .collect();
     extractions.sort_by(|a, b| a.0.cmp(&b.0));
 
     if !extractions.is_empty() {
         println!("  ↓ Extract:");
-        for (name, expr) in &extractions {
-            println!("    {} = {}", name, expr);
+        for (name, expr, mark) in &extractions {
+            println!("    {} = {}{}", name, expr, mark);
         }
     }
 
@@ -730,9 +779,10 @@ fn print_doc_scenario(doc_idx: usize, doc: &parser::GctfDocument) {
         if section.section_type == SectionType::Asserts
             && let SectionContent::Assertions(assertions) = &section.content
         {
+            let mark = skip_mark(section);
             for (i, a) in assertions.iter().enumerate() {
                 let rewritten = optimizer::rewrite_assertion_expression_fixed_point(a);
-                println!("    {}. {}", i + 1, rewritten);
+                println!("    {}. {}{}", i + 1, rewritten, mark);
             }
         }
     }
@@ -744,7 +794,6 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
     println!("FILE: {}", file_path.display());
     println!();
 
-    // META section (if present)
     for section in &doc.sections {
         if section.section_type == SectionType::Meta
             && let SectionContent::Meta(m) = &section.content
@@ -771,7 +820,6 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
         }
     }
 
-    // ATTRIBUTES section (if any)
     let mut has_attrs = false;
     for section in &doc.sections {
         if !section.attributes.is_empty() {
@@ -887,10 +935,11 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
             SectionType::RequestHeaders => {
                 println!();
                 println!(
-                    "Step {}: REQUEST HEADERS [lines {}-{}]",
+                    "Step {}: REQUEST HEADERS [lines {}-{}]{}",
                     step,
                     section.start_line + 1,
-                    section.end_line + 1
+                    section.end_line + 1,
+                    skip_mark(section)
                 );
                 if let SectionContent::KeyValues(headers) = &section.content {
                     for (key, value) in sorted_key_values(headers) {
@@ -902,10 +951,11 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
             SectionType::Request => {
                 println!();
                 println!(
-                    "Step {}: REQUEST [lines {}-{}]",
+                    "Step {}: REQUEST [lines {}-{}]{}",
                     step,
                     section.start_line + 1,
-                    section.end_line + 1
+                    section.end_line + 1,
+                    skip_mark(section)
                 );
                 match &section.content {
                     SectionContent::Json(value) => {
@@ -913,6 +963,16 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
                             .unwrap_or_else(|_| value.to_string());
                         for line in json_str.lines() {
                             println!("  {}", line);
+                        }
+                    }
+                    SectionContent::JsonLines(values) => {
+                        for (i, value) in values.iter().enumerate() {
+                            println!("  message {} of {}:", i + 1, values.len());
+                            let json_str = serde_json::to_string_pretty(value)
+                                .unwrap_or_else(|_| value.to_string());
+                            for line in json_str.lines() {
+                                println!("    {}", line);
+                            }
                         }
                     }
                     SectionContent::Empty => {
@@ -925,10 +985,11 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
             SectionType::Response => {
                 println!();
                 println!(
-                    "Step {}: RESPONSE [lines {}-{}]",
+                    "Step {}: RESPONSE [lines {}-{}]{}",
                     step,
                     section.start_line + 1,
-                    section.end_line + 1
+                    section.end_line + 1,
+                    skip_mark(section)
                 );
                 match &section.content {
                     SectionContent::Json(value) => {
@@ -964,10 +1025,11 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
             SectionType::Error => {
                 println!();
                 println!(
-                    "Step {}: EXPECTED ERROR [lines {}-{}]",
+                    "Step {}: EXPECTED ERROR [lines {}-{}]{}",
                     step,
                     section.start_line + 1,
-                    section.end_line + 1
+                    section.end_line + 1,
+                    skip_mark(section)
                 );
                 if let SectionContent::Json(value) = &section.content {
                     let json_str =
@@ -994,10 +1056,11 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
             SectionType::Extract => {
                 println!();
                 println!(
-                    "Step {}: EXTRACT [lines {}-{}]",
+                    "Step {}: EXTRACT [lines {}-{}]{}",
                     step,
                     section.start_line + 1,
-                    section.end_line + 1
+                    section.end_line + 1,
+                    skip_mark(section)
                 );
                 if let SectionContent::Extract(extractions) = &section.content {
                     for (name, expr) in sorted_key_values(extractions) {
@@ -1009,10 +1072,11 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
             SectionType::Asserts => {
                 println!();
                 println!(
-                    "Step {}: ASSERTS [lines {}-{}]",
+                    "Step {}: ASSERTS [lines {}-{}]{}",
                     step,
                     section.start_line + 1,
-                    section.end_line + 1
+                    section.end_line + 1,
+                    skip_mark(section)
                 );
                 if let SectionContent::Assertions(assertions) = &section.content {
                     for (i, a) in assertions.iter().enumerate() {
@@ -1025,10 +1089,11 @@ fn print_single_doc_workflow(doc: &parser::GctfDocument, file_path: &Path) {
             SectionType::Options => {
                 println!();
                 println!(
-                    "Step {}: OPTIONS [lines {}-{}]",
+                    "Step {}: OPTIONS [lines {}-{}]{}",
                     step,
                     section.start_line + 1,
-                    section.end_line + 1
+                    section.end_line + 1,
+                    skip_mark(section)
                 );
                 if let SectionContent::KeyValues(options) = &section.content {
                     if options.is_empty() {
@@ -1373,6 +1438,44 @@ fn print_source_hints(doc: &GctfDocument, file_path: &Path) {
 }
 
 #[cfg(test)]
+mod diagram_tests {
+    use super::*;
+
+    #[test]
+    fn a_group_is_drawn_as_one() {
+        let content = "--- ADDRESS ---\nhttp://api.test\n\n--- ENDPOINT parallel ---\nGET /a\n\n--- ASSERTS ---\n@status() == 200\n\n--- ENDPOINT parallel ---\nGET /b\n\n--- ASSERTS ---\n@status() == 200\n\n--- ENDPOINT ---\nGET /c\n\n--- ASSERTS ---\n@status() == 200\n";
+        let doc = parser::parse_gctf_from_str(content, "fan.httf").expect("parses");
+
+        let drawn = mermaid_sequence(&doc);
+        assert!(drawn.contains("par at the same time"), "{drawn}");
+        assert!(drawn.contains("\n    and"), "{drawn}");
+        assert!(drawn.contains("\n    end"), "{drawn}");
+        let after = drawn.split("    end").nth(1).unwrap_or_default();
+        assert!(after.contains("3. GET /c"), "{drawn}");
+    }
+
+    #[test]
+    fn a_chain_that_marks_nothing_is_drawn_as_it_always_was() {
+        let content = "--- ADDRESS ---\nhttp://api.test\n\n--- ENDPOINT ---\nGET /a\n\n--- ASSERTS ---\n@status() == 200\n\n--- ENDPOINT ---\nGET /b\n\n--- ASSERTS ---\n@status() == 200\n";
+        let doc = parser::parse_gctf_from_str(content, "chain.httf").expect("parses");
+
+        let drawn = mermaid_sequence(&doc);
+        assert!(!drawn.contains("par "), "{drawn}");
+        assert!(
+            drawn.contains("1. GET /a") && drawn.contains("2. GET /b"),
+            "{drawn}"
+        );
+    }
+
+    #[test]
+    fn one_marked_step_is_not_a_group() {
+        let content = "--- ADDRESS ---\nhttp://api.test\n\n--- ENDPOINT parallel ---\nGET /a\n\n--- ASSERTS ---\n@status() == 200\n\n--- ENDPOINT ---\nGET /b\n\n--- ASSERTS ---\n@status() == 200\n";
+        let doc = parser::parse_gctf_from_str(content, "chain.httf").expect("parses");
+        assert!(!mermaid_sequence(&doc).contains("par "));
+    }
+}
+
+#[cfg(test)]
 mod against_tests {
     use super::*;
 
@@ -1401,8 +1504,6 @@ mod against_tests {
     #[test]
     fn load_actual_result_falls_back_to_file_name_suffix() {
         let dir = tempfile::tempdir().unwrap();
-        // Report was generated from a different working directory, so the
-        // stored name's path prefix differs from what `explain` was given.
         let report = write_report(
             dir.path(),
             r#"{"results":[{"name":"/ci/workspace/tests/foo.gctf","status":"Fail","assertions":[]}]}"#,
@@ -1441,5 +1542,41 @@ mod against_tests {
     fn load_actual_result_errors_on_missing_file() {
         let missing = Path::new("/nonexistent/report-does-not-exist.json");
         assert!(load_actual_result(missing, Path::new("tests/foo.gctf")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_skipped_section_is_marked_wherever_explain_lists_it() {
+        let doc = crate::parser::parse_gctf_from_str(
+            "--- ENDPOINT ---\npkg.Svc/M\n\n#[skip]\n--- REQUEST ---\n{}\n\n--- RESPONSE ---\n{}\n",
+            "t.gctf",
+        )
+        .expect("parses");
+        let mark = |kind| {
+            skip_mark(
+                doc.sections
+                    .iter()
+                    .find(|s| s.section_type == kind)
+                    .expect("section"),
+            )
+        };
+        assert!(mark(SectionType::Request).contains("skipped"));
+        assert_eq!(mark(SectionType::Response), "");
+        assert_eq!(doc_expectation_kind(&doc), "response");
+    }
+
+    #[test]
+    fn a_step_that_verifies_nothing_is_not_drawn_as_one_that_does() {
+        let doc = crate::parser::parse_gctf_from_str(
+            "--- ENDPOINT ---\npkg.Svc/M\n\n--- REQUEST ---\n{}\n\n#[skip]\n--- RESPONSE ---\n{}\n",
+            "t.gctf",
+        )
+        .expect("parses");
+        assert_eq!(doc_expectation_kind(&doc), "none");
+        assert!(!mermaid_sequence(&doc).contains("response"));
     }
 }

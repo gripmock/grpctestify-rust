@@ -1,14 +1,14 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptimizeLevel {
     None = 0,
-    Safe = 1,
-    Advisory = 2,
-    Aggressive = 3,
+    Layout = 1,
+    Safe = 2,
+    Advisory = 3,
+    Aggressive = 4,
 }
 
 impl OptimizeLevel {
@@ -31,6 +31,8 @@ fn likely_needs_assertion_rewrite(expr: &str) -> bool {
         || expr.contains('@')
         || expr.contains(" startswith ")
         || expr.contains(" endswith ")
+        || expr.contains(" startswith(")
+        || expr.contains(" endswith(")
         || expr.contains("!!")
         || expr.contains("not not ")
         || expr.contains("if ")
@@ -55,24 +57,9 @@ fn normalization_mode() -> NormalizationMode {
     NormalizationMode::AstCanonical
 }
 
-fn normalize_expr_for_optimizer_with_mode<'a>(
-    expr: &'a str,
-    mode: NormalizationMode,
-) -> Cow<'a, str> {
-    let trimmed = expr.trim();
-    match mode {
-        #[cfg(test)]
-        NormalizationMode::Conservative => Cow::Borrowed(trimmed),
-        NormalizationMode::AstCanonical => canonicalize_expr_with_ast(trimmed)
-            .map(Cow::Owned)
-            .unwrap_or_else(|| Cow::Borrowed(trimmed)),
-    }
-}
-
-fn canonicalize_expr_with_ast(expr: &str) -> Option<String> {
+fn ast_to_if_string(expr: &parser::assertion_ast::AssertionExpr, out: &mut String, prec: u8) {
     use apif_parser::assertion_ast::AssertionExpr;
-
-    fn ast_to_if_string(expr: &AssertionExpr, out: &mut String, prec: u8) {
+    {
         match expr {
             AssertionExpr::Or { left, right } => {
                 if prec > 1 {
@@ -150,16 +137,12 @@ fn canonicalize_expr_with_ast(expr: &str) -> Option<String> {
             AssertionExpr::Raw(raw) => out.push_str(raw),
         }
     }
+}
 
-    if expr.is_empty() {
-        return None;
-    }
-
-    let parsed = parser::assertion_ast::parse_assertion(expr);
-    let reduced = parser::assertion_ast::remove_redundant_parens(&parsed);
-    let mut out = String::with_capacity(expr.len());
-    ast_to_if_string(&reduced, &mut out, 0);
-    Some(out)
+fn render_expr(expr: &parser::assertion_ast::AssertionExpr) -> String {
+    let mut out = String::new();
+    ast_to_if_string(expr, &mut out, 0);
+    out
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -178,6 +161,8 @@ macro_rules! rule_id_table {
         }
 
         impl RuleId {
+            pub const ALL: &'static [RuleId] = &[$(Self::$name),+];
+
             pub const fn as_str(self) -> &'static str {
                 match self {
                     $(Self::$name => $value),+
@@ -208,7 +193,6 @@ rule_id_table! {
     B002 => "OPT_B002",
     B003 => "OPT_B003",
     B004 => "OPT_B004",
-    B005 => "OPT_B005",
     B006 => "OPT_B006",
     B007 => "OPT_B007",
     B008 => "OPT_B008",
@@ -232,6 +216,7 @@ rule_id_table! {
     T002 => "OPT_T002",
     R001 => "OPT_R001",
     R002 => "OPT_R002",
+    C001 => "OPT_C001",
 }
 
 impl std::fmt::Display for RuleId {
@@ -285,12 +270,6 @@ const REWRITE_RULES: &[RewriteRuleMetadata] = &[
         proof_note: "Boolean negation: false == expr is equivalent to !expr",
     },
     RewriteRuleMetadata {
-        id: rule_ids::B005,
-        preconditions: "expression has form !!<bool-plugin-expr>",
-        negative_cases: "inner expr is not proven boolean-safe",
-        proof_note: "Double negation elimination for boolean expressions",
-    },
-    RewriteRuleMetadata {
         id: rule_ids::B006,
         preconditions: "binary compare over two literals only",
         negative_cases: "contains non-literals, dynamic plugin calls, or unknown values",
@@ -334,9 +313,9 @@ const REWRITE_RULES: &[RewriteRuleMetadata] = &[
     },
     RewriteRuleMetadata {
         id: rule_ids::B017,
-        preconditions: "expression has form not not <bool-plugin-expr>",
+        preconditions: "expression has form not not <bool-plugin-expr> or !!<bool-plugin-expr>",
         negative_cases: "inner expr is not proven boolean-safe",
-        proof_note: "Word-style double negation elimination",
+        proof_note: "Double negation elimination, in either spelling",
     },
     RewriteRuleMetadata {
         id: rule_ids::N001,
@@ -388,9 +367,12 @@ const REWRITE_RULES: &[RewriteRuleMetadata] = &[
     },
     RewriteRuleMetadata {
         id: rule_ids::P001,
-        preconditions: "@len(expr) compared to zero",
+        preconditions: "@len(expr) compared to zero; folding to a constant needs Aggressive",
         negative_cases: "comparison is not with zero or not @len plugin",
-        proof_note: "Length check simplification: @len(x) == 0 = @is_empty(x)",
+        proof_note: "Length check simplification: @len(x) == 0 = @is_empty(x). The always-true and \
+                     always-false cases (0 <= @len(x), 0 > @len(x), @len(x) < 0) hold only if @len \
+                     is total: if the plugin errors on the value, the original fails where the \
+                     constant passes",
     },
     RewriteRuleMetadata {
         id: rule_ids::P002,
@@ -408,7 +390,8 @@ const REWRITE_RULES: &[RewriteRuleMetadata] = &[
         id: rule_ids::T001,
         preconditions: "lhs is UInt plugin expr and rhs is 0",
         negative_cases: "non-zero or non-UInt plugin",
-        proof_note: "UInt is always >= 0, so the comparison is always true",
+        proof_note: "UInt is always >= 0, so the comparison is always true — provided the plugin \
+                     is total: if it errors on the value, the original fails where true passes",
     },
     RewriteRuleMetadata {
         id: rule_ids::T002,
@@ -421,6 +404,12 @@ const REWRITE_RULES: &[RewriteRuleMetadata] = &[
         preconditions: "deprecated plugin call (uuid/email/ip/url/timestamp/empty)",
         negative_cases: "already using canonical name",
         proof_note: "Use canonical plugin name instead of deprecated one",
+    },
+    RewriteRuleMetadata {
+        id: rule_ids::C001,
+        preconditions: "expression differs from the canonical form its own AST renders",
+        negative_cases: "expression does not parse, so there is no canonical form to offer",
+        proof_note: "Canonical spelling: same AST, one spelling — the spelling `fmt` writes",
     },
     RewriteRuleMetadata {
         id: rule_ids::R002,
@@ -476,17 +465,8 @@ static BOOLEAN_PLUGINS: LazyLock<HashSet<String>> = LazyLock::new(|| {
         .collect()
 });
 
-/// `.rhai` plugins tagged `@pure` with `@returns bool` — set once via
-/// [`register_extra_boolean_plugins`], same `OnceLock`-set-once-early
-/// pattern as `apif_semantics::register_extra_plugin_names`. `BOOLEAN_PLUGINS`
-/// itself stays built-ins-only; `is_boolean_plugin_expr` checks both.
 static EXTRA_BOOLEAN_PLUGINS: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
 
-/// Register `.rhai` plugin names that are safe to treat as boolean/pure for
-/// rewrite purposes (i.e. loaded plugins whose `signature()` reports
-/// `return_type: Bool` and `safe_for_rewrite`/`deterministic`/`idempotent:
-/// true` — the `@pure`+`@returns bool` doc-tag combination). Must be called
-/// before the first optimizer pass of the run — later calls are no-ops.
 pub fn register_extra_boolean_plugins(names: HashSet<String>) {
     let _ = EXTRA_BOOLEAN_PLUGINS.set(names);
 }
@@ -587,9 +567,8 @@ fn suggest_inequality_rewrite(
     None
 }
 
-/// Redundant parentheses: (expr) -> expr (single expression, no ambiguity)
 fn suggest_redundant_parens(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
-    if !level.is_enabled(OptimizeLevel::Safe) {
+    if !level.is_enabled(OptimizeLevel::Layout) {
         return None;
     }
     let trimmed = expr.trim();
@@ -602,16 +581,20 @@ fn suggest_redundant_parens(expr: &str, level: OptimizeLevel) -> Option<(RuleId,
         return None;
     }
 
-    let balanced = inner.chars().fold(0i32, |acc, c| {
-        if c == '(' {
-            acc + 1
-        } else if c == ')' {
-            acc - 1
-        } else {
-            acc
+    let mut depth = 0i32;
+    for c in inner.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth < 0 {
+                    return None;
+                }
+            }
+            _ => {}
         }
-    });
-    if balanced != 0 {
+    }
+    if depth != 0 {
         return None;
     }
 
@@ -633,16 +616,12 @@ fn suggest_double_negation_rewrite(
 
     let inner = trimmed[2..].trim();
     if is_boolean_plugin_expr(inner, bool_plugins) {
-        return Some((rule_ids::B005, inner.to_string()));
+        return Some((rule_ids::B017, inner.to_string()));
     }
 
     None
 }
 
-/// Replace `needle` with `replacement`, but only where `needle` occurs OUTSIDE
-/// of string literals. This prevents corrupting expected values that happen to
-/// contain the operator text (e.g. `.msg == "run startswith now"`).
-/// Returns `None` when no replacement outside of string literals was made.
 fn replace_outside_string_literals(expr: &str, needle: &str, replacement: &str) -> Option<String> {
     let mut result = String::with_capacity(expr.len());
     let mut in_quotes = false;
@@ -674,7 +653,6 @@ fn replace_outside_string_literals(expr: &str, needle: &str, replacement: &str) 
         if expr[i..].starts_with(needle) {
             result.push_str(replacement);
             replaced = true;
-            // Skip the remaining chars of the matched needle.
             let end = i + needle.len();
             while let Some(&(j, _)) = chars.peek() {
                 if j < end {
@@ -693,14 +671,31 @@ fn replace_outside_string_literals(expr: &str, needle: &str, replacement: &str) 
 }
 
 fn suggest_operator_canonicalization(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
-    if !level.is_enabled(OptimizeLevel::Safe) {
+    if !level.is_enabled(OptimizeLevel::Layout) {
         return None;
     }
-    if let Some(rewritten) = replace_outside_string_literals(expr, " startswith ", " startsWith ") {
-        return Some((rule_ids::N001, rewritten));
+    for (alias, canonical) in [
+        (" startswith ", " startsWith "),
+        (" endswith ", " endsWith "),
+    ] {
+        if let Some(rewritten) = replace_outside_string_literals(expr, alias, canonical) {
+            return Some((rule_ids::N001, rewritten));
+        }
     }
-    if let Some(rewritten) = replace_outside_string_literals(expr, " endswith ", " endsWith ") {
-        return Some((rule_ids::N001, rewritten));
+    let is_operator_grammar = !matches!(
+        parser::assertion_ast::parse_assertion(expr.trim()),
+        parser::assertion_ast::AssertionExpr::Raw(_)
+    );
+    if !is_operator_grammar {
+        return None;
+    }
+    for (alias, canonical) in [
+        (" startswith(", " startsWith("),
+        (" endswith(", " endsWith("),
+    ] {
+        if let Some(rewritten) = replace_outside_string_literals(expr, alias, canonical) {
+            return Some((rule_ids::N001, rewritten));
+        }
     }
     None
 }
@@ -873,172 +868,83 @@ fn suggest_reflexive_idempotent(
     Some((rule_id, result.to_string()))
 }
 
-/// Parse if-then-else expression and extract parts
-fn parse_if_then_else(expr: &str) -> Option<(&str, &str, &str)> {
-    let expr = expr.trim();
+fn if_parts(ast: &parser::assertion_ast::AssertionExpr) -> Option<(String, String, String)> {
+    use parser::assertion_ast::AssertionExpr;
 
-    if !expr.starts_with("if ") {
-        return None;
+    match ast {
+        AssertionExpr::IfThenElse {
+            condition,
+            then_branch,
+            else_branch,
+        } => Some((
+            render_expr(condition),
+            render_expr(then_branch),
+            render_expr(else_branch),
+        )),
+        _ => None,
     }
-
-    let bytes = expr.as_bytes();
-    let mut paren_depth = 0;
-    let mut if_depth = 0;
-    let mut then_pos = None;
-
-    let mut i = 0;
-    let mut in_string = false;
-    let mut string_char = None;
-    while i < bytes.len() {
-        // Handle string literals
-        if in_string {
-            if let Some(quote) = string_char
-                && bytes[i] == quote
-                && (i == 0 || bytes[i - 1] != b'\\')
-            {
-                in_string = false;
-            }
-            i += 1;
-            continue;
-        }
-        if bytes[i] == b'"' || bytes[i] == b'\'' {
-            in_string = true;
-            string_char = Some(bytes[i]);
-            i += 1;
-            continue;
-        }
-
-        match &bytes[i..i + 1] {
-            b"(" => paren_depth += 1,
-            b")" => paren_depth -= 1,
-            _ => {}
-        }
-
-        if paren_depth == 0 && i + 3 <= bytes.len() && &bytes[i..i + 3] == b"if " {
-            if_depth += 1;
-        }
-
-        if paren_depth == 0
-            && if_depth == 1
-            && i + 6 <= bytes.len()
-            && &bytes[i..i + 6] == b" then "
-        {
-            then_pos = Some(i);
-            break;
-        }
-
-        i += 1;
-    }
-
-    let then_pos = then_pos?;
-    let condition = expr[3..then_pos].trim();
-
-    let rest = &expr[then_pos + 6..];
-    let bytes = rest.as_bytes();
-    let mut else_pos = None;
-    let mut nested_if = 0;
-    paren_depth = 0;
-
-    let mut in_string = false;
-    let mut string_char = None;
-
-    i = 0;
-    while i < bytes.len() {
-        if in_string {
-            if let Some(quote) = string_char
-                && bytes[i] == quote
-                && (i == 0 || bytes[i - 1] != b'\\')
-            {
-                in_string = false;
-            }
-            i += 1;
-            continue;
-        }
-        if bytes[i] == b'"' || bytes[i] == b'\'' {
-            in_string = true;
-            string_char = Some(bytes[i]);
-            i += 1;
-            continue;
-        }
-
-        match &bytes[i..i + 1] {
-            b"(" => paren_depth += 1,
-            b")" => paren_depth -= 1,
-            _ => {}
-        }
-
-        if paren_depth == 0 && i + 3 <= bytes.len() && &bytes[i..i + 3] == b"if " {
-            nested_if += 1;
-        }
-
-        if paren_depth == 0 && i + 6 <= bytes.len() && &bytes[i..i + 6] == b" else " {
-            if nested_if == 0 {
-                else_pos = Some(i);
-                break;
-            }
-            nested_if -= 1;
-        }
-
-        i += 1;
-    }
-
-    let else_pos = else_pos?;
-    let then_expr = rest[..else_pos].trim();
-
-    let else_and_end = &rest[else_pos + 6..];
-    let else_expr = else_and_end.strip_suffix(" end")?.trim();
-
-    Some((condition, then_expr, else_expr))
 }
 
-/// Dead branch elimination: if true then A else B = A
-fn suggest_dead_branch_elimination(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
+fn suggest_dead_branch_elimination(
+    ast: &parser::assertion_ast::AssertionExpr,
+    level: OptimizeLevel,
+) -> Option<(RuleId, String)> {
     if !level.is_enabled(OptimizeLevel::Safe) {
         return None;
     }
-    let (condition, then_expr, else_expr) = parse_if_then_else(expr)?;
+    let (condition, then_expr, else_expr) = if_parts(ast)?;
 
     if condition == "true" {
-        return Some((rule_ids::I001, then_expr.to_string()));
+        return Some((rule_ids::I001, then_expr));
     }
 
     if condition == "false" {
-        return Some((rule_ids::I001, else_expr.to_string()));
+        return Some((rule_ids::I001, else_expr));
     }
 
     None
 }
 
-/// Branch merging: if C then X else X = X
-fn suggest_branch_merging(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
+fn suggest_branch_merging(
+    ast: &parser::assertion_ast::AssertionExpr,
+    level: OptimizeLevel,
+) -> Option<(RuleId, String)> {
     if !level.is_enabled(OptimizeLevel::Advisory) {
         return None;
     }
-    let (_condition, then_expr, else_expr) = parse_if_then_else(expr)?;
+    let (_condition, then_expr, else_expr) = if_parts(ast)?;
 
     if then_expr == else_expr {
-        return Some((rule_ids::I002, then_expr.to_string()));
+        return Some((rule_ids::I002, then_expr));
     }
 
     None
 }
 
-/// Nested if simplification: if A then (if A then X else Y) else Z = if A then X else Z
-fn suggest_nested_if_simplification(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
+fn suggest_nested_if_simplification(
+    ast: &parser::assertion_ast::AssertionExpr,
+    level: OptimizeLevel,
+) -> Option<(RuleId, String)> {
+    use parser::assertion_ast::AssertionExpr;
+
     if !level.is_enabled(OptimizeLevel::Advisory) {
         return None;
     }
-    let (outer_cond, inner_expr, else_expr) = parse_if_then_else(expr)?;
-
-    // Strip parentheses from inner expression if present
-    let inner_stripped = inner_expr.trim();
-    let inner_stripped = if inner_stripped.starts_with('(') && inner_stripped.ends_with(')') {
-        &inner_stripped[1..inner_stripped.len() - 1]
-    } else {
-        inner_stripped
+    let AssertionExpr::IfThenElse {
+        condition,
+        then_branch,
+        else_branch,
+    } = ast
+    else {
+        return None;
     };
 
-    let (inner_cond, inner_then, _inner_else) = parse_if_then_else(inner_stripped)?;
+    let inner = match &**then_branch {
+        AssertionExpr::Paren(inner) => &**inner,
+        other => other,
+    };
+    let (inner_cond, inner_then, _inner_else) = if_parts(inner)?;
+    let (outer_cond, else_expr) = (render_expr(condition), render_expr(else_branch));
 
     if outer_cond == inner_cond {
         let result = format!(
@@ -1051,15 +957,17 @@ fn suggest_nested_if_simplification(expr: &str, level: OptimizeLevel) -> Option<
     None
 }
 
-/// Boolean simplification: if C then true else false = C
-fn suggest_boolean_simplification(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
+fn suggest_boolean_simplification(
+    ast: &parser::assertion_ast::AssertionExpr,
+    level: OptimizeLevel,
+) -> Option<(RuleId, String)> {
     if !level.is_enabled(OptimizeLevel::Advisory) {
         return None;
     }
-    let (condition, then_expr, else_expr) = parse_if_then_else(expr)?;
+    let (condition, then_expr, else_expr) = if_parts(ast)?;
 
     if then_expr == "true" && else_expr == "false" {
-        return Some((rule_ids::I004, condition.to_string()));
+        return Some((rule_ids::I004, condition));
     }
 
     None
@@ -1091,22 +999,22 @@ fn negate_condition_expr(condition: &str) -> String {
     }
 }
 
-/// Condition inversion: if C then false else true = !(C)
-fn suggest_condition_inversion(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
+fn suggest_condition_inversion(
+    ast: &parser::assertion_ast::AssertionExpr,
+    level: OptimizeLevel,
+) -> Option<(RuleId, String)> {
     if !level.is_enabled(OptimizeLevel::Advisory) {
         return None;
     }
-    let (condition, then_expr, else_expr) = parse_if_then_else(expr)?;
+    let (condition, then_expr, else_expr) = if_parts(ast)?;
 
     if then_expr == "false" && else_expr == "true" {
-        Some((rule_ids::I005, negate_condition_expr(condition)))
+        Some((rule_ids::I005, negate_condition_expr(&condition)))
     } else {
         None
     }
 }
 
-/// Boolean identity/absorption: A or true = true, A and false = false
-/// The boolean value of an operand, if it is literally `true`/`false`.
 fn bool_literal(expr: &parser::assertion_ast::AssertionExpr) -> Option<bool> {
     use parser::assertion_ast::{AssertionExpr, Expr, Literal};
     match expr {
@@ -1116,18 +1024,16 @@ fn bool_literal(expr: &parser::assertion_ast::AssertionExpr) -> Option<bool> {
     }
 }
 
-fn suggest_boolean_identity_laws(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
+fn suggest_boolean_identity_laws(
+    ast: &parser::assertion_ast::AssertionExpr,
+    level: OptimizeLevel,
+) -> Option<(RuleId, String)> {
     if !level.is_enabled(OptimizeLevel::Advisory) {
         return None;
     }
     use parser::assertion_ast::{AssertionExpr, assertion_to_string};
 
-    // The parse tree already applied precedence, so only the operator that
-    // actually joins the expression is at the top: `.a or .b and false` is
-    // `Or(.a, And(.b, false))`, so the fold looks at the `or`, never the `and`
-    // it used to collapse the whole thing on.
-    let ast = parser::assertion_ast::parse_assertion(expr.trim());
-    match &ast {
+    match ast {
         AssertionExpr::Or { left, right } => {
             if bool_literal(left) == Some(true) || bool_literal(right) == Some(true) {
                 return Some((rule_ids::B009, "true".to_string()));
@@ -1156,7 +1062,6 @@ fn suggest_boolean_identity_laws(expr: &str, level: OptimizeLevel) -> Option<(Ru
     }
 }
 
-/// Plugin-specific: @len(.x) == 0 → @is_empty(.x)
 fn suggest_plugin_length_simplification(
     expr: &str,
     level: OptimizeLevel,
@@ -1165,9 +1070,6 @@ fn suggest_plugin_length_simplification(
         return None;
     }
     fn extract_len_inner(s: &str) -> Option<&str> {
-        // Match the close paren belonging to the FIRST `@len(` via depth
-        // counting, and only accept it when that call spans the whole side.
-        // Otherwise `@len(a) and @len(b)` would wrongly extract `a) and @len(b`.
         let rest = s.strip_prefix("@len(")?;
         let mut depth = 1usize;
         for (i, c) in rest.char_indices() {
@@ -1189,22 +1091,21 @@ fn suggest_plugin_length_simplification(
         None
     }
 
-    fn rewrite_len_zero_cmp(op: &str, inner: &str, len_on_left: bool) -> Option<String> {
-        // `@len(x)` is unsigned, so it is always `>= 0`. The rewrite must be
-        // operand-side aware: `@len(x) <= 0` collapses to `@is_empty(x)`, but
-        // `0 <= @len(x)` is a tautology and must not become `@is_empty(x)`.
-        // Emit the canonical `is_empty` name directly (not the deprecated
-        // `empty` alias) — otherwise a second `fmt` pass would rename it via
-        // the deprecated-plugin-rename rule, making the rewrite non-idempotent
-        // within a single format call.
+    fn rewrite_len_zero_cmp(
+        op: &str,
+        inner: &str,
+        len_on_left: bool,
+        level: OptimizeLevel,
+    ) -> Option<String> {
+        let folds_to_a_constant = level.is_enabled(OptimizeLevel::Aggressive);
         match (op, len_on_left) {
             ("==", _) => Some(format!("@is_empty({})", inner)),
             ("<=", true) => Some(format!("@is_empty({})", inner)),
-            ("<=", false) => Some("true".to_string()),
+            ("<=", false) => folds_to_a_constant.then(|| "true".to_string()),
             ("!=", _) => Some(format!("@len({}) > 0", inner)),
             (">", true) => None,
-            (">", false) => Some("false".to_string()),
-            ("<", true) => Some("false".to_string()),
+            (">", false) => folds_to_a_constant.then(|| "false".to_string()),
+            ("<", true) => folds_to_a_constant.then(|| "false".to_string()),
             ("<", false) => None,
             _ => None,
         }
@@ -1212,7 +1113,6 @@ fn suggest_plugin_length_simplification(
 
     let expr = expr.trim();
 
-    // Patterns: @len(.x) == 0, @len(.x) != 0, @len(.x) > 0
     let operators = [
         (" == ", "=="),
         (" != ", "!="),
@@ -1229,14 +1129,14 @@ fn suggest_plugin_length_simplification(
             if right == "0"
                 && let Some(inner) = extract_len_inner(left)
             {
-                return rewrite_len_zero_cmp(op_name, inner, true)
+                return rewrite_len_zero_cmp(op_name, inner, true, level)
                     .map(|rewrite| (rule_ids::P001, rewrite));
             }
 
             if left == "0"
                 && let Some(inner) = extract_len_inner(right)
             {
-                return rewrite_len_zero_cmp(op_name, inner, false)
+                return rewrite_len_zero_cmp(op_name, inner, false, level)
                     .map(|rewrite| (rule_ids::P001, rewrite));
             }
         }
@@ -1245,9 +1145,6 @@ fn suggest_plugin_length_simplification(
     None
 }
 
-/// Type-aware numeric comparison optimization.
-/// Uses TypeInfo to detect that certain plugins return unsigned integers,
-/// making comparisons like `@len(.x) >= 0` always true.
 fn suggest_type_aware_numeric_comparison(
     expr: &str,
     level: OptimizeLevel,
@@ -1283,12 +1180,6 @@ fn suggest_type_aware_numeric_comparison(
     }
 }
 
-/// Comparison negation: not (.x == 5) → .x != 5
-/// Positions of `op` that sit at paren depth 0 and outside string literals.
-/// Every boolean rule below used a raw `find`, which happily matched an
-/// operator nested inside parentheses, inside a string, or belonging to a
-/// sub-expression — the source of three rewrites that changed what an
-/// assertion means.
 fn top_level_positions(expr: &str, op: &str) -> Vec<usize> {
     let mut out = Vec::new();
     let mut depth = 0i32;
@@ -1318,12 +1209,8 @@ fn top_level_positions(expr: &str, op: &str) -> Vec<usize> {
     out
 }
 
-/// Arguments of a call whose `(` has already been consumed, plus whatever
-/// follows the matching `)`. Returns `None` if the parenthesis never closes.
 fn split_call_args(after_open_paren: &str) -> Option<(&str, &str)> {
     let mut parens = 0i32;
-    // Brackets are tracked too, so a `)` that belongs to neither a nested call
-    // nor a string cannot end the argument list from inside `[…]`/`{…}`.
     let mut brackets = 0i32;
     let mut quote: Option<char> = None;
     let mut escaped = false;
@@ -1354,24 +1241,22 @@ fn split_call_args(after_open_paren: &str) -> Option<(&str, &str)> {
     None
 }
 
-fn suggest_comparison_negation(expr: &str, level: OptimizeLevel) -> Option<(RuleId, String)> {
+fn suggest_comparison_negation(
+    ast: &parser::assertion_ast::AssertionExpr,
+    level: OptimizeLevel,
+) -> Option<(RuleId, String)> {
     if !level.is_enabled(OptimizeLevel::Safe) {
         return None;
     }
     use parser::assertion_ast::{AssertionExpr, BinaryOp};
 
-    // `!(…)` / `not (…)` parse to `Not`; unwrap a single wrapping `Paren`.
-    let ast = parser::assertion_ast::parse_assertion(expr.trim());
-    let AssertionExpr::Not(inner) = &ast else {
+    let AssertionExpr::Not(inner) = ast else {
         return None;
     };
     let inner = match &**inner {
         AssertionExpr::Paren(p) => &**p,
         other => other,
     };
-    // Only a single comparison flips. A compound (`And`/`Or`/…) needs De
-    // Morgan, which this rule doesn't do, so it declines — the parse tree makes
-    // that a shape mismatch instead of a hand-rolled top-level-operator scan.
     let AssertionExpr::Binary { op, left, right } = inner else {
         return None;
     };
@@ -1382,7 +1267,6 @@ fn suggest_comparison_negation(expr: &str, level: OptimizeLevel) -> Option<(Rule
         BinaryOp::Lt => BinaryOp::Ge,
         BinaryOp::Ge => BinaryOp::Lt,
         BinaryOp::Le => BinaryOp::Gt,
-        // Contains/Matches/StartsWith/EndsWith have no single-operator negation.
         _ => return None,
     };
     let rewritten = parser::assertion_ast::assertion_to_string(&AssertionExpr::Binary {
@@ -1417,7 +1301,6 @@ fn negate_comparison_expr(inner: &str) -> Option<String> {
     None
 }
 
-/// Detect redundant type annotations: `@len(.x):uint` → `@len(.x)` when `@len` already returns uint.
 fn suggest_redundant_type_cast(
     expr: &str,
     signatures: &HashMap<String, PluginSignature>,
@@ -1434,7 +1317,6 @@ fn suggest_redundant_type_cast(
     let cast_type_name = &expr[colon_pos + 1..];
     let inner_expr = expr[..colon_pos].trim();
 
-    // Extract the type name (stop at non-alphanumeric chars)
     let cast_type_end = cast_type_name
         .find(|c: char| !c.is_alphanumeric() && c != '_')
         .unwrap_or(cast_type_name.len());
@@ -1443,20 +1325,16 @@ fn suggest_redundant_type_cast(
         return None;
     }
 
-    // Only consider casts into valid TypeInfo names
     let cast_type = TypeInfo::parse_type_name(cast_type_name)?;
 
-    // Infer type of inner expression
     let inner_tokens = parser::tokenizer::tokenize_assertion(inner_expr);
     let empty_vars = std::collections::HashMap::new();
     let inner_type = apif_semantics::infer_type_from_tokens(&inner_tokens, signatures, &empty_vars);
 
-    // If inner type is unknown, cast might be useful — don't flag
     if inner_type == TypeInfo::Any || inner_type == TypeInfo::Yaml || inner_type == TypeInfo::Json {
         return None;
     }
 
-    // If the cast type matches the inferred type, it's redundant
     let cast_base = cast_type.base_type();
     let inner_base = inner_type.base_type();
 
@@ -1467,7 +1345,6 @@ fn suggest_redundant_type_cast(
         return None;
     }
 
-    // Build the rewritten expression by removing the `:type` suffix
     let after_colon = &expr[colon_pos + 1..];
     let rest = after_colon[cast_type_name.len()..].trim();
 
@@ -1480,8 +1357,6 @@ fn suggest_redundant_type_cast(
     Some((rule_ids::T002, rewritten))
 }
 
-/// Detect and rewrite deprecated plugin calls using PluginSignature metadata.
-/// Also handles `!@is_empty(x)` → `@has_value(x)`.
 fn suggest_deprecated_plugin_rename(
     expr: &str,
     signatures: &HashMap<String, PluginSignature>,
@@ -1492,10 +1367,6 @@ fn suggest_deprecated_plugin_rename(
     }
     let trimmed = expr.trim();
 
-    // The call's own parenthesis has to close where the pattern says it does.
-    // Taking "everything up to the last 10 characters" as the argument turned
-    // `@is_empty(.a) and @is_empty(.b) == false` into
-    // `@has_value(.a) and @is_empty(.b)` — both operands inverted the wrong way.
     if let Some(inner) = trimmed.strip_prefix("!@is_empty(")
         && let Some((args, rest)) = split_call_args(inner)
         && rest.is_empty()
@@ -1517,7 +1388,6 @@ fn suggest_deprecated_plugin_rename(
         return Some((rule_ids::R002, format!("@has_value({})", args)));
     }
 
-    // Generic deprecated plugin rename — read from PluginSignature.replacement
     for (name, sig) in signatures {
         let Some(replacement) = sig.replacement else {
             continue;
@@ -1528,14 +1398,12 @@ fn suggest_deprecated_plugin_rename(
         {
             return Some((rule_ids::R001, format!("@{}{}", replacement, rest)));
         }
-        // Handle !@name(...) pattern too — check for known boolean replacements
         let not_at_name = format!("!@{}", name);
         if let Some(rest) = trimmed.strip_prefix(&not_at_name)
             && let Some(inner) = rest.strip_prefix('(')
             && let Some((args, after)) = split_call_args(inner)
             && after.is_empty()
         {
-            // If the canonical replacement is `is_empty`, skip to `@has_value` directly
             if replacement == "is_empty" {
                 return Some((rule_ids::R002, format!("@has_value({})", args)));
             }
@@ -1553,9 +1421,207 @@ fn rewrite_assertion_expression_with_context(
     normalization_mode: NormalizationMode,
     level: OptimizeLevel,
 ) -> Option<(RuleId, String)> {
-    let normalized = normalize_expr_for_optimizer_with_mode(expr, normalization_mode);
-    let expr = normalized.as_ref();
+    if !level.is_enabled(OptimizeLevel::Layout) {
+        return None;
+    }
 
+    let trimmed = expr.trim();
+    let parsed = parser::assertion_ast::parse_assertion(trimmed);
+    let ast = match normalization_mode {
+        #[cfg(test)]
+        NormalizationMode::Conservative => parsed,
+        NormalizationMode::AstCanonical => parser::assertion_ast::remove_redundant_parens(&parsed),
+    };
+
+    if matches!(normalization_mode, NormalizationMode::AstCanonical) {
+        let canonical = render_expr(&ast);
+        if canonical != trimmed
+            && (level.is_enabled(OptimizeLevel::Safe) || only_layout_differs(trimmed, &canonical))
+        {
+            return Some((rule_ids::C001, canonical));
+        }
+    }
+
+    if let Some((rule_id, rewrite)) =
+        apply_rules_to_expression(trimmed, &ast, signatures, bool_plugins, level)
+    {
+        return Some((rule_id, rewrite));
+    }
+
+    if !level.is_enabled(OptimizeLevel::Safe) {
+        return None;
+    }
+
+    rewrite_a_subexpression(trimmed, &ast, signatures, bool_plugins, level)
+}
+
+pub fn only_layout_differs(before: &str, after: &str) -> bool {
+    fn tokens(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut quote: Option<char> = None;
+        let mut escaped = false;
+        for c in text.chars() {
+            match quote {
+                Some(open) => {
+                    out.push(c);
+                    if escaped {
+                        escaped = false;
+                    } else if c == '\\' {
+                        escaped = true;
+                    } else if c == open {
+                        quote = None;
+                    }
+                }
+                None => {
+                    if c == '"' || c == '\'' {
+                        quote = Some(c);
+                        out.push(c);
+                    } else if !c.is_whitespace() && c != '(' && c != ')' {
+                        out.push(c);
+                    }
+                }
+            }
+        }
+        out
+    }
+    tokens(before) == tokens(after)
+}
+
+fn rewrite_a_subexpression(
+    expr: &str,
+    ast: &parser::assertion_ast::AssertionExpr,
+    signatures: &HashMap<String, PluginSignature>,
+    bool_plugins: &HashSet<String>,
+    level: OptimizeLevel,
+) -> Option<(RuleId, String)> {
+    use parser::assertion_ast::AssertionExpr;
+
+    fn child_rewrite(
+        node: &AssertionExpr,
+        signatures: &HashMap<String, PluginSignature>,
+        bool_plugins: &HashSet<String>,
+        level: OptimizeLevel,
+    ) -> Option<(RuleId, AssertionExpr)> {
+        if !matches!(node, AssertionExpr::Paren(_)) {
+            let rendered = render_expr(node);
+            if let Some((rule_id, rewrite)) =
+                apply_rules_to_expression(&rendered, node, signatures, bool_plugins, level)
+            {
+                let rewritten = rewrite.trim();
+                if rewritten != rendered {
+                    let parsed = parser::assertion_ast::parse_assertion(rewritten);
+                    if !matches!(parsed, AssertionExpr::Raw(_)) {
+                        return Some((rule_id, parsed));
+                    }
+                }
+            }
+        }
+
+        let rebuild_pair = |left: &AssertionExpr,
+                            right: &AssertionExpr,
+                            build: &dyn Fn(AssertionExpr, AssertionExpr) -> AssertionExpr|
+         -> Option<(RuleId, AssertionExpr)> {
+            if let Some((rule_id, new_left)) = child_rewrite(left, signatures, bool_plugins, level)
+            {
+                return Some((rule_id, build(new_left, right.clone())));
+            }
+            let (rule_id, new_right) = child_rewrite(right, signatures, bool_plugins, level)?;
+            Some((rule_id, build(left.clone(), new_right)))
+        };
+
+        match node {
+            AssertionExpr::And { left, right } => {
+                rebuild_pair(left, right, &|l, r| AssertionExpr::And {
+                    left: Box::new(l),
+                    right: Box::new(r),
+                })
+            }
+            AssertionExpr::Or { left, right } => {
+                rebuild_pair(left, right, &|l, r| AssertionExpr::Or {
+                    left: Box::new(l),
+                    right: Box::new(r),
+                })
+            }
+            AssertionExpr::Xor { left, right } => {
+                rebuild_pair(left, right, &|l, r| AssertionExpr::Xor {
+                    left: Box::new(l),
+                    right: Box::new(r),
+                })
+            }
+            AssertionExpr::Binary { op, left, right } => {
+                let op = *op;
+                rebuild_pair(left, right, &move |l, r| AssertionExpr::Binary {
+                    op,
+                    left: Box::new(l),
+                    right: Box::new(r),
+                })
+            }
+            AssertionExpr::Not(inner) => child_rewrite(inner, signatures, bool_plugins, level)
+                .map(|(rule_id, new_inner)| (rule_id, AssertionExpr::Not(Box::new(new_inner)))),
+            AssertionExpr::NotNot(inner) => child_rewrite(inner, signatures, bool_plugins, level)
+                .map(|(rule_id, new_inner)| (rule_id, AssertionExpr::NotNot(Box::new(new_inner)))),
+            AssertionExpr::Paren(inner) => child_rewrite(inner, signatures, bool_plugins, level)
+                .map(|(rule_id, new_inner)| (rule_id, AssertionExpr::Paren(Box::new(new_inner)))),
+            AssertionExpr::IfThenElse {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let rebuild = |c: AssertionExpr, t: AssertionExpr, e: AssertionExpr| {
+                    AssertionExpr::IfThenElse {
+                        condition: Box::new(c),
+                        then_branch: Box::new(t),
+                        else_branch: Box::new(e),
+                    }
+                };
+                if let Some((rule_id, new_condition)) =
+                    child_rewrite(condition, signatures, bool_plugins, level)
+                {
+                    return Some((
+                        rule_id,
+                        rebuild(
+                            new_condition,
+                            (**then_branch).clone(),
+                            (**else_branch).clone(),
+                        ),
+                    ));
+                }
+                if let Some((rule_id, new_then)) =
+                    child_rewrite(then_branch, signatures, bool_plugins, level)
+                {
+                    return Some((
+                        rule_id,
+                        rebuild((**condition).clone(), new_then, (**else_branch).clone()),
+                    ));
+                }
+                let (rule_id, new_else) =
+                    child_rewrite(else_branch, signatures, bool_plugins, level)?;
+                Some((
+                    rule_id,
+                    rebuild((**condition).clone(), (**then_branch).clone(), new_else),
+                ))
+            }
+            AssertionExpr::Atom(_) | AssertionExpr::Raw(_) => None,
+        }
+    }
+
+    if matches!(ast, AssertionExpr::Atom(_) | AssertionExpr::Raw(_)) {
+        return None;
+    }
+
+    let (rule_id, rewritten) = child_rewrite(ast, signatures, bool_plugins, level)?;
+    let settled = parser::assertion_ast::remove_redundant_parens(&rewritten);
+    let rendered = render_expr(&settled);
+    (rendered != expr).then_some((rule_id, rendered))
+}
+
+fn apply_rules_to_expression(
+    expr: &str,
+    ast: &parser::assertion_ast::AssertionExpr,
+    signatures: &HashMap<String, PluginSignature>,
+    bool_plugins: &HashSet<String>,
+    level: OptimizeLevel,
+) -> Option<(RuleId, String)> {
     if let Some((rule_id, rewrite)) = suggest_boolean_rewrite(expr, bool_plugins, level) {
         return Some((rule_id, rewrite));
     }
@@ -1588,28 +1654,27 @@ fn rewrite_assertion_expression_with_context(
         return Some((rule_id, rewrite));
     }
 
-    // If-then-else optimizations
-    if let Some((rule_id, rewrite)) = suggest_dead_branch_elimination(expr, level) {
+    if let Some((rule_id, rewrite)) = suggest_dead_branch_elimination(ast, level) {
         return Some((rule_id, rewrite));
     }
 
-    if let Some((rule_id, rewrite)) = suggest_branch_merging(expr, level) {
+    if let Some((rule_id, rewrite)) = suggest_branch_merging(ast, level) {
         return Some((rule_id, rewrite));
     }
 
-    if let Some((rule_id, rewrite)) = suggest_nested_if_simplification(expr, level) {
+    if let Some((rule_id, rewrite)) = suggest_nested_if_simplification(ast, level) {
         return Some((rule_id, rewrite));
     }
 
-    if let Some((rule_id, rewrite)) = suggest_boolean_simplification(expr, level) {
+    if let Some((rule_id, rewrite)) = suggest_boolean_simplification(ast, level) {
         return Some((rule_id, rewrite));
     }
 
-    if let Some((rule_id, rewrite)) = suggest_condition_inversion(expr, level) {
+    if let Some((rule_id, rewrite)) = suggest_condition_inversion(ast, level) {
         return Some((rule_id, rewrite));
     }
 
-    if let Some((rule_id, rewrite)) = suggest_boolean_identity_laws(expr, level) {
+    if let Some((rule_id, rewrite)) = suggest_boolean_identity_laws(ast, level) {
         return Some((rule_id, rewrite));
     }
 
@@ -1629,7 +1694,7 @@ fn rewrite_assertion_expression_with_context(
         return Some((rule_id, rewrite));
     }
 
-    suggest_comparison_negation(expr, level)
+    suggest_comparison_negation(ast, level)
 }
 
 fn rewrite_assertion_expression_fixed_point_with_mode(
@@ -1640,26 +1705,28 @@ fn rewrite_assertion_expression_fixed_point_with_mode(
     let signatures = plugin_signatures();
     let bool_plugins = boolean_plugins();
 
-    let mut current = Cow::Borrowed(expr.trim());
-    for _ in 0..32 {
-        let Some((_, rewritten)) = rewrite_assertion_expression_with_context(
-            &current,
-            signatures,
-            bool_plugins,
-            mode,
-            level,
-        ) else {
-            break;
-        };
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut current = expr.trim().to_string();
+    seen.insert(current.clone());
 
-        let normalized = rewritten.trim();
-        if normalized == current.as_ref() {
+    while let Some((_, rewritten)) =
+        rewrite_assertion_expression_with_context(&current, signatures, bool_plugins, mode, level)
+    {
+        let normalized = rewritten.trim().to_string();
+        if normalized == current {
             break;
         }
-        current = Cow::Owned(normalized.to_string());
+        if !seen.insert(normalized.clone()) {
+            debug_assert!(
+                false,
+                "the rules cycle on `{expr}`: `{current}` and `{normalized}` rewrite into each other"
+            );
+            break;
+        }
+        current = normalized;
     }
 
-    current.into_owned()
+    current
 }
 
 pub fn rewrite_assertion_expression_with_level(
@@ -1719,7 +1786,6 @@ pub fn collect_assertion_optimizations(
     let mode = normalization_mode();
     let mut hints = Vec::new();
 
-    // A chain's 2nd+ document is not the head — scan every document.
     for section in doc.iter_chain().flat_map(|d| d.sections.iter()) {
         if section.section_type != parser::ast::SectionType::Asserts {
             continue;
@@ -1759,24 +1825,28 @@ pub fn collect_assertion_optimizations(
 mod tests {
     use super::*;
 
-    /// A rewrite that changes what an assertion *means* is worse than no
-    /// rewrite at all — and these three ran at Safe/Advisory, i.e. inside
-    /// `run`, so a test silently checked something the author never wrote.
+    fn if_parts_of(expr: &str) -> Option<(String, String, String)> {
+        if_parts(&ast(expr))
+    }
+
+    fn ast(expr: &str) -> parser::assertion_ast::AssertionExpr {
+        parser::assertion_ast::remove_redundant_parens(&parser::assertion_ast::parse_assertion(
+            expr.trim(),
+        ))
+    }
+
     #[test]
     fn compound_negation_is_declined_rather_than_botched() {
-        // `!(A and B)` is `!A or !B`. The old rule split on the first
-        // comparison and emitted `!A and B`.
         assert_eq!(
-            suggest_comparison_negation("!(.x == 1 and .y == 2)", OptimizeLevel::Safe),
+            suggest_comparison_negation(&ast("!(.x == 1 and .y == 2)"), OptimizeLevel::Safe),
             None
         );
         assert_eq!(
-            suggest_comparison_negation("not (.x == 1 or .y == 2)", OptimizeLevel::Safe),
+            suggest_comparison_negation(&ast("not (.x == 1 or .y == 2)"), OptimizeLevel::Safe),
             None
         );
-        // A single comparison still flips.
         assert_eq!(
-            suggest_comparison_negation("!(.x == 1)", OptimizeLevel::Safe)
+            suggest_comparison_negation(&ast("!(.x == 1)"), OptimizeLevel::Safe)
                 .map(|(_, out)| out)
                 .as_deref(),
             Some(".x != 1")
@@ -1785,7 +1855,6 @@ mod tests {
 
     #[test]
     fn a_comparison_operator_inside_parens_is_not_the_top_level_one() {
-        // The operator to flip is the outermost one, not the first textually.
         assert_eq!(
             negate_comparison_expr("(.a == 1) != .b").as_deref(),
             Some("(.a == 1) == .b")
@@ -1795,8 +1864,6 @@ mod tests {
     #[test]
     fn is_empty_rename_requires_its_own_parenthesis_to_close() {
         let sigs = HashMap::new();
-        // `@is_empty(.a) and @is_empty(.b) == false` used to become
-        // `@has_value(.a) and @is_empty(.b)` — both operands wrong.
         assert_eq!(
             suggest_deprecated_plugin_rename(
                 "@is_empty(.a) and @is_empty(.b) == false",
@@ -1809,7 +1876,6 @@ mod tests {
             suggest_deprecated_plugin_rename("!@is_empty(.a) and .b", &sigs, OptimizeLevel::Safe),
             None
         );
-        // The plain forms still rewrite, including a nested call in the args.
         for (input, expected) in [
             ("@is_empty(.a) == false", "@has_value(.a)"),
             ("!@is_empty(.a)", "@has_value(.a)"),
@@ -1827,23 +1893,41 @@ mod tests {
     }
 
     #[test]
+    fn if_rules_see_conditionals_whose_branches_are_paths() {
+        for (input, rule, rewrite) in [
+            ("if true then .a else .b end", "OPT_I001", ".a"),
+            ("if false then .a else .b end", "OPT_I001", ".b"),
+            ("if .x then .a else .a end", "OPT_I002", ".a"),
+            (
+                "if .x then if .x then .a else .b end else .c end",
+                "OPT_I003",
+                "if .x then .a else .c end",
+            ),
+            ("if .a then true else false end", "OPT_I004", ".a"),
+            ("if .a then false else true end", "OPT_I005", "!.a"),
+        ] {
+            assert_eq!(
+                rewrite_assertion_expression_with_level(input, OptimizeLevel::Aggressive),
+                Some((rule, rewrite.to_string())),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
     fn boolean_identities_respect_operator_precedence() {
-        // `and` binds tighter, so this is `.a or (.b and false)` = `.a`,
-        // never `false`.
         assert_eq!(
-            suggest_boolean_identity_laws(".a or .b and false", OptimizeLevel::Advisory),
+            suggest_boolean_identity_laws(&ast(".a or .b and false"), OptimizeLevel::Advisory),
             None
         );
         assert_eq!(
-            suggest_boolean_identity_laws(".a or .b and true", OptimizeLevel::Advisory),
+            suggest_boolean_identity_laws(&ast(".a or .b and true"), OptimizeLevel::Advisory),
             None
         );
-        // A parenthesised operand is not a top-level one either.
         assert_eq!(
-            suggest_boolean_identity_laws(".a and (.b or false)", OptimizeLevel::Advisory),
+            suggest_boolean_identity_laws(&ast(".a and (.b or false)"), OptimizeLevel::Advisory),
             None
         );
-        // Genuine identities still fold.
         for (input, expected) in [
             (".a or true", "true"),
             (".a or false", ".a"),
@@ -1851,7 +1935,7 @@ mod tests {
             (".a and false", "false"),
         ] {
             assert_eq!(
-                suggest_boolean_identity_laws(input, OptimizeLevel::Advisory)
+                suggest_boolean_identity_laws(&ast(input), OptimizeLevel::Advisory)
                     .map(|(_, out)| out)
                     .as_deref(),
                 Some(expected),
@@ -1899,8 +1983,6 @@ test.Service/Method
 
     #[test]
     fn collect_assertion_optimizations_finds_second_document_in_chain() {
-        // A chain's 2nd+ document is not `doc.sections` (the head) — this
-        // must scan every document via `doc.iter_chain()`, not just the head.
         let content = r#"--- ENDPOINT ---
 test.Service/Method
 
@@ -1933,12 +2015,12 @@ test.Service/Method
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
         let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
-        if ast_mode_active_for_tests() {
-            assert_eq!(hints[0].rule_id, rule_ids::B017);
-        } else {
-            assert_eq!(hints[0].rule_id, rule_ids::B005);
-        }
-        assert_eq!(hints[0].after, "@has_header(\"x-request-id\")");
+        assert_eq!(hints[0].rule_id, rule_ids::C001);
+        assert_eq!(hints[0].after, "not not @has_header(\"x-request-id\")");
+        assert_eq!(
+            rewrite_assertion_expression_fixed_point("!!@has_header(\"x-request-id\")"),
+            "@has_header(\"x-request-id\")"
+        );
     }
 
     #[test]
@@ -1952,13 +2034,16 @@ test.Service/Method
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
         let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
-        if ast_mode_active_for_tests() {
-            assert!(hints.is_empty());
-        } else {
-            assert_eq!(hints.len(), 1);
-            assert_eq!(hints[0].rule_id, rule_ids::N001);
-            assert_eq!(hints[0].after, ".name startsWith \"abc\"");
-        }
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].after, ".name startsWith \"abc\"");
+        assert_eq!(
+            hints[0].rule_id,
+            if ast_mode_active_for_tests() {
+                rule_ids::C001
+            } else {
+                rule_ids::N001
+            }
+        );
     }
 
     #[test]
@@ -1972,7 +2057,14 @@ test.Service/Method
 
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
         let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
-        assert!(hints.is_empty());
+        for hint in &hints {
+            assert_eq!(hint.rule_id, rule_ids::C001, "only a respelling is offered");
+        }
+        assert_eq!(
+            rewrite_assertion_expression_fixed_point("!!@len(.items)"),
+            "not not @len(.items)",
+            "the negation stays: @len is not a boolean plugin"
+        );
     }
 
     #[test]
@@ -1988,7 +2080,6 @@ test.Service/Method
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
         let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Aggressive);
 
-        // Only '3 > 2' is a strict literal compare and safe to fold here.
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].rule_id, rule_ids::B006);
         assert_eq!(hints[0].before, "3 > 2");
@@ -2013,43 +2104,246 @@ test.Service/Method
 
     #[test]
     fn rewrite_rule_metadata_is_complete() {
-        let expected = [
-            rule_ids::B001,
-            rule_ids::B002,
-            rule_ids::B003,
-            rule_ids::B004,
-            rule_ids::B005,
-            rule_ids::B006,
-            rule_ids::B007,
-            rule_ids::B008,
-            rule_ids::B009,
-            rule_ids::B010,
-            rule_ids::B013,
-            rule_ids::B014,
-            rule_ids::B015,
-            rule_ids::B016,
-            rule_ids::B017,
-            rule_ids::N001,
-            rule_ids::N002,
-            rule_ids::I001,
-            rule_ids::I002,
-            rule_ids::I003,
-            rule_ids::I004,
-            rule_ids::I005,
-            rule_ids::P001,
-            rule_ids::P002,
-            rule_ids::T001,
-            rule_ids::T002,
-            rule_ids::R001,
-            rule_ids::R002,
-        ];
-
-        for id in expected {
-            let meta = rule_metadata(id).unwrap_or_else(|| panic!("missing metadata for {id}"));
+        for id in RuleId::ALL {
+            let meta = rule_metadata(*id).unwrap_or_else(|| panic!("missing metadata for {id}"));
             assert!(!meta.preconditions.is_empty());
             assert!(!meta.negative_cases.is_empty());
             assert!(!meta.proof_note.is_empty());
         }
+    }
+
+    #[test]
+    fn every_declared_rule_has_an_input_that_produces_it() {
+        let inputs: &[(RuleId, &str)] = &[
+            (rule_ids::B001, "@is_empty(.a) == true"),
+            (rule_ids::B002, "@is_empty(.a) == false"),
+            (rule_ids::B003, "true == @is_empty(.a)"),
+            (rule_ids::B004, "false == @is_empty(.a)"),
+            (rule_ids::B006, "1 < 2"),
+            (rule_ids::B007, ".a == .a"),
+            (rule_ids::B008, ".a != .a"),
+            (rule_ids::B009, ".a or true"),
+            (rule_ids::B010, ".a and false"),
+            (rule_ids::B013, "@is_empty(.a) != true"),
+            (rule_ids::B014, "@is_empty(.a) != false"),
+            (rule_ids::B015, "true != @is_empty(.a)"),
+            (rule_ids::B016, "false != @is_empty(.a)"),
+            (rule_ids::B017, "not not @is_empty(.a)"),
+            (rule_ids::N001, ".name startswith \"a\" ="),
+            (rule_ids::N002, "!(.a == 1)"),
+            (rule_ids::I001, "if true then .a else .b end"),
+            (rule_ids::I002, "if .x then .a else .a end"),
+            (
+                rule_ids::I003,
+                "if .x then if .x then .a else .b end else .c end",
+            ),
+            (rule_ids::I004, "if .a then true else false end"),
+            (rule_ids::I005, "if .a then false else true end"),
+            (rule_ids::P001, "@len(.a) == 0"),
+            (rule_ids::P002, "(.x = 5)"),
+            (rule_ids::T001, "@len(.a) >= 0"),
+            (rule_ids::T002, "@len(.a):uint"),
+            (rule_ids::R001, "@uuid(.a)"),
+            (rule_ids::R002, "!@is_empty(.a)"),
+            (rule_ids::C001, "(@is_empty(.a)) == true"),
+        ];
+
+        for id in RuleId::ALL {
+            let (_, input) = inputs
+                .iter()
+                .find(|(candidate, _)| candidate == id)
+                .unwrap_or_else(|| {
+                    panic!("{id} has no input in this table — add one or delete the rule")
+                });
+            let produced =
+                rewrite_assertion_expression_with_level(input, OptimizeLevel::Aggressive)
+                    .map(|(reported, _)| reported);
+            assert_eq!(
+                produced,
+                Some(id.as_str()),
+                "{id} is unreachable: {input} produced {produced:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn canonicalization_is_reported_instead_of_discarded() {
+        for (input, canonical) in [
+            ("(.a) or (.b)", ".a or .b"),
+            ("(.a == 1)", ".a == 1"),
+            (".name startswith \"abc\"", ".name startsWith \"abc\""),
+        ] {
+            assert_eq!(
+                rewrite_assertion_expression_with_level(input, OptimizeLevel::Safe),
+                Some((rule_ids::C001.as_str(), canonical.to_string())),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rule_reaches_an_operand_of_a_compound_expression() {
+        for (input, rule, rewrite) in [
+            (
+                "@len(.a) == 0 and .b",
+                rule_ids::P001,
+                "@is_empty(.a) and .b",
+            ),
+            (
+                ".b and @len(.a) == 0",
+                rule_ids::P001,
+                ".b and @is_empty(.a)",
+            ),
+            (
+                "@is_empty(.a) == true and .b == 1",
+                rule_ids::B001,
+                "@is_empty(.a) and .b == 1",
+            ),
+            (
+                ".a and (.b or @len(.c) == 0)",
+                rule_ids::P001,
+                ".a and (.b or @is_empty(.c))",
+            ),
+            (
+                "if .c then @uuid(.a) else .b end",
+                rule_ids::R001,
+                "if .c then @is_uuid(.a) else .b end",
+            ),
+            (
+                "!(@len(.a) == 0) or .b",
+                rule_ids::N002,
+                "@len(.a) != 0 or .b",
+            ),
+        ] {
+            assert_eq!(
+                rewrite_assertion_expression_with_level(input, OptimizeLevel::Advisory),
+                Some((rule.as_str(), rewrite.to_string())),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_compound_expression_settles_the_way_its_operands_would_alone() {
+        for (input, settled) in [
+            (
+                ".a startswith \"x\" and .b endswith \"y\"",
+                ".a startsWith \"x\" and .b endsWith \"y\"",
+            ),
+            (
+                "@is_empty(.a) and @is_empty(.b) == false",
+                "@is_empty(.a) and @has_value(.b)",
+            ),
+            (".a and (.b or false)", ".a and .b"),
+            ("!(@len(.a) == 0) or .b", "@len(.a) > 0 or .b"),
+        ] {
+            assert_eq!(
+                rewrite_assertion_expression_fixed_point(input),
+                settled,
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_fixed_point_settles_rather_than_running_out_of_iterations() {
+        for input in [
+            "@len(.a) == 0 and .b",
+            "(@is_empty(.a)) == true",
+            "!!@is_uuid(.id)",
+            "if .c then (if .c then .a else .b end) else .z end",
+            "@is_empty(.a) and @is_empty(.b) == false",
+            ".c ? true : false",
+            ".a % .b",
+        ] {
+            for level in [
+                OptimizeLevel::Safe,
+                OptimizeLevel::Advisory,
+                OptimizeLevel::Aggressive,
+            ] {
+                let once = rewrite_assertion_expression_fixed_point_with_level(input, level);
+                let twice = rewrite_assertion_expression_fixed_point_with_level(&once, level);
+                assert_eq!(once, twice, "{input} at {level:?} did not settle");
+            }
+        }
+    }
+
+    #[test]
+    fn level_none_does_no_work_at_all() {
+        for input in [
+            "(@is_empty(.a)) == true",
+            "@len(.a) == 0 and .b",
+            "if true then .a else .b end",
+            "!!@is_uuid(.id)",
+        ] {
+            assert_eq!(
+                rewrite_assertion_expression_with_level(input, OptimizeLevel::None),
+                None,
+                "{input}"
+            );
+            assert_eq!(
+                rewrite_assertion_expression_fixed_point_with_level(input, OptimizeLevel::None),
+                input,
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_ternary_spelling_is_left_alone() {
+        for level in [
+            OptimizeLevel::Safe,
+            OptimizeLevel::Advisory,
+            OptimizeLevel::Aggressive,
+        ] {
+            for input in [".c ? true : false", ".c ? .a : .b"] {
+                assert_eq!(
+                    rewrite_assertion_expression_with_level(input, level),
+                    None,
+                    "{input} at {level:?}: the AST does not read this spelling, so there is \
+                     no canonical form to offer"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_rewrite_carries_only_what_its_own_rule_did() {
+        assert_eq!(
+            rewrite_assertion_expression_with_level(
+                "(@is_empty(.a)) == true",
+                OptimizeLevel::Advisory
+            ),
+            Some((rule_ids::C001.as_str(), "@is_empty(.a) == true".to_string())),
+            "dropping the parentheses is canonicalization, not OPT_B001"
+        );
+        assert_eq!(
+            rewrite_assertion_expression_with_level(
+                "@is_empty(.a) == true",
+                OptimizeLevel::Advisory
+            ),
+            Some((rule_ids::B001.as_str(), "@is_empty(.a)".to_string())),
+            "with the parentheses already gone, OPT_B001 is the whole diff"
+        );
+        assert_eq!(
+            rewrite_assertion_expression_fixed_point("(@is_empty(.a)) == true"),
+            "@is_empty(.a)"
+        );
+    }
+
+    #[test]
+    fn parentheses_are_dropped_only_when_the_first_one_closes_the_last() {
+        assert_eq!(
+            suggest_redundant_parens("(.x = 5) or (.y = 6)", OptimizeLevel::Safe),
+            None,
+            "the outer parentheses are two pairs, not one wrapper"
+        );
+        assert_eq!(
+            suggest_redundant_parens("(.x = 5)", OptimizeLevel::Safe)
+                .map(|(_, out)| out)
+                .as_deref(),
+            Some(".x = 5")
+        );
     }
 
     #[test]
@@ -2157,7 +2451,6 @@ true == @has_header("x-request-id") // comment should be ignored
 
     #[test]
     fn likely_needs_assertion_rewrite_fast_path() {
-        // Both old and new scope syntax trigger rewrite (contains @ and ==)
         assert!(likely_needs_assertion_rewrite("@scope_message_count()"));
         assert!(likely_needs_assertion_rewrite(
             "@scope.message_count() == 2"
@@ -2168,12 +2461,10 @@ true == @has_header("x-request-id") // comment should be ignored
         assert!(likely_needs_assertion_rewrite("if true then 1 else 2 end"));
     }
 
-    // === If-then-else optimization tests ===
-
     #[test]
     fn dead_branch_elimination_true() {
         let (rule_id, rewritten) = suggest_dead_branch_elimination(
-            "if true then \"yes\" else \"no\" end",
+            &ast("if true then \"yes\" else \"no\" end"),
             OptimizeLevel::Advisory,
         )
         .unwrap();
@@ -2184,7 +2475,7 @@ true == @has_header("x-request-id") // comment should be ignored
     #[test]
     fn dead_branch_elimination_false() {
         let (rule_id, rewritten) = suggest_dead_branch_elimination(
-            "if false then \"yes\" else \"no\" end",
+            &ast("if false then \"yes\" else \"no\" end"),
             OptimizeLevel::Advisory,
         )
         .unwrap();
@@ -2195,7 +2486,7 @@ true == @has_header("x-request-id") // comment should be ignored
     #[test]
     fn branch_merging() {
         let (rule_id, rewritten) = suggest_branch_merging(
-            "if .x > 0 then \"same\" else \"same\" end",
+            &ast("if .x > 0 then \"same\" else \"same\" end"),
             OptimizeLevel::Advisory,
         )
         .unwrap();
@@ -2205,11 +2496,9 @@ true == @has_header("x-request-id") // comment should be ignored
 
     #[test]
     fn nested_if_simplification() {
-        // Pattern: if A then (if A then X else Y end) else Z end
-        // Simplified: if A then X else Z end
         let input =
             "if .a > 0 then (if .a > 0 then \"inner\" else \"other\" end) else \"outer\" end";
-        let result = suggest_nested_if_simplification(input, OptimizeLevel::Advisory);
+        let result = suggest_nested_if_simplification(&ast(input), OptimizeLevel::Advisory);
         assert!(result.is_some());
         let (rule_id, rewritten) = result.unwrap();
         assert_eq!(rule_id, rule_ids::I003);
@@ -2219,7 +2508,7 @@ true == @has_header("x-request-id") // comment should be ignored
     #[test]
     fn parse_if_then_else_simple() {
         let (cond, then_expr, else_expr) =
-            parse_if_then_else("if .x > 0 then \"yes\" else \"no\" end").unwrap();
+            if_parts_of("if .x > 0 then \"yes\" else \"no\" end").unwrap();
         assert_eq!(cond, ".x > 0");
         assert_eq!(then_expr, "\"yes\"");
         assert_eq!(else_expr, "\"no\"");
@@ -2227,12 +2516,15 @@ true == @has_header("x-request-id") // comment should be ignored
 
     #[test]
     fn parse_if_then_else_nested() {
-        let (cond, then_expr, else_expr) = parse_if_then_else(
+        let (cond, then_expr, else_expr) = if_parts_of(
             "if .a > 0 then (if .b > 0 then \"both\" else \"a only\" end) else \"none\" end",
         )
         .unwrap();
         assert_eq!(cond, ".a > 0");
-        assert_eq!(then_expr, "(if .b > 0 then \"both\" else \"a only\" end)");
+        assert_eq!(
+            then_expr, "if .b > 0 then \"both\" else \"a only\" end",
+            "the rules see the reduced tree, so the wrapper parentheses are already gone"
+        );
         assert_eq!(else_expr, "\"none\"");
     }
 
@@ -2271,7 +2563,7 @@ if .x > 0 then "same" else "same" end
     #[test]
     fn boolean_simplification() {
         let (rule_id, rewritten) = suggest_boolean_simplification(
-            "if .x > 0 then true else false end",
+            &ast("if .x > 0 then true else false end"),
             OptimizeLevel::Advisory,
         )
         .unwrap();
@@ -2282,7 +2574,7 @@ if .x > 0 then "same" else "same" end
     #[test]
     fn condition_inversion() {
         let (rule_id, rewritten) = suggest_condition_inversion(
-            "if .x > 0 then false else true end",
+            &ast("if .x > 0 then false else true end"),
             OptimizeLevel::Advisory,
         )
         .unwrap();
@@ -2293,7 +2585,7 @@ if .x > 0 then "same" else "same" end
     #[test]
     fn condition_inversion_contains_needs_parens() {
         let (rule_id, rewritten) = suggest_condition_inversion(
-            "if .name contains \"foo\" then false else true end",
+            &ast("if .name contains \"foo\" then false else true end"),
             OptimizeLevel::Advisory,
         )
         .unwrap();
@@ -2304,7 +2596,7 @@ if .x > 0 then "same" else "same" end
     #[test]
     fn condition_inversion_simple_plugin_call_no_parens() {
         let (rule_id, rewritten) = suggest_condition_inversion(
-            "if @has_header(\"x\") then false else true end",
+            &ast("if @has_header(\"x\") then false else true end"),
             OptimizeLevel::Advisory,
         )
         .unwrap();
@@ -2315,18 +2607,21 @@ if .x > 0 then "same" else "same" end
     #[test]
     fn condition_inversion_not_keyword_gets_grouped() {
         let (rule_id, rewritten) = suggest_condition_inversion(
-            "if not @has_header(\"x\") then false else true end",
+            &ast("if not @has_header(\"x\") then false else true end"),
             OptimizeLevel::Advisory,
         )
         .unwrap();
         assert_eq!(rule_id, rule_ids::I005);
-        assert_eq!(rewritten, "!(not @has_header(\"x\"))");
+        assert_eq!(
+            rewritten, "!(!@has_header(\"x\"))",
+            "the condition comes back in the canonical spelling of `not`"
+        );
     }
 
     #[test]
     fn condition_inversion_bang_gets_grouped() {
         let (rule_id, rewritten) = suggest_condition_inversion(
-            "if !@has_header(\"x\") then false else true end",
+            &ast("if !@has_header(\"x\") then false else true end"),
             OptimizeLevel::Advisory,
         )
         .unwrap();
@@ -2337,7 +2632,7 @@ if .x > 0 then "same" else "same" end
     #[test]
     fn condition_inversion_matches_gets_grouped() {
         let (rule_id, rewritten) = suggest_condition_inversion(
-            "if .name matches /foo.*/ then false else true end",
+            &ast("if .name matches /foo.*/ then false else true end"),
             OptimizeLevel::Advisory,
         )
         .unwrap();
@@ -2380,7 +2675,7 @@ if .status == 200 then false else true end
     #[test]
     fn parse_if_then_else_string_with_else_keyword() {
         let (cond, then_expr, else_expr) =
-            parse_if_then_else(r#"if true then " else " else "no" end"#).unwrap();
+            if_parts_of(r#"if true then " else " else "no" end"#).unwrap();
         assert_eq!(cond, "true");
         assert_eq!(then_expr, r#"" else ""#);
         assert_eq!(else_expr, r#""no""#);
@@ -2389,78 +2684,66 @@ if .status == 200 then false else true end
     #[test]
     fn parse_if_then_else_then_in_string_condition() {
         let (cond, then_expr, else_expr) =
-            parse_if_then_else(r#"if .x == "then" then "yes" else "no" end"#).unwrap();
+            if_parts_of(r#"if .x == "then" then "yes" else "no" end"#).unwrap();
         assert_eq!(cond, r#".x == "then""#);
         assert_eq!(then_expr, r#""yes""#);
         assert_eq!(else_expr, r#""no""#);
     }
 
-    // === New optimization rules tests ===
-
     #[test]
     fn boolean_identity_or() {
-        // A or true = true
         let (rule_id, rewritten) =
-            suggest_boolean_identity_laws(".x or true", OptimizeLevel::Advisory).unwrap();
+            suggest_boolean_identity_laws(&ast(".x or true"), OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::B009);
         assert_eq!(rewritten, "true");
 
-        // A or false = A
         let (rule_id, rewritten) =
-            suggest_boolean_identity_laws(".x or false", OptimizeLevel::Advisory).unwrap();
+            suggest_boolean_identity_laws(&ast(".x or false"), OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::B009);
         assert_eq!(rewritten, ".x");
 
-        // true or A = true
         let (rule_id, rewritten) =
-            suggest_boolean_identity_laws("true or .x", OptimizeLevel::Advisory).unwrap();
+            suggest_boolean_identity_laws(&ast("true or .x"), OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::B009);
         assert_eq!(rewritten, "true");
     }
 
     #[test]
     fn boolean_absorption_and() {
-        // A and true = A
         let (rule_id, rewritten) =
-            suggest_boolean_identity_laws(".x and true", OptimizeLevel::Advisory).unwrap();
+            suggest_boolean_identity_laws(&ast(".x and true"), OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::B010);
         assert_eq!(rewritten, ".x");
 
-        // A and false = false
         let (rule_id, rewritten) =
-            suggest_boolean_identity_laws(".x and false", OptimizeLevel::Advisory).unwrap();
+            suggest_boolean_identity_laws(&ast(".x and false"), OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::B010);
         assert_eq!(rewritten, "false");
 
-        // false and A = false
         let (rule_id, rewritten) =
-            suggest_boolean_identity_laws("false and .x", OptimizeLevel::Advisory).unwrap();
+            suggest_boolean_identity_laws(&ast("false and .x"), OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::B010);
         assert_eq!(rewritten, "false");
     }
 
     #[test]
     fn plugin_length_simplification() {
-        // @len(.x) == 0 → @is_empty(.x)
         let (rule_id, rewritten) =
             suggest_plugin_length_simplification("@len(.items) == 0", OptimizeLevel::Advisory)
                 .unwrap();
         assert_eq!(rule_id, rule_ids::P001);
         assert_eq!(rewritten, "@is_empty(.items)");
 
-        // @len(.x) != 0 → @len(.x) > 0
         let (rule_id, rewritten) =
             suggest_plugin_length_simplification("@len(.items) != 0", OptimizeLevel::Advisory)
                 .unwrap();
         assert_eq!(rule_id, rule_ids::P001);
         assert_eq!(rewritten, "@len(.items) > 0");
 
-        // @len(.x) > 0 → no simplification
         let result =
             suggest_plugin_length_simplification("@len(.items) > 0", OptimizeLevel::Advisory);
         assert!(result.is_none());
 
-        // 0 == @len(.x) → @is_empty(.x)
         let (rule_id, rewritten) =
             suggest_plugin_length_simplification("0 == @len(.items)", OptimizeLevel::Advisory)
                 .unwrap();
@@ -2470,16 +2753,20 @@ if .status == 200 then false else true end
 
     #[test]
     fn plugin_length_le_zero_is_operand_side_aware() {
-        // @len(x) <= 0 is `@is_empty(x)` (len is unsigned, so <= 0 means == 0).
         let (rule_id, rewritten) =
             suggest_plugin_length_simplification("@len(.items) <= 0", OptimizeLevel::Advisory)
                 .unwrap();
         assert_eq!(rule_id, rule_ids::P001);
         assert_eq!(rewritten, "@is_empty(.items)");
 
-        // 0 <= @len(x) is always true (len is unsigned) — must NOT become @is_empty(x).
+        assert_eq!(
+            suggest_plugin_length_simplification("0 <= @len(.items)", OptimizeLevel::Advisory),
+            None,
+            "folding to a constant assumes @len never errors, which is an Aggressive assumption"
+        );
+
         let (rule_id, rewritten) =
-            suggest_plugin_length_simplification("0 <= @len(.items)", OptimizeLevel::Advisory)
+            suggest_plugin_length_simplification("0 <= @len(.items)", OptimizeLevel::Aggressive)
                 .unwrap();
         assert_eq!(rule_id, rule_ids::P001);
         assert_eq!(rewritten, "true");
@@ -2487,39 +2774,48 @@ if .status == 200 then false else true end
     }
 
     #[test]
+    fn a_length_comparison_folds_to_a_constant_only_when_totality_is_assumed() {
+        for input in ["0 <= @len(.items)", "0 > @len(.items)", "@len(.items) < 0"] {
+            assert_eq!(
+                suggest_plugin_length_simplification(input, OptimizeLevel::Advisory),
+                None,
+                "{input}"
+            );
+            assert!(
+                suggest_plugin_length_simplification(input, OptimizeLevel::Aggressive).is_some(),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
     fn comparison_negation() {
-        // not (.x == 5) → .x != 5
         let (rule_id, rewritten) =
-            suggest_comparison_negation("not (.x == 5)", OptimizeLevel::Advisory).unwrap();
+            suggest_comparison_negation(&ast("not (.x == 5)"), OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::N002);
         assert_eq!(rewritten, ".x != 5");
 
-        // not (.x != 5) → .x == 5
         let (rule_id, rewritten) =
-            suggest_comparison_negation("not (.x != 5)", OptimizeLevel::Advisory).unwrap();
+            suggest_comparison_negation(&ast("not (.x != 5)"), OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::N002);
         assert_eq!(rewritten, ".x == 5");
 
-        // not (.x > 5) → .x <= 5
         let (rule_id, rewritten) =
-            suggest_comparison_negation("not (.x > 5)", OptimizeLevel::Advisory).unwrap();
+            suggest_comparison_negation(&ast("not (.x > 5)"), OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::N002);
         assert_eq!(rewritten, ".x <= 5");
 
-        // not (.x >= 5) → .x < 5
         let (rule_id, rewritten) =
-            suggest_comparison_negation("not (.x >= 5)", OptimizeLevel::Advisory).unwrap();
+            suggest_comparison_negation(&ast("not (.x >= 5)"), OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::N002);
         assert_eq!(rewritten, ".x < 5");
 
-        // !(.x <= 5) -> .x > 5
         let (rule_id, rewritten) =
-            suggest_comparison_negation("!(.x <= 5)", OptimizeLevel::Advisory).unwrap();
+            suggest_comparison_negation(&ast("!(.x <= 5)"), OptimizeLevel::Advisory).unwrap();
         assert_eq!(rule_id, rule_ids::N002);
         assert_eq!(rewritten, ".x > 5");
 
-        // malformed/non-comparison inner should not rewrite
-        assert!(suggest_comparison_negation("!(.x)", OptimizeLevel::Advisory).is_none());
+        assert!(suggest_comparison_negation(&ast("!(.x)"), OptimizeLevel::Advisory).is_none());
     }
 
     #[test]
@@ -2582,8 +2878,12 @@ not (.status == 200)
         let doc = parser::parse_gctf_from_str(content, "test.gctf").unwrap();
         let hints = collect_assertion_optimizations(&doc, OptimizeLevel::Advisory);
         assert_eq!(hints.len(), 1);
-        assert_eq!(hints[0].rule_id, rule_ids::N002);
-        assert_eq!(hints[0].after, ".status != 200");
+        assert_eq!(hints[0].rule_id, rule_ids::C001);
+        assert_eq!(hints[0].after, "!(.status == 200)");
+        assert_eq!(
+            rewrite_assertion_expression_fixed_point("not (.status == 200)"),
+            ".status != 200"
+        );
     }
 
     #[test]
@@ -2694,11 +2994,7 @@ not not @has_header("x")
     #[test]
     fn collect_optimizations_p002_redundant_parens() {
         let result = rewrite_assertion_expression_fixed_point("(@has_header(\"x\"))");
-        if ast_mode_active_for_tests() {
-            assert_eq!(result, "(@has_header(\"x\"))");
-        } else {
-            assert_eq!(result, "@has_header(\"x\")");
-        }
+        assert_eq!(result, "@has_header(\"x\")");
     }
 
     #[test]
@@ -2774,7 +3070,11 @@ not not @has_header("x")
         );
 
         assert_eq!(conservative.map(|(id, _)| id), None);
-        assert_eq!(ast.map(|(id, _)| id), Some(rule_ids::B001));
+        assert_eq!(ast.map(|(id, _)| id), Some(rule_ids::C001));
+        assert_eq!(
+            rewrite_assertion_expression_fixed_point(expr),
+            "@has_header(\"x\")"
+        );
     }
 
     #[test]
@@ -2994,8 +3294,6 @@ not (.status == 200)
         }
     }
 
-    // ─── Redundant type cast tests ───────────────────────────────────
-
     #[test]
     fn suggest_redundant_type_cast_len_uint() {
         let expr = "@len(.items):uint >= 0";
@@ -3010,7 +3308,6 @@ not (.status == 200)
 
     #[test]
     fn suggest_redundant_type_cast_header_string() {
-        // @header returns String, so :string is redundant
         let expr = "@header(\"x\"):string != null";
         let signatures = plugin_signatures();
         let result = suggest_redundant_type_cast(expr, signatures, OptimizeLevel::Advisory);
@@ -3026,7 +3323,6 @@ not (.status == 200)
 
     #[test]
     fn suggest_redundant_type_cast_len_to_number() {
-        // @len returns UInt, :number is numeric-compatible → redundant
         let expr = "@len(.items):number >= 0";
         let signatures = plugin_signatures();
         let result = suggest_redundant_type_cast(expr, signatures, OptimizeLevel::Advisory);
@@ -3041,7 +3337,6 @@ not (.status == 200)
 
     #[test]
     fn suggest_non_redundant_type_cast_number() {
-        // .price:number is NOT redundant because .price is Any
         let expr = ".price:number >= 0";
         let signatures = plugin_signatures();
         let result = suggest_redundant_type_cast(expr, signatures, OptimizeLevel::Advisory);
@@ -3053,7 +3348,6 @@ not (.status == 200)
 
     #[test]
     fn suggest_non_redundant_type_cast_string() {
-        // .name:string is NOT redundant because .name is Any
         let expr = ".name:string contains \"hello\"";
         let signatures = plugin_signatures();
         let result = suggest_redundant_type_cast(expr, signatures, OptimizeLevel::Advisory);
@@ -3080,8 +3374,6 @@ test.Service/Method
 
     #[test]
     fn operator_canonicalization_skips_string_literals() {
-        // Regression: `startswith`/`endswith` inside a string literal must NOT
-        // be rewritten (previously a blind str::replace corrupted the value).
         assert_eq!(
             suggest_operator_canonicalization(
                 r#".msg == "run startswith now""#,
@@ -3093,7 +3385,6 @@ test.Service/Method
             suggest_operator_canonicalization(r#".msg == "x endswith y""#, OptimizeLevel::Safe),
             None
         );
-        // A genuine operator token is still canonicalized.
         assert_eq!(
             suggest_operator_canonicalization(r#".msg startswith "abc""#, OptimizeLevel::Safe),
             Some((rule_ids::N001, r#".msg startsWith "abc""#.to_string()))
@@ -3101,9 +3392,77 @@ test.Service/Method
     }
 
     #[test]
+    fn the_call_spelling_of_startswith_is_canonicalized_at_layout_level() {
+        assert_eq!(
+            suggest_operator_canonicalization(r#".msg startswith("abc")"#, OptimizeLevel::Layout),
+            Some((rule_ids::N001, r#".msg startsWith("abc")"#.to_string()))
+        );
+        assert_eq!(
+            suggest_operator_canonicalization(r#".msg endswith("abc")"#, OptimizeLevel::Layout),
+            Some((rule_ids::N001, r#".msg endsWith("abc")"#.to_string()))
+        );
+        assert_eq!(
+            suggest_operator_canonicalization(
+                r#".msg == "a startswith(b)""#,
+                OptimizeLevel::Layout
+            ),
+            None
+        );
+        assert_eq!(
+            suggest_operator_canonicalization(r#".msg startswith "abc""#, OptimizeLevel::None),
+            None
+        );
+        for jq in [r#".a | endswith("x")"#, r#".b | startswith("q")"#] {
+            assert_eq!(
+                suggest_operator_canonicalization(jq, OptimizeLevel::Aggressive),
+                None,
+                "{jq} is a jq pipeline and endswith/startswith are jq builtins there"
+            );
+            assert_eq!(
+                rewrite_assertion_expression_fixed_point_with_level(jq, OptimizeLevel::Aggressive),
+                jq
+            );
+        }
+    }
+
+    #[test]
+    fn layout_level_keeps_meaning_and_only_moves_whitespace_and_parens() {
+        for kept in [
+            "if true then .a else .b end",
+            "not (.x == 1 or .y == 2)",
+            "!(.x == 1)",
+            "@is_uuid(.id) == true",
+            "!!@is_uuid(.id)",
+            "@len(.x) == 0",
+        ] {
+            assert_eq!(
+                rewrite_assertion_expression_fixed_point_with_level(kept, OptimizeLevel::Layout),
+                kept,
+                "layout level rewrote the meaning of {kept}"
+            );
+        }
+        assert_eq!(
+            rewrite_assertion_expression_fixed_point_with_level("(.a)", OptimizeLevel::Layout),
+            ".a"
+        );
+        assert_eq!(
+            rewrite_assertion_expression_fixed_point_with_level(".a==1", OptimizeLevel::Layout),
+            ".a == 1"
+        );
+        assert!(only_layout_differs("(.a  ==1)", ".a == 1"));
+        assert!(!only_layout_differs("not (.a == 1)", "!(.a == 1)"));
+        assert!(!only_layout_differs("\"a b\"", "\"ab\""));
+        assert!(!only_layout_differs(".a == \"( x )\"", ".a == \"(x)\""));
+        assert!(only_layout_differs(".a==\"a b\"", ".a == \"a b\""));
+        assert!(!only_layout_differs(
+            r#".a == "say \" hi""#,
+            r#".a == "say \"hi""#
+        ));
+        assert!(only_layout_differs(".a  == 'a  b'", ".a == 'a  b'"));
+    }
+
+    #[test]
     fn len_zero_simplification_requires_whole_lhs() {
-        // Regression: the @len(...) call must span the entire compared side.
-        // `@len(a) and @len(b) == 0` must not become `@is_empty(a) and @len(b)`.
         assert_eq!(
             suggest_plugin_length_simplification(
                 "@len(a) and @len(b) == 0",
@@ -3111,12 +3470,10 @@ test.Service/Method
             ),
             None
         );
-        // Simple whole-LHS case still works.
         assert_eq!(
             suggest_plugin_length_simplification("@len(.x) == 0", OptimizeLevel::Advisory),
             Some((rule_ids::P001, "@is_empty(.x)".to_string()))
         );
-        // Nested parens inside the argument are matched correctly.
         assert_eq!(
             suggest_plugin_length_simplification("@len(f(.x)) == 0", OptimizeLevel::Advisory),
             Some((rule_ids::P001, "@is_empty(f(.x))".to_string()))
@@ -3125,8 +3482,6 @@ test.Service/Method
 
     #[test]
     fn deprecated_rename_no_panic_on_unclosed_paren() {
-        // Regression: `!@<deprecated>(` with no closing paren must not panic
-        // on the slice `rest[1..rest.len()-1]`.
         assert_eq!(
             suggest_deprecated_plugin_rename("!@uuid(", plugin_signatures(), OptimizeLevel::Safe),
             None

@@ -1,31 +1,33 @@
-// Supports: N requests, N responses, multiple backends, interleaved streaming
-
 use crate::optimizer;
 use serde::{Deserialize, Serialize};
 
-/// Workflow event - represents a semantic step in test execution
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WorkflowEvent {
-    /// Test file loaded
-    TestLoaded { file_path: String },
+    TestLoaded {
+        file_path: String,
+    },
 
-    /// Connecting to a backend service
-    Connect { backend: String, address: String },
+    Connect {
+        backend: String,
+        address: String,
+    },
 
-    /// Connected to backend
-    Connected { backend: String, address: String },
+    Connected {
+        backend: String,
+        address: String,
+    },
 
-    /// Loading service descriptors
-    LoadDescriptors { backend: String, service: String },
+    LoadDescriptors {
+        backend: String,
+        service: String,
+    },
 
-    /// Descriptors loaded
     DescriptorsLoaded {
         backend: String,
         service: String,
         method_count: usize,
     },
 
-    /// Sending a request
     SendRequest {
         backend: String,
         request_index: usize,
@@ -33,20 +35,17 @@ pub enum WorkflowEvent {
         line_range: (usize, usize),
     },
 
-    /// Request sent
     RequestSent {
         backend: String,
         request_index: usize,
     },
 
-    /// Receiving a response
     ReceiveResponse {
         backend: String,
         response_index: usize,
         expectation_type: String,
     },
 
-    /// Response received
     ResponseReceived {
         backend: String,
         response_index: usize,
@@ -54,30 +53,32 @@ pub enum WorkflowEvent {
         options: ResponseOptions,
     },
 
-    /// Extracting variables from response
     Extract {
         variables: Vec<String>,
         source_response_index: Option<usize>,
         line_range: (usize, usize),
     },
 
-    /// Variables extracted
-    Extracted { variables: Vec<String> },
+    Extracted {
+        variables: Vec<String>,
+    },
 
-    /// Running assertions
     Assert {
         count: usize,
         target_response_index: Option<usize>,
         line_range: (usize, usize),
     },
 
-    /// Assertions completed
-    Asserted { passed: usize, failed: usize },
+    Asserted {
+        passed: usize,
+        failed: usize,
+    },
 
-    /// Error occurred
-    Error { code: i32, message: String },
+    Error {
+        code: i32,
+        message: String,
+    },
 
-    /// Test execution complete
     Complete {
         total_requests: usize,
         total_responses: usize,
@@ -86,20 +87,21 @@ pub enum WorkflowEvent {
         backends_used: Vec<String>,
     },
 
-    /// Semantic analysis results (type mismatches, unknown plugins)
     SemanticAnalysis {
         type_mismatches: Vec<SemanticError>,
         unknown_plugins: Vec<SemanticError>,
     },
 
-    /// Optimization hints found during analysis
-    OptimizationFound { hints: Vec<OptimizationHint> },
+    OptimizationFound {
+        hints: Vec<OptimizationHint>,
+    },
 
-    /// Validation result
-    ValidationResult { passed: bool, errors: Vec<String> },
+    ValidationResult {
+        passed: bool,
+        errors: Vec<String>,
+    },
 }
 
-/// Semantic error from type mismatches or unknown plugins
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SemanticError {
     pub line: usize,
@@ -109,7 +111,6 @@ pub struct SemanticError {
     pub plugin_name: Option<String>,
 }
 
-/// Optimization hint from optimizer
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OptimizationHint {
     pub line: usize,
@@ -118,7 +119,6 @@ pub struct OptimizationHint {
     pub after: String,
 }
 
-/// Response options from inline options
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResponseOptions {
     pub partial: bool,
@@ -140,7 +140,6 @@ impl From<&crate::execution::ComparisonOptions> for ResponseOptions {
     }
 }
 
-/// Workflow - sequence of events for a test
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workflow {
     pub file_path: String,
@@ -148,7 +147,6 @@ pub struct Workflow {
     pub summary: WorkflowSummary,
 }
 
-/// Workflow summary
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkflowSummary {
     pub total_requests: usize,
@@ -199,10 +197,6 @@ impl Workflow {
         }
         "Unary"
     }
-    /// Messages, not sections — one json-lines section carries N. Counted from
-    /// the plan so the summary agrees with `rpc_mode_name`, which counts the
-    /// events built from the same numbers. Errors stay out of the response
-    /// tally; they have their own.
     fn message_counts(plan: &crate::execution::ExecutionPlan) -> (usize, usize) {
         let requests = plan
             .requests
@@ -224,7 +218,6 @@ impl Workflow {
         (requests, responses)
     }
 
-    /// Build workflow from ExecutionPlan
     pub fn from_plan(plan: &crate::execution::ExecutionPlan) -> Self {
         let mut events = Vec::new();
         let backend = plan.connection.backend.clone();
@@ -253,9 +246,6 @@ impl Workflow {
         });
 
         for request in &plan.requests {
-            // One json-lines section is N messages on a stream; the plan keeps
-            // it as a single entry, so both events fan out here (`validate`
-            // requires the send/sent counts to match).
             let messages = if request.content_type == "json-lines" {
                 request.content.as_array().map_or(1, |v| v.len().max(1))
             } else {
@@ -276,7 +266,6 @@ impl Workflow {
         }
 
         for expectation in &plan.expectations {
-            // Both halves fan out together: `validate` compares the two counts.
             let messages = expectation.message_count.unwrap_or(1).max(1);
             for _ in 0..messages {
                 events.push(WorkflowEvent::ReceiveResponse {
@@ -359,7 +348,6 @@ impl Workflow {
         }
     }
 
-    /// Get events by type
     pub fn events_by_type(&self, event_type: &str) -> Vec<&WorkflowEvent> {
         self.events
             .iter()
@@ -389,42 +377,34 @@ impl Workflow {
             .collect()
     }
 
-    /// Get request events
     pub fn requests(&self) -> Vec<&WorkflowEvent> {
         self.events_by_type("SendRequest")
     }
 
-    /// Get response events
     pub fn responses(&self) -> Vec<&WorkflowEvent> {
         self.events_by_type("ResponseReceived")
     }
 
-    /// Get extraction events
     pub fn extractions(&self) -> Vec<&WorkflowEvent> {
         self.events_by_type("Extract")
     }
 
-    /// Get assertion events
     pub fn assertions(&self) -> Vec<&WorkflowEvent> {
         self.events_by_type("Assert")
     }
 
-    /// Get semantic analysis events
     pub fn semantic_analysis(&self) -> Vec<&WorkflowEvent> {
         self.events_by_type("SemanticAnalysis")
     }
 
-    /// Get optimization hint events
     pub fn optimization_hints(&self) -> Vec<&WorkflowEvent> {
         self.events_by_type("OptimizationFound")
     }
 
-    /// Get validation result events
     pub fn validation_results(&self) -> Vec<&WorkflowEvent> {
         self.events_by_type("ValidationResult")
     }
 
-    /// Validate workflow structure
     pub fn validate(&self) -> ValidationResult {
         let mut errors = Vec::new();
 
@@ -484,7 +464,6 @@ impl Workflow {
         }
     }
 
-    /// Analyze streaming pattern
     pub fn analyze_streaming(&self) -> StreamingPattern {
         let mut pattern = StreamingPattern::Unary;
 
@@ -498,8 +477,6 @@ impl Workflow {
 
         for event in &self.events {
             match event {
-                // One kind per direction: each message emits a matched pair, so
-                // counting both doubled every burst length.
                 WorkflowEvent::RequestSent { .. } => {
                     current_requests += 1;
                     current_responses = 0;
@@ -536,7 +513,6 @@ impl Workflow {
         pattern
     }
 
-    /// Build workflow from GctfDocument with full semantic analysis
     pub fn from_document_with_analysis(doc: &crate::parser::GctfDocument) -> Workflow {
         let mut events = Vec::new();
 
@@ -622,7 +598,6 @@ impl Workflow {
         }
     }
 
-    /// Add execution events from ExecutionPlan
     fn add_execution_events_from_plan(
         events: &mut Vec<WorkflowEvent>,
         plan: &crate::execution::ExecutionPlan,
@@ -649,12 +624,6 @@ impl Workflow {
         });
 
         for request in &plan.requests {
-            // A `json-lines` REQUEST is one section holding N messages, sent as
-            // N messages on one stream. The plan deliberately keeps it as a
-            // single entry carrying the array, so the fan-out happens here.
-            // Both events are emitted N times: `rpc_mode_name` counts
-            // `RequestSent`, while `validate` requires the send/sent counts to
-            // match and `streaming_pattern` counts both.
             let messages = if request.content_type == "json-lines" {
                 request.content.as_array().map_or(1, |v| v.len().max(1))
             } else {
@@ -675,7 +644,6 @@ impl Workflow {
         }
 
         for expectation in &plan.expectations {
-            // Both halves fan out together: `validate` compares the two counts.
             let messages = expectation.message_count.unwrap_or(1).max(1);
             for _ in 0..messages {
                 events.push(WorkflowEvent::ReceiveResponse {
@@ -697,10 +665,6 @@ impl Workflow {
                 events.push(WorkflowEvent::Error { code, message });
             }
 
-            // Symmetric with the request side: a RESPONSE section holding N
-            // json-lines messages is N received messages, and `message_count`
-            // already carries that. Emitting one made `rpc_mode_name` — which
-            // counts these — call server streaming `Unary`.
             for _ in 0..expectation.message_count.unwrap_or(1).max(1) {
                 events.push(WorkflowEvent::ResponseReceived {
                     backend: backend.clone(),
@@ -744,7 +708,6 @@ impl Workflow {
     }
 }
 
-/// Streaming pattern analysis
 #[derive(Debug, Clone)]
 pub enum StreamingPattern {
     Unary,
@@ -764,7 +727,6 @@ pub enum StreamingPattern {
     },
 }
 
-/// Validation result
 #[derive(Debug, Clone)]
 pub struct ValidationResult {
     pub passed: bool,
@@ -795,6 +757,7 @@ mod tests {
             },
             headers: None,
             requests: vec![RequestInfo {
+                skipped: false,
                 index: 1,
                 content: json!({"key": "value"}),
                 content_type: "json".to_string(),
@@ -802,6 +765,7 @@ mod tests {
                 line_end: 8,
             }],
             expectations: vec![ExpectationInfo {
+                skipped: false,
                 index: 1,
                 expectation_type: "response".to_string(),
                 content: Some(json!({"result": "ok"})),
@@ -864,6 +828,7 @@ mod tests {
     fn workflow_streaming_analysis_server() {
         let mut plan = create_test_plan();
         plan.expectations.push(ExpectationInfo {
+            skipped: false,
             index: 2,
             expectation_type: "response".to_string(),
             content: Some(json!({"result": "ok2"})),

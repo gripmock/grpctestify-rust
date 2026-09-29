@@ -1,0 +1,416 @@
+/* The palettes, each in two modes.
+   The base block below is Terminal in daylight: the token contract, and the
+   palette every other block overrides. Amber on near-black is the same palette
+   at night; Slate is the cool one, in both. Every rule in app.css reads these and names no colour of
+   its own, so the palette is this file and nothing else.
+
+   One axis: a `data-theme` attribute, written on <html> by exactly one
+   function — and on the swatch in the theme picker, which is why the theme
+   blocks are not anchored to the root element. Every theme is a block below and a row in `lib/themes.ts`; the
+   grader walks both, so a palette cannot ship unreadable.
+   Colours are rgb() rather than hex so the contrast grader can read them
+   without a browser. */
+:root {
+  color-scheme: light;
+
+  /* Terminal by daylight. Two flat grey lights failed the same way: a neutral
+     page under an amber accent reads as a screenshot of a dark theme with the
+     lights left on. This is the same palette warmed to paper — ivory rather
+     than white, ink that is brown-black rather than blue-black, and the amber
+     burnt down far enough to carry white on a filled control. */
+  --surface: rgb(250, 247, 242);
+  --surface-sunken: rgb(242, 238, 231);
+  --surface-raised: rgb(255, 253, 250);
+  --surface-hover: rgb(238, 233, 224);
+  --row-alt: rgb(246, 242, 236);
+
+  --line: rgb(216, 207, 194);
+  --line-strong: rgb(172, 160, 143);
+
+  --ink: rgb(38, 32, 26);
+  --ink-muted: rgb(110, 100, 88);
+
+  --accent: rgb(158, 78, 8);
+  --accent-soft: rgb(176 88 12 / 0.10);
+  --accent-fill: rgb(176, 88, 12);
+  --accent-ink: rgb(255, 255, 255);
+
+  --ok: rgb(23, 104, 66);
+  --fail: rgb(176, 32, 38);
+  --warn: rgb(140, 100, 10);
+  --void: rgb(3, 5, 6);
+
+  /* One hue per meaning: green belongs to a passing verdict, so a unary badge
+     is teal rather than the same green. */
+  --kind-simple: rgb(13, 110, 110);
+  --kind-down: rgb(28, 85, 165);
+  --kind-up: rgb(101, 60, 175);
+  --kind-duplex: rgb(150, 48, 128);
+  --kind: var(--kind-simple);
+
+  /* Quieter pills: on paper a 14% tint of a saturated hue reads as a highlight
+     rather than a label, and there are a dozen of them on screen. */
+  --tint-badge: 9%;
+  --tint-chip: 8%;
+
+  /* The spacing scale, in 2px steps. It names the steps rather than rounding
+     them away: the mockup's rhythm is built on 2px, and a 4px scale inflated
+     every control by a pixel or two. */
+  --gap-hair: 0.0625rem;
+  --gap-0: 0.125rem;
+  --gap-1: 0.1875rem;
+  --gap-2: 0.25rem;
+  --gap-3: 0.375rem;
+  --gap-4: 0.5rem;
+  --gap-5: 0.625rem;
+  --gap-6: 0.75rem;
+  --gap-7: 1rem;
+
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius-md: 7px;
+  --radius-lg: 9px;
+  --radius-pill: 999px;
+  --output-edge: 2px;
+
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.1);
+  --shadow-md: 0 4px 8px -2px rgb(0 0 0 / 0.12);
+  --shadow-lg: 0 12px 24px -6px rgb(0 0 0 / 0.16);
+  --glow-accent: none;
+
+  --font-ui: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font-code: var(--font-ui);
+  --line-control: 1.2;
+  --line-text: 1.5;
+  --h-badge: 1rem;
+  --h-sm: 1.375rem;
+  --h-seg: 1.5rem;
+  --h-control: 1.75rem;
+  /* The request editor's height in rows layout — the splitter writes it per
+     workbench, this is what it starts from. */
+  --editor-h: 20rem;
+  /* How many lines the message being edited has — the editor sizes to it. */
+  --body-lines: 1;
+
+  --ui-2xs: 0.625rem;
+  --ui-xs: 0.6875rem;
+  --ui-sm: 0.75rem;
+  --ui-base: 0.8125rem;
+  --ui-lg: 0.875rem;
+  --ui-title: 0.9375rem;
+
+  --title-tracking: 0.04em;
+  --title-transform: uppercase;
+  --label-fill: transparent;
+  --label-ink: rgb(166, 84, 10);
+  --label-pad: 0.3125rem;
+
+  --motion-scale: 0.9;
+  --motion-fast: 90ms;
+  --motion-base: 180ms;
+}
+
+[data-theme="terminal-dark"] {
+  color-scheme: dark;
+
+  --surface: rgb(14, 16, 18);
+  --surface-sunken: rgb(8, 10, 11);
+  --surface-raised: rgb(22, 25, 27);
+  --surface-hover: rgb(30, 34, 36);
+  --row-alt: rgb(17, 20, 21);
+
+  --line: rgb(39, 44, 46);
+  --line-strong: rgb(62, 69, 71);
+
+  --ink: rgb(226, 232, 228);
+  --ink-muted: rgb(139, 151, 145);
+
+  /* Lit, not neon. The palette used to run at full saturation — mint green,
+     pure red, a 255-bright amber — which on a near-black screen reads as glare
+     rather than as meaning. Every hue is pulled back to where it still clears
+     its contrast floor and stops shouting. */
+  --accent: rgb(226, 165, 88);
+  --accent-soft: rgb(226 165 88 / 0.14);
+  --accent-fill: rgb(226, 165, 88);
+  --accent-ink: rgb(14, 16, 18);
+
+  --ok: rgb(116, 202, 156);
+  --fail: rgb(226, 108, 105);
+  --warn: rgb(216, 184, 106);
+  --void: rgb(3, 5, 6);
+
+  --kind-simple: rgb(112, 190, 184);
+  --kind-down: rgb(120, 170, 214);
+  --kind-up: rgb(172, 148, 210);
+  --kind-duplex: rgb(210, 156, 100);
+
+  --tint-badge: 11%;
+  --tint-chip: 12%;
+
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.35);
+  --shadow-md: 0 4px 8px -2px rgb(0 0 0 / 0.4);
+  --shadow-lg: 0 12px 24px -6px rgb(0 0 0 / 0.5);
+  --glow-accent: 0 0 10px rgb(226 165 88 / 0.12);
+
+  --label-ink: rgb(226, 165, 88);
+}
+
+/* Cool and quiet: the same structure as Terminal with the warmth taken out, for
+   a screen that is looked at all day and an amber that starts to shout. */
+[data-theme="slate-dark"] {
+  color-scheme: dark;
+
+  --surface: rgb(18, 21, 26);
+  --surface-sunken: rgb(12, 14, 18);
+  --surface-raised: rgb(26, 30, 36);
+  --surface-hover: rgb(35, 40, 47);
+  --row-alt: rgb(21, 25, 30);
+
+  --line: rgb(46, 52, 61);
+  --line-strong: rgb(74, 83, 95);
+
+  --ink: rgb(222, 228, 236);
+  --ink-muted: rgb(148, 158, 171);
+
+  --accent: rgb(126, 180, 242);
+  --accent-soft: rgb(126 180 242 / 0.14);
+  --accent-fill: rgb(126, 180, 242);
+  --accent-ink: rgb(12, 14, 18);
+
+  --ok: rgb(110, 201, 152);
+  --fail: rgb(232, 116, 113);
+  --warn: rgb(216, 184, 106);
+  --void: rgb(7, 8, 10);
+
+  --kind-simple: rgb(112, 190, 184);
+  --kind-down: rgb(130, 176, 220);
+  --kind-up: rgb(178, 156, 214);
+  --kind-duplex: rgb(212, 160, 106);
+
+  --tint-badge: 11%;
+  --tint-chip: 12%;
+
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.35);
+  --shadow-md: 0 4px 8px -2px rgb(0 0 0 / 0.4);
+  --shadow-lg: 0 12px 24px -6px rgb(0 0 0 / 0.5);
+  --glow-accent: none;
+
+  --label-ink: rgb(126, 180, 242);
+}
+
+
+/* Slate by daylight: the cool palette's own paper — a blue-grey page under a
+   blue accent, rather than Terminal's ivory with the amber swapped out. */
+[data-theme="slate-light"] {
+  color-scheme: light;
+
+  --surface: rgb(247, 248, 250);
+  --surface-sunken: rgb(238, 240, 244);
+  --surface-raised: rgb(255, 255, 255);
+  --surface-hover: rgb(232, 235, 240);
+  --row-alt: rgb(243, 245, 247);
+
+  --line: rgb(202, 208, 218);
+  --line-strong: rgb(155, 164, 177);
+
+  --ink: rgb(24, 28, 35);
+  --ink-muted: rgb(92, 100, 112);
+
+  --accent: rgb(26, 88, 178);
+  --accent-soft: rgb(30 95 190 / 0.10);
+  --accent-fill: rgb(30, 95, 190);
+  --accent-ink: rgb(255, 255, 255);
+
+  --ok: rgb(21, 105, 68);
+  --fail: rgb(178, 33, 40);
+  --warn: rgb(140, 100, 10);
+  --void: rgb(3, 5, 6);
+
+  --kind-simple: rgb(14, 116, 116);
+  --kind-down: rgb(29, 88, 168);
+  --kind-up: rgb(104, 63, 178);
+  --kind-duplex: rgb(154, 50, 132);
+
+  --tint-badge: 9%;
+  --tint-chip: 8%;
+
+  --shadow-sm: 0 1px 2px 0 rgb(15 23 42 / 0.08);
+  --shadow-md: 0 4px 8px -2px rgb(15 23 42 / 0.10);
+  --shadow-lg: 0 12px 24px -6px rgb(15 23 42 / 0.14);
+  --glow-accent: none;
+
+  --label-ink: rgb(26, 88, 178);
+}
+
+/* Plum: the violet identity. Warm where Slate is cold and cool where Terminal
+   is warm — a page with a trace of the accent in it rather than a neutral one
+   with a violet dropped on top. */
+[data-theme="plum-light"] {
+  color-scheme: light;
+
+  --surface: rgb(250, 247, 251);
+  --surface-sunken: rgb(242, 236, 245);
+  --surface-raised: rgb(255, 253, 255);
+  --surface-hover: rgb(237, 229, 241);
+  --row-alt: rgb(246, 241, 248);
+
+  --line: rgb(215, 203, 221);
+  --line-strong: rgb(166, 150, 176);
+
+  --ink: rgb(34, 27, 39);
+  --ink-muted: rgb(104, 92, 114);
+
+  --accent: rgb(126, 42, 148);
+  --accent-soft: rgb(138 48 160 / 0.10);
+  --accent-fill: rgb(138, 48, 160);
+  --accent-ink: rgb(255, 255, 255);
+
+  --ok: rgb(21, 105, 68);
+  --fail: rgb(178, 33, 40);
+  --warn: rgb(140, 100, 10);
+  --void: rgb(5, 3, 6);
+
+  /* One hue per meaning, the same four as everywhere else — the accent is a
+     deeper violet than the client-stream badge, and the badge carries its
+     word. */
+  --kind-simple: rgb(14, 116, 116);
+  --kind-down: rgb(29, 88, 168);
+  --kind-up: rgb(101, 60, 175);
+  --kind-duplex: rgb(154, 50, 132);
+
+  --tint-badge: 9%;
+  --tint-chip: 8%;
+
+  --shadow-sm: 0 1px 2px 0 rgb(40 20 50 / 0.10);
+  --shadow-md: 0 4px 8px -2px rgb(40 20 50 / 0.12);
+  --shadow-lg: 0 12px 24px -6px rgb(40 20 50 / 0.16);
+  --glow-accent: none;
+
+  --label-ink: rgb(126, 42, 148);
+}
+
+[data-theme="plum-dark"] {
+  color-scheme: dark;
+
+  --surface: rgb(20, 16, 24);
+  --surface-sunken: rgb(13, 10, 16);
+  --surface-raised: rgb(29, 24, 34);
+  --surface-hover: rgb(38, 31, 45);
+  --row-alt: rgb(24, 19, 28);
+
+  --line: rgb(50, 42, 58);
+  --line-strong: rgb(80, 68, 92);
+
+  --ink: rgb(230, 225, 236);
+  --ink-muted: rgb(157, 148, 168);
+
+  --accent: rgb(206, 154, 232);
+  --accent-soft: rgb(206 154 232 / 0.14);
+  --accent-fill: rgb(206, 154, 232);
+  --accent-ink: rgb(20, 16, 24);
+
+  --ok: rgb(116, 202, 156);
+  --fail: rgb(232, 116, 113);
+  --warn: rgb(216, 184, 106);
+  --void: rgb(6, 4, 8);
+
+  --kind-simple: rgb(112, 190, 184);
+  --kind-down: rgb(130, 176, 220);
+  --kind-up: rgb(166, 150, 226);
+  --kind-duplex: rgb(212, 160, 106);
+
+  --tint-badge: 11%;
+  --tint-chip: 12%;
+
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.35);
+  --shadow-md: 0 4px 8px -2px rgb(0 0 0 / 0.4);
+  --shadow-lg: 0 12px 24px -6px rgb(0 0 0 / 0.5);
+  --glow-accent: 0 0 10px rgb(206 154 232 / 0.12);
+
+  --label-ink: rgb(206, 154, 232);
+}
+
+/* Mono: the palette with no hue of its own. What is chosen is the ink itself,
+   so the only colour on screen is the colour that means something — a passing
+   verdict, a failing one, and the four call shapes. */
+[data-theme="mono-light"] {
+  color-scheme: light;
+
+  --surface: rgb(252, 252, 252);
+  --surface-sunken: rgb(242, 242, 242);
+  --surface-raised: rgb(255, 255, 255);
+  --surface-hover: rgb(235, 235, 235);
+  --row-alt: rgb(247, 247, 247);
+
+  --line: rgb(207, 207, 207);
+  --line-strong: rgb(148, 148, 148);
+
+  --ink: rgb(22, 22, 22);
+  --ink-muted: rgb(94, 94, 94);
+
+  --accent: rgb(22, 22, 22);
+  --accent-soft: rgb(22 22 22 / 0.08);
+  --accent-fill: rgb(30, 30, 30);
+  --accent-ink: rgb(255, 255, 255);
+
+  --ok: rgb(21, 105, 68);
+  --fail: rgb(178, 33, 40);
+  --warn: rgb(133, 95, 8);
+  --void: rgb(4, 4, 4);
+
+  --kind-simple: rgb(14, 116, 116);
+  --kind-down: rgb(29, 88, 168);
+  --kind-up: rgb(101, 60, 175);
+  --kind-duplex: rgb(154, 50, 132);
+
+  --tint-badge: 8%;
+  --tint-chip: 7%;
+
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.08);
+  --shadow-md: 0 4px 8px -2px rgb(0 0 0 / 0.10);
+  --shadow-lg: 0 12px 24px -6px rgb(0 0 0 / 0.14);
+  --glow-accent: none;
+
+  --label-ink: rgb(22, 22, 22);
+}
+
+[data-theme="mono-dark"] {
+  color-scheme: dark;
+
+  --surface: rgb(13, 13, 13);
+  --surface-sunken: rgb(7, 7, 7);
+  --surface-raised: rgb(21, 21, 21);
+  --surface-hover: rgb(31, 31, 31);
+  --row-alt: rgb(16, 16, 16);
+
+  --line: rgb(43, 43, 43);
+  --line-strong: rgb(72, 72, 72);
+
+  --ink: rgb(233, 233, 233);
+  --ink-muted: rgb(150, 150, 150);
+
+  --accent: rgb(240, 240, 240);
+  --accent-soft: rgb(240 240 240 / 0.12);
+  --accent-fill: rgb(233, 233, 233);
+  --accent-ink: rgb(13, 13, 13);
+
+  --ok: rgb(116, 202, 156);
+  --fail: rgb(232, 116, 113);
+  --warn: rgb(216, 184, 106);
+  --void: rgb(3, 3, 3);
+
+  --kind-simple: rgb(112, 190, 184);
+  --kind-down: rgb(130, 176, 220);
+  --kind-up: rgb(172, 148, 210);
+  --kind-duplex: rgb(212, 160, 106);
+
+  --tint-badge: 11%;
+  --tint-chip: 12%;
+
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+  --shadow-md: 0 4px 8px -2px rgb(0 0 0 / 0.45);
+  --shadow-lg: 0 12px 24px -6px rgb(0 0 0 / 0.55);
+  --glow-accent: none;
+
+  --label-ink: rgb(233, 233, 233);
+}

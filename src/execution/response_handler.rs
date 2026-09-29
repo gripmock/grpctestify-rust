@@ -3,6 +3,7 @@ use crate::execution::runner::TestExecutionResult;
 use crate::grpc::GrpcResponse;
 use crate::parser::GctfDocument;
 use crate::parser::ast::{InlineOptions, Section, SectionContent, SectionType};
+use crate::utils::section_header_line;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,7 +18,6 @@ static PLUGIN_REGISTRY: LazyLock<Arc<dyn apif_assert::registry::PluginRegistry>>
     LazyLock::new(|| Arc::new(crate::execution::plugin_dir::build_plugin_manager()));
 
 impl ResponseHandler {
-    /// Create new response handler
     pub fn new(no_assert: bool) -> Self {
         Self {
             no_assert,
@@ -25,7 +25,6 @@ impl ResponseHandler {
         }
     }
 
-    /// Validate a single response message against expected value
     pub fn validate_message(
         &self,
         actual: &Value,
@@ -46,6 +45,7 @@ impl ResponseHandler {
                         message,
                         expected: exp,
                         actual: act,
+                        hint: _,
                     } => {
                         let mut msg = format!("  - {}", message);
                         if let (Some(e), Some(a)) = (exp, act) {
@@ -68,7 +68,6 @@ impl ResponseHandler {
         Ok(())
     }
 
-    /// Get expected values for a response section
     fn expected_values_for_section(
         section: &Section,
         variables: &HashMap<String, Value>,
@@ -91,12 +90,10 @@ impl ResponseHandler {
         }
     }
 
-    /// Substitute variables in a JSON value (public for use by orchestrator)
     pub fn substitute_variables_in_value(value: &mut Value, variables: &HashMap<String, Value>) {
         crate::execution::runner_helpers::substitute_variables(value, variables);
     }
 
-    /// Validate a full document against a response (for testing purposes)
     pub fn validate_document(
         &self,
         document: &GctfDocument,
@@ -139,7 +136,7 @@ impl ResponseHandler {
                                 if !diffs.is_empty() {
                                     failure_reasons.push(format!(
                                         "Response mismatch at line {}:",
-                                        section.start_line
+                                        section_header_line(section.start_line)
                                     ));
                                     for diff in diffs {
                                         match diff {
@@ -147,6 +144,7 @@ impl ResponseHandler {
                                                 message,
                                                 expected: exp,
                                                 actual: act,
+                                                hint: _,
                                             } => {
                                                 let mut msg = format!("  - {}", message);
                                                 if let (Some(exp), Some(act)) = (exp, act) {
@@ -171,7 +169,7 @@ impl ResponseHandler {
                         } else if !self.no_assert {
                             failure_reasons.push(format!(
                                 "Expected message for RESPONSE section at line {}, but no more messages received",
-                                section.start_line
+                                section_header_line(section.start_line)
                             ));
                             break;
                         }
@@ -198,10 +196,11 @@ impl ResponseHandler {
                                             message,
                                             expected,
                                             actual,
+                                            hint: _,
                                         } => {
                                             let ctx = format!(
                                                 "(attached to RESPONSE at line {})",
-                                                section.start_line
+                                                section_header_line(section.start_line)
                                             );
                                             failure_reasons.push(format!(
                                                 "Assertion failed {}: {}",
@@ -217,7 +216,7 @@ impl ResponseHandler {
                                         crate::assert::AssertionResult::Error(m) => {
                                             let ctx = format!(
                                                 "(attached to RESPONSE at line {})",
-                                                section.start_line
+                                                section_header_line(section.start_line)
                                             );
                                             failure_reasons
                                                 .push(format!("Assertion error {}: {}", ctx, m));
@@ -250,8 +249,12 @@ impl ResponseHandler {
                                             message,
                                             expected,
                                             actual,
+                                            hint: _,
                                         } => {
-                                            let ctx = format!("at line {}", section.start_line);
+                                            let ctx = format!(
+                                                "at line {}",
+                                                section_header_line(section.start_line)
+                                            );
                                             failure_reasons.push(format!(
                                                 "Assertion failed {}: {}",
                                                 ctx, message
@@ -264,7 +267,10 @@ impl ResponseHandler {
                                             }
                                         }
                                         crate::assert::AssertionResult::Error(m) => {
-                                            let ctx = format!("at line {}", section.start_line);
+                                            let ctx = format!(
+                                                "at line {}",
+                                                section_header_line(section.start_line)
+                                            );
                                             failure_reasons
                                                 .push(format!("Assertion error {}: {}", ctx, m));
                                         }
@@ -276,7 +282,7 @@ impl ResponseHandler {
                     } else if !self.no_assert {
                         failure_reasons.push(format!(
                             "Expected message for ASSERTS section at line {}, but no more messages received",
-                            section.start_line
+                            section_header_line(section.start_line)
                         ));
                     }
                 }
@@ -291,14 +297,15 @@ impl ResponseHandler {
                                         } else {
                                             failure_reasons.push(format!(
                                                  "Extraction failed at line {}: Query '{}' returned no results",
-                                                 section.start_line, query
+                                                 section_header_line(section.start_line), query
                                              ));
                                         }
                                     }
                                     Err(e) => {
                                         failure_reasons.push(format!(
                                             "Extraction error at line {}: {}",
-                                            section.start_line, e
+                                            section_header_line(section.start_line),
+                                            e
                                         ));
                                     }
                                 }
@@ -307,7 +314,7 @@ impl ResponseHandler {
                     } else {
                         failure_reasons.push(format!(
                             "EXTRACT at line {} requires a previous response message",
-                            section.start_line
+                            section_header_line(section.start_line)
                         ));
                     }
                 }
@@ -326,9 +333,6 @@ impl ResponseHandler {
     }
 }
 
-// Most tests here construct a `ResponseHandler`, which forces this file's own
-// `PLUGIN_REGISTRY` lazy static (`build_plugin_manager()` → `fs::metadata` on
-// configured plugin dirs) — blocked under miri isolation.
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
@@ -395,7 +399,6 @@ mod tests {
         let expected = json!({"id": 456});
         let options = InlineOptions::default();
 
-        // Should always pass when no_assert is true
         let result = handler.validate_message(&actual, &expected, &options);
         result.expect("no_assert must accept any message");
     }

@@ -7,11 +7,9 @@ use crate::error::GrpcError;
 #[derive(Debug, Default)]
 pub struct TransportResult {
     pub messages: Vec<Value>,
+    pub message_offsets_ms: Vec<u64>,
     pub headers: HashMap<String, String>,
     pub trailers: HashMap<String, String>,
-    /// Structured status carried verbatim across the transport boundary — no
-    /// format-then-reparse. Producers build it directly from `tonic::Status`
-    /// (grpc) or the parsed Connect/grpc-web error (HTTP).
     pub error: Option<GrpcError>,
 }
 

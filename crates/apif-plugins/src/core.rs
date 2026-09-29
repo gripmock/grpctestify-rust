@@ -1,34 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
-//! Assertion plugins — built-in functions for gRPC test assertions.
-//!
-//! Plugins extend the assertion engine with custom validation logic.
-//! Each plugin implements the [`Plugin`] trait and is registered with [`PluginManager`].
-//!
-//! # Type System
-//!
-//! Plugin signatures include full type information (`TypeInfo`, `ArgTypeInfo`)
-//! that is consumed by:
-//! - **Optimizer**: type-aware rewrites (e.g., `@len(.x) >= 0 → true`)
-//! - **LSP**: hover information, completion, signature help
-//! - **Semantics**: type-checking assertion expressions
-//! - **Explain/Inspect**: human-readable type information
-//!
-//! # Available Plugins
-//!
-//! | Plugin | Purpose | Returns |
-//! |--------|---------|---------|
-//! | `@uuid` | Validate UUID format | bool |
-//! | `@email` | Validate email format | bool |
-//! | `@ip` | Validate IP address | bool |
-//! | `@url` | Validate URL format | bool |
-//! | `@timestamp` | Validate Unix timestamp | bool |
-//! | `@regex` | Regex matching | bool |
-//! | `@len` / `@empty` | Length/emptiness checks | non-negative integer / bool |
-//! | `@header` / `@has_header` | HTTP header extraction/checks | string|null / bool |
-//! | `@trailer` / `@has_trailer` | gRPC trailer extraction/checks | string|null / bool |
-//! | `@env` | Environment variable (with optional default) | string|null |
-//! | `@elapsed_ms` / `@total_elapsed_ms` | Timing assertions | non-negative integer |
-//! | `@scope.message_count` / `@scope.index` | Streaming scope info | non-negative integer |
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 pub use crate::type_info::{ArgTypeInfo, TypeInfo, TypedPluginSignature};
 
@@ -39,7 +9,6 @@ use std::sync::{Arc, LazyLock, RwLock};
 
 use apif_assert::registry;
 
-// Re-export shared types from assert module (single source of truth)
 pub use registry::{AssertionTiming, PluginContext, PluginResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,18 +20,13 @@ pub enum PluginPurity {
 
 #[derive(Debug, Clone, Copy)]
 pub struct PluginSignature {
-    /// Extended return type — the single source of truth for return type information.
     pub return_type: TypeInfo,
-    /// Type information for each argument (for LSP signature help).
     pub arg_types: &'static [ArgTypeInfo],
     pub purity: PluginPurity,
     pub deterministic: bool,
     pub idempotent: bool,
     pub safe_for_rewrite: bool,
-    /// Human-readable argument names for signature display.
     pub arg_names: &'static [&'static str],
-    /// Canonical plugin name to use instead (e.g., `Some("is_uuid")` for deprecated `"uuid"`).
-    /// `None` means the plugin name is current and not deprecated.
     pub replacement: Option<&'static str>,
 }
 
@@ -81,16 +45,11 @@ impl Default for PluginSignature {
     }
 }
 
-/// Trait for all plugins
 pub trait Plugin: Send + Sync {
-    /// unique name of the plugin (e.g., "uuid", "len")
     fn name(&self) -> &str;
-    /// Description of what the plugin does
     fn description(&self) -> &str;
-    /// Execute the plugin logic
     fn execute(&self, args: &[Value], context: &PluginContext) -> Result<PluginResult>;
 
-    /// Static plugin signature used by optimizer/LSP.
     fn signature(&self) -> PluginSignature {
         PluginSignature::default()
     }
@@ -112,10 +71,6 @@ pub fn extract_plugin_call_name(expr: &str) -> Option<String> {
         return None;
     }
 
-    // The whole expression has to BE the call. Accepting anything that merely
-    // starts with `@` and ends with `)` classified
-    // `@is_empty(.a) and @is_empty(.b)` as one plugin call, and the boolean
-    // rules built on this then rewrote the wrong operand.
     if !call_closes_at_end(&e[open + 1..]) {
         return None;
     }
@@ -123,8 +78,6 @@ pub fn extract_plugin_call_name(expr: &str) -> Option<String> {
     Some(e[1..open].trim().to_string())
 }
 
-/// Whether the opening parenthesis just consumed closes at the very end,
-/// ignoring parentheses inside string literals.
 fn call_closes_at_end(after_open: &str) -> bool {
     let mut depth = 0i32;
     let mut quote: Option<char> = None;
@@ -160,7 +113,6 @@ pub fn plugin_signature_map() -> HashMap<String, PluginSignature> {
         .collect()
 }
 
-/// Cached plugin signatures — single source of truth for all modules.
 pub static PLUGIN_SIGNATURES: LazyLock<HashMap<String, PluginSignature>> =
     LazyLock::new(plugin_signature_map);
 
@@ -187,7 +139,6 @@ impl PluginManager {
             ("empty", "is_empty"),
         ];
 
-        // Register original plugins under their current names
         self.register(Arc::new(crate::uuid::UuidPlugin));
         self.register(Arc::new(crate::email::EmailPlugin));
         self.register(Arc::new(crate::ip::IpPlugin));
@@ -195,12 +146,9 @@ impl PluginManager {
         self.register(Arc::new(crate::timestamp::TimestampPlugin));
         self.register(Arc::new(crate::empty::EmptyPlugin));
 
-        // Register canonical (is_*) and deprecated (old) names
         for &(old_name, new_name) in &plugin_pairs {
-            // Get the original plugin to wrap
             let inner = self.get(old_name).expect("plugin must be registered");
 
-            // Canonical name (is_*) — replacement=None means not deprecated
             self.register_with_name(
                 new_name,
                 Arc::new(RenamedPlugin {
@@ -210,7 +158,6 @@ impl PluginManager {
                 }),
             );
 
-            // Old name — deprecated, replacement=Some(new_name)
             self.register_with_name(
                 old_name,
                 Arc::new(RenamedPlugin {
@@ -221,7 +168,6 @@ impl PluginManager {
             );
         }
 
-        // Non-deprecated plugins
         self.register(Arc::new(crate::header_extract::HeaderExtractPlugin));
         self.register(Arc::new(crate::header_extract::HasHeaderPlugin));
         self.register(Arc::new(crate::trailer_extract::TrailerExtractPlugin));
@@ -229,20 +175,18 @@ impl PluginManager {
         self.register(Arc::new(crate::len::LenPlugin));
         self.register(Arc::new(crate::env::EnvPlugin));
         self.register(Arc::new(crate::regex::RegexPlugin));
+        self.register(Arc::new(crate::status::StatusPlugin));
         self.register(Arc::new(crate::timing::ElapsedMsPlugin));
         self.register(Arc::new(crate::timing::TotalElapsedMsPlugin));
         self.register(Arc::new(crate::timing::ScopeMessageCountPlugin));
         self.register(Arc::new(crate::timing::ScopeIndexPlugin));
 
-        // Register canonical scope plugin names (@scope.message_count, @scope.index)
-        // and deprecated old names (@scope_message_count, @scope_index)
         let scope_pairs: [(&str, &str); 2] = [
             ("scope_message_count", "scope.message_count"),
             ("scope_index", "scope.index"),
         ];
         for &(old_name, new_name) in &scope_pairs {
             let inner = self.get(new_name).expect("scope plugin must be registered");
-            // Old name — deprecated, use new name instead
             self.register_with_name(
                 old_name,
                 Arc::new(RenamedPlugin {
@@ -253,13 +197,11 @@ impl PluginManager {
             );
         }
 
-        // New plugins
         self.register(Arc::new(crate::has_value::HasValuePlugin));
         self.register(Arc::new(crate::is_base64::IsBase64Plugin));
         self.register(Arc::new(crate::is_json::IsJsonPlugin));
         self.register(Arc::new(crate::schema::SchemaPlugin));
 
-        // Type methods (@type.method syntax)
         crate::type_methods::register_all(self);
     }
 
@@ -302,12 +244,9 @@ impl Default for PluginManager {
     }
 }
 
-/// Wrapper that renames a plugin and optionally marks it deprecated.
-/// Used for `is_*` aliases and old deprecated names.
 struct RenamedPlugin {
     inner: Arc<dyn Plugin>,
     new_name: &'static str,
-    /// `None` = not deprecated. `Some(x)` = deprecated, use `x` instead.
     replacement: Option<&'static str>,
 }
 
@@ -328,7 +267,6 @@ impl Plugin for RenamedPlugin {
     }
 }
 
-/// Wrapper to convert Arc<dyn Plugin> to Arc<dyn PluginApi>
 struct PluginApiWrapper(Arc<dyn Plugin>);
 
 impl apif_assert::registry::PluginApi for PluginApiWrapper {
@@ -381,7 +319,6 @@ mod tests {
     #[test]
     fn plugin_manager_new() {
         let manager = PluginManager::new();
-        // PluginManager registers defaults on creation
         let plugins = manager.plugins.read().unwrap();
         assert!(!plugins.is_empty());
     }
@@ -415,7 +352,7 @@ mod tests {
     fn plugin_manager_list() {
         let manager = PluginManager::new();
         let plugins = manager.list();
-        assert!(plugins.len() >= 8); // uuid, email, ip, url, timestamp, header, trailer, len
+        assert!(plugins.len() >= 8);
     }
 
     #[test]
@@ -492,9 +429,7 @@ mod tests {
 
             let sig = plugin.signature();
 
-            // Verify RenamedPlugin sets replacement correctly
             if name.starts_with("is_") {
-                // Canonical name — replacement must be None
                 assert!(
                     sig.replacement.is_none(),
                     "canonical plugin {} should not have replacement",
@@ -502,7 +437,6 @@ mod tests {
                 );
             }
 
-            // Verify deprecated names point to canonical
             let canonical = format!("is_{}", name);
             if manager.get(&canonical).is_some() && name != canonical {
                 assert_eq!(
@@ -553,11 +487,9 @@ mod tests {
 
         let manager = PluginManager::new();
 
-        // get_plugin with @ prefix
         let plugin = manager.get_plugin("@uuid");
         assert!(plugin.is_some(), "should find @uuid");
 
-        // get_plugin without @ prefix
         let plugin = manager.get_plugin("uuid");
         assert!(plugin.is_some(), "should find uuid");
     }
@@ -574,7 +506,6 @@ mod tests {
     fn renamed_plugin_description() {
         let manager = PluginManager::new();
 
-        // Both old and new names should have the same description
         let is_uuid = manager.get("is_uuid").unwrap();
         let uuid = manager.get("uuid").unwrap();
         assert_eq!(is_uuid.description(), uuid.description());
@@ -592,7 +523,6 @@ mod tests {
         let map = plugin_signature_map();
         assert!(!map.is_empty(), "plugin signature map should not be empty");
 
-        // Verify known plugins have entries
         assert!(map.contains_key("uuid"), "uuid should be in signature map");
         assert!(
             map.contains_key("is_uuid"),
@@ -607,7 +537,6 @@ mod tests {
 
     #[test]
     fn extract_plugin_call_name_various() {
-        // Valid calls
         assert_eq!(extract_plugin_call_name("@uuid(.x)").unwrap(), "uuid");
         assert_eq!(
             extract_plugin_call_name("@url.scheme(.x)").unwrap(),
@@ -618,18 +547,12 @@ mod tests {
             "is_email"
         );
 
-        // Invalid calls
         assert!(
             extract_plugin_call_name("uuid(.x)").is_none(),
             "missing @ prefix"
         );
-        // A compound expression is not one plugin call. Accepting it made the
-        // optimizer's boolean rules rewrite the wrong operand:
-        // `@is_empty(.a) and @is_empty(.b) == false` became
-        // `!@is_empty(.a) and @is_empty(.b)`.
         assert!(extract_plugin_call_name("@is_empty(.a) and @is_empty(.b)").is_none());
         assert!(extract_plugin_call_name("@is_empty(.a) == false").is_none());
-        // Nested parens and parens inside strings still resolve to one call.
         assert_eq!(
             extract_plugin_call_name("@len(f(.a, g(.b)))").unwrap(),
             "len"

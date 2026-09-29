@@ -1,0 +1,26 @@
+--- META ---
+name: Greeting per row
+tags: [dataset, users]
+
+--- DATASET ---
+- id: "1"
+  name: Ada
+- id: "2"
+  name: Grace
+
+--- ADDRESS ---
+localhost:50051
+
+--- ENDPOINT ---
+user.UserService/GetUser
+
+--- REQUEST ---
+{
+  "id": "{{dataset.id}}"
+}
+
+--- RESPONSE ---
+{
+  "id": "{{dataset.id}}",
+  "username": "{{dataset.name}}"
+}

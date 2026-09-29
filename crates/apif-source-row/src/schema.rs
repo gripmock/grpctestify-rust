@@ -1,8 +1,7 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-// Re-export bench schema constants from parser (format-level validation data)
 pub use apif_parser::validator::{
     BENCH_ASSERT_MODE_VALUES, BENCH_CACHE_VALUES, BENCH_DURATION_KEYS, BENCH_DURATION_STOP_VALUES,
     BENCH_LOAD_SCHEDULE_VALUES, BENCH_MODE_VALUES, BENCH_NUMERIC_KEYS, allowed_values_message,
@@ -28,10 +27,6 @@ pub const BENCH_DIRECT_KEYS: &[&str] = &[
 
 pub const BENCH_COMPOUND_KEYS: &[&str] = &["sources"];
 
-/// The BENCH key list, owned by `apif_parser::validator` — the format-level
-/// validator is the single source of truth. This crate keeps the grouped
-/// constants below for presentation (rank, detail text), not as a second list;
-/// `grouped_bench_keys_match_the_parser` pins the two together.
 pub fn supported_bench_keys() -> Vec<&'static str> {
     apif_parser::validator::supported_bench_keys()
 }
@@ -243,8 +238,6 @@ pub fn bench_key_rank(key: &str) -> usize {
     canonical_order.len() + 1
 }
 
-/// Built-in benchmark profiles.
-/// Each profile is a set of key-value pairs that override defaults.
 pub static BUILTIN_PROFILES: LazyLock<HashMap<&'static str, HashMap<&'static str, &'static str>>> =
     LazyLock::new(|| {
         let mut m: HashMap<&str, HashMap<&str, &str>> = HashMap::new();
@@ -301,11 +294,19 @@ pub static BUILTIN_PROFILES: LazyLock<HashMap<&'static str, HashMap<&'static str
         soak.insert("load_start", "50");
         m.insert("soak", soak);
 
+        let mut sweep = HashMap::new();
+        sweep.insert("description", "Concurrency sweep 1→64");
+        sweep.insert("mode", "fixed");
+        sweep.insert("requests", "200");
+        sweep.insert("concurrency_schedule", "step");
+        sweep.insert("concurrency_start", "1");
+        sweep.insert("concurrency_end", "64");
+        sweep.insert("concurrency_step", "8");
+        m.insert("sweep", sweep);
+
         m
     });
 
-/// Apply a named profile to a BENCH section config.
-/// Returns the list of (key, value) pairs that the profile defines.
 pub fn apply_profile(name: &str) -> Vec<(&'static str, &'static str)> {
     if let Some(profile) = BUILTIN_PROFILES.get(name) {
         return profile.iter().map(|(k, v)| (*k, *v)).collect();
@@ -313,12 +314,10 @@ pub fn apply_profile(name: &str) -> Vec<(&'static str, &'static str)> {
     Vec::new()
 }
 
-/// Custom profiles loaded from YAML files at runtime.
 static CUSTOM_PROFILES: std::sync::LazyLock<
     std::sync::RwLock<HashMap<String, HashMap<String, String>>>,
 > = std::sync::LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
 
-/// Register a custom profile at runtime.
 pub fn register_custom_profile(name: &str, keys: HashMap<String, String>) {
     CUSTOM_PROFILES
         .write()
@@ -326,8 +325,6 @@ pub fn register_custom_profile(name: &str, keys: HashMap<String, String>) {
         .insert(name.to_string(), keys);
 }
 
-/// Apply a custom (or built-in) profile, returning key-value pairs.
-/// Returns empty vec if the profile is not found.
 pub fn apply_profile_dynamic(name: &str) -> Vec<(String, String)> {
     let builtin = apply_profile(name);
     if !builtin.is_empty() {
@@ -342,7 +339,6 @@ pub fn apply_profile_dynamic(name: &str) -> Vec<(String, String)> {
     Vec::new()
 }
 
-/// List all available profiles (built-in + custom).
 pub fn list_profiles() -> Vec<(String, HashMap<String, String>)> {
     let mut result: Vec<(String, HashMap<String, String>)> = BUILTIN_PROFILES
         .iter()
@@ -374,8 +370,6 @@ mod tests {
         assert!(keys.contains(&"thresholds.*"));
     }
 
-    /// The grouped constants are presentation metadata, but they used to *be*
-    /// the key list. If a key is added to the parser and not to a group here,
     #[test]
     fn grouped_bench_keys_match_the_parser() {
         let mut grouped: Vec<&'static str> = Vec::new();
@@ -431,6 +425,28 @@ mod tests {
         let keys = bench_keys_canonical_order();
         assert_eq!(keys.first().copied(), Some("mode"));
         assert!(keys.iter().position(|k| *k == "thresholds.*").is_some());
+    }
+
+    #[test]
+    fn a_sweep_is_a_profile_the_command_line_can_name() {
+        let keys: std::collections::HashMap<&str, &str> =
+            apply_profile("sweep").into_iter().collect();
+        assert_eq!(keys.get("concurrency_schedule").copied(), Some("step"));
+        assert_eq!(keys.get("concurrency_start").copied(), Some("1"));
+        assert_eq!(keys.get("concurrency_end").copied(), Some("64"));
+        assert!(keys.contains_key("requests") || keys.contains_key("duration"));
+        assert!(keys.contains_key("description"));
+    }
+
+    #[test]
+    fn every_profile_says_what_it_is() {
+        for (name, keys) in list_profiles() {
+            assert!(
+                keys.get("description")
+                    .is_some_and(|d| !d.trim().is_empty()),
+                "{name} has no description"
+            );
+        }
     }
 
     #[test]

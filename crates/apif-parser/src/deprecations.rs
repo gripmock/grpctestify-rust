@@ -1,22 +1,7 @@
-//! Single source of truth for detecting deprecated `.gctf` spellings.
-//!
-//! Runs over the shared `gctf_tokenizer` token stream (the same one both the
-//! strict `core.rs` and lenient `error_recovery.rs` parsers consume), so every
-//! command surfaces the *same* deprecation warnings from one place instead of
-//! the scattered, per-command scans that used to drift (`check` via the
-//! validator, the lenient path via its own inline check, LSP via yet another).
-//!
-//! Detection only — it does not mutate tokens. Canonicalization already happens
-//! downstream (`SectionType::from_keyword` maps `HEADERS`→`REQUEST_HEADERS`, the
-//! validator accepts kebab aliases, `fmt` re-emits canonical spellings), so the
-//! missing piece was uniform *reporting*, not the rewrite.
-
 use crate::ast::{DEPRECATED_KEBAB_CASE_KEYS, SectionType};
 use crate::gctf_tokenizer::{GctfToken, GctfTokenKind, tokenize_kv_line};
 use apif_diagnostics::{Diagnostic, DiagnosticCode, Range};
 
-/// Canonical spelling for a deprecated kebab-case key, or `None` if `key` isn't
-/// a known deprecated form.
 fn deprecated_kebab_canonical(key: &str) -> Option<&'static str> {
     DEPRECATED_KEBAB_CASE_KEYS
         .iter()
@@ -24,12 +9,6 @@ fn deprecated_kebab_canonical(key: &str) -> Option<&'static str> {
         .map(|(_, canonical)| *canonical)
 }
 
-/// Detect every deprecated spelling in the token stream, each as a `Warning`
-/// diagnostic located at the offending line. Covers the three token-visible
-/// forms: the `HEADERS` section alias, kebab-case `OPTIONS` keys, and kebab-case
-/// `#[...]` attributes. (Deprecated *plugin* names live inside ASSERTS
-/// expression text and stay with `apif_semantics::collect_deprecated_plugin_calls`,
-/// which already is a single shared source.)
 pub fn detect_deprecations(tokens: &[GctfToken]) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     let mut current_section: Option<SectionType> = None;
@@ -61,9 +40,6 @@ pub fn detect_deprecations(tokens: &[GctfToken]) -> Vec<Diagnostic> {
                 }
             }
             GctfTokenKind::Content(text) => {
-                // Kebab OPTIONS keys — only inside an OPTIONS section, so a
-                // `retry-delay:`-shaped line in some other section's body (or a
-                // JSON payload) can't false-match.
                 if current_section == Some(SectionType::Options)
                     && let Some((key, _)) = tokenize_kv_line(text)
                     && let Some(canonical) = deprecated_kebab_canonical(&key)
@@ -132,8 +108,6 @@ mod tests {
 
     #[test]
     fn kebab_key_outside_options_is_not_flagged() {
-        // A `retry-delay:`-shaped line in a REQUEST JSON body must not be
-        // mistaken for a deprecated OPTIONS key.
         let msgs = messages("--- REQUEST ---\n{\n  \"retry-delay\": 5\n}\n");
         assert!(msgs.is_empty(), "unexpected: {msgs:?}");
     }
@@ -143,7 +117,6 @@ mod tests {
         let src = "--- OPTIONS ---\ntimeout: 5\nretry-delay: 0.5\n";
         let diags = detect_deprecations(&tokenize_gctf(src));
         assert_eq!(diags.len(), 1);
-        // `retry-delay` is on line index 2 (0-based).
         assert_eq!(diags[0].range.start.line, 2);
     }
 }

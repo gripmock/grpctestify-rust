@@ -12,7 +12,6 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
-/// Request building and sending result
 #[derive(Debug, Clone)]
 pub struct RequestSendResult {
     pub success: bool,
@@ -24,7 +23,6 @@ pub struct RequestHandler {
 }
 
 impl RequestHandler {
-    /// Create new request handler
     pub fn new(
         _no_assert: bool,
         _verbose: bool,
@@ -33,7 +31,6 @@ impl RequestHandler {
         Self { coverage_collector }
     }
 
-    /// Build request value from section
     pub fn build_request(
         &self,
         section: &Section,
@@ -45,16 +42,11 @@ impl RequestHandler {
                 self.substitute_variables(&mut request, variables);
                 Some(request)
             }
-            SectionContent::JsonLines(_) => {
-                // For JSON lines, each line is a separate request
-                // This is handled by send_requests_batch
-                None
-            }
+            SectionContent::JsonLines(_) => None,
             _ => None,
         }
     }
 
-    /// Send a single request
     pub async fn send_request(
         &self,
         tx: &Sender<Value>,
@@ -62,7 +54,6 @@ impl RequestHandler {
         section_line: usize,
         _msg_type: Option<&MessageDescriptor>,
     ) -> RequestSendResult {
-        // Coverage: record request fields (simplified - would need message type name)
         if let Some(_collector) = &self.coverage_collector {}
 
         match tx.send(request_value).await {
@@ -80,16 +71,13 @@ impl RequestHandler {
         }
     }
 
-    /// Check if request stream should be closed (test-only)
     #[cfg(test)]
     pub fn should_close_request_stream(&self, sections: &[Section], current_index: usize) -> bool {
-        // Close stream if no more REQUEST sections follow
         sections[current_index + 1..]
             .iter()
             .all(|s| s.section_type != SectionType::Request)
     }
 
-    /// Substitute variables in request value
     pub fn substitute_variables(
         &self,
         value: &mut Value,
@@ -98,38 +86,34 @@ impl RequestHandler {
         crate::execution::runner_helpers::substitute_variables(value, variables);
     }
 
-    /// Build TLS config from document (test-only)
     #[cfg(test)]
     pub fn build_tls_config(
         document: &crate::parser::ast::GctfDocument,
         document_path: &Path,
     ) -> Option<crate::grpc::TlsConfig> {
-        document
-            .get_tls_config()
-            .map(|tls_map| crate::grpc::TlsConfig {
-                ca_cert_path: tls_map.get("ca_cert").map(|p| {
-                    FileUtils::resolve_relative_path(document_path, p)
-                        .to_string_lossy()
-                        .to_string()
-                }),
-                client_cert_path: tls_map.get("client_cert").map(|p| {
-                    FileUtils::resolve_relative_path(document_path, p)
-                        .to_string_lossy()
-                        .to_string()
-                }),
-                client_key_path: tls_map.get("client_key").map(|p| {
-                    FileUtils::resolve_relative_path(document_path, p)
-                        .to_string_lossy()
-                        .to_string()
-                }),
+        document.get_tls_config().map(|tls_map| {
+            let path_of = |names: &[&str]| -> Option<String> {
+                names.iter().find_map(|n| {
+                    tls_map.get(*n).map(|p| {
+                        FileUtils::resolve_relative_path(document_path, p)
+                            .to_string_lossy()
+                            .to_string()
+                    })
+                })
+            };
+
+            crate::grpc::TlsConfig {
+                ca_cert_path: path_of(&["ca_cert", "ca_file", "ca"]),
+                client_cert_path: path_of(&["client_cert", "cert_file", "cert"]),
+                client_key_path: path_of(&["client_key", "key_file", "key"]),
                 server_name: tls_map.get("server_name").cloned(),
                 insecure_skip_verify: tls_map
                     .get("insecure")
                     .is_some_and(|v| v == "true" || v == "1"),
-            })
+            }
+        })
     }
 
-    /// Build proto config from document (test-only)
     #[cfg(test)]
     pub fn build_proto_config(
         document: &crate::parser::ast::GctfDocument,
@@ -248,7 +232,6 @@ mod tests {
             },
         ];
 
-        // After first section (index 0), there are no more REQUEST sections
         assert!(handler.should_close_request_stream(&sections, 0));
     }
 

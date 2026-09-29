@@ -5,23 +5,20 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "clean": "rm -rf dist/assets",
+    "clean": "rm -rf dist/assets node_modules/.monaco",
     "build": "npm run clean && tsc -b && vite build",
-    "lint": "oxlint",
+    "lint": "oxlint --deny-warnings",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "check": "tsc -b && oxlint --deny-warnings && vitest run"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
-    "@tailwindcss/vite": "^4.3.3",
-    "esbuild": "^0.28.2",
     "lodash-es": "^4.18.1",
     "lucide-react": "^1.31.0",
     "monaco-editor": "^0.56.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "tailwindcss": "^4.3.3",
-    "vite-plugin-monaco-editor": "^1.1.0",
     "zustand": "^5.0.15"
   },
   "overrides": {
@@ -29,15 +26,19 @@
     "nanoid": "^3.3.17"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
     "@types/lodash-es": "^4.17.12",
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.4",
+    "esbuild": "^0.28.2",
     "jsdom": "^30.0.1",
     "oxlint": "^1.78.0",
+    "tailwindcss": "^4.3.3",
     "typescript": "~7.0.2",
     "vite": "^8.2.1",
+    "vite-plugin-monaco-editor": "^1.1.0",
     "vitest": "^4.1.10"
   }
 }

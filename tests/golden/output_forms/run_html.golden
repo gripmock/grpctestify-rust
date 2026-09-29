@@ -173,13 +173,13 @@ summary:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-of
 
 <div class="meta-line"><span class="meta-key">Steps</span>#1 <MS>ms</div>
 <div class="error-box">Validation failed:
-  - Assertion failed at line 9 (assertion at line 11): Assertion failed: .status == &quot;NOT_SERVING&quot; (Values: String(&quot;SERVING&quot;) vs String(&quot;NOT_SERVING&quot;))
-  -     Expected: == String(&quot;NOT_SERVING&quot;)
-    Actual:   String(&quot;SERVING&quot;)</div>
+  - Assertion failed at line 10 (assertion at line 11): Assertion failed: .status == &quot;NOT_SERVING&quot; (Values: &quot;SERVING&quot; vs &quot;NOT_SERVING&quot;)
+  -     Expected: == &quot;NOT_SERVING&quot;
+    Actual:   &quot;SERVING&quot;</div>
 
 <div class="table-scroll">
 <table class="assertions-table"><tr><th></th><th>Line</th><th>Expression</th><th>Expected</th><th>Actual</th><th>Time</th><th>Endpoint</th></tr>
-<tr class="a-fail"><td class="a-mark">✗</td><td>11</td><td>.status == &quot;NOT_SERVING&quot;</td><td>== String(&quot;NOT_SERVING&quot;)</td><td>String(&quot;SERVING&quot;)</td><td><MS>ms</td><td>grpc.health.v1.Health&#x2f;Check</td></tr>
+<tr class="a-fail"><td class="a-mark">✗</td><td>11</td><td>.status == &quot;NOT_SERVING&quot;</td><td>== &quot;NOT_SERVING&quot;</td><td>&quot;SERVING&quot;</td><td><MS>ms</td><td>grpc.health.v1.Health&#x2f;Check</td></tr>
 </table>
 </div>
 

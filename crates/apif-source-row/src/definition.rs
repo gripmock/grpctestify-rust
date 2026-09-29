@@ -30,11 +30,6 @@ pub enum JoinType {
     Cross,
 }
 
-/// `indexed_by` takes one column or several. The documented spelling for the
-/// common case is a bare scalar (`indexed_by: user_id`), which a plain
-/// `Vec<String>` rejects — so a file written exactly as the guide shows failed
-/// to parse, and `index` reported the whole `sources` block as invalid YAML.
-/// Both forms are accepted.
 fn deserialize_string_or_seq<'de, D>(de: D) -> Result<Option<Vec<String>>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -174,7 +169,6 @@ filter:
 mod indexed_by_tests {
     use super::*;
 
-    /// `bench-sources.md` documents the single-column case as a bare scalar.
     #[test]
     fn indexed_by_accepts_a_scalar() {
         let def: SourceDefinition =

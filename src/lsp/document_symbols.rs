@@ -1,14 +1,8 @@
-//! Document symbols for GCTF documents.
-//!
-//! Builds a tree of symbols for assertions and extracted variables
-//! that appears in the LSP document symbol response.
-
 use crate::lsp::position::byte_to_utf16_col;
 use crate::parser;
 use crate::parser::ast::SectionType;
 use tower_lsp::lsp_types::{DocumentSymbol, Position, Range, SymbolKind};
 
-/// Build document symbols (assertions and extracted variables) for a GCTF document.
 pub fn build_section_children_for_doc(doc: &parser::GctfDocument) -> Vec<DocumentSymbol> {
     let mut all_children: Vec<DocumentSymbol> = Vec::new();
 
@@ -23,9 +17,6 @@ pub fn build_section_children_for_doc(doc: &parser::GctfDocument) -> Vec<Documen
                 }
 
                 let line_num = (s.start_line + idx + 1) as u32;
-                // Offsets below are byte indices into `trimmed`; convert them to
-                // UTF-16 columns in the original `line` (which may be indented
-                // and/or contain non-ASCII characters) as LSP requires.
                 let lead = line.len() - line.trim_start().len();
                 let off16 =
                     |byte_in_trimmed: usize| byte_to_utf16_col(line, lead + byte_in_trimmed) as u32;
@@ -102,8 +93,6 @@ pub fn build_section_children_for_doc(doc: &parser::GctfDocument) -> Vec<Documen
                 let lead = line.len() - line.trim_start().len();
                 let off16 =
                     |byte_in_trimmed: usize| byte_to_utf16_col(line, lead + byte_in_trimmed) as u32;
-                // `var_name` is the leading token of `trimmed`, so it starts at
-                // trimmed byte offset 0.
                 let name_off = trimmed.len() - trimmed.trim_start().len();
 
                 #[expect(deprecated)]
@@ -140,7 +129,6 @@ mod tests {
 
     #[test]
     fn variable_child_range_is_utf16() {
-        // Cyrillic inside `{{ }}`: each char is 2 UTF-8 bytes but 1 UTF-16 unit.
         let content = "--- ENDPOINT ---\nsvc.M\n\n--- ASSERTS ---\n{{ имя }} == 1\n";
         let doc = parser::parse_gctf_from_str(content, "t.gctf").unwrap();
         let symbols = build_section_children_for_doc(&doc);
@@ -150,18 +138,14 @@ mod tests {
             .expect("assertion with a variable child");
         let child = &assertion.children.as_ref().unwrap()[0];
         assert_eq!(child.name, "имя");
-        // `{{ имя }}` spans 9 UTF-16 columns; a raw byte offset would report 12.
         assert_eq!(child.range.start.character, 0);
         assert_eq!(child.range.end.character, 9);
-        // The inner-name selection covers `имя` at UTF-16 columns 2..7.
         assert_eq!(child.selection_range.start.character, 2);
         assert_eq!(child.selection_range.end.character, 7);
     }
 
     #[test]
     fn extract_symbol_range_is_utf16() {
-        // Non-ASCII in the extract expression must not push the range end past
-        // the real UTF-16 width of the line.
         let content = "--- EXTRACT ---\nname = .поле\n";
         let doc = parser::parse_gctf_from_str(content, "t.gctf").unwrap();
         let symbols = build_section_children_for_doc(&doc);
@@ -169,7 +153,6 @@ mod tests {
             .iter()
             .find(|s| s.name == "name")
             .expect("extract variable symbol");
-        // `name = .поле` is 12 UTF-16 columns (4 Cyrillic chars = 4 units).
         assert_eq!(sym.range.end.character, 12);
         assert_eq!(sym.selection_range.start.character, 0);
         assert_eq!(sym.selection_range.end.character, 4);

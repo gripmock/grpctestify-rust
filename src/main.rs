@@ -7,9 +7,6 @@ use grpctestify::commands;
 
 use cli::{Cli, Commands};
 
-/// The mascot rendered for `--help`, coloured through the same `pass_style()`
-/// path as the no-args welcome so the logo looks identical in both places
-/// (green on a colour terminal, plain under `NO_COLOR` or when piped).
 fn help_logo() -> String {
     let g = grpctestify::report::style::pass_style();
     grpctestify::report::style::SNAIL_LOGO
@@ -19,9 +16,6 @@ fn help_logo() -> String {
         .join("\n")
 }
 
-/// `--cpus` wins, then `TOKIO_WORKER_THREADS`, else `bench` caps at 4 and every
-/// other command keeps `available_parallelism`. More threads cost instructions
-/// per request without adding throughput — see `docs/.../bench.md`.
 fn resolve_worker_threads(args: &[String]) -> usize {
     let parallelism = std::thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)
@@ -30,8 +24,6 @@ fn resolve_worker_threads(args: &[String]) -> usize {
     worker_threads_for(args, env.as_deref(), parallelism)
 }
 
-/// Pure half of [`resolve_worker_threads`], so the precedence is testable
-/// without touching process state.
 fn worker_threads_for(args: &[String], env: Option<&str>, parallelism: usize) -> usize {
     let parallelism = parallelism.max(1);
 
@@ -53,11 +45,10 @@ fn worker_threads_for(args: &[String], env: Option<&str>, parallelism: usize) ->
     parallelism
 }
 
-/// Above this, worker threads cost CPU and instructions per request without
-/// adding throughput; the tax grows with the host's core count.
 const BENCH_MAX_WORKER_THREADS: usize = 4;
 
-fn main() -> Result<()> {
+fn main() -> Result<std::process::ExitCode> {
+    grpctestify::report::set_tool_identity("grpctestify", env!("CARGO_PKG_VERSION"));
     let argv: Vec<String> = std::env::args().collect();
     let worker_threads = resolve_worker_threads(&argv);
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -67,11 +58,9 @@ fn main() -> Result<()> {
     runtime.block_on(run())
 }
 
-async fn run() -> Result<()> {
-    // Install the default crypto provider (ring) to avoid panics with rustls 0.23+
+async fn run() -> Result<std::process::ExitCode> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    // Honour NO_COLOR (https://no-color.org/) before any output, including clap --help.
     let disable_color = std::env::var_os("NO_COLOR").is_some();
     if disable_color {
         console::set_colors_enabled(false);
@@ -81,7 +70,7 @@ async fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("v{}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
+        return Ok(std::process::ExitCode::SUCCESS);
     }
 
     let command = Cli::command().before_long_help(help_logo());
@@ -93,21 +82,12 @@ async fn run() -> Result<()> {
     use tracing_subscriber::EnvFilter;
     use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
-    // `-v` raises visibility to info (not debug) so verbose test output isn't
-    // buried in gRPC debug traces. `grpctestify=debug`/`=trace` only scopes to
-    // this one crate — the `apif-*` workspace crates (grpc transport,
-    // assertion engine, plugin loading, ...) have their own crate-name
-    // targets and won't match it. For full debug detail (e.g. before filing
-    // a bug report), use the bare `RUST_LOG=debug` or `RUST_LOG=trace` (no
-    // crate scope) — it covers every first-party crate plus tonic/hyper
-    // internals in one go, and is honoured first by the env filter below.
     let base_filter = if cli.verbose {
         "grpctestify=info,warn"
     } else {
         "grpctestify=warn,error"
     };
     let is_play = matches!(cli.command, Some(Commands::Play(_)));
-    // In play mode, include HTTP access logs from tower_http
     let filter = if is_play {
         format!("{},tower_http=info", base_filter)
     } else {
@@ -115,13 +95,6 @@ async fn run() -> Result<()> {
     };
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&filter));
 
-    // Logs must never share a stream with a command's primary payload — `gen`,
-    // `inspect`, `query`, `explain`, etc. print their real output to stdout
-    // for piping/redirection, and raising verbosity to debug a bug is exactly
-    // when a user is most likely to be capturing that stdout for a report.
-    // `play` is a long-running dev server with no piped payload of its own,
-    // so its access/app logs stay on stdout (prior behavior, easier to `|
-    // grep`/tail alongside the proxied traffic it's serving).
     let writer = if is_play {
         BoxMakeWriter::new(std::io::stdout)
     } else {
@@ -140,10 +113,14 @@ async fn run() -> Result<()> {
 
     if let Some(shell_type) = cli.completion {
         commands::handle_completion(&shell_type)?;
-        return Ok(());
+        return Ok(std::process::ExitCode::SUCCESS);
     }
 
-    match &cli.command {
+    if let Some(Commands::Call(args)) = &cli.command {
+        return commands::handle_call(args).await;
+    }
+
+    let finished: Result<()> = match &cli.command {
         Some(Commands::Reflect(args)) => commands::handle_reflect(args).await,
         Some(Commands::Fmt(args)) => commands::handle_fmt(args, &cli).await,
         Some(Commands::Check(args)) => commands::handle_check(args, &cli).await,
@@ -155,7 +132,7 @@ async fn run() -> Result<()> {
         Some(Commands::Docs(args)) => commands::handle_docs(args),
         Some(Commands::Graph(args)) => commands::handle_graph(args),
         Some(Commands::Run(args)) => commands::run_tests(&cli, args).await,
-        Some(Commands::Call(args)) => commands::handle_call(args).await,
+        Some(Commands::Call(_)) => Ok(()),
         Some(Commands::Gen(args)) => commands::handle_gen(args).await,
         Some(Commands::Lsp(args)) => commands::handle_lsp(args).await,
         Some(Commands::Bench(args)) => commands::handle_bench(args).await,
@@ -177,15 +154,15 @@ async fn run() -> Result<()> {
             .await?
         }
         None => {
-            // Implicit Run
             let args = cli.run_args.clone();
             if args.test_paths.is_empty() {
                 print_welcome();
-                return Ok(());
+                return Ok(std::process::ExitCode::SUCCESS);
             }
             commands::run_tests(&cli, &args).await
         }
-    }
+    };
+    finished.map(|()| std::process::ExitCode::SUCCESS)
 }
 
 fn print_welcome() {
@@ -194,16 +171,12 @@ fn print_welcome() {
     let d = dim_style();
     let version = env!("CARGO_PKG_VERSION");
 
-    // Braille-art snail — the project mascot, shared with `--help`.
     let g = grpctestify::report::style::pass_style();
     for line in grpctestify::report::style::SNAIL_LOGO.lines() {
         println!("  {}", g.apply_to(line));
     }
     println!();
 
-    // The no-args screen is the landing: identity + the few pointers a newcomer
-    // needs. It deliberately does NOT list commands/options/examples — `--help`
-    // owns the full reference, so the two never read as duplicates of each other.
     println!("{} {}", b.apply_to("grpctestify"), d.apply_to(version));
     println!("Native gRPC testing with .gctf files — zero dependencies");
     println!();
@@ -240,7 +213,6 @@ mod tests {
             worker_threads_for(&argv(&["grpctestify", "bench", "x.gctf"]), None, 64),
             4
         );
-        // A host smaller than the cap keeps its own core count.
         assert_eq!(
             worker_threads_for(&argv(&["grpctestify", "bench", "x.gctf"]), None, 2),
             2
@@ -273,7 +245,6 @@ mod tests {
         assert_eq!(worker_threads_for(&args, Some("nope"), 8), 4);
         let trailing = argv(&["grpctestify", "bench", "x.gctf", "--cpus"]);
         assert_eq!(worker_threads_for(&trailing, None, 8), 4);
-        // A runtime with zero worker threads would not start.
         assert!(worker_threads_for(&argv(&["grpctestify", "run"]), None, 0) >= 1);
     }
 }

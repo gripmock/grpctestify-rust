@@ -6,11 +6,6 @@ use crate::config;
 use crate::grpc::client::{GrpcClient, GrpcClientConfig};
 use crate::grpc::{TlsConfig, WireProtocol};
 
-/// Resolve `--plaintext`/`--insecure` into a `TlsConfig` (or `None` for
-/// plaintext) — pulled out of [`handle_reflect`] so it's testable without a
-/// live server. Previously there was no way to force skip-verify for an
-/// explicit `https://` address (only the bare-address auto-fallback could
-/// produce it); `--insecure` now does that explicitly.
 fn resolve_tls_config(
     plaintext: bool,
     insecure: bool,
@@ -37,8 +32,6 @@ fn resolve_tls_config(
 
 const MAX_DESCRIBE_DEPTH: usize = 8;
 
-/// A field's type as a short label — scalar name, `MessageName`, `EnumName`,
-/// or `map<K, V>`.
 pub(crate) fn field_type_label(field: &prost_reflect::FieldDescriptor) -> String {
     use prost_reflect::Kind;
     if field.is_map() {
@@ -68,9 +61,6 @@ pub(crate) fn field_type_label(field: &prost_reflect::FieldDescriptor) -> String
     }
 }
 
-/// Indented text tree of a message's fields, recursing into nested message
-/// fields up to [`MAX_DESCRIBE_DEPTH`] and stopping early on a cycle
-/// (self-referential/recursive message types are legal in protobuf).
 pub(crate) fn describe_message_tree(
     desc: &prost_reflect::MessageDescriptor,
     indent: usize,
@@ -123,9 +113,6 @@ pub(crate) fn describe_message_tree(
     }
 }
 
-/// JSON Schema (draft-07-ish: `type`/`properties`/`items`/`enum`) for a
-/// message, with the same depth cap and cycle guard as
-/// [`describe_message_tree`].
 fn describe_message_schema(
     desc: &prost_reflect::MessageDescriptor,
     depth: usize,
@@ -198,9 +185,6 @@ fn field_schema(
     }
 }
 
-/// Case-insensitive substring filter for `--filter`, shared by the default
-/// service listing and `--list-methods`. Empty/absent filter matches
-/// everything.
 fn matches_filter(filter: Option<&str>, service_name: &str, method_name: &str) -> bool {
     let Some(f) = filter.filter(|f| !f.is_empty()) else {
         return true;
@@ -250,7 +234,6 @@ pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
 
     let pool = client.descriptor_pool();
 
-    // --describe: show full message fields for a method
     if let Some(ref desc) = args.describe {
         let parts: Vec<&str> = desc.split('/').collect();
         if parts.len() != 2 {
@@ -316,7 +299,6 @@ pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
         return Ok(());
     }
 
-    // --list-methods: show all methods with full signatures
     if args.list_methods {
         let mut all = BTreeMap::new();
         for service in pool.services() {
@@ -380,17 +362,12 @@ pub async fn handle_reflect(args: &ReflectArgs) -> Result<()> {
         return Ok(());
     }
 
-    // --symbol: describe a specific symbol
     if let Some(symbol) = args.symbol.as_deref() {
         let output = client.describe(Some(symbol))?;
         println!("\n{}", output);
         return Ok(());
     }
 
-    // Default: list services. A method matching `--filter` keeps its whole
-    // service in view (so filtering by a method name still shows which
-    // service it belongs to); a service whose own name matches shows every
-    // method, not just the ones that happen to match too.
     let filter = args.filter.as_deref();
     if args.format == "json" {
         let services: Vec<_> = pool
@@ -526,10 +503,6 @@ mod tests {
         assert!(out.contains("SERVING"));
     }
 
-    /// A hand-built descriptor for `test.Node { string name = 1; repeated
-    /// Node children = 2; }` — genuinely self-referential, unlike anything
-    /// in the health-check proto, so the cycle/depth guards actually get
-    /// exercised instead of trivially no-op-ing.
     fn self_referential_node_message() -> prost_reflect::MessageDescriptor {
         use prost_types::field_descriptor_proto::{Label, Type};
         use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
@@ -575,12 +548,8 @@ mod tests {
     fn describe_message_schema_stops_at_a_cycle_instead_of_recursing_forever() {
         let msg = self_referential_node_message();
         let mut visiting = vec![msg.full_name().to_string()];
-        // Must return promptly (not hang/overflow) — that's the real assertion.
         let schema = describe_message_schema(&msg, MAX_DESCRIBE_DEPTH, &mut visiting);
         assert_eq!(schema["type"], "object");
-        // `children` must NOT have expanded into another `properties.name`/
-        // `properties.children` level — the cycle guard should have replaced
-        // it with a plain marker instead of recursing back into Node.
         let children_items = &schema["properties"]["children"]["items"];
         assert!(
             children_items.get("properties").is_none(),
@@ -588,10 +557,6 @@ mod tests {
         );
     }
 
-    /// A non-cyclic 3-level chain (`Chain3.next -> Chain2.next -> Chain1`, no
-    /// repeated type names) — isolates the depth cap from the cycle guard,
-    /// which a self-referential fixture can't do (any self-reference trips
-    /// the cycle check on its very first expansion too).
     fn depth_chain_message() -> prost_reflect::MessageDescriptor {
         use prost_types::field_descriptor_proto::{Label, Type};
         use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto};
@@ -636,9 +601,6 @@ mod tests {
     #[test]
     fn describe_message_schema_stops_at_max_depth() {
         let msg = depth_chain_message();
-        // depth=1: Chain3.next (Chain2) expands one level, but Chain2.next
-        // (Chain1) must not — no name ever repeats here, so only the depth
-        // counter, not the cycle guard, can be responsible for stopping it.
         let mut visiting = Vec::new();
         let schema = describe_message_schema(&msg, 1, &mut visiting);
         let chain2 = &schema["properties"]["next"];
@@ -658,7 +620,6 @@ mod tests {
         let msg = self_referential_node_message();
         let mut visiting = vec![msg.full_name().to_string()];
         let mut out = String::new();
-        // Must return promptly (not hang/overflow) — that's the real assertion.
         describe_message_tree(&msg, 0, &mut visiting, &mut out);
         assert!(out.contains("children"));
         assert!(out.contains("max depth or recursive type"));

@@ -42,6 +42,7 @@ const CORPUS: &[&str] = &[
     "if .c then false else true end",
     ".c ? .a : .b",
     ".name startswith(\"a\")",
+    ".a | endswith(\"x\")",
     "!(.x == 1)",
     "!(.x == 1 and .y == 2)",
     "not (.x == 1 or .y == 2)",
@@ -77,6 +78,7 @@ fn optimized_assert(expr: &str, level: OptimizeLevel) -> String {
 fn render() -> String {
     let mut out = String::new();
     for level in [
+        OptimizeLevel::Layout,
         OptimizeLevel::Safe,
         OptimizeLevel::Advisory,
         OptimizeLevel::Aggressive,

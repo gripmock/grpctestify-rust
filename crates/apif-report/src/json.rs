@@ -1,6 +1,5 @@
-// JSON reporter - outputs test results to a JSON file
-
 use super::Reporter;
+use crate::{tool_name, tool_version};
 use anyhow::{Context, Result};
 use apif_state::TestResults;
 use serde::Serialize;
@@ -43,8 +42,8 @@ impl Reporter for JsonReporter {
         let report = JsonReport {
             results,
             report_context: JsonReportContext {
-                tool: "apif".to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
+                tool: tool_name().to_string(),
+                version: tool_version().to_string(),
                 generated_at: apif_cfg_runtime::now_timestamp(),
             },
         };
@@ -59,6 +58,13 @@ impl Reporter for JsonReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_report_names_the_tool_not_the_crate_that_formats_it() {
+        crate::set_tool_identity("grpctestify", "9.9.9");
+        assert_eq!(crate::tool_name(), "grpctestify");
+        assert_eq!(crate::tool_version(), "9.9.9");
+    }
 
     #[test]
     fn json_reporter_new() {

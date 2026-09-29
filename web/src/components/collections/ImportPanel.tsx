@@ -1,19 +1,120 @@
 import { useState } from 'react';
+import { useIntentText } from '../../lib/use-intent';
 import { useStore } from '../../lib/store';
 import { parseShell } from '../../lib/shell';
+import { importSummary, planImport } from '../../lib/grpcurl-import';
+import { curlSummary, isCurl, parseCurl } from '../../lib/curl-import';
+import { callSummary, grpctestifySubcommand, isGrpctestify, parseGrpctestifyCall } from '../../lib/gctf-call-import';
+import { joinEndpoint } from '../../lib/http-endpoint';
 import { Upload, Terminal, AlertCircle, Check } from 'lucide-react';
+import { useToast } from 'luvo/ui/useToast';
 
-export function ImportPanel() {
-  const [command, setCommand] = useState('');
+export function ImportPanel({ onDone }: { onDone?: () => void } = {}) {
+  const toast = useToast();
+  const intent = useStore(s => s.importIntent);
+  const prefill = useStore(s => s.importPrefill);
+  const [command, setCommand] = useIntentText(intent, intent > 0 ? prefill ?? '' : '');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [summary, setSummary] = useState('');
+  const [ignored, setIgnored] = useState<string[]>([]);
+  const [adjusted, setAdjusted] = useState<string[]>([]);
   const setEndpoint = useStore(s => s.setEndpoint);
   const setRequestBodies = useStore(s => s.setRequestBodies);
   const setRequestHeaders = useStore(s => s.setRequestHeaders);
   const setAddress = useStore(s => s.setAddress);
   const setTls = useStore(s => s.setTls);
   const newWorkspace = useStore(s => s.newWorkspace);
+  const focusHeldCall = useStore(s => s.focusHeldCall);
+  const setSectionKv = useStore(s => s.setSectionKv);
+  const setProtocol = useStore(s => s.setProtocol);
+  const loadCollection = useStore(s => s.loadCollection);
+
+  const importCurl = () => {
+    const imported = parseCurl(parseShell(command.trim()));
+    if (!imported.path) {
+      setError('That curl command names no url');
+      return;
+    }
+    const endpoint = joinEndpoint(imported.method, imported.path);
+    if (focusHeldCall({ endpoint, headers: imported.headers, bodies: imported.body ? [imported.body] : [] })) {
+      toast.success('Already open — this is the tab holding it');
+      onDone?.();
+      return;
+    }
+    newWorkspace();
+    setEndpoint(endpoint);
+    if (imported.address) setAddress(imported.address);
+    setRequestBodies(imported.body ? [imported.body] : []);
+    if (Object.keys(imported.headers).length > 0) setRequestHeaders(imported.headers);
+    const said = curlSummary(imported).join(' · ');
+    setSummary(said);
+    setIgnored(imported.ignored);
+    setAdjusted([]);
+    setSuccess(true);
+    settle(said, imported.ignored, []);
+  };
+
+  const importGrpctestify = async () => {
+    const args = parseShell(command.trim());
+    const sub = grpctestifySubcommand(args);
+    if (sub !== 'call') {
+      setError(sub === ''
+        ? 'That line names no grpctestify subcommand — `call` is the one that is a single request'
+        : `\`grpctestify ${sub}\` runs files rather than making one call — open the file from Collections`);
+      return;
+    }
+    const imported = parseGrpctestifyCall(args);
+    if (imported.endpoint === '' && imported.file !== '') {
+      const opened = await loadCollection(imported.file, { pin: true });
+      if (!opened) {
+        setError(`That line runs ${imported.file}, and this project has no such file`);
+        return;
+      }
+      toast.success(`Opened ${imported.file}`);
+      onDone?.();
+      return;
+    }
+    if (imported.endpoint === '') {
+      setError('That line names no endpoint — `-e package.Service/Method`, or the file it runs');
+      return;
+    }
+    if (focusHeldCall({
+      endpoint: imported.endpoint,
+      headers: imported.headers,
+      bodies: imported.body ? [imported.body] : [],
+    })) {
+      toast.success('Already open — this is the tab holding it');
+      onDone?.();
+      return;
+    }
+    newWorkspace();
+    setEndpoint(imported.endpoint);
+    if (imported.address) setAddress(imported.address);
+    setRequestBodies(imported.body ? [imported.body] : []);
+    if (Object.keys(imported.headers).length > 0) setRequestHeaders(imported.headers);
+    if (imported.protocol) setProtocol(imported.protocol);
+    setTls(!imported.plaintext && (imported.insecure || Object.keys(imported.tls ?? {}).length > 0));
+    const plan = planImport(imported);
+    if (Object.keys(imported.tls ?? {}).length > 0) setSectionKv('tls', imported.tls!);
+    if (Object.keys(plan.options).length > 0) setSectionKv('options', plan.options);
+    const dropped = [...plan.ignored, ...imported.ignored];
+    const said = [...callSummary(imported), ...(Object.keys(plan.options).length > 0 ? ['OPTIONS'] : [])];
+    const sentence = said.length > 0 ? `with ${said.join(', ')}` : '';
+    setSummary(sentence);
+    setIgnored(dropped);
+    setAdjusted(plan.adjusted);
+    setSuccess(true);
+    settle(sentence, dropped, plan.adjusted);
+  };
+
+  const settle = (said: string, dropped: string[], changed: string[]) => {
+    if (dropped.length === 0 && changed.length === 0) {
+      toast.success(`Imported ${said}`);
+      onDone?.();
+    }
+  };
 
   const handleImport = async () => {
     if (!command.trim()) return;
@@ -22,6 +123,14 @@ export function ImportPanel() {
     setSuccess(false);
 
     try {
+      if (isCurl(command)) {
+        importCurl();
+        return;
+      }
+      if (isGrpctestify(command)) {
+        await importGrpctestify();
+        return;
+      }
       const args = parseShell(command.trim());
       const res = await fetch('/api/import-grpcurl', {
         method: 'POST',
@@ -33,7 +142,7 @@ export function ImportPanel() {
       try { data = await res.json(); } catch {  }
 
       if (!res.ok) {
-        setError(data?.error || `Import failed (${res.status})`);
+        setError(data?.error || `The workbench could not read that command (${res.status} ${res.statusText})`);
         return;
       }
       if (data?.error) {
@@ -41,18 +150,35 @@ export function ImportPanel() {
         return;
       }
 
-
+      if (focusHeldCall({
+        endpoint: data.endpoint,
+        headers: data.headers && Object.keys(data.headers).length > 0 ? data.headers : {},
+        bodies: data.body ? [data.body] : [],
+      })) {
+        toast.success('Already open — this is the tab holding it');
+        onDone?.();
+        return;
+      }
       newWorkspace();
       setEndpoint(data.endpoint);
       if (data.body) setRequestBodies([data.body]);
       if (data.address) setAddress(data.address);
-      // grpcurl without -plaintext means the call uses TLS.
       setTls(!data.plaintext);
       if (data.headers && Object.keys(data.headers).length > 0) {
         setRequestHeaders(data.headers);
       }
+
+      const plan = planImport(data);
+      if (data.tls && Object.keys(data.tls).length > 0) setSectionKv('tls', data.tls);
+      if (data.proto && Object.keys(data.proto).length > 0) setSectionKv('proto', data.proto);
+      if (Object.keys(plan.options).length > 0) setSectionKv('options', plan.options);
+
+      const said = importSummary(data, plan);
+      setSummary(said);
+      setIgnored(plan.ignored);
+      setAdjusted(plan.adjusted);
       setSuccess(true);
-      setTimeout(() => setSuccess(false), 3000);
+      settle(said, plan.ignored, plan.adjusted);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -63,100 +189,94 @@ export function ImportPanel() {
   const examples = [
     'grpcurl -plaintext localhost:4770 helloworld.Greeter/SayHello',
     "grpcurl -plaintext -d '{\"name\":\"World\"}' localhost:4770 helloworld.Greeter/SayHello",
-    "grpcurl -H 'x-api-key: abc123' -plaintext localhost:4770 svc.Service/Method",
+    "curl https://api.example.com/v1/users",
+    "curl -X POST https://api.example.com/v1/users -H 'content-type: application/json' -d '{\"name\":\"Ada\"}'",
+    "grpctestify call -e 'helloworld.Greeter/SayHello' --address 'localhost:4770' -d '{\"name\":\"World\"}' --plaintext",
   ];
 
   return (
-    <div style={{ padding: 8 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-        <Upload size={14} />
-        <span style={{
-          fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)',
-          textTransform: 'uppercase', letterSpacing: '0.5px',
-        }}>
-          Import from grpcurl
-        </span>
+    <div className="stack">
+      <div className="bar">
+        <Upload size={14} className="muted" />
+        <span className="field-label">Import a command</span>
       </div>
 
-      <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, lineHeight: 1.5 }}>
-        Paste a <code style={{ background: 'var(--bg-tertiary)', padding: '1px 4px', borderRadius: 3 }}>grpcurl</code> command to automatically fill the request fields.
+      <div className="muted">
+        Paste a <span className="mono">grpcurl</span>, <span className="mono">curl</span> or
+        <span className="mono"> grpctestify call</span> command to fill the request fields — the
+        first word says which.
       </div>
 
-      <div style={{
-        border: `1px solid ${error ? 'var(--error)' : 'var(--border)'}`,
-        borderRadius: 6, overflow: 'hidden', marginBottom: 8,
-      }}>
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 4, padding: '4px 8px',
-          background: 'var(--bg-tertiary)', fontSize: 11, color: 'var(--text-muted)',
-        }}>
-          <Terminal size={12} /> grpcurl command
-        </div>
+      <fieldset className={`panel${error ? ' is-bad' : ''}`}>
+        <legend>
+          <Terminal size={11} />{' '}
+          {command.trim() === ''
+            ? 'command'
+            : isCurl(command) ? 'curl command'
+            : isGrpctestify(command) ? 'grpctestify command'
+            : 'grpcurl command'}
+        </legend>
         <textarea
+          className="field mono paste-area"
           value={command}
-          onChange={e => { setCommand(e.target.value); setError(null); setSuccess(false); }}
-          placeholder="grpcurl -plaintext localhost:4770 package.Service/Method"
+          onChange={e => { setCommand(e.target.value); setError(null); setSuccess(false); setIgnored([]); }}
+          placeholder="grpcurl -plaintext localhost:4770 package.Service/Method — or curl https://api.example.com/v1/users"
           rows={4}
-          style={{
-            width: '100%', border: 'none', resize: 'vertical', padding: 8, fontSize: 12,
-            fontFamily: 'monospace', background: 'var(--bg-primary)', color: 'var(--text-primary)',
-            outline: 'none', boxSizing: 'border-box',
-          }}
+          spellCheck={false}
         />
-      </div>
+      </fieldset>
 
       {error && (
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 4, fontSize: 12,
-          color: 'var(--error)', marginBottom: 8,
-        }}>
-          <AlertCircle size={12} /> {error}
+        <div className="assert is-fail">
+          <span className="assert-mark"><AlertCircle size={12} /></span>
+          <span>{error}</span>
         </div>
       )}
 
       {success && (
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 4, fontSize: 12,
-          color: 'var(--success)', marginBottom: 8,
-        }}>
-          <Check size={12} /> Imported successfully
+        <div className="stack is-tight">
+          <div className="assert is-ok">
+            <span className="assert-mark"><Check size={12} /></span>
+            <span>Imported {summary}</span>
+          </div>
+          {ignored.length > 0 && (
+            <div className="note is-warn">
+              Not brought across: <span className="mono">{ignored.join(' · ')}</span> — nothing here
+              holds them, so the call runs without them.
+            </div>
+          )}
+          {adjusted.length > 0 && (
+            <div className="note">
+              Carried differently: <span className="mono">{adjusted.join(' · ')}</span>.
+            </div>
+          )}
+          {onDone && (
+            <div className="bar">
+              <span className="grow" />
+              <button className="btn is-primary" onClick={() => onDone()}>done</button>
+            </div>
+          )}
         </div>
       )}
 
       <button
+        className="btn is-primary"
         onClick={handleImport}
         disabled={loading || !command.trim()}
-        style={{
-          display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', width: '100%',
-          justifyContent: 'center', background: 'var(--accent)', color: '#fff', border: 'none',
-          borderRadius: 6, cursor: loading || !command.trim() ? 'not-allowed' : 'pointer',
-          fontSize: 13, fontWeight: 500, opacity: loading || !command.trim() ? 0.6 : 1,
-        }}
       >
-        {loading ? 'Parsing...' : 'Import'}
+        {loading ? 'Parsing…' : 'Import'}
       </button>
 
-      <div style={{ marginTop: 12 }}>
-        <div style={{
-          fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase',
-          letterSpacing: '0.5px', marginBottom: 6,
-        }}>
-          Examples
-        </div>
+      <div>
+        <div className="field-label">Examples</div>
         {examples.map((ex, i) => (
-          <div
+          <button
             key={i}
+            className="row example"
             onClick={() => { setCommand(ex); setError(null); setSuccess(false); }}
-            style={{
-              padding: '6px 8px', fontSize: 11, fontFamily: 'monospace', borderRadius: 4,
-              cursor: 'pointer', marginBottom: 2, background: 'var(--bg-tertiary)',
-              color: 'var(--text-secondary)', wordBreak: 'break-all', lineHeight: 1.4,
-            }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--border)'; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'var(--bg-tertiary)'; }}
           >
-            {ex}
-          </div>
+            <span className="mono">{ex}</span>
+          </button>
         ))}
       </div>
     </div>

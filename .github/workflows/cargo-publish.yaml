@@ -39,7 +39,7 @@ jobs:
             # Level 0: no apif-* dependencies
             apif-twoq-cache apif-source-error apif-cfg-runtime
             apif-query apif-ast apif-diagnostics apif-utils
-            apif-state apif-grpc-transport
+            apif-state apif-grpc-transport apif-http-transport
             # Level 1: depend only on Level 0
             apif-assert apif-parser apif-report
             # Level 2
@@ -90,12 +90,22 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          while :; do
+          MAX_PASSES=6
+          for PASS in $(seq 1 $MAX_PASSES); do
             OUTPUT=$(cargo publish 2>&1) && echo "$OUTPUT" && break
+            echo "$OUTPUT"
             if echo "$OUTPUT" | grep -q "already exists"; then
               echo "grpctestify already published"; break
             fi
-            echo "$OUTPUT"
-            echo "Rate limited, sleeping 5 min..."
-            sleep 300
+            if echo "$OUTPUT" | grep -qE "429|failed to select a version"; then
+              if [ "$PASS" -eq "$MAX_PASSES" ]; then
+                echo "::error::grpctestify publish still blocked after $MAX_PASSES passes"
+                exit 1
+              fi
+              echo "Retryable, sleeping 5 min (pass $PASS/$MAX_PASSES)..."
+              sleep 300
+              continue
+            fi
+            echo "::error::grpctestify publish failed"
+            exit 1
           done

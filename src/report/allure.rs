@@ -1,8 +1,3 @@
-//! Allure TestOps compatible reporter.
-//!
-//! Writes individual JSON files per test in the Allure results format.
-//! Each file contains test metadata, status, timing, and gRPC call steps.
-
 use crate::report::Reporter;
 use crate::report::kernel;
 use crate::state::TestResult;
@@ -14,9 +9,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use uuid::Uuid;
 
-/// Machine hostname, resolved once per process — Allure's `host` Timeline
-/// label. Falls back to a placeholder on the rare platform where the lookup
-/// itself fails, rather than panicking over a cosmetic label.
 static HOST_LABEL: LazyLock<String> = LazyLock::new(|| {
     gethostname::gethostname()
         .into_string()
@@ -27,22 +19,14 @@ fn host_label() -> String {
     HOST_LABEL.clone()
 }
 
-/// Allure reporter — writes one result file per test.
 pub struct AllureReporter {
     output_dir: PathBuf,
-    /// Target gRPC address, surfaced in `environment.properties`. `None` leaves
-    /// it out of the environment widget.
     address: Option<String>,
-    /// Per-directory container state, accumulated across `on_test_end` calls
-    /// and flushed to `*-container.json` files in `on_suite_end`. Keyed by the
-    /// test's parent directory, matching `_setup.gctf`/`_teardown.gctf`'s
-    /// exact-directory scope in the runner.
     fixture_state: Mutex<HashMap<PathBuf, DirContainerState>>,
 }
 
 #[derive(Default)]
 struct DirContainerState {
-    /// UUIDs of every ordinary (non-fixture) test result in this directory.
     children: Vec<String>,
     befores: Vec<FixtureStep>,
     afters: Vec<FixtureStep>,
@@ -69,24 +53,20 @@ struct AllureContainer {
     afters: Vec<FixtureStep>,
 }
 
-/// `_setup.gctf`/`_teardown.gctf` reported as befores/afters, mirroring the
-/// exact filename match `partition_fixtures` uses in the runner.
 enum FixtureKind {
     Setup,
     Teardown,
 }
 
 fn fixture_kind(test_name: &str) -> Option<FixtureKind> {
-    match Path::new(test_name).file_name().and_then(|n| n.to_str()) {
-        Some("_setup.gctf") => Some(FixtureKind::Setup),
-        Some("_teardown.gctf") => Some(FixtureKind::Teardown),
-        _ => None,
+    match crate::commands::run::fixture_role(Path::new(test_name)) {
+        Some(crate::commands::run::FixtureRole::Setup) => Some(FixtureKind::Setup),
+        Some(crate::commands::run::FixtureRole::Teardown) => Some(FixtureKind::Teardown),
+        None => None,
     }
 }
 
 impl AllureReporter {
-    /// Create a new Allure reporter writing to `output_dir`.
-    /// Creates the directory if it doesn't exist.
     pub fn new(output_dir: PathBuf) -> Self {
         if let Err(e) = fs::create_dir_all(&output_dir) {
             eprintln!("Failed to create allure report directory: {}", e);
@@ -98,18 +78,12 @@ impl AllureReporter {
         }
     }
 
-    /// Record the target gRPC address for the Allure environment widget.
     pub fn with_address(mut self, address: String) -> Self {
         self.address = Some(address);
         self
     }
 }
 
-/// Static defect taxonomy written as `categories.json`. Buckets failures in the
-/// Allure UI by matching `statusDetails.message`/`trace` — mirroring the
-/// runner's own failure categories (assertion / gRPC status / connection /
-/// timeout / parse / validation). `(?s)` makes `.` span newlines so the regex
-/// matches multi-line traces.
 const CATEGORIES_JSON: &str = r#"[
   {"name": "Assertion mismatch", "matchedStatuses": ["failed"], "messageRegex": "(?s).*(ssertion|xpected|xpect).*"},
   {"name": "gRPC status error", "matchedStatuses": ["failed"], "messageRegex": "(?s).*gRPC code.*"},
@@ -124,8 +98,6 @@ const CATEGORIES_JSON: &str = r#"[
 struct AllureResult {
     uuid: String,
     history_id: String,
-    /// Stable identity of the test case (independent of parameters), used by
-    /// Allure 3 to group history and retries. Derived from the full name.
     test_case_id: String,
     full_name: String,
     name: String,
@@ -141,10 +113,8 @@ struct AllureResult {
     steps: Option<Vec<Step>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     attachments: Option<Vec<Attachment>>,
-    /// From META.summary — rendered as the test description in the Allure UI.
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
-    /// From META.links — rendered as clickable links in the Allure UI.
     #[serde(skip_serializing_if = "Option::is_none")]
     links: Option<Vec<Link>>,
 }
@@ -239,10 +209,6 @@ fn build_grpc_steps(
     }
     let total_docs = calls.len();
 
-    // Prefer the runner's real per-document wall-clock durations. Documents
-    // beyond what the runner recorded (never executed — the chain stopped
-    // early on a failure) get a zero-width step; the last step still always
-    // ends exactly at `stop`, so steps stay monotonic and never overrun.
     let has_real_durations = !result.document_durations_ms.is_empty();
     let total_span = stop.saturating_sub(start);
     let per_step = total_span / total_docs as u128;
@@ -251,9 +217,6 @@ fn build_grpc_steps(
     let mut cursor = start;
 
     for (idx, call) in calls.iter().enumerate() {
-        // Use the per-call status resolved by the kernel: it attributes the
-        // failure to the actual failing document and marks never-executed
-        // documents as skipped instead of falsely passed.
         let status = call.status.as_str();
 
         let is_last = idx + 1 == total_docs;
@@ -314,11 +277,6 @@ fn build_grpc_steps(
     if steps.is_empty() { None } else { Some(steps) }
 }
 
-/// Build one Allure step per recorded assertion, wrapped in a parent
-/// "Assertions" step. A failed assertion carries its expected/actual diff and
-/// message inline via the step's `statusDetails`, so the Allure UI shows the
-/// exact mismatch without opening an attachment. Returns `None` when the runner
-/// recorded no assertions (e.g. an ERROR-only or connection-failed test).
 fn build_assertion_steps(result: &TestResult) -> Option<Step> {
     if result.assertions.is_empty() {
         return None;
@@ -367,8 +325,6 @@ fn build_assertion_steps(result: &TestResult) -> Option<Step> {
     })
 }
 
-/// Format a failed assertion's expected/actual as a two-line diff for the
-/// step trace. `None` when neither side was captured.
 fn assertion_diff(rec: &crate::state::AssertionRecord) -> Option<String> {
     match (&rec.expected, &rec.actual) {
         (None, None) => None,
@@ -380,9 +336,6 @@ fn assertion_diff(rec: &crate::state::AssertionRecord) -> Option<String> {
     }
 }
 
-/// Compile all failed assertions into a single trace block for the test-level
-/// `statusDetails`, so Allure's failure summary shows every mismatch (line,
-/// expression, expected, actual) inline. `None` when nothing failed.
 fn failed_assertions_trace(result: &TestResult) -> Option<String> {
     let mut blocks: Vec<String> = Vec::new();
     for rec in result.assertions.iter().filter(|r| !r.passed) {
@@ -403,9 +356,6 @@ fn failed_assertions_trace(result: &TestResult) -> Option<String> {
     }
 }
 
-/// Runtime config parameters (timeout/retry/...) plus, when this case came
-/// from a `--data` row, that row's own values — so Allure can dedupe/trend
-/// history by the exact data that drove the run, not just the file path.
 fn collect_parameters(test_name: &str, result: &TestResult) -> Vec<Parameter> {
     kernel::runtime_properties(test_name)
         .into_iter()
@@ -414,9 +364,6 @@ fn collect_parameters(test_name: &str, result: &TestResult) -> Vec<Parameter> {
         .collect()
 }
 
-/// Write the captured request/response exchange as a JSON attachment file and
-/// return its `Attachment` descriptor. `None` when nothing was captured (the
-/// runner wasn't asked to, or the call never reached a response).
 fn write_exchange_attachment(
     output_dir: &std::path::Path,
     uuid: &str,
@@ -443,9 +390,6 @@ fn write_exchange_attachment(
     })
 }
 
-/// Serialize and write an Allure result file atomically: write to a temp file in
-/// the same directory, then rename it into place. This prevents an Allure
-/// consumer (or a crash) from ever observing a partially written JSON file.
 fn write_result_atomically(
     output_dir: &std::path::Path,
     file_path: &std::path::Path,
@@ -462,15 +406,10 @@ fn write_result_atomically(
     Ok(())
 }
 
-/// Build the Allure `executor.json` from CI environment variables, so the
-/// report shows the build/run it came from. Returns `None` when not running in
-/// a recognised CI (no file is written locally).
 fn build_executor_json() -> Option<String> {
     build_executor_json_from(|k| std::env::var(k).ok())
 }
 
-/// Pure core of [`build_executor_json`] — takes an env getter so it is testable
-/// without mutating the process environment.
 fn build_executor_json_from(get: impl Fn(&str) -> Option<String>) -> Option<String> {
     if get("GITHUB_ACTIONS").as_deref() == Some("true") {
         let server = get("GITHUB_SERVER_URL").unwrap_or_else(|| "https://github.com".to_string());
@@ -487,7 +426,6 @@ fn build_executor_json_from(get: impl Fn(&str) -> Option<String>) -> Option<Stri
         return serde_json::to_string_pretty(&body).ok();
     }
 
-    // Generic CI fallback (Jenkins/GitLab/etc set CI plus a build URL/number).
     if matches!(get("CI").as_deref(), Some("true") | Some("1")) {
         let body = serde_json::json!({
             "name": get("CI_NAME").unwrap_or_else(|| "CI".to_string()),
@@ -512,10 +450,6 @@ impl Reporter for AllureReporter {
             crate::state::TestStatus::Skip => "skipped",
         };
 
-        // `_setup.gctf`/`_teardown.gctf` are fixtures, not ordinary test cases:
-        // report them as the directory container's befores/afters instead of a
-        // standalone `-result.json` — otherwise they'd show up twice (once as
-        // their own test card, once implied by the container).
         if let Some(kind) = fixture_kind(test_name) {
             let now = crate::polyfill::runtime::now_unix_millis();
             let start = now.saturating_sub(result.duration_ms as u128);
@@ -547,16 +481,10 @@ impl Reporter for AllureReporter {
         let namespace = Uuid::NAMESPACE_OID;
         let history_id = Uuid::new_v5(&namespace, test_name.as_bytes()).to_string();
 
-        // A Pass that only succeeded after a retry is flaky — surfaced even
-        // though there's no error message, so it doesn't look like a clean
-        // pass in the Allure UI.
         let is_flaky = result.status == crate::state::TestStatus::Pass && result.retried;
         let status_details = if result.error_message.is_some() || is_flaky {
             Some(StatusDetails {
                 message: result.error_message.clone(),
-                // Surface every failed assertion's expected/actual diff in the
-                // failure summary; falls back to no trace for non-assertion
-                // failures (connection/parse errors carry only a message).
                 trace: failed_assertions_trace(result),
                 flaky: is_flaky.then_some(true),
                 known: None,
@@ -570,24 +498,18 @@ impl Reporter for AllureReporter {
         let duration = result.duration_ms as u128;
         let start = now.saturating_sub(duration);
 
-        // Use META name if available, otherwise file path
         let display_name = result.meta.name.as_deref().unwrap_or(test_name);
         let test_name_short = extract_test_name(display_name);
         let suite_name = extract_suite_name(test_name);
-        // Identity for Allure's test list AND its history/retry grouping —
-        // both key off `testCaseId`, not `historyId` (confirmed against the
-        // real Allure 3 CLI: `allure generate` groups the report's test list
-        // by testCaseId, so two rows sharing one testCaseId collapse into a
-        // single entry and only one row is visible). Key on the full
-        // `test_name` (file path + `#[row=...]` suffix when present) so each
-        // data row is its own test, while still being stable run-to-run for
-        // *that* row — deterministic reruns of the same row keep the same
-        // id, which is what actually drives the flaky/history trend.
         let test_case_id = Uuid::new_v5(&namespace, test_name.as_bytes()).to_string();
 
         let fallback_step = if result.call_duration_ms.is_some() {
             Some(vec![Step {
-                name: "gRPC call".to_string(),
+                name: if result.family == "httf" {
+                    "HTTP call".to_string()
+                } else {
+                    "gRPC call".to_string()
+                },
                 status: if result.status == crate::state::TestStatus::Pass {
                     "passed"
                 } else {
@@ -605,15 +527,10 @@ impl Reporter for AllureReporter {
         };
 
         let mut steps = build_grpc_steps(test_name, result, start, now).or(fallback_step);
-        // Append per-assertion steps so the Allure tree shows each ASSERTS check
-        // (expected/actual on failure), not just the per-document gRPC steps.
         if let Some(assertion_step) = build_assertion_steps(result) {
             steps.get_or_insert_with(Vec::new).push(assertion_step);
         }
 
-        // Derive the package/service/method hierarchy once, so it can drive both
-        // the Suites tree (parentSuite/suite/subSuite) and the Behaviors tree
-        // (epic/feature/story) instead of the old hardcoded feature/dir labels.
         let grpc_labels = kernel::collect_grpc_labels(test_name);
         let first_package = grpc_labels.packages.first().cloned();
         let first_service = grpc_labels.services.first().cloned();
@@ -622,7 +539,7 @@ impl Reporter for AllureReporter {
         let mut labels = vec![
             Label {
                 name: "language".to_string(),
-                value: "gctf".to_string(),
+                value: crate::parser::ast::Family::of(test_name).ext().to_string(),
             },
             Label {
                 name: "framework".to_string(),
@@ -632,12 +549,6 @@ impl Reporter for AllureReporter {
                 name: "grpctestify_version".to_string(),
                 value: env!("CARGO_PKG_VERSION").to_string(),
             },
-            // Machine + concurrency-lane identity, real data (not fabricated
-            // for Allure): the actual host running the suite, and the actual
-            // OS thread this test executed on. Tests genuinely run
-            // concurrently (`buffer_unordered(parallel_jobs)` in `run.rs`),
-            // so distinct thread ids reflect real overlap — exactly what
-            // Allure's Timeline tab visualizes.
             Label {
                 name: "host".to_string(),
                 value: host_label(),
@@ -646,12 +557,10 @@ impl Reporter for AllureReporter {
                 name: "thread".to_string(),
                 value: format!("{:?}", std::thread::current().id()),
             },
-            // Suites tree: package > service > method (fall back to the directory).
             Label {
                 name: "suite".to_string(),
                 value: first_service.clone().unwrap_or(suite_name),
             },
-            // Behaviors tree: feature = service (fall back to a generic label).
             Label {
                 name: "feature".to_string(),
                 value: first_service
@@ -695,7 +604,6 @@ impl Reporter for AllureReporter {
             });
         }
 
-        // Add gRPC endpoint/service/method labels for fast filtering in Allure UI
         for endpoint in grpc_labels.endpoints {
             labels.push(Label {
                 name: "grpc_endpoint".to_string(),
@@ -775,7 +683,6 @@ impl Reporter for AllureReporter {
     }
 
     fn on_suite_end(&self, results: &crate::state::TestResults) -> Result<()> {
-        // Static defect taxonomy — best-effort; a failed write must not fail the run.
         let categories_path = self.output_dir.join("categories.json");
         if let Err(e) = fs::write(&categories_path, CATEGORIES_JSON) {
             tracing::warn!("Failed to write Allure categories.json: {e}");
@@ -803,10 +710,6 @@ impl Reporter for AllureReporter {
             tracing::warn!("Failed to write Allure executor.json: {e}");
         }
 
-        // One container per directory that had a setup/teardown fixture,
-        // linking its befores/afters to the ordinary test children that ran
-        // there — directories with no fixture need no container (the Suites
-        // tree already groups tests via the parentSuite/suite/subSuite labels).
         if let Ok(state) = self.fixture_state.lock() {
             for (dir, entry) in state.iter() {
                 if entry.befores.is_empty() && entry.afters.is_empty() {
@@ -835,6 +738,18 @@ impl Reporter for AllureReporter {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_language_label_is_the_family_of_the_file() {
+        assert_eq!(
+            crate::parser::ast::Family::of("api/users.httf").ext(),
+            "httf"
+        );
+        assert_eq!(
+            crate::parser::ast::Family::of("api/users.gctf").ext(),
+            "gctf"
+        );
+    }
     use super::*;
     use crate::state::TestResult;
 
@@ -886,7 +801,6 @@ pkg.Service/M
         std::fs::write(&path, CHAIN_FIXTURE).unwrap();
         let path_str = path.to_string_lossy().into_owned();
 
-        // Reference a line inside the SECOND document so it is the failing one.
         let doc = crate::parser::parse_gctf(&path).unwrap();
         let chain: Vec<_> = doc.iter_chain().collect();
         let line = chain[1]
@@ -907,12 +821,9 @@ pkg.Service/M
         assert_eq!(steps.len(), 3);
         assert_eq!(steps[0].status, "passed");
         assert_eq!(steps[1].status, "failed");
-        // Never-executed document is skipped, not passed.
         assert_eq!(steps[2].status, "skipped");
     }
 
-    // Regression: when the runner recorded real per-document durations, steps
-    // must use them instead of splitting the total span evenly.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn build_grpc_steps_uses_real_document_durations() {
@@ -930,7 +841,6 @@ pkg.Service/M
             .max()
             .unwrap();
 
-        // Doc 0 ran for 50ms, doc 1 (the failing one) for 30ms; doc 2 never ran.
         let result = TestResult::fail(
             path_str.clone(),
             format!("Assertion failed (attached to RESPONSE at line {line})"),
@@ -951,14 +861,10 @@ pkg.Service/M
             (Some(50), Some(80)),
             "second step starts where the first left off"
         );
-        // The never-executed third step has no recorded duration — it absorbs
-        // the remaining span up to the overall stop.
         assert_eq!(steps[2].start, Some(80));
         assert_eq!(steps[2].stop, Some(300));
     }
 
-    // Without any recorded per-document durations, the old even-split fallback
-    // must still produce a valid, monotonic set of steps.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn build_grpc_steps_falls_back_to_even_split_without_real_durations() {
@@ -997,12 +903,10 @@ pkg.Service/M
             } else {
                 Some("\"pending\"".to_string())
             },
+            hint: None,
         }
     }
 
-    // Regression: the per-assertion diagnostic data (expected/actual/line) must
-    // reach the Allure result — as an "Assertions" step tree and as the
-    // test-level failure trace — not be dropped like it was before.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn allure_emits_assertion_steps_and_diff_trace() {
@@ -1033,7 +937,6 @@ pkg.Service/M
         let json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(result_file).unwrap()).unwrap();
 
-        // An "Assertions (2)" step exists with a failed and a passed child.
         let steps = json["steps"].as_array().expect("steps array");
         let assertions_step = steps
             .iter()
@@ -1053,7 +956,6 @@ pkg.Service/M
             "step trace has actual: {trace}"
         );
 
-        // The test-level failure trace aggregates the mismatch too.
         let top_trace = json["statusDetails"]["trace"].as_str().unwrap();
         assert!(
             top_trace.contains("line 7"),
@@ -1065,9 +967,6 @@ pkg.Service/M
         );
     }
 
-    // Regression: labels must build the Suites (parentSuite/suite/subSuite) and
-    // Behaviors (epic/feature/story) trees from package/service/method, and a
-    // stable testCaseId must be emitted.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn allure_emits_suite_behavior_trees_and_test_case_id() {
@@ -1094,7 +993,6 @@ pkg.Service/M
                 .iter()
                 .any(|l| l["name"] == name && l["value"] == value)
         };
-        // SINGLE_FIXTURE endpoint is pkg.Service/M.
         assert!(has("parentSuite", "pkg"), "parentSuite=pkg: {labels:?}");
         assert!(has("suite", "Service"), "suite=Service: {labels:?}");
         assert!(has("subSuite", "M"), "subSuite=M: {labels:?}");
@@ -1149,9 +1047,6 @@ pkg.Service/M
     #[cfg_attr(miri, ignore)]
     #[test]
     fn allure_thread_label_reflects_real_concurrency() {
-        // Two tests run on genuinely different OS threads must get distinct
-        // `thread` label values — proves the label reflects real execution,
-        // not a hardcoded/constant placeholder.
         let dir = tempfile::tempdir().unwrap();
         let gctf = dir.path().join("t.gctf");
         std::fs::write(&gctf, SINGLE_FIXTURE).unwrap();
@@ -1198,12 +1093,6 @@ pkg.Service/M
         );
     }
 
-    // testCaseId must differ per `--data` row (verified against the real
-    // Allure 3 CLI: it groups the rendered test list by testCaseId, so rows
-    // sharing one id silently collapse into a single visible entry — 2 of 3
-    // `List.gctf` variants disappeared from `allure generate`'s output
-    // before this was caught), while staying idempotent (stable across
-    // reruns) for one specific row so its own flaky/history trend works.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn allure_test_case_id_differs_per_row_but_stable_for_reruns() {
@@ -1214,8 +1103,6 @@ pkg.Service/M
 
         let out_dir = dir.path().join("allure-results");
         let reporter = AllureReporter::new(out_dir.clone());
-        // Two distinct rows, plus a rerun of the first row (simulating a
-        // retry within the same run).
         reporter.on_test_end(
             &format!("{base}#[row=0 x=1]"),
             &TestResult::pass(base.clone(), 5, Some(3)),
@@ -1291,8 +1178,6 @@ pkg.Service/M
         assert!(build_executor_json_from(|_| None).is_none());
     }
 
-    // Regression: on_suite_end must emit the Allure sidecar files that unlock
-    // the defect-categories and environment widgets.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn allure_writes_categories_and_environment_sidecars() {
@@ -1306,7 +1191,6 @@ pkg.Service/M
         results.metrics.rpc_calls = 9;
         reporter.on_suite_end(&results).unwrap();
 
-        // categories.json is valid JSON with the assertion bucket.
         let categories = std::fs::read_to_string(out_dir.join("categories.json")).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&categories).unwrap();
         assert!(
@@ -1318,7 +1202,6 @@ pkg.Service/M
             "categories.json must define the Assertion mismatch bucket"
         );
 
-        // environment.properties carries version, address, and parallelism.
         let env = std::fs::read_to_string(out_dir.join("environment.properties")).unwrap();
         assert!(
             env.contains("grpctestify.address=localhost:4770"),
@@ -1328,8 +1211,6 @@ pkg.Service/M
         assert!(env.contains(env!("CARGO_PKG_VERSION")), "env: {env}");
     }
 
-    // Regression: a Pass that only succeeded after a retry must be flagged
-    // flaky in the Allure UI — otherwise it looks identical to a clean pass.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn allure_flags_retried_pass_as_flaky() {
@@ -1367,7 +1248,6 @@ pkg.Service/M
 
         let out_dir = dir.path().join("allure-results");
         let reporter = AllureReporter::new(out_dir.clone());
-        // retried defaults to false — a normal, non-flaky pass.
         let result = TestResult::pass(gctf_str.clone(), 5, Some(3));
         reporter.on_test_end(&gctf_str, &result);
 
@@ -1384,10 +1264,20 @@ pkg.Service/M
         );
     }
 
-    // Regression: `_setup.gctf`/`_teardown.gctf` must not get their own
-    // `-result.json` (they'd show up as an ordinary test AND inside the
-    // container's befores/afters) — they only ever contribute to the
-    // directory's container.
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn a_fixture_is_a_fixture_in_either_family() {
+        assert!(matches!(
+            fixture_kind("api/_setup.httf"),
+            Some(FixtureKind::Setup)
+        ));
+        assert!(matches!(
+            fixture_kind("api/_teardown.httf"),
+            Some(FixtureKind::Teardown)
+        ));
+        assert!(fixture_kind("api/list.httf").is_none());
+    }
+
     #[cfg_attr(miri, ignore)]
     #[test]
     fn allure_fixture_writes_container_not_result() {
@@ -1419,9 +1309,6 @@ pkg.Service/M
         assert_eq!(json["befores"][0]["name"], setup_path);
     }
 
-    // Regression: a directory's ordinary tests must be linked as the
-    // container's `children`, and setup/teardown land in befores/afters
-    // respectively — one container ties the whole directory together.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn allure_container_links_children_and_fixtures() {
@@ -1447,7 +1334,6 @@ pkg.Service/M
             .on_suite_end(&crate::state::TestResults::new())
             .unwrap();
 
-        // The ordinary test's own uuid, from its written -result.json filename.
         let entries: Vec<String> = std::fs::read_dir(&out_dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -1469,8 +1355,6 @@ pkg.Service/M
         assert_eq!(json["afters"].as_array().unwrap().len(), 1);
     }
 
-    // Regression: a directory with only ordinary tests (no fixtures) gets no
-    // container at all — nothing meaningful to report beyond the labels.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn allure_no_container_without_fixtures() {
@@ -1514,7 +1398,6 @@ pkg.Service/M
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
 
-        // A finished result file exists and no temp file leaked.
         let result_file = entries
             .iter()
             .find(|n| n.ends_with("-result.json"))
@@ -1524,7 +1407,6 @@ pkg.Service/M
             "temp file leaked: {entries:?}"
         );
 
-        // The written file is complete, parseable JSON.
         let content = std::fs::read_to_string(out_dir.join(result_file)).unwrap();
         let _: serde_json::Value =
             serde_json::from_str(&content).expect("allure result must be valid JSON");

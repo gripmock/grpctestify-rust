@@ -1,4 +1,3 @@
-// Thin shim — all implementation lives in crates/apif-state.
 pub use apif_state::{
     AssertionRecord, CapturedExchange, ConfigSummary, ExecutionMetrics, TestMeta, TestResult,
     TestResults, TestStatus,

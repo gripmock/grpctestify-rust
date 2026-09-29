@@ -1,9 +1,5 @@
 use console::{Style, style};
 
-/// The project mascot — a Braille-art snail. Shared by the no-args welcome
-/// screen and `--help` so the two present one identity. Lines start with the
-/// Braille blank (U+2800), not ASCII space, so callers can indent by prefixing
-/// without a string-continuation stripping the leading whitespace.
 pub const SNAIL_LOGO: &str = "⠀⠀⠀⠀⣠⡄⠀⢠⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⣿⡇⠀⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⣿⡇⠀⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
@@ -69,10 +65,6 @@ pub fn header(text: &str) -> String {
     style(text).bold().to_string()
 }
 
-/// A dim horizontal rule — `width` repetitions of `ch`. Centralizes the
-/// hand-rolled `dim_style().apply_to("─".repeat(n))` pattern so section rules
-/// render consistently and honor `NO_COLOR`/non-TTY through the same `console`
-/// styling as every other helper here.
 pub fn rule(ch: char, width: usize) -> String {
     dim_style()
         .apply_to(ch.to_string().repeat(width))
@@ -117,8 +109,6 @@ mod tests {
 
     #[test]
     fn rule_repeats_the_char_width_times() {
-        // Content is `width` copies of `ch` regardless of any (TTY-gated)
-        // styling wrapper — assert the glyph count, not the ANSI.
         assert_eq!(rule('─', 5).matches('─').count(), 5);
         assert_eq!(rule('═', 80).matches('═').count(), 80);
         assert_eq!(rule('─', 0).matches('─').count(), 0);

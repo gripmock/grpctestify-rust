@@ -47,12 +47,14 @@ async fn skip_still_skips_its_own_section() {
     let address = spawn_health_server().await;
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("skip-own.gctf");
-    // The only wrong expectation is inside the skipped section, so the run
-    // must pass.
+    /* The only wrong expectation is inside the skipped section, so the run must
+    pass — and something else has to verify the file, because a file whose
+    every check is switched off is refused the way a file with no check at
+    all is. */
     std::fs::write(
         &file,
         format!(
-            "--- ADDRESS ---\n{address}\n\n--- ENDPOINT ---\ngrpc.health.v1.Health/Check\n\n--- REQUEST ---\n{{}}\n\n#[skip]\n--- RESPONSE ---\n{{\"status\": \"WRONG\"}}\n"
+            "--- ADDRESS ---\n{address}\n\n--- ENDPOINT ---\ngrpc.health.v1.Health/Check\n\n--- REQUEST ---\n{{}}\n\n#[skip]\n--- RESPONSE ---\n{{\"status\": \"WRONG\"}}\n\n--- ASSERTS ---\n.status == \"SERVING\"\n"
         ),
     )
     .unwrap();

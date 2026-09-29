@@ -1,29 +1,72 @@
-// AST (Abstract Syntax Tree) for .gctf files
-// Represents the parsed structure of a .gctf test file
-
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Insertion-ordered string map backing KV/EXTRACT section content. Ordered
-/// (not `HashMap`) so serialized output and every consumer iteration follow the
-/// author's source order deterministically; keeps map ergonomics (`get`/dedup)
-/// since duplicate keys are already rejected at parse time.
 pub type OrderedStringMap = IndexMap<String, String>;
 
-/// Complete .gctf document
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Family {
+    Gctf,
+    Httf,
+    Apif,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Transport {
+    Grpc,
+    Http,
+}
+
+impl Family {
+    pub fn of(path: &str) -> Family {
+        let file = match path.split_once("#[") {
+            Some((file, _)) => file,
+            None => path,
+        };
+        match file.rsplit('.').next() {
+            Some(ext) if ext.eq_ignore_ascii_case("httf") => Family::Httf,
+            Some(ext) if ext.eq_ignore_ascii_case("apif") => Family::Apif,
+            _ => Family::Gctf,
+        }
+    }
+
+    pub fn ext(self) -> &'static str {
+        match self {
+            Family::Gctf => "gctf",
+            Family::Httf => "httf",
+            Family::Apif => "apif",
+        }
+    }
+
+    pub fn allows_http(self) -> bool {
+        matches!(self, Family::Httf | Family::Apif)
+    }
+
+    pub fn allows_grpc(self) -> bool {
+        matches!(self, Family::Gctf | Family::Apif)
+    }
+}
+
+pub enum Call {
+    Rpc {
+        package: String,
+        service: String,
+        method: String,
+    },
+    Http {
+        method: String,
+        path: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GctfDocument {
-    /// File path (absolute or relative)
     pub file_path: String,
 
-    /// All sections in the document (preserving order)
     pub sections: Vec<Section>,
 
-    /// Document metadata
     pub metadata: DocumentMetadata,
 
-    /// Next document in chain (for multi-document files)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_document: Option<Box<GctfDocument>>,
 }
@@ -42,21 +85,14 @@ impl<'a> Iterator for DocumentChainIter<'a> {
     }
 }
 
-/// Document metadata
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DocumentMetadata {
-    /// Original file content (for error reporting)
     pub source: Option<String>,
 
-    /// File modification time (for caching)
     pub mtime: Option<i64>,
 
-    /// Parsed at timestamp
     pub parsed_at: i64,
 
-    /// The parser proved no section text contains a `{{` placeholder. Defaults
-    /// to `false`, so a document not built by the parser is treated as if it
-    /// might.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub placeholder_free: bool,
 }
@@ -72,29 +108,22 @@ impl Default for DocumentMetadata {
     }
 }
 
-/// File-level metadata (META section)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct FileMeta {
-    /// Test name
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Test summary (one-liner)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
-    /// Test tags
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
-    /// Test owner (team/person)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
-    /// Related links (docs, jira, etc)
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<String>,
 }
 
 impl FileMeta {
-    /// Check if meta has any content
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.name.is_none()
@@ -105,7 +134,6 @@ impl FileMeta {
     }
 }
 
-/// GCTF attribute (#[name(value)] syntax)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GctfAttribute {
     pub name: String,
@@ -161,17 +189,9 @@ impl GctfAttribute {
     }
 }
 
-/// Deprecated kebab-case OPTIONS-key / `#[...]` attribute spellings that mean
-/// the same thing as their canonical snake_case counterpart — kept working
-/// indefinitely (never rejected), just normalized on the way back out and
-/// flagged when seen. Single source of truth so a future rename only needs
-/// one new entry here, instead of touching the validator's match arms and
-/// every place that re-emits canonical output separately.
 pub const DEPRECATED_KEBAB_CASE_KEYS: &[(&str, &str)] =
     &[("retry-delay", "retry_delay"), ("no-retry", "no_retry")];
 
-/// Canonical spelling for `key`, or `key` itself if it's not a known
-/// deprecated form.
 pub fn canonical_key_spelling(key: &str) -> &str {
     DEPRECATED_KEBAB_CASE_KEYS
         .iter()
@@ -219,14 +239,6 @@ impl Section {
     }
 }
 
-/// Document-absolute source position of a `Section`, in both byte offsets
-/// (for tooling that needs precise slicing/patching, e.g. LSP text edits)
-/// and 0-based line/column (matching `start_line`/`end_line`'s own
-/// convention). Columns are always 0 today — this format is line-based
-/// (section headers/content always start at column 0), so there's nothing
-/// finer to report yet; the fields exist so a future per-token span (e.g. a
-/// specific JSON key within a REQUEST body) has somewhere consistent to
-/// plug in without another struct.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SectionSpan {
     pub start_byte: usize,
@@ -238,11 +250,6 @@ pub struct SectionSpan {
 }
 
 impl SectionSpan {
-    /// Build a `SectionSpan` for the half-open 0-based line range `[start_line,
-    /// end_line)`, using `line_offsets` (see `line_start_byte_offsets`) to
-    /// resolve byte positions. `source_len` is the fallback for a line index
-    /// past the last tracked offset (e.g. `end_line` at EOF with no trailing
-    /// newline).
     pub fn from_line_range(
         line_offsets: &[usize],
         start_line: usize,
@@ -266,12 +273,6 @@ impl SectionSpan {
     }
 }
 
-/// Byte offset where each 0-based line starts, for `source` — index `k`
-/// gives the byte position right after the `k`-th `\n` (index 0 is always
-/// 0). Only `\n` bytes count as separators, so `\r\n`-terminated lines work
-/// identically to `\n`-terminated ones (a `\r` immediately before a `\n`
-/// stays part of the preceding line's byte range, matching how
-/// `str::lines()` treats it).
 pub fn line_start_byte_offsets(source: &str) -> Vec<usize> {
     let mut offsets = vec![0];
     offsets.extend(
@@ -284,36 +285,23 @@ pub fn line_start_byte_offsets(source: &str) -> Vec<usize> {
     offsets
 }
 
-/// A section in the .gctf file
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Section {
-    /// Section type
     pub section_type: SectionType,
 
-    /// Content of the section (raw text, typically JSON)
     pub content: SectionContent,
 
-    /// Inline options (for sections that support them)
     pub inline_options: InlineOptions,
 
-    /// Raw text content of the section (preserved for formatting)
     pub raw_content: String,
 
-    /// Line number where section starts
     pub start_line: usize,
 
-    /// Line number where section ends
     pub end_line: usize,
 
-    /// Attributes declared on this section
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attributes: Vec<GctfAttribute>,
 
-    /// Document-absolute byte/line/col span, duplicating `start_line`/
-    /// `end_line` in a richer shape — see `SectionSpan`. Defaults to
-    /// all-zero (`SectionSpan::default()`) when a caller doesn't know or
-    /// care about it (most tests, and any document built by hand rather than
-    /// parsed from real source); real parses always populate it.
     #[serde(default)]
     pub span: SectionSpan,
 }
@@ -333,86 +321,59 @@ impl Default for Section {
     }
 }
 
-/// Section content
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SectionContent {
-    /// Single value (ADDRESS, ENDPOINT, etc.)
     Single(String),
 
-    /// JSON object (REQUEST, RESPONSE, ERROR)
     Json(serde_json::Value),
 
-    /// Newline-delimited JSON values within a single section block
     JsonLines(Vec<serde_json::Value>),
 
-    /// Key-value pairs (REQUEST_HEADERS, TLS, OPTIONS, PROTO)
     KeyValues(OrderedStringMap),
 
-    /// Extract variables from response (EXTRACT)
     Extract(OrderedStringMap),
 
-    /// Assertion expressions (ASSERTS)
     Assertions(Vec<String>),
 
-    /// File-level metadata (META)
     Meta(FileMeta),
 
-    /// Inline data-driven rows (DATASET) — a YAML list of row objects, each
-    /// becoming one `dataset.<field>` template expansion.
     Rows(Vec<serde_json::Value>),
 
-    /// Empty section
     Empty,
 }
 
-/// Section types in .gctf files
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SectionType {
-    /// Server address
     Address,
 
-    /// gRPC endpoint (service/method)
     Endpoint,
 
-    /// Request payload (can have multiple)
     Request,
 
-    /// Expected response (can have multiple)
     Response,
 
-    /// Expected error
     Error,
 
-    /// Request-specific headers
     RequestHeaders,
 
-    /// Assertion expressions (can have multiple)
     Asserts,
 
-    /// Protocol buffer configuration
     Proto,
 
-    /// TLS/mTLS configuration
     Tls,
 
-    /// Test execution options
     Options,
 
-    /// Extract variables from response
     Extract,
 
-    /// File-level metadata (suite, tags)
     Meta,
 
-    /// File-level benchmark profile/options
     Bench,
 
-    /// Inline data-driven test rows (YAML list of objects)
     Dataset,
 }
 
 impl SectionType {
-    /// Returns `true` if this section marks the end of a logical request-response cycle.
     #[must_use]
     pub fn is_terminal(&self) -> bool {
         matches!(
@@ -421,7 +382,6 @@ impl SectionType {
         )
     }
 
-    /// Get section name as string
     pub fn as_str(&self) -> &'static str {
         match self {
             SectionType::Address => "ADDRESS",
@@ -441,7 +401,6 @@ impl SectionType {
         }
     }
 
-    /// Parse section name string to SectionType
     pub fn from_keyword(s: &str) -> Option<SectionType> {
         match s.trim() {
             "ADDRESS" => Some(SectionType::Address),
@@ -462,7 +421,37 @@ impl SectionType {
         }
     }
 
-    /// Check if section can appear multiple times
+    pub const KEYWORDS: &'static [&'static str] = &[
+        "ADDRESS",
+        "ENDPOINT",
+        "REQUEST",
+        "RESPONSE",
+        "ERROR",
+        "REQUEST_HEADERS",
+        "ASSERTS",
+        "PROTO",
+        "TLS",
+        "OPTIONS",
+        "EXTRACT",
+        "META",
+        "BENCH",
+        "DATASET",
+    ];
+
+    #[must_use]
+    pub fn nearest_keyword(name: &str) -> Option<&'static str> {
+        let wanted = name.trim().to_uppercase();
+        if wanted.is_empty() {
+            return None;
+        }
+        let (best, distance) = Self::KEYWORDS
+            .iter()
+            .map(|k| (*k, edit_distance(&wanted, k)))
+            .min_by_key(|(_, d)| *d)?;
+        let allowed = if wanted.len() <= 5 { 1 } else { 2 };
+        (distance <= allowed).then_some(best)
+    }
+
     #[must_use]
     pub fn is_multiple_allowed(&self) -> bool {
         matches!(
@@ -475,17 +464,16 @@ impl SectionType {
     }
 
     pub fn supports_inline_options(&self) -> bool {
-        matches!(self, SectionType::Response | SectionType::Error)
+        matches!(
+            self,
+            SectionType::Response | SectionType::Error | SectionType::Endpoint
+        )
     }
 
     pub fn preamble_rank(&self) -> Option<usize> {
         match self {
             SectionType::Meta => Some(0),
             SectionType::Bench => Some(1),
-            // DATASET is file-level test configuration like BENCH, not a
-            // connection detail — and its `dataset.*` fields are referenced
-            // via `{{dataset.field}}` inside REQUEST, so it must read before
-            // REQUEST rather than sitting wherever it happened to be typed.
             SectionType::Dataset => Some(2),
             SectionType::Address => Some(3),
             SectionType::Endpoint => Some(4),
@@ -497,28 +485,20 @@ impl SectionType {
     }
 }
 
-/// Inline options for sections
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct InlineOptions {
-    /// Run ASSERTS on same response (unary RPC)
     pub with_asserts: bool,
 
-    /// Subset comparison (expected is subset of actual)
     pub partial: bool,
 
-    /// Numeric tolerance for floating-point comparisons
     pub tolerance: Option<f64>,
 
-    /// Remove sensitive fields before comparison
     pub redact: Vec<String>,
 
-    /// Sort arrays for order-independent comparison
     pub unordered_arrays: bool,
 
-    /// Plugin-declared inline-option keys (`@inline_option` doc tag) and
-    /// their raw string values — the parser accepts any key a loaded plugin
-    /// has registered instead of hard-rejecting it as unknown. Ordered for
-    /// deterministic `fmt` round-tripping.
+    pub parallel: bool,
+
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub extra: std::collections::BTreeMap<String, String>,
 }
@@ -550,6 +530,10 @@ impl InlineOptions {
             parts.push("unordered_arrays".to_string());
         }
 
+        if self.parallel {
+            parts.push("parallel".to_string());
+        }
+
         if self.with_asserts {
             parts.push("with_asserts".to_string());
         }
@@ -568,6 +552,7 @@ impl InlineOptions {
             && self.tolerance.is_none()
             && self.redact.is_empty()
             && !self.unordered_arrays
+            && !self.parallel
             && self.extra.is_empty()
     }
 }
@@ -594,19 +579,14 @@ impl Section {
     }
 }
 
-/// GCTF file header with inline options
-/// Format: --- SECTION_NAME key=value ... ---
 #[derive(Debug, Clone, PartialEq)]
 pub struct SectionHeader {
-    /// Section type
     pub section_type: SectionType,
 
-    /// Inline options (key=value pairs)
     pub options: HashMap<String, String>,
 }
 
 impl GctfDocument {
-    /// Create a new empty document
     pub fn new(file_path: String) -> Self {
         Self {
             file_path,
@@ -616,7 +596,6 @@ impl GctfDocument {
         }
     }
 
-    /// Get document by index (0-based) from the chain
     pub fn get_document(&self, index: usize) -> Option<&GctfDocument> {
         self.iter_chain().nth(index)
     }
@@ -637,8 +616,6 @@ impl GctfDocument {
         count
     }
 
-    /// Clone with `next_document` cleared — for passing one chain member to
-    /// a chain-aware function without it also walking the rest of the chain.
     #[must_use]
     pub fn detached(&self) -> GctfDocument {
         GctfDocument {
@@ -652,7 +629,6 @@ impl GctfDocument {
         self.next_document.is_none()
     }
 
-    /// Get all sections of a specific type
     pub fn sections_by_type(&self, section_type: SectionType) -> Vec<&Section> {
         self.sections
             .iter()
@@ -660,14 +636,12 @@ impl GctfDocument {
             .collect()
     }
 
-    /// Get first section of a specific type
     pub fn first_section(&self, section_type: SectionType) -> Option<&Section> {
         self.sections
             .iter()
             .find(|s| s.section_type == section_type)
     }
 
-    /// The BENCH section's key-values, if the document has a BENCH section.
     pub fn bench_key_values(&self) -> Option<&OrderedStringMap> {
         match &self.first_section(SectionType::Bench)?.content {
             SectionContent::KeyValues(kv) => Some(kv),
@@ -675,7 +649,6 @@ impl GctfDocument {
         }
     }
 
-    /// Get address (from ADDRESS section or environment variable)
     pub fn get_address(&self, env_address: Option<&str>) -> Option<String> {
         if let Some(section) = self.first_section(SectionType::Address)
             && let SectionContent::Single(addr) = &section.content
@@ -685,7 +658,6 @@ impl GctfDocument {
         env_address.map(|s| s.to_string())
     }
 
-    /// Get endpoint
     pub fn get_endpoint(&self) -> Option<String> {
         if let Some(section) = self.first_section(SectionType::Endpoint)
             && let SectionContent::Single(endpoint) = &section.content
@@ -695,8 +667,59 @@ impl GctfDocument {
         None
     }
 
-    /// Parse endpoint into package, service, method
+    pub fn family(&self) -> Family {
+        Family::of(&self.file_path)
+    }
+
+    pub fn runs_in_parallel(&self) -> bool {
+        self.first_section(SectionType::Endpoint)
+            .is_some_and(|s| s.inline_options.parallel)
+    }
+
+    pub fn transport(&self) -> Transport {
+        match self.family() {
+            Family::Gctf => Transport::Grpc,
+            Family::Httf => Transport::Http,
+            Family::Apif => {
+                if self.parse_http_endpoint().is_some() {
+                    Transport::Http
+                } else {
+                    Transport::Grpc
+                }
+            }
+        }
+    }
+
+    pub fn parse_call(&self) -> Option<Call> {
+        match self.transport() {
+            Transport::Grpc => self
+                .parse_endpoint()
+                .map(|(package, service, method)| Call::Rpc {
+                    package,
+                    service,
+                    method,
+                }),
+            Transport::Http => self
+                .parse_http_endpoint()
+                .map(|(method, path)| Call::Http { method, path }),
+        }
+    }
+
+    pub fn parse_http_endpoint(&self) -> Option<(String, String)> {
+        let endpoint = self.get_endpoint()?;
+        let mut parts = endpoint.split_whitespace();
+        let method = parts.next()?;
+        let path = parts.next()?;
+        if parts.next().is_some() || !is_http_method(method) {
+            return None;
+        }
+        Some((method.to_ascii_uppercase(), path.to_string()))
+    }
+
     pub fn parse_endpoint(&self) -> Option<(String, String, String)> {
+        if self.transport() == Transport::Http {
+            return None;
+        }
         let endpoint = self.get_endpoint()?;
         let parts: Vec<&str> = endpoint.split('/').collect();
         if parts.len() == 2 {
@@ -717,21 +740,17 @@ impl GctfDocument {
         None
     }
 
-    /// Get all request payloads
     pub fn get_requests(&self) -> Vec<serde_json::Value> {
         self.sections_by_type(SectionType::Request)
             .into_iter()
-            .filter_map(|s| {
-                if let SectionContent::Json(json) = &s.content {
-                    Some(json.clone())
-                } else {
-                    None
-                }
+            .flat_map(|s| match &s.content {
+                SectionContent::Json(json) => vec![json.clone()],
+                SectionContent::JsonLines(values) => values.clone(),
+                _ => Vec::new(),
             })
             .collect()
     }
 
-    /// Get all assertion sections
     pub fn get_assertions(&self) -> Vec<Vec<String>> {
         self.sections_by_type(SectionType::Asserts)
             .into_iter()
@@ -745,7 +764,6 @@ impl GctfDocument {
             .collect()
     }
 
-    /// Get request headers
     pub fn get_request_headers(&self) -> Option<OrderedStringMap> {
         if let Some(section) = self.first_section(SectionType::RequestHeaders)
             && let SectionContent::KeyValues(headers) = &section.content
@@ -755,7 +773,6 @@ impl GctfDocument {
         None
     }
 
-    /// Get TLS configuration
     pub fn get_tls_config(&self) -> Option<OrderedStringMap> {
         if let Some(section) = self.first_section(SectionType::Tls)
             && let SectionContent::KeyValues(config) = &section.content
@@ -765,7 +782,6 @@ impl GctfDocument {
         None
     }
 
-    /// Get OPTIONS configuration
     pub fn get_options(&self) -> Option<OrderedStringMap> {
         if let Some(section) = self.first_section(SectionType::Options)
             && let SectionContent::KeyValues(config) = &section.content
@@ -775,7 +791,6 @@ impl GctfDocument {
         None
     }
 
-    /// Get TLS configuration merged with defaults (section values override defaults)
     pub fn get_tls_config_with_defaults(
         &self,
         defaults: &OrderedStringMap,
@@ -797,7 +812,6 @@ impl GctfDocument {
         }
     }
 
-    /// Get PROTO configuration
     pub fn get_proto_config(&self) -> Option<OrderedStringMap> {
         if let Some(section) = self.first_section(SectionType::Proto)
             && let SectionContent::KeyValues(config) = &section.content
@@ -807,7 +821,6 @@ impl GctfDocument {
         None
     }
 
-    /// Check for RESPONSE and ERROR conflict
     #[must_use]
     pub fn has_response_error_conflict(&self) -> bool {
         self.first_section(SectionType::Response).is_some()
@@ -829,20 +842,55 @@ impl GctfDocument {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_family_of_an_expanded_case_is_the_family_of_its_file() {
+        assert_eq!(
+            Family::of("rows.httf#[row=0 dataset.path=/x]"),
+            Family::Httf
+        );
+        assert_eq!(Family::of("rows.gctf#[row=1 users.user=bob]"), Family::Gctf);
+        assert_eq!(Family::of("plain.httf"), Family::Httf);
+        assert_eq!(Family::of("plain.gctf"), Family::Gctf);
+        assert_eq!(Family::of("no-extension"), Family::Gctf);
+        assert_eq!(Family::of("checkout.apif"), Family::Apif);
+        assert_eq!(Family::of("rows.apif#[row=0 k=v]"), Family::Apif);
+        assert_eq!(Family::Apif.ext(), "apif");
+        assert!(Family::Apif.allows_http() && Family::Apif.allows_grpc());
+        assert!(Family::Gctf.allows_grpc() && !Family::Gctf.allows_http());
+        assert!(Family::Httf.allows_http() && !Family::Httf.allows_grpc());
+    }
+
+    #[test]
+    fn an_http_endpoint_is_not_a_service_and_a_method() {
+        let mut doc = GctfDocument::new("t.httf".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Endpoint,
+            content: SectionContent::Single("GET /v1/users".to_string()),
+            inline_options: Default::default(),
+            raw_content: String::new(),
+            start_line: 0,
+            end_line: 0,
+            attributes: Vec::new(),
+            span: SectionSpan::default(),
+        });
+        assert_eq!(doc.parse_endpoint(), None);
+        assert_eq!(
+            doc.parse_http_endpoint(),
+            Some(("GET".to_string(), "/v1/users".to_string()))
+        );
+    }
     use super::*;
     use serde_json::json;
 
     #[test]
     fn line_start_byte_offsets_lf() {
         let source = "abc\nde\nfghi";
-        // line 0: "abc" (0..3), line 1: "de" (4..6), line 2: "fghi" (7..11)
         assert_eq!(line_start_byte_offsets(source), vec![0, 4, 7]);
     }
 
     #[test]
     fn line_start_byte_offsets_crlf() {
-        // `\r` stays part of the preceding line's byte range — only `\n`
-        // advances to the next line's start.
         let source = "ab\r\ncd";
         assert_eq!(line_start_byte_offsets(source), vec![0, 4]);
     }
@@ -856,7 +904,6 @@ mod tests {
     fn section_span_from_line_range() {
         let source = "abc\ndefg\nh\n";
         let offsets = line_start_byte_offsets(source);
-        // Section spanning lines [1, 2) — just "defg".
         let span = SectionSpan::from_line_range(&offsets, 1, 2, source.len());
         assert_eq!(span.start_byte, 4);
         assert_eq!(span.end_byte, 9);
@@ -929,9 +976,6 @@ mod tests {
             Some(SectionType::Dataset)
         );
         assert_eq!(SectionType::Dataset.as_str(), "DATASET");
-        // File-level configuration like BENCH, not a connection detail —
-        // must sort before ADDRESS/ENDPOINT/TLS/PROTO/OPTIONS since its
-        // fields are referenced via `{{dataset.field}}` inside REQUEST.
         assert!(SectionType::Dataset.preamble_rank() > SectionType::Bench.preamble_rank());
         assert!(SectionType::Dataset.preamble_rank() < SectionType::Address.preamble_rank());
         assert!(!SectionType::Dataset.is_multiple_allowed());
@@ -953,7 +997,6 @@ mod tests {
 
     #[test]
     fn section_type_from_keyword_case_insensitive() {
-        // Should be case sensitive based on implementation
         assert_eq!(SectionType::from_keyword("address"), None);
         assert_eq!(
             SectionType::from_keyword("  ADDRESS  "),
@@ -1149,6 +1192,25 @@ mod tests {
         });
 
         assert!(doc.parse_endpoint().is_none());
+    }
+
+    #[test]
+    fn get_requests_reads_a_streaming_section_as_its_messages() {
+        let mut doc = GctfDocument::new("test.gctf".to_string());
+        doc.sections.push(Section {
+            section_type: SectionType::Request,
+            content: SectionContent::JsonLines(vec![json!({"chunk": 1}), json!({"chunk": 2})]),
+            inline_options: InlineOptions::default(),
+            raw_content: String::new(),
+            start_line: 1,
+            end_line: 3,
+            attributes: Vec::new(),
+            span: SectionSpan::default(),
+        });
+
+        let requests = doc.get_requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1], json!({"chunk": 2}));
     }
 
     #[test]
@@ -1589,7 +1651,6 @@ mod tests {
     fn test_canonical_key_spelling() {
         assert_eq!(canonical_key_spelling("retry-delay"), "retry_delay");
         assert_eq!(canonical_key_spelling("no-retry"), "no_retry");
-        // Already-canonical and unrelated keys pass through unchanged.
         assert_eq!(canonical_key_spelling("retry_delay"), "retry_delay");
         assert_eq!(canonical_key_spelling("timeout"), "timeout");
     }
@@ -1604,7 +1665,6 @@ mod tests {
             GctfAttribute::flag("no-retry").format_directive(),
             "#[no_retry]"
         );
-        // Already-canonical names are untouched.
         assert_eq!(
             GctfAttribute::new("timeout", "5").format_directive(),
             "#[timeout(5)]"
@@ -1765,5 +1825,47 @@ mod tests {
     fn section_has_tag_missing() {
         let section = Section::default();
         assert!(!section.has_tag("smoke"));
+    }
+}
+
+pub fn is_http_method(word: &str) -> bool {
+    !word.is_empty()
+        && word.len() <= 24
+        && word.chars().all(|c| c.is_ascii_alphabetic() || c == '-')
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut current = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        current[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            current[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(current[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut current);
+    }
+    prev[b.len()]
+}
+
+#[cfg(test)]
+mod nearest_tests {
+    use super::SectionType;
+
+    #[test]
+    fn a_typo_is_answered_with_the_name_it_was_reaching_for() {
+        assert_eq!(SectionType::nearest_keyword("ENDPIONT"), Some("ENDPOINT"));
+        assert_eq!(SectionType::nearest_keyword("ASSERT"), Some("ASSERTS"));
+        assert_eq!(SectionType::nearest_keyword("REQEUST"), Some("REQUEST"));
+        assert_eq!(SectionType::nearest_keyword("endpoint"), Some("ENDPOINT"));
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_section_at_all_gets_no_guess() {
+        assert_eq!(SectionType::nearest_keyword("NOTES"), None);
+        assert_eq!(SectionType::nearest_keyword("SETUP"), None);
+        assert_eq!(SectionType::nearest_keyword(""), None);
     }
 }

@@ -12,6 +12,7 @@ fn allure_reporter_passing_test() {
 
     let pass_result = TestResult {
         name: "/path/to/test_pass.gctf".to_string(),
+        family: "gctf".to_string(),
         status: TestStatus::Pass,
         duration_ms: 100,
         call_duration_ms: Some(80),
@@ -105,6 +106,7 @@ fn allure_reporter_mixed_results() {
         "test_pass.gctf",
         &TestResult {
             name: "/path/test_pass.gctf".to_string(),
+            family: "gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 10,
             call_duration_ms: Some(5),
@@ -127,6 +129,7 @@ fn allure_reporter_mixed_results() {
         "test_skip.gctf",
         &TestResult {
             name: "/path/test_skip.gctf".to_string(),
+            family: "gctf".to_string(),
             status: TestStatus::Skip,
             duration_ms: 0,
             call_duration_ms: None,
@@ -166,6 +169,7 @@ fn allure_reporter_labels_present() {
         "test_labels.gctf",
         &TestResult {
             name: "test_labels.gctf".to_string(),
+            family: "gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 10,
             call_duration_ms: None,
@@ -214,6 +218,7 @@ fn allure_reporter_test_name_from_path() {
         "/workspace/tests/projects/search/case_tech_search.gctf",
         &TestResult {
             name: "/workspace/tests/projects/search/case_tech_search.gctf".to_string(),
+            family: "gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 50,
             call_duration_ms: Some(40),
@@ -254,6 +259,7 @@ fn allure_reporter_timestamps() {
         "test_timestamps.gctf",
         &TestResult {
             name: "test_timestamps.gctf".to_string(),
+            family: "gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 100,
             call_duration_ms: Some(80),
@@ -297,6 +303,7 @@ fn allure_reporter_tags_and_owner_labels() {
         "test_labels.gctf",
         &TestResult {
             name: "test_labels.gctf".to_string(),
+            family: "gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 10,
             call_duration_ms: None,
@@ -362,6 +369,7 @@ tasktracker.TaskService/GetTask
         test_file.to_string_lossy().as_ref(),
         &TestResult {
             name: test_file.to_string_lossy().to_string(),
+            family: "gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 20,
             call_duration_ms: Some(10),
@@ -438,6 +446,7 @@ tasktracker.TaskService/GetTask
         test_file.to_string_lossy().as_ref(),
         &TestResult {
             name: test_file.to_string_lossy().to_string(),
+            family: "gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 10,
             call_duration_ms: Some(5),
@@ -497,6 +506,7 @@ fn allure_reporter_row_params_present() {
         test_file.to_string_lossy().as_ref(),
         &TestResult {
             name: test_file.to_string_lossy().to_string(),
+            family: "gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 10,
             call_duration_ms: Some(5),
@@ -550,6 +560,7 @@ fn allure_reporter_display_name_from_meta() {
         "test.gctf",
         &TestResult {
             name: "test.gctf".to_string(),
+            family: "gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 10,
             call_duration_ms: None,
@@ -590,6 +601,7 @@ fn allure_reporter_description_and_links_from_meta() {
         "test.gctf",
         &TestResult {
             name: "test.gctf".to_string(),
+            family: "gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 10,
             call_duration_ms: None,
@@ -635,6 +647,7 @@ fn allure_reporter_no_description_or_links_when_meta_empty() {
         "test.gctf",
         &TestResult {
             name: "test.gctf".to_string(),
+            family: "gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 10,
             call_duration_ms: None,
@@ -681,6 +694,7 @@ fn allure_reporter_writes_exchange_attachment() {
         "test.gctf",
         &TestResult {
             name: "test.gctf".to_string(),
+            family: "gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 10,
             call_duration_ms: Some(5),
@@ -754,6 +768,7 @@ fn allure_reporter_no_attachment_when_exchange_absent() {
         "test.gctf",
         &TestResult {
             name: "test.gctf".to_string(),
+            family: "gctf".to_string(),
             status: TestStatus::Pass,
             duration_ms: 10,
             call_duration_ms: None,
@@ -786,4 +801,64 @@ fn allure_reporter_no_attachment_when_exchange_absent() {
         }
     }
     assert!(found, "expected a result json file to be written");
+}
+
+/// The step this report shows for a call is named after the call the file
+/// made: a suite with `.httf` files in it named every one of them `gRPC call`.
+#[test]
+fn an_http_test_reports_an_http_call_step() {
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let reporter = AllureReporter::new(temp_dir.path().to_path_buf());
+
+    let result = TestResult {
+        name: "/path/to/probe.httf".to_string(),
+        family: "httf".to_string(),
+        status: TestStatus::Pass,
+        duration_ms: 12,
+        call_duration_ms: Some(9),
+        error_message: None,
+        execution_time: 1700000000,
+        meta: TestMeta::default(),
+        assertions: Vec::new(),
+        exchange: None,
+        retried: false,
+        document_durations_ms: Vec::new(),
+        row_params: Vec::new(),
+        config_summary: ConfigSummary::default(),
+    };
+
+    reporter.on_test_start("probe.httf");
+    reporter.on_test_end("probe.httf", &result);
+
+    let written = std::fs::read_dir(temp_dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+        .expect("Allure report file should exist");
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(written.path()).unwrap()).unwrap();
+    let steps = json["steps"].as_array().expect("the call is a step");
+    assert_eq!(steps[0]["name"], "HTTP call", "{json}");
+}
+
+/// And where the report walks the file's own documents, the label beside each
+/// one is the shape that document has: `Unary` is gRPC's word, and an HTTP
+/// request has no RPC mode to name.
+#[test]
+fn an_http_document_is_not_labelled_with_an_rpc_mode() {
+    let dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let file = dir.path().join("probe.httf");
+    std::fs::write(
+        &file,
+        "--- ADDRESS ---\nhttp://127.0.0.1:1\n\n--- ENDPOINT ---\nGET /v1/users\n\n--- ASSERTS ---\n@status() == 200\n",
+    )
+    .unwrap();
+
+    let mut result = TestResult::pass(file.to_string_lossy().to_string(), 5, Some(3));
+    result.family = "httf".to_string();
+
+    let calls = grpctestify::report::kernel::build_kernel_calls(&file.to_string_lossy(), &result)
+        .expect("the file has a document");
+
+    assert_eq!(calls[0].rpc_mode, "HTTP", "{:?}", calls[0]);
 }

@@ -14,6 +14,9 @@ hero:
     - theme: alt
       text: First Test
       link: /guides/getting-started/first-test
+    - theme: alt
+      text: Playground
+      link: /guides/playground
 features:
   - title: File-Based Specs
     details: "Keep test intent close to API behavior with readable sectioned .gctf files."
@@ -27,4 +30,6 @@ features:
     details: "Tag tests with `META` and run focused subsets with `--tags` and `--skip-tags`."
   - title: Secure Transport
     details: "Cover TLS/mTLS endpoints and request metadata without custom harness code."
+  - title: A Workbench, Not Just A Runner
+    details: "`grpctestify play` explores an API in the browser and saves the call as the file CI runs."
 ---

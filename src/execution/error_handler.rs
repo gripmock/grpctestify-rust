@@ -39,7 +39,6 @@ struct GoogleRpcBadRequestFieldViolation {
 
 pub struct ErrorHandler;
 
-/// Normalize field names in `actual` to match `expected` key naming (camelCase ↔ snake_case).
 fn normalize_field_names(
     actual: &Map<String, Value>,
     expected: &Map<String, Value>,
@@ -47,7 +46,6 @@ fn normalize_field_names(
     let mut result = actual.clone();
     for (exp_key, exp_val) in expected {
         if !result.contains_key(exp_key) {
-            // Try to find a key that differs only by underscores/case
             let normalized_key = result
                 .keys()
                 .find(|k| {
@@ -72,19 +70,16 @@ fn normalize_field_names(
 }
 
 impl ErrorHandler {
-    /// Check if error matches expected error
     pub fn error_matches_expected(error_text: &str, expected: &Value) -> bool {
         Self::message_matches_error_text(error_text, expected)
             && Self::code_matches_error_text(error_text, expected)
             && expected.get("details").is_none()
     }
 
-    /// Check if GrpcError matches expected error JSON (supports details)
     pub fn status_matches_expected(status: &GrpcError, expected: &Value) -> bool {
         Self::status_matches_expected_with_options(status, expected, false)
     }
 
-    /// Check if GrpcError matches expected error JSON, optionally as partial subset.
     pub fn status_matches_expected_with_options(
         status: &GrpcError,
         expected: &Value,
@@ -123,7 +118,6 @@ impl ErrorHandler {
         Self::compare_details(expected, actual_details).is_none()
     }
 
-    /// Convert GrpcError details to JSON array
     pub fn status_details_json(status: &GrpcError) -> Value {
         match Self::decode_status_details(status.details()) {
             Some(details) => Value::Array(details),
@@ -131,7 +125,6 @@ impl ErrorHandler {
         }
     }
 
-    /// Convert GrpcError to JSON object for diff output
     pub fn status_to_json(status: &GrpcError) -> Value {
         let mut obj = Map::with_capacity(3);
         obj.insert("code".into(), Value::from(status.code() as i64));
@@ -150,14 +143,6 @@ impl ErrorHandler {
         Value::Object(obj)
     }
 
-    /// Try to decode details as raw JSON array bytes (ConnectRPC style).
-    ///
-    /// Connect carries a detail as `{"type": <name>, "value": <base64 proto>}`,
-    /// while the gRPC path exposes the protobuf JSON form with an `@type` key.
-    /// A `.gctf` expectation is written once and run against every protocol, so
-    /// the Connect shape is normalised here: the protocol's optional `debug`
-    /// field is exactly that protobuf JSON rendering, and is used for comparison
-    /// when the server provides it. Details without it are left untouched.
     fn decode_json_details(raw: &[u8]) -> Option<Vec<Value>> {
         if raw.is_empty() {
             return Some(Vec::new());
@@ -173,7 +158,6 @@ impl ErrorHandler {
         )
     }
 
-    /// Replace a Connect detail with its `debug` rendering when one is present.
     fn normalize_connect_detail(detail: Value) -> Value {
         let Some(object) = detail.as_object() else {
             return detail;
@@ -189,12 +173,10 @@ impl ErrorHandler {
         }
     }
 
-    /// Returns a human-readable mismatch reason for GrpcError comparison
     pub fn status_mismatch_reason(status: &GrpcError, expected: &Value) -> Option<String> {
         Self::status_mismatch_reason_with_options(status, expected, false)
     }
 
-    /// Returns mismatch reason for GrpcError comparison with optional partial mode.
     pub fn status_mismatch_reason_with_options(
         status: &GrpcError,
         expected: &Value,
@@ -411,7 +393,6 @@ impl ErrorHandler {
             }
 
             for (idx, (exp, act)) in expected_array.iter().zip(actual_details.iter()).enumerate() {
-                // Enrich actual with @type from expected if missing
                 let enriched = if let (Value::Object(exp_obj), Value::Object(act_obj)) = (exp, act)
                     && exp_obj.contains_key("@type")
                     && !act_obj.contains_key("@type")
@@ -429,7 +410,6 @@ impl ErrorHandler {
                     continue;
                 }
 
-                // Try field-name normalization: snake_case ↔ camelCase
                 if let (Value::Object(exp_obj), Value::Object(act_obj)) = (exp, &enriched) {
                     let norm_act = normalize_field_names(act_obj, exp_obj);
                     if exp == &Value::Object(norm_act) {
@@ -533,7 +513,6 @@ impl ErrorHandler {
         output
     }
 
-    /// Get gRPC code name from numeric code
     pub fn grpc_code_name_from_numeric(code: i64) -> Option<&'static str> {
         match code {
             0 => Some("OK"),
@@ -557,7 +536,6 @@ impl ErrorHandler {
         }
     }
 
-    /// Format error message for display
     pub fn format_error_message(_error_text: &str, expected: &Value) -> String {
         let mut parts = Vec::new();
 
@@ -584,7 +562,6 @@ impl ErrorHandler {
         }
     }
 
-    /// Check if error text contains expected code
     pub fn error_contains_code(error_text: &str, expected_code: i64) -> bool {
         if let Some(code_name) = Self::grpc_code_name_from_numeric(expected_code) {
             error_text.contains(&format!("status: {}", code_name))
@@ -594,7 +571,6 @@ impl ErrorHandler {
         }
     }
 
-    /// Check if error text contains expected message
     pub fn error_contains_message(error_text: &str, expected_message: &str) -> bool {
         error_text.contains(expected_message)
     }
@@ -623,7 +599,7 @@ mod tests {
         };
 
         let status_proto = GoogleRpcStatus {
-            code: 3, // InvalidArgument
+            code: 3,
             message: "Invalid argument provided".to_string(),
             details: vec![
                 Any {

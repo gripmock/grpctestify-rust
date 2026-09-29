@@ -3,13 +3,11 @@ use crate::execution::TestExecutionResult;
 #[cfg(test)]
 use crate::parser::ast::GctfDocument;
 
-/// Test validator — only compiled in test builds
 #[cfg(test)]
 pub struct TestValidator;
 
 #[cfg(test)]
 impl TestValidator {
-    /// Validate execution plan
     pub fn validate(document: &GctfDocument) -> Result<(), String> {
         Self::validate_required_sections(document)?;
         Self::validate_no_conflicts(document)?;
@@ -75,12 +73,10 @@ impl TestValidator {
         Ok(())
     }
 
-    /// Validate test result after execution
     pub fn validate_result(result: &TestExecutionResult) -> bool {
         matches!(result.status, crate::execution::TestExecutionStatus::Pass)
     }
 
-    /// Get result summary
     pub fn get_result_summary(result: &TestExecutionResult) -> String {
         let duration = result.call_duration_ms.unwrap_or(0);
         match &result.status {

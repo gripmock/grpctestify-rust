@@ -59,8 +59,6 @@ fn call_phases(doc: &GctfDocument, call_status: &str) -> Vec<KernelPhase> {
     let plan = ExecutionPlan::from_document(doc);
     let mut phases = Vec::new();
 
-    // A validation phase reflects the call status: failed for the failing call,
-    // skipped for calls the chain never reached, otherwise passed.
     let validation_status = || {
         match call_status {
             "failed" => "failed",
@@ -69,15 +67,12 @@ fn call_phases(doc: &GctfDocument, call_status: &str) -> Vec<KernelPhase> {
         }
         .to_string()
     };
-    // The request phase only "passes" when the call actually ran.
     let request_status = if call_status == "skipped" {
         "skipped".to_string()
     } else {
         "passed".to_string()
     };
 
-    // Labelled `messages=`, so it counts messages: `plan.summary` counts
-    // sections, which reads as "1 message" for a 3-message stream.
     let request_count: usize = plan
         .requests
         .iter()
@@ -143,12 +138,6 @@ fn call_phases(doc: &GctfDocument, call_status: &str) -> Vec<KernelPhase> {
     phases
 }
 
-/// Extract the first line number referenced by an error message.
-///
-/// Failure messages embed the absolute file line of the offending section
-/// (e.g. `"ASSERTS section at line 42 ..."`). Chain documents preserve absolute
-/// line numbers, so this lets us map a failure back to the document it belongs
-/// to instead of blindly blaming the last document in the chain.
 fn extract_error_line(message: &str) -> Option<usize> {
     let mut rest = message;
     while let Some(pos) = rest.find("line ") {
@@ -162,7 +151,6 @@ fn extract_error_line(message: &str) -> Option<usize> {
     None
 }
 
-/// Absolute file line range `[start, end]` covered by a document's sections.
 fn doc_line_range(doc: &GctfDocument) -> Option<(usize, usize)> {
     let mut start = usize::MAX;
     let mut end = 0usize;
@@ -177,12 +165,6 @@ fn doc_line_range(doc: &GctfDocument) -> Option<(usize, usize)> {
     }
 }
 
-/// Determine which document in the chain actually failed.
-///
-/// Under fail-fast execution the failure belongs to a single document; the ones
-/// after it were never executed. We locate it via the line number embedded in
-/// the error message. When no line can be extracted (e.g. an opaque transport
-/// error) we fall back to the last document, preserving prior behaviour.
 fn resolve_failed_doc_index(chain: &[&GctfDocument], error_message: &Option<String>) -> usize {
     let last = chain.len().saturating_sub(1);
     let Some(msg) = error_message else {
@@ -202,9 +184,6 @@ fn resolve_failed_doc_index(chain: &[&GctfDocument], error_message: &Option<Stri
     last
 }
 
-/// Per-document status within a chain, given the resolved failing index.
-/// Documents before the failure passed; the failing one failed; documents after
-/// it were never executed (fail-fast) and are reported as skipped, not passed.
 fn chain_call_status(idx: usize, failed_index: Option<usize>) -> &'static str {
     match failed_index {
         Some(f) if idx == f => "failed",
@@ -233,7 +212,6 @@ pub fn build_kernel_calls(test_path: &str, result: &TestResult) -> Option<Vec<Ke
             .unwrap_or_else(|| "<missing endpoint>".to_string());
         let parsed = d.parse_endpoint();
         let plan = ExecutionPlan::from_document(d);
-        // detached: from_document_with_analysis is chain-aware internally too
         let single = d.detached();
         let workflow = Workflow::from_document_with_analysis(&single);
         let request_count = plan.summary.total_requests;
@@ -268,7 +246,11 @@ pub fn build_kernel_calls(test_path: &str, result: &TestResult) -> Option<Vec<Ke
             method,
             request_count,
             expectation_kind,
-            rpc_mode: workflow.rpc_mode_name().to_string(),
+            rpc_mode: if d.transport() == crate::parser::ast::Transport::Http {
+                "HTTP".to_string()
+            } else {
+                workflow.rpc_mode_name().to_string()
+            },
             display_name: call_display_name(d, idx + 1, &endpoint),
             phases: call_phases(d, &status),
             status,
@@ -425,8 +407,6 @@ pkg.Service/MethodC
     #[test]
     fn failure_attributed_to_actual_document_not_last() {
         let (_dir, path) = write_fixture();
-        // Determine an absolute line that falls inside the SECOND document,
-        // then craft an error message referencing it.
         let doc = crate::parser::parse_gctf(std::path::Path::new(&path)).unwrap();
         let chain: Vec<&GctfDocument> = doc.iter_chain().collect();
         let (start, end) = doc_line_range(chain[1]).unwrap();
@@ -441,14 +421,10 @@ pkg.Service/MethodC
 
         let calls = build_kernel_calls(&path, &result).unwrap();
         assert_eq!(calls.len(), 3);
-        // Document before the failure passed.
         assert_eq!(calls[0].status, "passed");
-        // The failing document is the one that actually failed, not the last.
         assert_eq!(calls[1].status, "failed");
-        // The never-executed document is skipped, not falsely passed.
         assert_eq!(calls[2].status, "skipped");
 
-        // Its phases must not claim "passed" either.
         assert!(
             calls[2].phases.iter().all(|p| p.status == "skipped"),
             "skipped call phases: {:?}",

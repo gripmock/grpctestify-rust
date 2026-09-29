@@ -1,52 +1,9 @@
-//! Native helpers registered into every `.rhai` script engine — both
-//! assertion plugins (`RhaiPlugin`) and reporters (`RhaiReporter`) call
-//! [`build_engine`] so the two don't drift, either in what's registered or
-//! in how the engine is sandboxed.
-//!
-//! Two kinds of helper, both deliberately small:
-//!
-//! - `log_info`/`log_warn`/`log_error`/`log_debug` route through
-//!   grpctestify's own `tracing` output instead of Rhai's raw `print`/
-//!   `debug` (which always writes straight to stdout/stderr, ignoring
-//!   `--verbose`/log filtering entirely).
-//! - `is_uuid`/`is_email`/`is_ip`/`is_url`/`is_timestamp`/`regex_match` wrap
-//!   the exact same crates backing the built-in `@is_uuid`/`@regex`/...
-//!   plugins, so a custom script can reuse them instead of hand-rolling
-//!   validation logic (as the first `luhn_valid.rhai`/`is_palindrome.rhai`
-//!   examples had to before this existed).
-//!
-//! All of it stays inside the pure-function boundary already documented for
-//! script plugins: no file or network access, nothing added here changes
-//! that.
-//!
-//! # Sandboxing
-//!
-//! `Engine::new()` on its own does *not* bound operation count or
-//! string/array/map size (Rhai's own defaults leave those unlimited) — a
-//! buggy or malicious script (`while true {}`, a huge string literal) would
-//! otherwise hang or OOM the whole `run` process, not just itself.
-//! [`build_engine`] sets generous-but-finite limits and disables Rhai's
-//! built-in `eval` (dynamic string-as-code execution has no legitimate use
-//! in a validator/reporter script and is an easy footgun if a script ever
-//! passes response data into it). Call/expression nesting depth already has
-//! sane built-in Rhai defaults and isn't touched here.
-
 use rhai::Engine;
 
-/// Operation count ceiling — generous for any realistic validator/reporter
-/// (a Luhn-checksum loop over a card number is a few dozen operations), but
-/// stops a runaway loop within a fraction of a second instead of hanging
-/// the whole `run` process.
 const MAX_OPERATIONS: u64 = 1_000_000;
-/// Per-string size ceiling — comfortably larger than any realistic gRPC
-/// field, small enough to block a multi-gigabyte string-literal bomb.
 const MAX_STRING_SIZE: usize = 10_000_000;
-/// Per-array/map element-count ceiling, same rationale as the string limit.
 const MAX_COLLECTION_SIZE: usize = 100_000;
 
-/// Build a `.rhai` script engine with the shared stdlib registered and the
-/// sandbox limits applied — the only way either `RhaiPlugin` or
-/// `RhaiReporter` should construct an `Engine`.
 pub fn build_engine() -> Engine {
     let mut engine = Engine::new();
     engine
@@ -55,20 +12,11 @@ pub fn build_engine() -> Engine {
         .set_max_array_size(MAX_COLLECTION_SIZE)
         .set_max_map_size(MAX_COLLECTION_SIZE)
         .disable_symbol("eval");
-    // `Engine::new()` ships a filesystem resolver, so `import "../../x"` both
-    // escaped the plugin dir and ran the imported script's top level.
     engine.set_module_resolver(rhai::module_resolvers::DummyModuleResolver::new());
     register(&mut engine);
     engine
 }
 
-/// Read a script, hash it, and compile it — in that order, from one buffer.
-///
-/// The trust gate compares the stored digest against the script that is about
-/// to run, so the digest must cover the exact bytes that were compiled. Both
-/// `RhaiPlugin::load_all` and `RhaiReporter::load` need this, and having them
-/// each spell it out invited the two copies to drift apart; the invariant lives
-/// here instead.
 pub fn compile_with_digest(
     engine: &Engine,
     path: &std::path::Path,
@@ -130,9 +78,6 @@ mod tests {
         );
     }
 
-    /// The trust gate is only sound if the digest covers the bytes that were
-    /// actually compiled — pin that the returned digest is the file's own
-    /// hash, not something computed from a re-read or a re-encode.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn compile_with_digest_hashes_exactly_what_it_compiled() {
@@ -171,9 +116,6 @@ mod tests {
 
     #[test]
     fn a_normal_check_plugin_still_runs_well_under_the_limits() {
-        // The whole point of generous limits: real validator logic (a
-        // digit-summing loop, same shape as the Luhn checksum example) must
-        // not be anywhere near them.
         let engine = engine_with_stdlib();
         let result: bool = engine
             .eval(

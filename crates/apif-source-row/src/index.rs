@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)] // audited safe
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use anyhow::{Context, Result};
 use rand::RngExt;
 use rand::SeedableRng;
@@ -8,20 +8,14 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 const INDEX_MAGIC: u32 = 0x47435449;
-const INDEX_VERSION: u32 = 6; // v6: fixed UUID/ULID key ordering (v5 keys sorted wrong)
-pub const COMPOSITE_KEY_SEPARATOR: &str = "\x1F"; // Unit separator for composite keys
+const INDEX_VERSION: u32 = 6;
+pub const COMPOSITE_KEY_SEPARATOR: &str = "\x1F";
 
-/// The columns a key spec names. A single-column spec yields one item, so the
-/// composite path and the plain path are the same code.
 pub fn key_columns(spec: &str) -> impl Iterator<Item = &str> {
     spec.split(COMPOSITE_KEY_SEPARATOR)
         .filter(|c| !c.is_empty())
 }
 
-/// The key value a row carries for a spec, or `None` when a named column is
-/// absent. `indexed_by: [a, b]` used to be passed around as the literal column
-/// name `"a\x1Fb"`, which no row has — the in-memory path failed the lookup and
-/// the index builder silently indexed on `a` alone.
 pub fn composite_value(spec: &str, get: impl Fn(&str) -> Option<String>) -> Option<String> {
     let mut out = String::new();
     for (i, column) in key_columns(spec).enumerate() {
@@ -33,8 +27,6 @@ pub fn composite_value(spec: &str, get: impl Fn(&str) -> Option<String>) -> Opti
     (!out.is_empty() || spec.is_empty()).then_some(out)
 }
 
-/// A key spec rendered for a file name: the unit separator is not something to
-/// put on a filesystem.
 pub fn key_spec_slug(spec: &str) -> String {
     key_columns(spec).collect::<Vec<_>>().join("+")
 }
@@ -159,8 +151,6 @@ fn parse_uuid(s: &str) -> Option<UuidParts> {
     Some(UuidParts(p0, p1))
 }
 
-/// Split high/low so the derived `Ord` matches both numeric and lexicographic
-/// order. 26 x 5 = 130 bits, of which the leading two must be zero.
 fn parse_ulid(s: &str) -> Option<UlidParts> {
     const BASE32_CHARS: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
     let s = s.trim();
@@ -600,9 +590,6 @@ impl SourceIndex {
             }
             KeyStorage::Numeric(vec) => {
                 let key_type = self.header.key_type;
-                // Same diagnostic as the one-at-a-time path: dropping an
-                // unparseable key here would build an index that silently has
-                // no entry for that row.
                 let mut batch: Vec<(KeyValue, String, IndexEntry)> = entries
                     .into_iter()
                     .map(|(key, offset, row_length)| match key_type.parse(&key) {
@@ -617,9 +604,6 @@ impl SourceIndex {
                     })
                     .collect::<anyhow::Result<Vec<_>>>()?;
 
-                // Stable, so entries that share a key keep the order they
-                // arrived in (ascending offset for the builder) — the property
-                // the one-at-a-time path has and `lookup_all` consumers rely on.
                 batch.sort_by(|a, b| a.0.cmp(&b.0));
 
                 let mut prev_kv: Option<KeyValue> = None;
@@ -634,11 +618,6 @@ impl SourceIndex {
                         continue;
                     }
                     if idx < vec.len() && vec[idx].0 <= kv {
-                        // The search runs on `vec[idx..]`, so both outcomes are
-                        // positions relative to `idx` and both need it added
-                        // back. Adding it only on Err put an existing key at a
-                        // relative position, which dropped its entry and left
-                        // the vector unsorted.
                         let rel = match vec[idx..].binary_search_by(|e| e.0.cmp(&kv)) {
                             Ok(found) => found,
                             Err(insert_at) => insert_at,
@@ -973,8 +952,6 @@ impl SourceIndex {
         Ok(Some(line))
     }
 
-    /// A row span runs to the end of its line terminator, so callers that want
-    /// the record itself must drop it.
     pub fn lookup_row_from_mmap(&self, mmap_data: &[u8], key: &str) -> Result<Option<String>> {
         let entries = self.lookup_all(key);
         let entry = match entries.and_then(|e| e.first()) {
@@ -1004,8 +981,6 @@ impl SourceIndex {
     }
 }
 
-/// A span is a superset of its record: it may lead with blank or `#` comment
-/// lines the reader skipped, and it ends past the terminator.
 pub fn trim_row_terminator(bytes: &[u8]) -> &[u8] {
     let mut rest = bytes;
     loop {
@@ -1185,9 +1160,6 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    // A real 2026 ULID: `01K` is January 2026, and the random suffix carries
-    // characters well above `7`. The old two-chars-into-a-`u8` accumulator
-    // overflowed on those — a debug panic and a corrupt key in release.
     #[test]
     fn a_current_ulid_decodes_without_overflowing() {
         let parsed = parse_ulid("01KZZZZZZZZZZZZZZZZZZZZZZZ").expect("valid ULID must decode");
@@ -1195,7 +1167,6 @@ mod tests {
         assert!(parse_ulid("01JQ8XMK3F9T7VWXYZAB0CDEFG").is_some());
     }
 
-    // ULIDs are built to sort by time as strings; the key ordering must agree.
     #[test]
     fn ulid_keys_sort_the_way_the_strings_do() {
         let mut ulids = [
@@ -1234,22 +1205,12 @@ mod tests {
             parse_ulid("01JQ8XMK3F9T7VWXYZAB0CDEFU").is_none(),
             "U is not in Crockford base32"
         );
-        // The leading character carries only three significant bits; anything
-        // above `7` would need a 131st bit.
         assert!(parse_ulid("81JQ8XMK3F9T7VWXYZAB0CDEFG").is_none());
     }
 
-    // `batch_insert` is the O(n log n) alternative to inserting one row at a
-    // time, which is O(n^2) for numeric keys because each new key shifts a Vec.
-    // It was never wired into the builder. Before it can be, it has to produce
-    // the *same* index as the one-at-a-time path — including the order of
-    // entries that share a key, which the builder emits in ascending offset
-    // order and any consumer of `lookup_all` may rely on.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn batch_insert_matches_one_at_a_time_including_duplicate_key_order() {
-        // Numeric keys, out of order, with duplicates whose offsets are NOT in
-        // the same order as the keys — the case a sort-by-key would scramble.
         let rows: &[(&str, u64, u32)] = &[
             ("30", 0, 10),
             ("10", 10, 10),
@@ -1478,12 +1439,6 @@ mod tests {
 
     #[test]
     fn batch_insert_into_a_populated_index_stays_sorted() {
-        // The binary search runs on `vec[idx..]`, so its result is relative to
-        // `idx`. Only the Err branch added `idx` back, so an existing key found
-        // at a non-zero `idx` produced a relative position and the entry landed
-        // in the wrong slot, leaving the vector unsorted and later lookups
-        // wrong. Needs a pre-populated index — batching into an empty one never
-        // takes the Ok branch.
         let mut one = SourceIndex::with_key_type("id", KeyType::U64);
         let mut batched = SourceIndex::with_key_type("id", KeyType::U64);
         for (k, off) in [("10", 0u64), ("20", 10u64)] {

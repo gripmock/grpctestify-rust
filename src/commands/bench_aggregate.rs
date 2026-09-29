@@ -1,8 +1,3 @@
-//! Fold many bench reports into one matrix document.
-//!
-//! Reports are read as schema-tolerant `serde_json::Value`, like `bench-compare`,
-//! so a newer or older `bench_report_schema_*` still folds.
-
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
@@ -10,7 +5,6 @@ use crate::cli::args::BenchAggregateArgs;
 
 pub const BENCH_MATRIX_SCHEMA_VERSION: &str = "bench_matrix_schema_v1";
 
-/// One measured point: a run at one concurrency level.
 #[derive(Debug)]
 struct Row {
     run: String,
@@ -36,7 +30,6 @@ fn percentiles_of(v: &Value) -> Vec<(f64, u64)> {
     out
 }
 
-/// One point per `levels` entry for a sweep, one for an ordinary report.
 fn rows_of(run: &str, report: &Value) -> Result<Vec<Row>> {
     if report.get("summary").is_none() {
         bail!("{run} is not a bench report (no `summary` object)");
@@ -103,7 +96,6 @@ fn csv_field(value: &str) -> String {
 }
 
 fn to_csv(rows: &[Row]) -> String {
-    // Union, not intersection: a run configured for tail percentiles keeps them.
     let mut percentiles: Vec<f64> = Vec::new();
     for row in rows {
         for (p, _) in &row.percentiles {
@@ -237,7 +229,6 @@ mod tests {
         assert!(header.ends_with("p50_ns,p99.9_ns"), "got: {header}");
 
         let first = lines.next().unwrap();
-        // concurrency 1 has only p99.9, so the p50 cell is empty.
         assert!(first.ends_with(",,7"), "got: {first}");
     }
 

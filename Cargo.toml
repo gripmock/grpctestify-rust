@@ -18,10 +18,11 @@ members = [
   "crates/apif-utils",
   "crates/apif-report",
   "crates/apif-grpc-transport",
+  "crates/apif-http-transport",
 ]
 
 [workspace.package]
-version = "1.10.3"
+version = "1.11.0"
 edition = "2024"
 authors = ["bavix"]
 license = "MIT"
@@ -134,7 +135,7 @@ reqwest = { version = "0.13", default-features = false, features = [
 # Web UI (play command)
 axum = "0.8"
 tower-http = { version = "0.7", features = ["cors", "fs", "trace"] }
-rust-embed = "8"
+rust-embed = { version = "8", features = ["debug-embed"] }
 mime_guess = "2"
 
 # `target/` had grown past 180 GB. The multiplier is this workspace's shape:
@@ -206,7 +207,7 @@ notify = "8"
 
 # Pure-Rust git (no shell-out). Not zlib-ng/max-performance/curl/native-tls —
 # those pull in C libraries; -rust-tls reuses reqwest's rustls stack.
-gix = { version = "0.86", default-features = false, features = [
+gix = { version = "0.87", default-features = false, features = [
   "basic",
   "worktree-mutation",
   "blocking-http-transport-reqwest-rust-tls",
@@ -250,6 +251,7 @@ flate2 = "1"
 
 # JSON/YAML
 serde = { workspace = true }
+sha2 = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true }
 minijinja = { workspace = true }
@@ -296,6 +298,7 @@ apif-query = { path = "crates/apif-query", version = "0.1.0" }
 apif-grpc-transport = { path = "crates/apif-grpc-transport", version = "0.3.0", features = [
   "tonic-transport",
 ] }
+apif-http-transport = { path = "crates/apif-http-transport", version = "0.2.2" }
 rand = "0.10"
 prost-reflect.workspace = true
 futures = "0.3"
@@ -396,6 +399,7 @@ protoc-bin-vendored = { version = "3", optional = true }
 [dev-dependencies]
 # Testing
 tempfile = "3.27"
+tokio = { workspace = true, features = ["test-util"] }
 uuid = { workspace = true }
 criterion = { version = "0.8", features = ["html_reports"] }
 tonic-health = "0.14.6"

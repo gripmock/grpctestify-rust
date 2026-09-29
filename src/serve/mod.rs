@@ -19,25 +19,29 @@ use crate::serve::project::ProjectSettings;
 #[derive(Serialize)]
 pub struct HealthResponse {
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build: Option<String>,
 }
 
 pub mod api;
 pub mod assets;
+pub mod bench_job;
+pub mod eval_api;
+pub mod jobs;
+pub mod lsp_api;
 pub mod project;
+pub mod reports;
 
 pub struct PlayState {
-    /// Primary collections dir (first in `collections_dirs`), backward compat
     pub collections_dir: PathBuf,
-    /// All collections directories (primary + extras from settings.json)
     pub collections_dirs: Vec<PathBuf>,
     pub shares_dir: PathBuf,
     pub project_root: Option<PathBuf>,
     pub project_settings: Option<ProjectSettings>,
-    /// Serialize history writes to prevent file-level races.
     pub history_lock: tokio::sync::Mutex<()>,
-    /// Monotonic timestamp bumped on every collection/env change.
-    /// Frontend polls /api/info and compares this value for auto-reload.
+    pub write_lock: tokio::sync::Mutex<()>,
     pub collections_mtime: Arc<AtomicU64>,
+    pub jobs: Arc<jobs::JobRegistry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +57,8 @@ pub struct ShareState {
     pub created_at: i64,
     pub expires_at: i64,
     pub access_count: u64,
+    #[serde(default)]
+    pub redacted: Vec<String>,
 }
 
 async fn static_handler(Path(path): Path<String>) -> Response {
@@ -63,10 +69,7 @@ async fn index_handler() -> Response {
     assets::handle_embedded("").await
 }
 
-/// Serve root-level static files (favicon.ico, manifest.json, etc.)
-/// or fall back to index.html for SPA client-side routing.
 async fn spa_fallback(Path(path): Path<String>) -> Response {
-    // Unknown API routes must be a real 404, not index.html.
     if path.starts_with("api/") {
         return (StatusCode::NOT_FOUND, "Not found").into_response();
     }
@@ -92,7 +95,30 @@ pub async fn version_handler() -> Json<VersionResponse> {
 async fn health_handler() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".into(),
+        build: assets::build_id(),
     })
+}
+
+#[derive(Serialize, Default)]
+pub struct ServerEnv {
+    pub address: Option<String>,
+    pub tls_ca: Option<String>,
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
+    pub tls_server_name: Option<String>,
+    pub compression: Option<String>,
+}
+
+fn server_env() -> ServerEnv {
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+    ServerEnv {
+        address: var(crate::config::ENV_GRPCTESTIFY_ADDRESS),
+        tls_ca: var("GRPCTESTIFY_TLS_CA_FILE"),
+        tls_cert: var("GRPCTESTIFY_TLS_CERT_FILE"),
+        tls_key: var("GRPCTESTIFY_TLS_KEY_FILE"),
+        tls_server_name: var("GRPCTESTIFY_TLS_SERVER_NAME"),
+        compression: var("GRPCTESTIFY_COMPRESSION"),
+    }
 }
 
 #[derive(Serialize)]
@@ -100,24 +126,62 @@ pub struct InfoResponse {
     pub version: String,
     pub status: String,
     pub project: Option<api::ProjectInfo>,
-    /// Monotonic counter that increments on every collection/env change.
-    /// Frontend uses this for auto-reload without polling the full list.
+    pub env: ServerEnv,
     pub collections_mtime: u64,
+    pub workspace: String,
+    pub root: String,
+    pub shares_path: String,
 }
 
-/// GET /api/info — unified startup info (version + health + project)
 pub async fn info_handler(State(state): State<Arc<PlayState>>) -> Json<InfoResponse> {
     let project = if state.project_root.is_some() {
         Some(api::project_info_inner(&state))
     } else {
         None
     };
+    let dir = api::primary_dir(&state);
     Json(InfoResponse {
         version: env!("CARGO_PKG_VERSION").to_string(),
         status: "ok".into(),
         project,
+        env: server_env(),
         collections_mtime: state.collections_mtime.load(Ordering::Relaxed),
+        workspace: dir
+            .canonicalize()
+            .unwrap_or_else(|_| dir.to_path_buf())
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| dir.to_string_lossy().to_string()),
+        root: workspace_identity(dir),
+        shares_path: if state.project_root.is_some() {
+            ".grpctestify/shares".to_string()
+        } else {
+            "shares".to_string()
+        },
     })
+}
+
+fn workspace_identity(dir: &std::path::Path) -> String {
+    use sha2::Digest;
+    let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let digest = sha2::Sha256::digest(canonical.to_string_lossy().as_bytes());
+    let short: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+    let name = canonical
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| dir.to_string_lossy().to_string());
+    format!("{name}#{short}")
+}
+
+pub(super) fn redact_query(query: &str) -> String {
+    query
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            Some((key, _)) if key == "token" => format!("{key}=<redacted>"),
+            _ => pair.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 fn use_color() -> bool {
@@ -177,7 +241,7 @@ async fn access_log_middleware(
     let query = req
         .uri()
         .query()
-        .map(|q| format!("?{}", q))
+        .map(|q| format!("?{}", redact_query(q)))
         .unwrap_or_default();
     let start = Instant::now();
     let response = next.run(req).await;
@@ -218,8 +282,6 @@ async fn access_log_middleware(
     response
 }
 
-/// Background file watcher. Runs until the notify channel disconnects
-/// (i.e. the watcher is dropped / the process exits).
 fn start_file_watcher(
     mtime: Arc<AtomicU64>,
     dirs: &[PathBuf],
@@ -257,9 +319,6 @@ fn start_file_watcher(
     loop {
         match rx.recv() {
             Ok(Ok(event)) => {
-                // Always bump: the frontend polls /api/info and tolerates
-                // spurious increments; a time-based debounce here dropped the
-                // trailing event of a burst, missing the final change.
                 mtime.fetch_add(1, Ordering::Relaxed);
                 if matches!(event.kind, notify::EventKind::Remove(_)) {
                     for w in &static_paths {
@@ -278,30 +337,21 @@ fn start_file_watcher(
     }
 }
 
-/// Extract the hostname from a Host header value, stripping any port
-/// (`localhost:4755`, `[::1]:4755`, bare IPv6 literals).
 fn host_header_name(host: &str) -> &str {
     if let Some(rest) = host.strip_prefix('[') {
-        // Bracketed IPv6: [::1] or [::1]:4755
         rest.split(']').next().unwrap_or("")
     } else if host.matches(':').count() > 1 {
-        // Bare IPv6 literal without port
         host
     } else {
         host.rsplit_once(':').map_or(host, |(h, _)| h)
     }
 }
 
-/// Is this Host header a loopback name?
 fn host_is_loopback(host: &str) -> bool {
     let name = host_header_name(host);
     name.eq_ignore_ascii_case("localhost") || name == "127.0.0.1" || name == "::1"
 }
 
-/// DNS-rebinding guard: even when bound to 127.0.0.1, a malicious site can
-/// reach us by pointing its own DNS name at 127.0.0.1 — the browser then
-/// sends `Host: attacker.example`. The playground itself is always opened via
-/// a loopback name, so rejecting any other Host closes the hole.
 async fn loopback_host_guard(
     req: axum::http::Request<Body>,
     next: axum::middleware::Next,
@@ -318,8 +368,66 @@ async fn loopback_host_guard(
     next.run(req).await
 }
 
-/// Build the axum Router from a PlayState. Tests should use this instead of
-/// duplicating route registrations.
+pub struct PlayToken {
+    pub value: String,
+    pub generated: bool,
+}
+
+pub fn token_for_bind(host: &str) -> Option<PlayToken> {
+    if host_is_loopback(host) {
+        return None;
+    }
+    match std::env::var("GRPCTESTIFY_PLAY_TOKEN")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+    {
+        Some(value) => Some(PlayToken {
+            value,
+            generated: false,
+        }),
+        None => Some(PlayToken {
+            value: uuid::Uuid::new_v4().to_string(),
+            generated: true,
+        }),
+    }
+}
+
+pub fn needs_token(path: &str) -> bool {
+    path.starts_with("/api/")
+}
+
+pub(super) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    let mut diff = a.len() ^ b.len();
+    let longest = a.len().max(b.len());
+    for i in 0..longest {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        diff |= usize::from(x ^ y);
+    }
+    diff == 0
+}
+
+pub fn request_has_token(
+    headers: &axum::http::HeaderMap,
+    query: Option<&str>,
+    expected: &str,
+) -> bool {
+    let bearer = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim);
+    if bearer.is_some_and(|given| ct_eq(given.as_bytes(), expected.as_bytes())) {
+        return true;
+    }
+    query
+        .into_iter()
+        .flat_map(|q| q.split('&'))
+        .filter_map(|pair| pair.split_once('='))
+        .any(|(key, value)| key == "token" && ct_eq(value.as_bytes(), expected.as_bytes()))
+}
+
 pub fn build_app(state: Arc<PlayState>) -> Router {
     let base_routes = Router::new()
         .route("/", get(index_handler))
@@ -327,22 +435,52 @@ pub fn build_app(state: Arc<PlayState>) -> Router {
         .route("/api/collections", get(api::list_collections))
         .route("/api/collections/{*path}", get(api::get_collection))
         .route("/api/save", post(api::save_collection))
+        .route("/api/bench/compare", post(api::bench_compare))
+        .route("/api/changed", get(api::changed_collections))
         .route(
             "/api/save-structured",
             post(api::save_collection_structured),
         )
+        .route(
+            "/api/preview-structured",
+            post(api::preview_collection_structured),
+        )
+        .route("/api/fmt", post(api::format_content))
+        .route("/api/complete", post(lsp_api::complete))
+        .route("/api/hover", post(lsp_api::hover))
+        .route("/api/snippets", get(lsp_api::snippets))
+        .route("/api/explain", post(lsp_api::explain))
+        .route("/api/eval/assert", post(eval_api::eval_assert))
+        .route("/api/eval/query", post(eval_api::eval_query))
+        .route("/api/eval/regex", post(eval_api::eval_regex))
         .route("/api/call", post(api::execute_call))
         .route("/api/run", post(api::execute_test))
+        .route("/api/jobs", post(jobs::create_job))
+        .route("/api/jobs", get(jobs::list_jobs))
+        .route("/api/jobs/{id}", get(jobs::get_job))
+        .route("/api/jobs/{id}/events", get(jobs::job_events))
+        .route("/api/jobs/{id}/report/{name}", get(jobs::job_report))
+        .route("/api/jobs/{id}/cancel", post(jobs::cancel_job))
         .route("/api/diagnostics", post(api::get_diagnostics))
+        .route("/api/target-health", post(api::target_health))
+        .route("/api/check", post(api::check_files))
+        .route("/api/versions", post(api::file_versions))
         .route("/api/reflect", post(api::reflect_server))
         .route("/api/import-grpcurl", post(api::import_grpcurl))
         .route("/api/grpcurl", post(api::generate_grpcurl))
+        .route("/api/call-command", post(api::generate_call_command))
         .route("/api/schema-fill", post(api::schema_fill))
+        .route("/api/scaffold", post(api::scaffold))
+        .route("/api/docs", post(api::docs))
         .route("/api/proto-source", post(api::proto_source))
         .route("/api/proto-upload", post(api::proto_upload))
         .route("/api/proto-files", get(api::proto_files))
+        .route("/api/data-files", get(api::data_files))
+        .route("/api/bench/profiles", get(api::bench_profiles))
         .route("/api/dir/{*path}", post(api::create_directory))
         .route("/api/move", post(api::move_item))
+        .route("/api/rename-variable", post(api::rename_variable_endpoint))
+        .route("/api/chain", post(api::chain_edit))
         .route("/api/collections/{*path}", delete(api::delete_collection))
         .route("/api/share", post(api::create_share))
         .route("/api/share/{id}", get(api::get_share))
@@ -354,9 +492,12 @@ pub fn build_app(state: Arc<PlayState>) -> Router {
         .route("/api/project/info", get(api::project_info))
         .route("/api/project/settings", get(api::project_get_settings))
         .route("/api/project/settings", put(api::project_put_settings))
+        .route("/api/variables", get(api::list_variables))
+        .route("/api/references/{*path}", get(api::list_references))
         .route("/api/project/env/list", get(api::project_env_list))
         .route("/api/project/env/{name}", get(api::project_env_get))
         .route("/api/project/env/{name}", put(api::project_env_put))
+        .route("/api/project/env/{name}", delete(api::project_env_delete))
         .route(
             "/api/project/env/{name}/merged",
             get(api::project_env_merged),
@@ -375,9 +516,6 @@ pub fn build_app(state: Arc<PlayState>) -> Router {
         )
         .route("/api/project/history", get(api::project_history_get));
 
-    // Note: no CORS layer on purpose — the web UI is served same-origin and
-    // only fetches relative /api paths; permissive CORS would let any website
-    // in the user's browser drive this server.
     base_routes
         .merge(project_routes)
         .route("/{*path}", get(spa_fallback))
@@ -387,7 +525,11 @@ pub fn build_app(state: Arc<PlayState>) -> Router {
 }
 
 pub async fn start_play_server(host: &str, port: u16, dir: PathBuf) -> Result<()> {
+    apif_plugins::trust::set_non_interactive();
     let project_root = project::detect_project(&dir);
+    if let Some(root) = project_root.as_ref() {
+        project::ensure_workbench_ignored(root);
+    }
 
     let collections_dir = project_root
         .as_ref()
@@ -400,9 +542,6 @@ pub async fn start_play_server(host: &str, port: u16, dir: PathBuf) -> Result<()
         if let Ok(settings) = project::load_project_settings(root)
             && let Some(ref extra) = settings.collections
         {
-            // `settings.json` ships with the repo. `resolve_file` validates a
-            // request against whichever dir it lands in, so an entry pointing
-            // outside the project makes every file under it readable.
             let root_canon = root.canonicalize().unwrap_or_else(|_| root.clone());
             for p in extra {
                 let resolved = root.join(p);
@@ -427,7 +566,6 @@ pub async fn start_play_server(host: &str, port: u16, dir: PathBuf) -> Result<()
 
     let collections_mtime = Arc::new(AtomicU64::new(0));
 
-    // Start file watcher (runs for the lifetime of the process)
     let w_mtime = collections_mtime.clone();
     let w_dirs: Vec<PathBuf> = collections_dirs.clone();
     let w_root = project_root.clone();
@@ -449,18 +587,21 @@ pub async fn start_play_server(host: &str, port: u16, dir: PathBuf) -> Result<()
             .as_ref()
             .and_then(|r| project::load_project_settings(r).ok()),
         history_lock: tokio::sync::Mutex::new(()),
+        write_lock: tokio::sync::Mutex::new(()),
         collections_mtime,
+        jobs: Default::default(),
     });
 
+    let sweep_root = project_root.clone();
     tokio::task::spawn_blocking(move || {
         let _ = project::cleanup_expired_shares(&shares_dir);
+        if let Some(root) = sweep_root {
+            project::prune_history_sessions(&root, project::KEEP_SESSIONS);
+        }
     });
 
     let app = build_app(state);
 
-    // When bound to loopback (the default), reject requests whose Host header
-    // is not a loopback name — see loopback_host_guard for the rationale.
-    // Users who opt into network exposure via --host skip the guard.
     let bound_loopback = host_is_loopback(host);
     let app = if bound_loopback {
         app.layer(axum::middleware::from_fn(loopback_host_guard))
@@ -468,7 +609,32 @@ pub async fn start_play_server(host: &str, port: u16, dir: PathBuf) -> Result<()
         app
     };
 
-    // Bracket bare IPv6 literals for SocketAddr syntax
+    let token = token_for_bind(host);
+    let app = match &token {
+        Some(play_token) => {
+            let expected = play_token.value.clone();
+            app.layer(axum::middleware::from_fn(
+                move |req: axum::http::Request<Body>, next: axum::middleware::Next| {
+                    let expected = expected.clone();
+                    async move {
+                        if !needs_token(req.uri().path())
+                            || request_has_token(req.headers(), req.uri().query(), &expected)
+                        {
+                            next.run(req).await
+                        } else {
+                            (
+                                StatusCode::UNAUTHORIZED,
+                                "This workbench is bound to a network address and needs its token — start it again to read the one it prints, or set GRPCTESTIFY_PLAY_TOKEN.",
+                            )
+                                .into_response()
+                        }
+                    }
+                },
+            ))
+        }
+        None => app,
+    };
+
     let addr = if host.contains(':') && !host.starts_with('[') {
         format!("[{}]:{}", host, port)
     } else {
@@ -482,12 +648,37 @@ pub async fn start_play_server(host: &str, port: u16, dir: PathBuf) -> Result<()
         version = version,
         reset = ansi!(ANSI_RESET),
     );
-    println!(
-        "   {dim}➜{reset}  http://localhost:{port}",
-        dim = ansi!(ANSI_BOLD),
-        reset = ansi!(ANSI_RESET),
-        port = port
-    );
+    match &token {
+        Some(play_token) => {
+            println!(
+                "   {dim}➜{reset}  http://{host}:{port}/?token={token}",
+                dim = ansi!(ANSI_BOLD),
+                reset = ansi!(ANSI_RESET),
+                host = host_header_name(host),
+                port = port,
+                token = play_token.value,
+            );
+            println!(
+                "   {dim}bound to {host} — every request needs this token{reset}",
+                dim = ansi!(ANSI_BOLD),
+                reset = ansi!(ANSI_RESET),
+                host = host,
+            );
+            if play_token.generated {
+                println!(
+                    "   {dim}set GRPCTESTIFY_PLAY_TOKEN to keep one across restarts{reset}",
+                    dim = ansi!(ANSI_BOLD),
+                    reset = ansi!(ANSI_RESET),
+                );
+            }
+        }
+        None => println!(
+            "   {dim}➜{reset}  http://localhost:{port}",
+            dim = ansi!(ANSI_BOLD),
+            reset = ansi!(ANSI_RESET),
+            port = port
+        ),
+    }
     if let Some(ref root) = project_root {
         println!("   project  {root}", root = root.display());
         if let Ok(envs) = project::list_env_files(root)
@@ -497,6 +688,12 @@ pub async fn start_play_server(host: &str, port: u16, dir: PathBuf) -> Result<()
         }
     }
     println!("   dirs     {dir}", dir = collections_dir_display);
+    println!(
+        "   {dim}this release names the workspace differently, so tabs saved by an older \
+         session are let go once{reset}",
+        dim = ansi!(ANSI_BOLD),
+        reset = ansi!(ANSI_RESET),
+    );
     println!();
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -521,6 +718,54 @@ mod tests {
     }
 
     #[test]
+    fn a_network_bind_asks_for_a_token_and_loopback_does_not() {
+        assert!(token_for_bind("127.0.0.1").is_none());
+        assert!(token_for_bind("localhost").is_none());
+        assert!(token_for_bind("[::1]").is_none());
+
+        let made = token_for_bind("0.0.0.0").expect("a network bind needs one");
+        assert!(made.generated);
+        assert!(made.value.len() >= 32, "{}", made.value);
+
+        unsafe { std::env::set_var("GRPCTESTIFY_PLAY_TOKEN", "  chosen-by-the-operator  ") };
+        let given = token_for_bind("0.0.0.0").expect("a network bind needs one");
+        unsafe { std::env::remove_var("GRPCTESTIFY_PLAY_TOKEN") };
+        assert!(!given.generated);
+        assert_eq!(given.value, "chosen-by-the-operator");
+    }
+
+    #[test]
+    fn the_token_guards_the_data_and_not_the_page_that_reads_it() {
+        assert!(needs_token("/api/collections"));
+        assert!(needs_token("/api/jobs/1/events"));
+        assert!(!needs_token("/"));
+        assert!(!needs_token("/assets/index-abc.js"));
+        assert!(!needs_token("/c/auth/login.gctf"));
+    }
+
+    #[test]
+    fn a_request_carries_its_token_in_a_header_or_in_the_url() {
+        let mut headers = axum::http::HeaderMap::new();
+        assert!(!request_has_token(&headers, None, "secret"));
+        assert!(!request_has_token(&headers, Some("token=other"), "secret"));
+
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_static("Bearer secret"),
+        );
+        assert!(request_has_token(&headers, None, "secret"));
+
+        let empty = axum::http::HeaderMap::new();
+        assert!(request_has_token(&empty, Some("token=secret"), "secret"));
+        assert!(request_has_token(
+            &empty,
+            Some("since=1&token=secret"),
+            "secret"
+        ));
+        assert!(!request_has_token(&empty, Some("token=secre"), "secret"));
+    }
+
+    #[test]
     fn test_host_is_loopback() {
         assert!(host_is_loopback("localhost"));
         assert!(host_is_loopback("LOCALHOST:4755"));
@@ -530,8 +775,49 @@ mod tests {
         assert!(!host_is_loopback("evil.example"));
         assert!(!host_is_loopback("evil.example:4755"));
         assert!(!host_is_loopback("192.168.1.10:4755"));
-        // 127.0.0.1 lookalikes must not pass
         assert!(!host_is_loopback("127.0.0.1.evil.example"));
         assert!(!host_is_loopback(""));
+    }
+
+    #[test]
+    fn the_access_log_never_prints_a_token() {
+        assert_eq!(redact_query("token=abc123"), "token=<redacted>");
+        assert_eq!(
+            redact_query("since=1&token=abc123&x=y"),
+            "since=1&token=<redacted>&x=y"
+        );
+        assert_eq!(redact_query("since=1"), "since=1");
+        assert_eq!(redact_query("tokens=abc"), "tokens=abc");
+    }
+
+    #[test]
+    fn tokens_compare_without_leaking_where_they_differ() {
+        assert!(ct_eq(b"secret", b"secret"));
+        assert!(!ct_eq(b"secret", b"secreT"));
+        assert!(!ct_eq(b"secret", b"secre"));
+        assert!(!ct_eq(b"", b"a"));
+        assert!(!ct_eq(b"", &[0u8; 256]));
+        assert!(ct_eq(b"", b""));
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn the_workspace_identity_names_the_folder_and_not_where_it_lives() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let inner = dir.path().join("app");
+        std::fs::create_dir_all(&inner).expect("mkdir");
+        let identity = workspace_identity(&inner);
+        assert!(identity.starts_with("app#"), "{identity}");
+        assert_eq!(identity.len(), "app#".len() + 8, "{identity}");
+        assert!(
+            !identity.contains(&*dir.path().to_string_lossy()),
+            "{identity}"
+        );
+        assert_eq!(identity, workspace_identity(&inner));
+
+        let other = tempfile::tempdir().expect("tempdir");
+        let same_name = other.path().join("app");
+        std::fs::create_dir_all(&same_name).expect("mkdir");
+        assert_ne!(identity, workspace_identity(&same_name));
     }
 }
